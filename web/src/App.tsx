@@ -130,10 +130,11 @@ export default function App() {
     : job?.message || job?.status
 
   return <main>
-    <header><span className="mark">V</span><div><h1>Vinylgen</h1><p>From source image to cuttable layers</p></div></header>
+    <header><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1><p>From source image to cuttable layers</p></div><span className="header-context">{current ? `${current.kind} revision` : 'New artwork'}</span></header>
     <section className="workspace">
       <ImageWorkspace layers={artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)} />
       <aside>
+        <section className="side-section create-section">
         <h2>Create artwork</h2>
         <form className="generation-form" onSubmit={generateImage}>
           <label>Short subject<textarea name="prompt" placeholder="e.g. sky whale city" required /></label>
@@ -152,12 +153,17 @@ export default function App() {
           <label className="file">Source image<input name="source" type="file" accept="image/*" required /></label>
           <button type="submit">Import image</button>
         </form>
+        </section>
+        <section className="side-section project-section">
         <h2 className="project-heading">Projects</h2>
         {error && <p className="error" role="alert">{error}</p>}
         <div className="projects">
           {projects.map(project => <button key={project.id} className={selected === project.id ? 'selected' : ''} onClick={() => setSelected(project.id)}>{project.name}<small>{project.slug}</small></button>)}
           {!projects.length && <p className="muted">No projects yet.</p>}
         </div>
+        </section>
+        <section className="side-section pipeline-section">
+        <div className="section-heading"><h2>Prepare layers</h2><span>{revision ? 'Revision selected' : 'Choose a project'}</span></div>
         <div className="job">
           <button disabled={!revision || ['queued', 'running'].includes(job?.status || '')} onClick={() => runPipeline('palette')}>Flatten image</button>
           <button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || ['queued', 'running'].includes(job?.status || '')} onClick={() => runPipeline('trace')}>Trace and validate</button>
@@ -166,6 +172,7 @@ export default function App() {
           {job && <><div className="progress" role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)} aria-valuetext={`${jobMessage} · ${Math.round(job.progress * 100)}%`}><i style={{ '--progress': job.progress } as CSSProperties} /></div><p role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage} · {Math.round(job.progress * 100)}%</p>
             {['queued', 'running'].includes(job.status) && <button className="secondary" onClick={() => api.cancelJob(job.id).then(setJob)}>Cancel</button>}</>}
         </div>
+        </section>
       </aside>
     </section>
     {selected && revision && source && <MaskedEditor projectId={selected} revisionId={revision} source={source} onApply={setRevision} />}
