@@ -1,0 +1,2 @@
+"""Vinylgen web application foundation."""
+

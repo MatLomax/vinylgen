@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -o pipefail
+
+project_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+runtime_dir="$project_dir/.tmp/inkscape-headless"
+
+mkdir -p "$runtime_dir/profile" "$runtime_dir/config" "$runtime_dir/cache" "$runtime_dir/data"
+
+export INKSCAPE_PROFILE_DIR="$runtime_dir/profile"
+export XDG_CONFIG_HOME="$runtime_dir/config"
+export XDG_CACHE_HOME="$runtime_dir/cache"
+export XDG_DATA_HOME="$runtime_dir/data"
+
+inkscape "$@" 2> >(
+  awk '
+    /WARNING.*Failed to wrap object of type .GtkRecentManager./ { suppress_hint = 1; next }
+    suppress_hint && /Hint: this error is commonly caused by failing to call a library init[(][)] function[.]/ {
+      suppress_hint = 0
+      next
+    }
+    { suppress_hint = 0; print > "/dev/stderr" }
+  '
+)

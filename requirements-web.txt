@@ -1,0 +1,5 @@
+fastapi>=0.115,<0.117
+anyio>=4.8,<4.10
+httpx>=0.28,<1
+python-multipart>=0.0.20,<1
+uvicorn[standard]>=0.34,<1

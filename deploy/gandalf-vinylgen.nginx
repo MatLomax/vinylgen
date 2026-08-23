@@ -1,0 +1,5 @@
+# location /
+client_max_body_size 25m;
+proxy_set_header X-Gandalf-User $gandalf_user;
+proxy_read_timeout 900s;
+proxy_send_timeout 900s;
