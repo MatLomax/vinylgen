@@ -1,23 +1,117 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
+import os
+import queue
 import shutil
+import signal
 import subprocess
+import sys
+import threading
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
 from vinylgen.contracts import PaletteSettings, TraceSettings
-from vinylgen.palette import infer_palette
-from vinylgen.tracing import trace_subject
 from vinylgen.validation import validate_svg
 
 from .store import Store
 
 
 Progress = Callable[[float, str], None]
+Cancelled = Callable[[], bool]
+
+# The repository root, used as the working directory when spawning the compute worker
+# so ``python -m vinylgen.web.pipeline_worker`` resolves regardless of the caller's cwd.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _terminate(process: subprocess.Popen) -> None:
+    """Stop a worker's whole process group, escalating to SIGKILL if it lingers."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled) -> None:
+    """Run one compute step in a killable subprocess, relaying its progress.
+
+    Cancellation is checked on every poll rather than only when the worker emits a
+    line, so a job wedged inside a long numpy call is killed within one poll interval
+    instead of waiting for the next progress checkpoint.
+    """
+    process = subprocess.Popen(
+        [sys.executable, "-m", "vinylgen.web.pipeline_worker"],
+        cwd=REPO_ROOT, text=True, bufsize=1,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True)
+    events: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+    def reader(stream, tag: str) -> None:
+        for line in stream:
+            events.put((tag, line))
+        events.put((tag, None))
+
+    threads = [threading.Thread(target=reader, args=(process.stdout, "out"), daemon=True),
+               threading.Thread(target=reader, args=(process.stderr, "err"), daemon=True)]
+    for thread in threads:
+        thread.start()
+    error: str | None = None
+    stderr_tail: list[str] = []
+    closed = 0
+    try:
+        process.stdin.write(json.dumps(spec))
+        process.stdin.close()
+        while closed < 2 or process.poll() is None:
+            if cancelled():
+                _terminate(process)
+                raise asyncio.CancelledError
+            try:
+                tag, line = events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if line is None:
+                closed += 1
+                continue
+            if tag == "err":
+                stderr_tail.append(line)
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "progress":
+                on_progress(float(event["value"]), str(event["message"]))
+            elif event.get("type") == "error":
+                error = event.get("message") or "pipeline worker failed"
+        process.wait()
+        if cancelled():
+            _terminate(process)
+            raise asyncio.CancelledError
+        if error is not None:
+            raise RuntimeError(error)
+        if process.returncode:
+            raise RuntimeError("".join(stderr_tail).strip()
+                               or f"pipeline worker exited with status {process.returncode}")
+    finally:
+        if process.poll() is None:
+            _terminate(process)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            try:
+                stream.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                pass
 
 PALETTE_FILES = {
     "source": "source.png", "flattened": "flattened.png",
@@ -84,14 +178,15 @@ class PipelineRunner:
 
     def run(self, job_id: str, kind: str, project_id: str, revision_id: str,
             *, palette: dict | None, trace: dict | None, colour_names: dict[str, str],
-            progress: Progress) -> str:
+            progress: Progress, cancelled: Cancelled = lambda: False) -> str:
         work = self.scratch_root / job_id
         work.mkdir(parents=True, exist_ok=False)
         try:
             if kind == "palette":
-                return self._palette(project_id, revision_id, work, palette or {}, progress)
+                return self._palette(project_id, revision_id, work, palette or {}, progress, cancelled)
             if kind == "trace":
-                return self._trace(project_id, revision_id, work, trace or {}, colour_names, progress)
+                return self._trace(project_id, revision_id, work, trace or {}, colour_names,
+                                   progress, cancelled)
             if kind == "validate":
                 return self._validate(project_id, revision_id, work, progress)
             if kind == "export":
@@ -127,7 +222,7 @@ class PipelineRunner:
         return revision["id"]
 
     def _palette(self, project_id: str, parent_id: str, work: Path, values: dict,
-                 progress: Progress) -> str:
+                 progress: Progress, cancelled: Cancelled) -> str:
         project = self.store.get_project(project_id)
         artifacts = self._copy_inputs(parent_id, work, {"source"})
         source_row = artifacts["source"]
@@ -135,8 +230,11 @@ class PipelineRunner:
         staged_source = work / f"{project['slug']}{source.suffix.lower()}"
         shutil.copyfile(source, staged_source)
         effective = asdict(PaletteSettings(**values))
-        infer_palette(staged_source, work / "outputs", PaletteSettings(**effective),
-                      progress=lambda fraction, message: progress(0.15 + fraction * 0.70, message))
+        run_worker(
+            {"op": "palette", "source": str(staged_source),
+             "outputs": str(work / "outputs"), "settings": effective},
+            on_progress=lambda fraction, message: progress(0.15 + fraction * 0.70, message),
+            cancelled=cancelled)
         subject = work / "outputs" / project["slug"]
         progress(0.85, "Storing palette artifacts")
         files = {kind: subject / filename for kind, filename in PALETTE_FILES.items()}
@@ -144,14 +242,18 @@ class PipelineRunner:
                             _provenance("palette", effective, None))
 
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
-               colour_names: dict[str, str], progress: Progress) -> str:
+               colour_names: dict[str, str], progress: Progress, cancelled: Cancelled) -> str:
         _require_fresh(self.store, parent_id, {"palette"})
         subject = work / self.store.get_project(project_id)["slug"]
         required = set(PALETTE_FILES)
         self._copy_inputs(parent_id, subject, required)
         trace_settings = TraceSettings(**values)
         progress(0.1, "Tracing shared boundaries")
-        trace_subject(subject, trace_settings, colour_names)
+        run_worker(
+            {"op": "trace", "subject": str(subject),
+             "settings": asdict(trace_settings), "colour_names": colour_names},
+            on_progress=lambda fraction, message: progress(0.1 + fraction * 0.8, message),
+            cancelled=cancelled)
         effective = asdict(trace_settings)
         progress(0.9, "Storing traced and validated artifacts")
         files = {kind: subject / filename for kind, filename in TRACE_FILES.items()}

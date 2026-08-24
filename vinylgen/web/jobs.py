@@ -119,7 +119,8 @@ class JobManager:
                 self._worker_executor,
                 lambda: self.pipeline.run(
                     job_id, kind, project_id, revision_id, palette=palette,
-                    trace=trace, colour_names=colour_names, progress=progress))
+                    trace=trace, colour_names=colour_names, progress=progress,
+                    cancelled=cancellation.is_set))
             if cancellation.is_set():
                 raise asyncio.CancelledError
             await self._update(job_id, status="succeeded", progress=1, message="Complete",

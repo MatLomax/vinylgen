@@ -5,14 +5,17 @@ import io
 import tempfile
 import unittest
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
 import numpy as np
 from PIL import Image
 
+from vinylgen.contracts import PaletteSettings
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
+from vinylgen.web.pipeline import run_worker
 
 
 class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
@@ -170,6 +173,40 @@ class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
         settings = self.app.state.store.get_revision(traced["result_revision_id"])["settings"]
         self.assertEqual(settings["palette"]["initial_colours"], 2)
         self.assertEqual(settings["palette"]["min_colour_share"], 0)
+
+
+class PipelineWorkerTest(unittest.TestCase):
+    """The compute worker runs in a killable subprocess, so cancellation stops the work
+    immediately rather than waiting for the next progress checkpoint."""
+
+    def setUp(self) -> None:
+        self.work = Path(tempfile.mkdtemp(dir=".tmp"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.work, ignore_errors=True))
+        pixels = np.full((48, 60, 3), (15, 35, 60), dtype=np.uint8)
+        pixels[6:42, 10:50] = (225, 95, 45)
+        self.source = self.work / "subject.png"
+        Image.fromarray(pixels, "RGB").save(self.source)
+        self.spec = {"op": "palette", "source": str(self.source),
+                     "outputs": str(self.work / "outputs"),
+                     "settings": asdict(PaletteSettings(initial_colours=4))}
+        self.flattened = self.work / "outputs" / "subject" / "flattened.png"
+
+    def test_worker_relays_progress_and_writes_output(self) -> None:
+        seen: list[tuple[float, str]] = []
+        run_worker(self.spec, on_progress=lambda value, message: seen.append((value, message)),
+                   cancelled=lambda: False)
+        self.assertTrue(self.flattened.exists())
+        self.assertTrue(seen, "expected relayed progress events")
+        self.assertEqual([value for value, _ in seen], sorted(value for value, _ in seen))
+        self.assertEqual(seen[-1][0], 1.0)
+
+    def test_cancellation_terminates_the_worker_before_it_finishes(self) -> None:
+        # A cancel that is already set must raise and leave no committed-quality output,
+        # proving the worker is killed rather than allowed to run to its next checkpoint.
+        with self.assertRaises(asyncio.CancelledError):
+            run_worker(self.spec, on_progress=lambda value, message: None,
+                       cancelled=lambda: True)
+        self.assertFalse(self.flattened.exists())
 
 
 if __name__ == "__main__":
