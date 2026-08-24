@@ -333,13 +333,18 @@ describe('application status accessibility', () => {
     fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
     fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
     const progress = await screen.findByRole('progressbar', { name: 'Job progress' })
-    // Queued: no measured value yet, so the bar stays indeterminate.
+    // Queued: no measured value yet, so the bar stays indeterminate and the spinner shows.
     expect(progress.getAttribute('aria-valuenow')).toBeNull()
+    expect(document.querySelector('.spinner')).not.toBeNull()
+    expect(screen.queryByText('40%')).toBeNull()
 
     await act(async () => update?.({ ...queuedJob, status: 'running', progress: 0.4, message: 'Resolving anti-aliased boundaries' }))
     expect(progress.getAttribute('aria-valuenow')).toBe('40')
     expect(progress.getAttribute('style')).toContain('--progress: 0.4')
     expect(screen.getByRole('status').textContent).toContain('Resolving anti-aliased boundaries')
+    // Determinate: a visible percent readout appears and the redundant spinner is dropped.
+    expect(screen.getByText('40%')).not.toBeNull()
+    expect(document.querySelector('.spinner')).toBeNull()
   })
 
   it('announces cancellation and completion through the same atomic status', async () => {
