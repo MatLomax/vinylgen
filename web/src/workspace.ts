@@ -47,3 +47,20 @@ export function distance(a: Point, b: Point) {
 export function sameImageSize(a?: ImageSize, b?: ImageSize) {
   return Boolean(a && b && a.width === b.width && a.height === b.height)
 }
+
+/**
+ * The integer pixels a pencil stroke covers moving to (toX, toY). With no prior
+ * point it is just the destination; otherwise it is every step along the line
+ * from the last painted pixel, so a fast drag leaves no gaps. The starting pixel
+ * is omitted because the previous move already painted it.
+ */
+export function pixelLine(fromX: number | null, fromY: number | null, toX: number, toY: number): Array<[number, number]> {
+  if (fromX === null || fromY === null) return [[toX, toY]]
+  const steps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY))
+  if (steps === 0) return [[toX, toY]]
+  const points: Array<[number, number]> = []
+  for (let step = 1; step <= steps; step++) {
+    points.push([Math.round(fromX + (toX - fromX) * step / steps), Math.round(fromY + (toY - fromY) * step / steps)])
+  }
+  return points
+}

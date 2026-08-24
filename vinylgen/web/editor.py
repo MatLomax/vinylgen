@@ -99,6 +99,18 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
             if int(bundle.labels[y, x]) == target:
                 raise ValueError("selected region already uses the target colour")
             bundle.labels[component] = target
+        elif operation.tool == "paint_pixels":
+            target = _check_label(operation.target_label, count, "target_label")
+            if not operation.pixels:
+                raise ValueError("paint_pixels requires at least one pixel")
+            height, width = bundle.labels.shape
+            # Repaint individual pixels. Regions are derived from the label grid by
+            # four-way connectivity, so a stroke that severs a region splits it into
+            # separate components the next time anything recomputes connectivity.
+            for x, y in operation.pixels:
+                if x < 0 or y < 0 or y >= height or x >= width:
+                    raise ValueError("paint pixel lies outside the flattened image")
+                bundle.labels[y, x] = target
         else:  # pragma: no cover - Pydantic constrains the value
             raise ValueError(f"unsupported editor tool: {operation.tool}")
 

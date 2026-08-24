@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fitTransform, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
+import { fitTransform, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
 
 describe('shared workspace transform', () => {
   it('keeps the pixel under the pointer registered while zooming', () => {
@@ -54,5 +54,18 @@ describe('shared workspace transform', () => {
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 768 })).toBe(true)
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 900 })).toBe(false)
     expect(sameImageSize({ width: 1024, height: 768 }, undefined)).toBe(false)
+  })
+
+  it('paints only the destination pixel when a stroke has no prior point', () => {
+    expect(pixelLine(null, null, 4, 7)).toEqual([[4, 7]])
+    expect(pixelLine(4, 7, 4, 7)).toEqual([[4, 7]])
+  })
+
+  it('fills every gap-free pixel between the last painted pixel and the next', () => {
+    // A fast diagonal drag must leave a continuous stroke, not scattered dots.
+    expect(pixelLine(0, 0, 3, 3)).toEqual([[1, 1], [2, 2], [3, 3]])
+    expect(pixelLine(0, 0, 4, 0)).toEqual([[1, 0], [2, 0], [3, 0], [4, 0]])
+    // The starting pixel is omitted (the previous move already painted it).
+    expect(pixelLine(0, 0, 3, 3)).not.toContainEqual([0, 0])
   })
 })

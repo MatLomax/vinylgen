@@ -76,6 +76,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .viewport { grid-column: 1; position: relative; overflow: hidden; min-width: 0; min-height: 0; touch-action: none; user-select: none; cursor: grab; background-color: var(--surface-canvas); background-image: linear-gradient(45deg,var(--surface-grid) 25%,transparent 25%),linear-gradient(-45deg,var(--surface-grid) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--surface-grid) 75%),linear-gradient(-45deg,transparent 75%,var(--surface-grid) 75%); background-size: 30px 30px; background-position: 0 0,0 15px,15px -15px,-15px 0; }
 .viewport:active { cursor: grabbing; }
 .viewport.selecting-point { cursor: crosshair; }
+.viewport.painting { cursor: crosshair; }
 .image-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .image-stage img, .compare-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
 .image-stage img { display: block; object-fit: fill; pointer-events: none; }
@@ -273,6 +274,11 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .region-swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .region-swatch { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 10px; text-align: left; color: var(--text); background: var(--surface-item); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .region-swatch.is-neighbour { border-color: var(--accent); }
+.region-swatch.is-active { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.edit-tool-toggle { grid-template-columns: repeat(2, 1fr); margin-bottom: 16px; }
+.pencil-editor { display: grid; gap: 16px; }
+.pencil-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pencil-actions button { flex: 1 1 auto; }
 .region-swatch-colour { flex: none; width: 30px; height: 30px; border-radius: var(--radius-sm); border: 2px solid var(--swatch-border); }
 .region-swatch-text { display: grid; gap: 2px; min-width: 0; }
 .region-swatch-text strong { font-size: 13px; color: var(--text-strong); }

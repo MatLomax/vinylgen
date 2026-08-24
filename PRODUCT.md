@@ -26,7 +26,7 @@ The core loop is `Generate → inspect → flatten → inspect/edit → trace �
 
 - Source generation uses a fresh ephemeral locally authenticated Codex session for each request; it must not copy OAuth credentials, silently reuse prior images, or fall back to hidden API billing.
 - Deterministic flattening infers a limited palette, preserves exact palette membership, and treats four-way edge connectivity as authoritative for physical vinyl regions.
-- Palette edits operate on complete colours in authoritative label maps; the UI does not expose manual pixel painting or arbitrary colour adjustment.
+- Palette edits operate on complete colours in authoritative label maps. The flattened-image editor supports whole-colour merges, point-selected connected-area reassignment, and a per-pixel pencil that repaints individual pixels to an existing palette colour; it does not create new colours or adjust a palette colour's RGB value. Four-way connectivity stays authoritative, so a pencil stroke that severs a region splits it into separate regions on the next recompute.
 - Generative source creation always creates a recoverable root revision.
 - Tracing emits shared-boundary overlap and edge SVG variants, audits, and a synchronized 768 DPI preview. Structural validation does not establish physical cutter readiness.
 - Source generation always requests maximum provider quality and rich detail within a configurable limited-colour flat graphic style designed for clean flattening; cut detail and trace fidelity remain separate deterministic controls.

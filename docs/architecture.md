@@ -31,11 +31,14 @@ and segmentation without copying blobs.
 
 The palette and region editors are deterministic branches between palette
 inference and tracing. They use the shared artwork canvas and intentionally
-offer no freehand, fill, lasso, protection-painting, or manual RGB tools.
-Whole-colour merges, name metadata, and point-selected four-way connected
-region reassignment create new parent-linked revisions;
-`segmentation.labels` remains authoritative and `flattened.png` is derived
-mechanically. Undo and redo navigate revision ancestry.
+offer no fill, lasso, protection-painting, or manual RGB tools. Whole-colour
+merges, name metadata, point-selected four-way connected region reassignment,
+and a per-pixel pencil that repaints individual pixels to an existing palette
+colour create new parent-linked revisions; `segmentation.labels` remains
+authoritative and `flattened.png` is derived mechanically. Because connectivity
+is recomputed from the label grid, a pencil stroke that severs a region splits
+it into separate components with no extra bookkeeping. Undo and redo navigate
+revision ancestry.
 
 Source generation is a provider-backed branch before deterministic processing.
 `vinylgen.web.generation` expands the short subject through a persisted,

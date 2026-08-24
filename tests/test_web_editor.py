@@ -120,14 +120,57 @@ class WebEditorTest(unittest.IsolatedAsyncioTestCase):
         with np.load(io.BytesIO((await self.client.get(parent_segmentation["download_url"])).content)) as data:
             self.assertEqual(set(np.unique(data["labels"])), {0, 1})
 
-    async def test_manual_painting_and_colour_adjustment_are_rejected_at_api_boundary(self) -> None:
+    async def test_pencil_paints_individual_pixels_and_splits_regions(self) -> None:
+        from scipy import ndimage
+
+        project, parent = await self.flattened_project()
+        # Paint the background colour straight across the middle of the colour-1
+        # block (rows 2..9), severing it into a top and a bottom half.
+        pixels = [[x, 5] for x in range(3, 11)]
+        response = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{parent}/edits",
+            json={"operations": [{"tool": "paint_pixels", "target_label": 0, "pixels": pixels}]})
+        self.assertEqual(response.status_code, 201, response.text)
+        revision = response.json()["id"]
+
+        artifacts = (await self.client.get(f"/api/revisions/{revision}/artifacts")).json()
+        segmentation = next(row for row in artifacts if row["kind"] == "segmentation")
+        with np.load(io.BytesIO((await self.client.get(segmentation["download_url"])).content)) as data:
+            labels = data["labels"]
+        self.assertTrue(np.all(labels[5, 3:11] == 0))
+        cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+        _, components = ndimage.label(labels == 1, structure=cross)
+        self.assertEqual(components, 2)
+
+        # The flattened raster stays exactly on-palette after painting.
+        flattened = next(row for row in artifacts if row["kind"] == "flattened")
+        image = Image.open(io.BytesIO((await self.client.get(flattened["download_url"])).content))
+        state = (await self.client.get(f"/api/revisions/{revision}/editor")).json()
+        self.assertTrue(set(image.getdata()).issubset({tuple(row["rgb"]) for row in state["palette"]}))
+
+        # The parent revision is an untouched, deterministic branch point.
+        parent_artifacts = (await self.client.get(f"/api/revisions/{parent}/artifacts")).json()
+        parent_segmentation = next(row for row in parent_artifacts if row["kind"] == "segmentation")
+        with np.load(io.BytesIO((await self.client.get(parent_segmentation["download_url"])).content)) as data:
+            _, parent_components = ndimage.label(data["labels"] == 1, structure=cross)
+        self.assertEqual(parent_components, 1)
+
+    async def test_pencil_rejects_pixels_outside_the_image(self) -> None:
+        project, parent = await self.flattened_project()
+        for pixels in ([[14, 0]], [[0, 12]], [[-1, 0]], []):
+            response = await self.client.post(
+                f"/api/projects/{project['id']}/revisions/{parent}/edits",
+                json={"operations": [{"tool": "paint_pixels", "target_label": 0, "pixels": pixels}]})
+            self.assertEqual(response.status_code, 409, pixels)
+
+    async def test_unsupported_manual_tools_are_rejected_at_api_boundary(self) -> None:
+        # Whole-colour merge, connected-area reassignment, and the per-pixel pencil
+        # are the only manual edits; broader painting and colour adjustment are not.
         project, parent = await self.flattened_project()
         for operation in (
-            {"tool": "pencil", "label": 1, "points": [[0, 0]]},
             {"tool": "brush", "label": 1, "points": [[0, 0]], "radius": 4},
             {"tool": "flood_fill", "label": 1, "points": [[0, 0]]},
             {"tool": "lasso", "label": 1, "points": [[0, 0], [1, 0], [0, 1]]},
-            {"tool": "component", "label": 1, "points": [[0, 0]]},
             {"tool": "protect", "points": [[0, 0]]},
             {"tool": "adjust_colour", "label": 0, "rgb": [1, 2, 3]},
         ):

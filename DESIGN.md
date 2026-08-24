@@ -228,5 +228,5 @@ Each stage exposes only controls relevant to that operation. Settings groups use
 - **Don't** decorate ordinary panels with floating shadows or bright accent fills.
 - **Don't** use artwork colours as interface accents; status colours have fixed semantic jobs.
 - **Don't** hide the stage sequence or move stage-specific settings into an undifferentiated control wall.
-- **Don't** imply pixel painting, destructive overwrites, or automatic physical-cutter safety where the product does not provide them.
+- **Don't** imply destructive overwrites, arbitrary colour mixing, or automatic physical-cutter safety the product does not provide; the per-pixel pencil repaints to existing palette colours as recoverable revisions, not an unbounded raster editor.
 - **Don't** shrink touch controls or explanatory copy to preserve desktop density on a phone.

@@ -163,7 +163,7 @@ class GenerationStarted(BaseModel):
     expanded_prompt: str
 
 
-EditorTool = Literal["merge_colour", "rename_colour", "reassign_region"]
+EditorTool = Literal["merge_colour", "rename_colour", "reassign_region", "paint_pixels"]
 
 
 class LabelEditOperation(BaseModel):
@@ -173,6 +173,7 @@ class LabelEditOperation(BaseModel):
     target_label: int | None = Field(default=None, ge=0)
     name: str | None = Field(default=None, min_length=1, max_length=80)
     point: tuple[int, int] | None = None
+    pixels: tuple[tuple[int, int], ...] | None = Field(default=None, max_length=4_000_000)
 
 
 class ApplyLabelEdits(BaseModel):

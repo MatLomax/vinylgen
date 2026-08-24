@@ -1,14 +1,16 @@
 import { PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
-import { distance, fitTransform, midpoint, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
+import { distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; overlay?: string; editorMode?: boolean; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: string; editorMode?: boolean; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const pointers = useRef(new Map<number, Point>())
   const pointerStarts = useRef(new Map<number, Point>())
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
+  const painting = useRef(false)
+  const lastPaint = useRef<[number, number] | null>(null)
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [beforeId, setBeforeId] = useState(() => layers.some(layer => layer.role === 'image' && layer.id === preferredLayerId) ? preferredLayerId! : layers.find(layer => layer.role === 'image')?.id ?? '')
@@ -152,14 +154,31 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     return { x: clientX - bounds.left, y: clientY - bounds.top }
   }
 
+  function imagePixel(clientX: number, clientY: number): [number, number] | null {
+    if (!size.width || !size.height) return null
+    const here = localPoint(clientX, clientY)
+    const x = Math.floor((here.x - transform.x) / transform.scale)
+    const y = Math.floor((here.y - transform.y) / transform.scale)
+    return x >= 0 && y >= 0 && x < size.width && y < size.height ? [x, y] : null
+  }
+
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId)
     const here = localPoint(event.clientX, event.clientY)
     pointers.current.set(event.pointerId, here)
     pointerStarts.current.set(event.pointerId, here)
     if (pointers.current.size === 2) {
+      // A second finger begins a pinch; abandon any stroke so it does not paint
+      // a line to the zoom's focus.
+      painting.current = false
+      lastPaint.current = null
       const [a, b] = [...pointers.current.values()]
       gesture.current = { distance: distance(a, b), centre: midpoint(a, b), transform }
+    } else if (paintMode && onPaint) {
+      const pixel = imagePixel(event.clientX, event.clientY)
+      painting.current = true
+      lastPaint.current = pixel
+      if (pixel) onPaint(pixel[0], pixel[1])
     }
   }
 
@@ -168,13 +187,22 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     if (!previous) return
     const current = localPoint(event.clientX, event.clientY)
     pointers.current.set(event.pointerId, current)
-    if (pointers.current.size === 1) {
-      setTransform(value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
-    } else if (pointers.current.size === 2 && gesture.current) {
+    if (pointers.current.size === 2 && gesture.current) {
       const [a, b] = [...pointers.current.values()]
       const centre = midpoint(a, b)
       const zoomed = zoomAt(gesture.current.transform, gesture.current.centre, distance(a, b) / gesture.current.distance)
       setTransform({ ...zoomed, x: zoomed.x + centre.x - gesture.current.centre.x, y: zoomed.y + centre.y - gesture.current.centre.y })
+    } else if (paintMode && onPaint) {
+      if (!painting.current) return
+      const pixel = imagePixel(event.clientX, event.clientY)
+      if (!pixel) return
+      const [last] = [lastPaint.current]
+      for (const [x, y] of pixelLine(last?.[0] ?? null, last?.[1] ?? null, pixel[0], pixel[1])) {
+        if (x >= 0 && y >= 0 && x < size.width && y < size.height) onPaint(x, y)
+      }
+      lastPaint.current = pixel
+    } else if (pointers.current.size === 1) {
+      setTransform(value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
     }
   }
 
@@ -186,6 +214,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       const y = Math.floor((end.y - transform.y) / transform.scale)
       if (x >= 0 && y >= 0 && x < size.width && y < size.height) onSelectPoint([x, y])
     }
+    painting.current = false
+    lastPaint.current = null
     pointers.current.delete(event.pointerId)
     pointerStarts.current.delete(event.pointerId)
     gesture.current = null
@@ -233,7 +263,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
     <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}<button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button></div>
-    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={wheel}>
+    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}

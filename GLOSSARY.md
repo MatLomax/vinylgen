@@ -57,7 +57,8 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **palette colour** | One exact RGB member of the final palette. | colour, swatch, palette entry | shade family, source colour |
 | **colour family** | A source-derived cluster identity considered during inference and merge decisions. | cluster family, candidate family | palette colour, once final merging is complete |
 | **palette merge** | Replacing one complete palette colour and all of its labels with another palette colour. | merge colours, whole-colour merge | recolour, paint, blend |
-| **manual colour painting** | Per-pixel or selected-region reassignment, freehand recolouring, flood filling, or direct output-colour adjustment. This is not a supported flattened-image UI capability; that UI permits whole-colour merge only. | raster painting, manual recolouring | palette merge, generative-mask painting |
+| **pencil** | Repainting individual flattened pixels to an existing palette colour by dragging on the artwork. Because four-way connectivity is authoritative, a stroke that severs a region splits it into separate regions on the next recompute. | pixel pencil, per-pixel paint | flood fill, brush radius, colour adjustment |
+| **manual colour painting** | Flood filling, radius brushes, lasso selection, freehand recolouring into new colours, or direct output-colour (RGB) adjustment. These remain unsupported in the flattened-image UI, which permits only whole-colour merge, connected-area reassignment, and the per-pixel **pencil**. | raster painting, manual recolouring | palette merge, pencil, generative-mask painting |
 | **flattening** | Rendering every output pixel as exactly one member of the final palette after deterministic labelling and cleanup. | palette flattening, flatten stage | image generation, tracing |
 | **flattened image** | The authoritative exact-colour raster output, `flattened.png`. | flattened raster, palette raster | preview, report image |
 | **label** | The integer palette index assigned to one pixel in the authoritative label map. | palette label, colour label | RGB value |
@@ -138,8 +139,9 @@ automatically interchangeable when an entry calls out a narrower meaning.
 
 - **Generative mask** selects where probabilistic source pixels may change;
   **preservation selection** constrains deterministic palette inference.
-- **Palette merge** combines complete colours; it is not freehand recolouring,
-  region painting, blending, manual colour adjustment, or generative editing.
+- **Palette merge** combines complete colours; it is not the per-pixel **pencil**,
+  connected-area reassignment, freehand recolouring, blending, manual colour
+  adjustment, or generative editing.
 - **Small-region cleanup** operates on raster pixels during palette processing;
   **cutter cleanup** operates during tracing with width/area thresholds.
 - **Initial colour candidates** are not the **final colour count**.

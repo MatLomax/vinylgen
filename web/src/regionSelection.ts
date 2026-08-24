@@ -94,6 +94,21 @@ export function neighbourLabels(selection: Component[], pixels: Pixels, palette:
   return [...labels]
 }
 
+// RGBA overlay painting each staged pencil cell with its target palette colour at
+// full opacity, so an uncommitted stroke previews exactly as it will flatten. Keyed
+// by cell index (y * width + x) mapped to the palette label to paint there.
+export function paintOverlayPixels(painted: Map<number, number>, palette: PaletteEntry[], width: number, height: number): Uint8ClampedArray {
+  const overlay = new Uint8ClampedArray(width * height * 4)
+  const rgbByLabel = new Map(palette.map(entry => [entry.index, entry.rgb]))
+  for (const [cell, label] of painted) {
+    const rgb = rgbByLabel.get(label)
+    if (!rgb) continue
+    const offset = cell * 4
+    overlay[offset] = rgb[0]; overlay[offset + 1] = rgb[1]; overlay[offset + 2] = rgb[2]; overlay[offset + 3] = 255
+  }
+  return overlay
+}
+
 // RGBA overlay marking the selection: a translucent fill with an opaque outline
 // so it reads over both light and dark artwork.
 export function overlayPixels(selection: Component[], width: number, height: number): Uint8ClampedArray {

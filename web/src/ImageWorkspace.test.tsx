@@ -26,9 +26,9 @@ function load(container: HTMLElement, name: string, width: number, height: numbe
   fireEvent.load(image)
 }
 
-function prepare() {
-  const result = render(<ImageWorkspace layers={layers} />)
-  const viewport = within(result.container).getByLabelText('Image comparison viewport')
+function prepare(props: Partial<Parameters<typeof ImageWorkspace>[0]> = {}) {
+  const result = render(<ImageWorkspace layers={layers} {...props} />)
+  const viewport = within(result.container).getByLabelText(props.selectionLabel ?? 'Image comparison viewport')
   Object.defineProperties(viewport, {
     clientWidth: { configurable: true, value: 800 },
     clientHeight: { configurable: true, value: 600 },
@@ -75,6 +75,26 @@ describe('ImageWorkspace interactions', () => {
     expect(stage.style.transform).not.toBe(panned)
     fireEvent.pointerUp(viewport, { pointerId: 2 })
     fireEvent.pointerUp(viewport, { pointerId: 1 })
+  })
+
+  it('paints a continuous pixel stroke on drag instead of panning in paint mode', () => {
+    const onPaint = vi.fn()
+    // Image 1000x700 in an 800x600 viewport fits at scale 0.768, origin (16, 31.2),
+    // so image pixel (px, py) sits at client (16 + px*0.768, 31.2 + py*0.768).
+    const { container, viewport } = prepare({ paintMode: true, onPaint, selectionLabel: 'Flattened artwork pencil' })
+    const stage = container.querySelector('.image-stage') as HTMLElement
+    const before = stage.style.transform
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 16 + 100 * 0.768, clientY: 31.2 + 100 * 0.768 })
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 16 + 103 * 0.768, clientY: 31.2 + 100 * 0.768 })
+    fireEvent.pointerUp(viewport, { pointerId: 1 })
+    // The drag did not move the artwork...
+    expect(stage.style.transform).toBe(before)
+    // ...it painted the starting pixel and every pixel across to the destination.
+    const painted = onPaint.mock.calls.map(call => `${call[0]},${call[1]}`)
+    expect(painted).toContain('100,100')
+    expect(painted).toContain('101,100')
+    expect(painted).toContain('102,100')
+    expect(painted).toContain('103,100')
   })
 
   it('exposes phone controls with touch-sized primary actions', () => {

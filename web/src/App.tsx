@@ -5,7 +5,8 @@ import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
-import { neighbourLabels, overlayPixels, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
+import { PencilEditor } from './PencilEditor'
+import { neighbourLabels, overlayPixels, paintOverlayPixels, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
@@ -133,6 +134,11 @@ export default function App() {
   const [overlayUrl, setOverlayUrl] = useState<string | undefined>(undefined)
   const [regionBusy, setRegionBusy] = useState(false)
   const [regionError, setRegionError] = useState('')
+  const [editTool, setEditTool] = useState<'areas' | 'pencil'>('areas')
+  const [pencilLabel, setPencilLabel] = useState<number | null>(null)
+  const [paintedCells, setPaintedCells] = useState<Map<number, number>>(new Map())
+  const [pencilBusy, setPencilBusy] = useState(false)
+  const [pencilError, setPencilError] = useState('')
   const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
   const stageScroll = useRef<Partial<Record<WorkflowStage, number>>>({})
   const loadedProject = useRef<string | null>(null)
@@ -271,6 +277,7 @@ export default function App() {
   }, [sourceRevision?.id])
   useEffect(() => {
     setRegionSelection([]); setRegionError('')
+    setPaintedCells(new Map()); setPencilError('')
     if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); return }
     const controller = new AbortController()
     api.editor(revision, controller.signal).then(state => setEditorPalette(state.palette))
@@ -291,17 +298,27 @@ export default function App() {
     return () => { controller.abort(); image.onload = null }
   }, [revision, flattened?.id])
   useEffect(() => {
-    if (!flattenedPixels || regionSelection.length === 0) { setOverlayUrl(undefined); return }
+    // The Edit stage shows one overlay for whichever tool is active: the pencil's
+    // staged (uncommitted) pixels in their target colours, or the selected areas.
+    if (!editorPalette.length) { setPencilLabel(null); return }
+    setPencilLabel(current => current !== null && current < editorPalette.length ? current : editorPalette[0].index)
+  }, [editorPalette])
+  useEffect(() => {
+    if (!flattenedPixels) { setOverlayUrl(undefined); return }
     const { width, height } = flattenedPixels
+    const pixels = editTool === 'pencil'
+      ? (paintedCells.size ? paintOverlayPixels(paintedCells, editorPalette, width, height) : null)
+      : (regionSelection.length ? overlayPixels(regionSelection, width, height) : null)
+    if (!pixels) { setOverlayUrl(undefined); return }
     const canvas = document.createElement('canvas')
     canvas.width = width; canvas.height = height
     const context = canvas.getContext('2d')
     if (!context) { setOverlayUrl(undefined); return }
     const image = context.createImageData(width, height)
-    image.data.set(overlayPixels(regionSelection, width, height))
+    image.data.set(pixels)
     context.putImageData(image, 0, 0)
     setOverlayUrl(canvas.toDataURL())
-  }, [regionSelection, flattenedPixels])
+  }, [editTool, regionSelection, paintedCells, flattenedPixels, editorPalette])
 
   useEffect(() => {
     if (availableViews.length && !availableViews.includes(view)) setView(defaultView)
@@ -446,6 +463,38 @@ export default function App() {
     if (current?.parent_revision_id) setRevision(current.parent_revision_id)
   }
 
+  function chooseEditTool(tool: 'areas' | 'pencil') {
+    setEditTool(tool)
+    // Switching tools drops the other tool's uncommitted staging so the overlay
+    // never shows a selection the active tool cannot act on.
+    if (tool === 'pencil') setRegionSelection([]); else setPaintedCells(new Map())
+  }
+
+  function paintPixel(x: number, y: number) {
+    if (pencilLabel === null || !flattenedPixels) return
+    const cell = y * flattenedPixels.width + x
+    setPaintedCells(prev => prev.get(cell) === pencilLabel ? prev : new Map(prev).set(cell, pencilLabel))
+  }
+
+  async function commitPencil() {
+    if (!selected || !revision || !flattenedPixels || paintedCells.size === 0) return
+    const { width } = flattenedPixels
+    const byLabel = new Map<number, [number, number][]>()
+    for (const [cell, label] of paintedCells) {
+      const x = cell % width, y = (cell - x) / width
+      const pixels = byLabel.get(label) ?? []
+      pixels.push([x, y]); byLabel.set(label, pixels)
+    }
+    const operations = [...byLabel].map(([label, pixels]) => ({ tool: 'paint_pixels' as const, target_label: label, pixels }))
+    setPencilBusy(true); setPencilError('')
+    try {
+      const next = await api.applyEdits(selected, revision, operations)
+      setPaintedCells(new Map())
+      setRevision(next.id)
+    } catch (cause) { setPencilError(String(cause)) }
+    finally { setPencilBusy(false) }
+  }
+
   function selectPreservationPoint(point: [number, number]) {
     if (selectionMode === 'protect-component') {
       setPaletteSettings(value => ({ ...value, protected_component_points: [...value.protected_component_points, point] }))
@@ -513,8 +562,10 @@ export default function App() {
         {stage === 'palette' || stage === 'edit' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           preferredLayerId={viewLayerId(view)}
-          selectionLabel={stage === 'edit' ? 'Flattened artwork area selector' : selectionMode ? 'Source image preservation-point selector' : undefined}
-          onSelectPoint={stage === 'edit' ? (editSelectable ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
+          selectionLabel={stage === 'edit' ? (editTool === 'pencil' ? 'Flattened artwork pencil' : 'Flattened artwork area selector') : selectionMode ? 'Source image preservation-point selector' : undefined}
+          onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
+          paintMode={stage === 'edit' && editTool === 'pencil' && editSelectable}
+          onPaint={stage === 'edit' && editTool === 'pencil' && editSelectable ? paintPixel : undefined}
           overlay={stage === 'edit' && editSelectable ? overlayUrl : undefined}
         /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
         {(projectLoading || busy) && <section className="canvas-loading">{jobProgress === null && <span className="spinner" aria-hidden="true"/>}<h2>{projectLoading ? 'Loading artwork' : jobMessage || 'Working'}</h2><div className={jobProgress === null ? 'progress indeterminate' : 'progress'} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={jobProgress === null ? undefined : Math.round(jobProgress * 100)} style={jobProgress === null ? undefined : { '--progress': jobProgress } as React.CSSProperties}><i /></div>{jobProgress !== null && <p className="progress-percent" aria-hidden="true">{Math.round(jobProgress * 100)}%</p>}<p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
@@ -566,7 +617,15 @@ export default function App() {
           {selected && revision && source && !flattened && <><h2>Palette unavailable</h2><p className="stage-guidance">Flatten this revision first to edit its palette.</p></>}
         </section>
         <section id="workflow-panel-edit" role="tabpanel" aria-labelledby="workflow-tab-edit" className={`side-section region-edit-section workflow-surface ${stage === 'edit' ? 'mobile-stage-active' : ''}`} data-stage="edit">
-          {!selected || !revision || !flattened ? <><h2>Edit selected areas</h2><p className="stage-guidance">Flatten the active project before editing individual areas.</p></> : <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to select and edit areas.`} />}
+          {!selected || !revision || !flattened ? <><h2>Edit selected areas</h2><p className="stage-guidance">Flatten the active project before editing individual areas.</p></> : <>
+            <div className="segmented edit-tool-toggle" role="group" aria-label="Edit tool">
+              <button type="button" className={editTool === 'areas' ? 'active' : ''} aria-pressed={editTool === 'areas'} onClick={() => chooseEditTool('areas')}>Select areas</button>
+              <button type="button" className={editTool === 'pencil' ? 'active' : ''} aria-pressed={editTool === 'pencil'} onClick={() => chooseEditTool('pencil')}>Pencil</button>
+            </div>
+            {editTool === 'areas'
+              ? <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to select and edit areas.`} />
+              : <PencilEditor palette={editorPalette} activeLabel={pencilLabel} onPickColour={setPencilLabel} paintedCount={paintedCells.size} onApply={commitPencil} onDiscard={() => setPaintedCells(new Map())} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={pencilBusy} error={pencilError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to paint pixels.`} />}
+          </>}
         </section>
       </aside>
     </section>

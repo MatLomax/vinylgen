@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   combinedMask, componentIndexAt, floodComponent, labelForRgb, neighbourLabels,
-  overlayPixels, selectionLabels, toggleComponent, type Pixels, type Rgb,
+  overlayPixels, paintOverlayPixels, selectionLabels, toggleComponent, type Pixels, type Rgb,
 } from './regionSelection'
 
 const A: Rgb = [10, 0, 0]
@@ -73,5 +73,15 @@ describe('regionSelection', () => {
     expect(overlay[(0 * 4 + 2) * 4 + 3]).toBe(0) // (2,0) unselected -> transparent
     const size = pixels.width * pixels.height
     expect([...combinedMask(selection, size)].reduce((sum, v) => sum + v, 0)).toBe(4)
+  })
+
+  it('paints staged pencil cells in their target colour at full opacity', () => {
+    // Stage cell (1,0) as colour C and cell (0,2) as colour B on a 4x3 grid.
+    const painted = new Map<number, number>([[0 * 4 + 1, 2], [2 * 4 + 0, 1]])
+    const overlay = paintOverlayPixels(painted, palette, 4, 3)
+    const at = (x: number, y: number) => overlay.slice((y * 4 + x) * 4, (y * 4 + x) * 4 + 4)
+    expect([...at(1, 0)]).toEqual([...C, 255]) // painted C, opaque
+    expect([...at(0, 2)]).toEqual([...B, 255]) // painted B, opaque
+    expect([...at(0, 0)]).toEqual([0, 0, 0, 0]) // untouched -> transparent
   })
 })
