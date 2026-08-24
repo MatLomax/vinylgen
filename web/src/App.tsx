@@ -402,6 +402,9 @@ export default function App() {
     : job?.message || job?.status
   const customDimensions = customRatioDimensions(...customRatio)
   const busy = ['queued', 'running'].includes(job?.status || '')
+  // Show a filled, determinate bar only once a running job reports real progress;
+  // before that (queued, or the first tick still pending) the bar stays indeterminate.
+  const jobProgress = job?.status === 'running' && job.progress > 0 ? job.progress : null
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
@@ -514,7 +517,7 @@ export default function App() {
           onSelectPoint={stage === 'edit' ? (editSelectable ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
           overlay={stage === 'edit' && editSelectable ? overlayUrl : undefined}
         /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
-        {(projectLoading || busy) && <section className="canvas-loading"><span className="spinner" aria-hidden="true"/><h2>{projectLoading ? 'Loading artwork' : jobMessage || 'Working'}</h2><div className="progress indeterminate" role="progressbar" aria-label="Job progress"><i /></div><p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
+        {(projectLoading || busy) && <section className="canvas-loading"><span className="spinner" aria-hidden="true"/><h2>{projectLoading ? 'Loading artwork' : jobMessage || 'Working'}</h2><div className={jobProgress === null ? 'progress indeterminate' : 'progress'} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={jobProgress === null ? undefined : Math.round(jobProgress * 100)} style={jobProgress === null ? undefined : { '--progress': jobProgress } as React.CSSProperties}><i /></div><p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
       </div>
       <aside>
         <section id="workflow-panel-create" role="tabpanel" aria-labelledby="workflow-tab-create" className={`side-section create-section workflow-surface ${stage === 'create' ? 'mobile-stage-active' : ''}`} data-stage="create">

@@ -325,6 +325,23 @@ describe('application status accessibility', () => {
     expect(statuses[0].textContent).toContain('Preparing artwork')
   })
 
+  it('fills the progress bar and shows the current stage once a running job reports progress', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id, onJob) => { update = onJob; return () => undefined })
+    mocks.generate.mockResolvedValue({ project: { ...project, revisions: [revision] }, job: queuedJob, expanded_prompt: 'Expanded' })
+    render(createElement((await import('./App')).default))
+    fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
+    fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
+    const progress = await screen.findByRole('progressbar', { name: 'Job progress' })
+    // Queued: no measured value yet, so the bar stays indeterminate.
+    expect(progress.getAttribute('aria-valuenow')).toBeNull()
+
+    await act(async () => update?.({ ...queuedJob, status: 'running', progress: 0.4, message: 'Resolving anti-aliased boundaries' }))
+    expect(progress.getAttribute('aria-valuenow')).toBe('40')
+    expect(progress.getAttribute('style')).toContain('--progress: 0.4')
+    expect(screen.getByRole('status').textContent).toContain('Resolving anti-aliased boundaries')
+  })
+
   it('announces cancellation and completion through the same atomic status', async () => {
     let update: ((job: Job) => void) | undefined
     mocks.followJob.mockImplementation((_id, onJob) => { update = onJob; return () => undefined })

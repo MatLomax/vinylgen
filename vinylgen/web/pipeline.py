@@ -135,8 +135,8 @@ class PipelineRunner:
         staged_source = work / f"{project['slug']}{source.suffix.lower()}"
         shutil.copyfile(source, staged_source)
         effective = asdict(PaletteSettings(**values))
-        progress(0.15, "Inferring palette and segmentation")
-        infer_palette(staged_source, work / "outputs", PaletteSettings(**effective))
+        infer_palette(staged_source, work / "outputs", PaletteSettings(**effective),
+                      progress=lambda fraction, message: progress(0.15 + fraction * 0.70, message))
         subject = work / "outputs" / project["slug"]
         progress(0.85, "Storing palette artifacts")
         files = {kind: subject / filename for kind, filename in PALETTE_FILES.items()}

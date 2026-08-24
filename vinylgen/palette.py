@@ -12,6 +12,7 @@ import json
 import shutil
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -38,19 +39,32 @@ from vinylgen.segmentation import (
 from vinylgen.reporting import create_report
 
 
+# Reports fractional stage completion (0..1) and a human-readable activity label.
+Progress = Callable[[float, str], None]
+
+
+def _noop(fraction: float, message: str) -> None:
+    pass
+
+
 def merge_clusters(
     centres: np.ndarray,
     counts: np.ndarray,
     label_map: np.ndarray,
     settings: PaletteSettings,
     distinct_cluster_pairs: set[tuple[int, int]] | None = None,
+    progress: Progress | None = None,
 ) -> tuple[np.ndarray, list[dict[str, object]]]:
     merges: list[dict[str, object]] = []
     total = float(counts.sum())
     groups = [{index} for index in range(len(centres))]
     distinct = distinct_cluster_pairs or set()
     target_count = settings.final_colours or settings.min_output_colours
+    tick = progress or _noop
+    start_count = len(centres)
+    span = max(1, start_count - target_count)
     while len(centres) > target_count:
+        tick((start_count - len(centres)) / span, f"Merging similar colours ({len(centres)} left)")
         stats = spatial_stats(label_map, len(centres))
         distances = np.linalg.norm(centres[:, None, :] - centres[None, :, :], axis=2)
         np.fill_diagonal(distances, np.inf)
@@ -120,7 +134,10 @@ def merge_clusters(
     return centres, merges
 
 
-def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> dict[str, object]:
+def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
+                  progress: Progress | None = None) -> dict[str, object]:
+    tick = progress or _noop
+    tick(0.0, "Analysing source colours")
     source = Image.open(path).convert("RGB")
     analysed = analysis_image(source, settings.analysis_max_dimension)
     analysis_rgb = np.asarray(analysed)
@@ -160,9 +177,11 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
             )
         distinct_cluster_pairs.add(tuple(sorted(map(int, sampled_clusters))))
     centres, merges = merge_clusters(
-        centres, counts, label_map, settings, distinct_cluster_pairs
+        centres, counts, label_map, settings, distinct_cluster_pairs,
+        progress=lambda local, message: tick(0.05 + local * 0.10, message),
     )
 
+    tick(0.15, "Mapping palette to full resolution")
     full_rgb = source_rgb
     full_lab_flat = srgb_to_lab(full_rgb.reshape(-1, 3))
     full_lab = full_lab_flat.reshape((*full_rgb.shape[:2], 3))
@@ -170,21 +189,25 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
         (*full_rgb.shape[:2], len(centres))
     )
     full_labels = initial_costs.argmin(axis=2).astype(np.int32)
+    tick(0.35, "Protecting connected details")
     explicit_protection, protected_components = protect_components_at_points(
         full_labels, settings.protected_component_points
     )
+    tick(0.40, "Detecting intentional linework")
     full_labels, protected_features, feature_detection = detect_intentional_strokes(
         full_lab, full_labels, initial_costs, centres,
         minimum_contrast=settings.intentional_line_min_contrast,
         minimum_length=settings.intentional_line_min_length,
         locked_features=explicit_protection,
     )
+    tick(0.52, "Resolving anti-aliased boundaries")
     full_labels, aa_resolution = resolve_ambiguous_boundaries(
         full_labels, initial_costs, protected_features,
         ambiguity_margin=settings.aa_ambiguity_margin,
         smoothness=settings.aa_smoothness,
         passes=settings.aa_resolution_passes,
     )
+    tick(0.72, "Removing small regions")
     full_labels, cleanup = remove_small_regions(
         full_labels, centres, settings.min_region_pixels,
         protected_features=protected_features,
@@ -198,6 +221,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
         colour = int(full_labels[y, x])
         preserved_colours.add(colour)
         preserved_colour_points.append({"x": x, "y": y, "colour_index_before_final_remap": colour})
+    tick(0.82, "Folding underrepresented colours")
     full_labels, colour_cleanup = fold_underrepresented_colours(
         full_labels, centres, settings.min_colour_share,
         settings.final_colours or settings.min_output_colours,
@@ -208,6 +232,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
         raise ValueError(
             f"fixed colour count requested {settings.final_colours}, but deterministic cleanup produced {len(used)} colours"
         )
+    tick(0.86, "Finalising palette")
     centres = centres[used]
     used_remap = np.full(int(used.max()) + 1, -1, dtype=np.int32)
     used_remap[used] = np.arange(len(used))
@@ -225,6 +250,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
         (*full_labels.shape, len(centres))
     )
 
+    tick(0.92, "Rendering flattened image")
     stem = path.stem
     subject_dir = output_dir / stem
     subject_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +282,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
                 **final_stats[index],
             }
         )
+    tick(0.96, "Building palette report")
     create_report(Image.fromarray(flattened, "RGB"), palette).save(subject_dir / "report.png")
     report: dict[str, object] = {
         "source": str(path),
@@ -273,4 +300,5 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
         "settings": asdict(settings),
     }
     (subject_dir / "palette.json").write_text(json.dumps(report, indent=2) + "\n")
+    tick(1.0, "Palette ready")
     return report
