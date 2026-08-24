@@ -43,7 +43,7 @@ SVG cutter-ready without a target physical size.
 ## Later application stages
 
 1. Minimal viewer for original/flattened/vector comparisons and palette edits.
-2. Short-subject image generation with visible expanded prompt and configurable
+2. Short-subject image generation with persisted expanded prompt and configurable
    run settings.
 3. Global palette replacement, colour merging, region recolouring, and deletion.
 4. Whole-image generative edits with version branching.

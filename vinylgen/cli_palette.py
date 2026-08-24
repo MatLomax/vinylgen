@@ -15,6 +15,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("inputs", nargs="+", type=Path, help="PNG/JPEG inputs or directories")
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     parser.add_argument("--initial-colours", type=int, default=PaletteSettings.initial_colours)
+    parser.add_argument("--final-colours", type=int, default=PaletteSettings.final_colours,
+                        help="require an exact final palette size; automatic when omitted")
     parser.add_argument("--similar-delta-e", type=float, default=PaletteSettings.similar_delta_e)
     parser.add_argument("--small-share", type=float, default=PaletteSettings.small_share)
     parser.add_argument("--small-delta-e", type=float, default=PaletteSettings.small_delta_e)
@@ -76,6 +78,18 @@ def input_files(inputs: list[Path]) -> list[Path]:
             files.extend(path for path in sorted(item.iterdir()) if path.suffix.lower() in extensions)
         elif item.suffix.lower() in extensions:
             files.append(item)
+    by_stem: dict[str, list[Path]] = {}
+    for path in files:
+        by_stem.setdefault(path.stem, []).append(path)
+    collisions = {stem: paths for stem, paths in by_stem.items() if len(paths) > 1}
+    if collisions:
+        detail = "; ".join(
+            f"{stem!r}: {', '.join(str(path) for path in paths)}"
+            for stem, paths in sorted(collisions.items())
+        )
+        raise ValueError(
+            f"inputs share an output name and would overwrite each other: {detail}"
+        )
     return files
 
 
@@ -113,6 +127,7 @@ def main() -> None:
     args = parse_args()
     settings = PaletteSettings(
         initial_colours=args.initial_colours,
+        final_colours=args.final_colours,
         similar_delta_e=args.similar_delta_e,
         small_share=args.small_share,
         small_delta_e=args.small_delta_e,

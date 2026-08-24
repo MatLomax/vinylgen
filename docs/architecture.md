@@ -29,19 +29,21 @@ and trace configuration plus concern-level downstream staleness. Artifact
 lookup walks revision ancestry, so a trace revision reuses its parent's source
 and segmentation without copying blobs.
 
-The flattened-label editor is a deterministic branch between palette inference
-and tracing. `segmentation.labels` remains authoritative: palette-constrained
-brush, fill, lasso, component, protection, and palette operations create a new
-parent-linked revision, then derive `flattened.png` mechanically from the edited
-labels and palette. Undo and redo navigate revision ancestry; they never mutate
-or replay over an existing revision.
+The palette and region editors are deterministic branches between palette
+inference and tracing. They use the shared artwork canvas and intentionally
+offer no freehand, fill, lasso, protection-painting, or manual RGB tools.
+Whole-colour merges, name metadata, and point-selected four-way connected
+region reassignment create new parent-linked revisions;
+`segmentation.labels` remains authoritative and `flattened.png` is derived
+mechanically. Undo and redo navigate revision ancestry.
 
 Source generation is a provider-backed branch before deterministic processing.
-`vinylgen.web.generation` expands the short subject through a visible,
+`vinylgen.web.generation` expands the short subject through a persisted,
 deterministic art-direction template and sends only that text plus provider
 settings to the selected provider. It never resolves artifacts or supplies an
 earlier revision as an implicit reference. A successful request creates a new
-root `generated-source` revision containing the short and expanded prompts,
+root `generated-source` revision containing the short and expanded prompts for
+auditability (the expanded provider prompt is not shown in the Create panel),
 complete effective settings, provider request metadata, an explicit empty
 reference list, and one full-frame `source.png` normalized to the requested
 dimensions. Provider output remains probabilistic; only persistence and output
@@ -57,17 +59,6 @@ decodable PNG, and removes scratch state before the runner crosses the immutable
 revision commit boundary. Cancellation and timeout terminate the owned process
 group. The direct OpenAI Image API remains an unimplemented contingency, not a
 runtime fallback.
-
-Masked generation is a provider-neutral branch from any revision with an
-effective source artifact. The browser paints a full-source binary mask; the
-server validates its dimensions, crops source and mask to the same padded
-bounds, and requests one or three independent candidates. Candidate review
-revisions retain the mask, composed source candidates, lightweight automatic
-flatten previews, expanded prompt, crop geometry, and provider provenance.
-Regardless of provider behaviour, the server hard-composites each generated
-crop through the exact binary mask. Applying a candidate creates a new
-`masked-edit` child of the original source revision rather than mutating either
-the source or candidate review revision.
 
 The Inkscape handoff is an immutable branch after tracing. SVG and PNG
 downloads are explicit choices, and configured shared-folder saves are atomic.

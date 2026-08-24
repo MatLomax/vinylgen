@@ -18,7 +18,7 @@ from PIL import Image
 
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
-from vinylgen.web.generation import GeneratedImage, CodexImageProvider
+from vinylgen.web.generation import GeneratedImage, CodexImageProvider, expand_prompt
 from vinylgen.web.jobs import GenerationCancellation
 
 
@@ -31,7 +31,12 @@ class FakeProvider:
     def generate(self, **request) -> GeneratedImage:
         self.requests.append(request)
         image = io.BytesIO()
-        Image.new("RGB", (48, 32), (20, 80, 140)).save(image, "PNG")
+        raster = Image.new("RGB", (48, 36))
+        colours = [(12, 20, 28), (220, 52, 64), (238, 160, 48),
+                   (240, 226, 178), (42, 138, 148), (72, 64, 132)]
+        for index, colour in enumerate(colours):
+            raster.paste(colour, (0, index * 6, 48, (index + 1) * 6))
+        raster.save(image, "PNG")
         return GeneratedImage(image.getvalue(), "image/png", {
             "provider": "fake-codex", "model": "test-image", "request_id": "req-test"})
 
@@ -200,12 +205,33 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
     async def test_short_prompt_creates_persisted_immutable_source(self) -> None:
         response = await self.client.post("/api/generations", json={
             "prompt": "clockwork griffin", "project_name": "Griffin",
-            "settings": {"width": 640, "height": 480, "preset": "simple",
-                         "quality": "low", "required_motifs": ["moon"],
+            "settings": {"width": 640, "height": 480, "desired_colours": 6,
+                         "required_motifs": ["moon"],
                          "rejected_motifs": ["text"]}})
         self.assertEqual(response.status_code, 202, response.text)
         started = response.json()
-        self.assertIn("one complete full-frame", started["expanded_prompt"])
+        self.assertIn("one solitary, complete, full-frame", started["expanded_prompt"].lower())
+        self.assertIn("maximum visual quality", started["expanded_prompt"].lower())
+        self.assertIn("rich, intricate scene detail", started["expanded_prompt"].lower())
+        self.assertIn("final delivery target after normalization: 4:3 (640 × 480)", started["expanded_prompt"].lower())
+        self.assertIn("survive a centred crop", started["expanded_prompt"])
+        self.assertIn("composed for the 4:3 final delivery target", started["expanded_prompt"])
+        self.assertNotIn("return one independent, highly detailed, maximum-quality 4:3",
+                         started["expanded_prompt"].lower())
+        self.assertIn("exactly 6 colours total", started["expanded_prompt"].lower())
+        self.assertIn("exactly 6 rolls of pre-coloured adhesive vinyl", started["expanded_prompt"])
+        self.assertIn("crisp hard-edged shapes", started["expanded_prompt"])
+        self.assertIn("Absolutely no gradients", started["expanded_prompt"])
+        self.assertIn("dithering, stippling, halftones", started["expanded_prompt"])
+        self.assertNotIn("later deterministic", started["expanded_prompt"].lower())
+        self.assertNotIn("later stage", started["expanded_prompt"].lower())
+        self.assertIn("Required subjects, objects, or motifs: moon.", started["expanded_prompt"])
+        self.assertIn("Absolutely forbidden subjects or motifs: occult eyes", started["expanded_prompt"])
+        self.assertIn("Chinese dragons", started["expanded_prompt"])
+        self.assertIn("trains, text", started["expanded_prompt"])
+        self.assertIn("background decoration, symbols, carvings, insignia", started["expanded_prompt"])
+        self.assertNotIn("image 2", started["expanded_prompt"].lower())
+        self.assertNotIn("four images", started["expanded_prompt"].lower())
         job = await self.wait(started["job"]["id"])
         self.assertEqual(job["status"], "succeeded", job)
         revision = (await self.client.get(
@@ -213,14 +239,36 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revision["kind"], "generated-source")
         self.assertIsNone(revision["parent_revision_id"])
         self.assertEqual(revision["settings"]["short_prompt"], "clockwork griffin")
+        self.assertEqual(revision["settings"]["provider_quality"], "high")
+        self.assertEqual(revision["settings"]["requested_source_colour_count"], 6)
+        self.assertEqual(revision["settings"]["expanded_prompt"], started["expanded_prompt"])
         self.assertEqual(revision["settings"]["provider_metadata"]["request_id"], "req-test")
         self.assertEqual(revision["settings"]["reference_artifact_ids"], [])
         artifacts = (await self.client.get(
             f"/api/revisions/{revision['id']}/artifacts")).json()
         image = Image.open(io.BytesIO((await self.client.get(artifacts[0]["download_url"])).content))
         self.assertEqual(image.size, (640, 480))
+        self.assertEqual(set(image.getdata()), {
+            (12, 20, 28), (220, 52, 64), (238, 160, 48),
+            (240, 226, 178), (42, 138, 148), (72, 64, 132),
+        })
         self.assertEqual(self.provider.requests[0]["size"], "1536x1024")
+        self.assertEqual(self.provider.requests[0]["quality"], "high")
+        self.assertEqual(self.provider.requests[0]["prompt"], started["expanded_prompt"])
         self.assertNotIn("image", self.provider.requests[0])
+
+    def test_selected_colour_count_rewrites_the_complete_style_contract(self) -> None:
+        expanded = expand_prompt("sky whale", {
+            "width": 1536, "height": 1024, "desired_colours": 9,
+            "required_motifs": [], "rejected_motifs": [],
+        })
+        self.assertIn("STRICT 9-COLOUR PALETTE", expanded)
+        self.assertIn("exactly 9 colours total", expanded)
+        self.assertIn("exactly 9 rolls", expanded)
+        self.assertIn("placement of the 9 flat colours", expanded)
+        self.assertIn("made from exactly\n9 solid colours", expanded)
+        self.assertNotIn("six-colour", expanded.lower())
+        self.assertNotIn("six colours", expanded.lower())
 
     async def test_each_generation_is_an_unreferenced_root(self) -> None:
         first = await self.client.post("/api/generations", json={"prompt": "first world"})
@@ -235,6 +283,14 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
     async def test_generation_settings_are_bounded(self) -> None:
         response = await self.client.post("/api/generations", json={
             "prompt": "tiny", "settings": {"width": 10, "height": 10000}})
+        self.assertEqual(response.status_code, 422)
+
+        response = await self.client.post("/api/generations", json={
+            "prompt": "sky whale", "settings": {"desired_colours": 13}})
+        self.assertEqual(response.status_code, 422)
+
+        response = await self.client.post("/api/generations", json={
+            "prompt": "sky whale", "settings": {"desired_colours": 1}})
         self.assertEqual(response.status_code, 422)
 
     async def test_generation_obeys_global_job_cap_without_orphan_project(self) -> None:

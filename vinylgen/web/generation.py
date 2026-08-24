@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import queue
 import shutil
@@ -19,6 +20,11 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .store import Store
 
+BASELINE_REJECTED_MOTIFS = (
+    "occult eyes", "all-seeing eyes", "mystical floating eyes", "mandalas",
+    "Chinese dragons", "pirates", "samurai", "trains",
+)
+
 
 @dataclass(frozen=True)
 class GeneratedImage:
@@ -33,13 +39,6 @@ class ImageProvider(Protocol):
     def generate(self, *, prompt: str, size: str, quality: str,
                  cancelled: Callable[[], bool] = lambda: False,
                  progress: Callable[[float, str], None] | None = None) -> GeneratedImage: ...
-
-
-class MaskedEditProvider(Protocol):
-    name: str
-
-    def edit(self, *, image: bytes, mask: bytes, prompt: str, size: str,
-             quality: str, cancelled: Callable[[], bool] = lambda: False) -> GeneratedImage: ...
 
 
 class CodexImageProvider:
@@ -66,18 +65,6 @@ class CodexImageProvider:
         ))
         return self._run(instruction, cancelled=cancelled, progress=progress)
 
-    def edit(self, *, image: bytes, mask: bytes, prompt: str, size: str,
-             quality: str, cancelled: Callable[[], bool] = lambda: False) -> GeneratedImage:
-        instruction = " ".join((
-            "Use the image-generation tool to edit source.png using mask.png; white mask pixels",
-            "are editable and black pixels must be preserved. Return exactly one complete PNG.",
-            f"Requested canvas: {size}. Requested quality: {quality}.",
-            "Create no variants, contact sheet, or other image files. Write the result as",
-            f"output.png in the current working directory. Edit request: {prompt}",
-        ))
-        return self._run(instruction, cancelled=cancelled, attachments={
-            "source.png": image, "mask.png": mask})
-
     def _version(self, environment: dict[str, str]) -> str:
         try:
             result = subprocess.run(
@@ -103,8 +90,7 @@ class CodexImageProvider:
         return version
 
     def _run(self, instruction: str, *, cancelled: Callable[[], bool],
-             progress: Callable[[float, str], None] | None = None,
-             attachments: dict[str, bytes] | None = None) -> GeneratedImage:
+             progress: Callable[[float, str], None] | None = None) -> GeneratedImage:
         self.scratch_root.mkdir(parents=True, exist_ok=True)
         job_dir = Path(tempfile.mkdtemp(prefix="codex-image-", dir=self.scratch_root))
         environment = os.environ.copy()
@@ -115,13 +101,8 @@ class CodexImageProvider:
         except BaseException:
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
-        attachments = attachments or {}
-        for filename, content in attachments.items():
-            (job_dir / filename).write_bytes(content)
         argv = [self.executable, "exec", "--ephemeral", "--json", "--color", "never",
                 "--sandbox", "workspace-write", "--skip-git-repo-check", "--cd", str(job_dir)]
-        for filename in attachments:
-            argv.extend(("--image", str(job_dir / filename)))
         argv.extend(("--", instruction))
         if progress:
             progress(.2, "Starting isolated Codex image session")
@@ -137,11 +118,9 @@ class CodexImageProvider:
             events, stderr = self._collect(process, cancelled, progress)
             if process.returncode:
                 raise RuntimeError(self._failure_message(process.returncode, events, stderr))
-            attachment_paths = {(job_dir / filename).resolve() for filename in attachments}
             candidates = [path for path in job_dir.rglob("*")
                           if path.is_file() and not path.is_symlink()
-                          and path.suffix.lower() == ".png"
-                          and path.resolve() not in attachment_paths]
+                          and path.suffix.lower() == ".png"]
             if not candidates:
                 raise RuntimeError(
                     "Codex completed without an image; verify login and image-generation availability")
@@ -288,25 +267,86 @@ def provider_size(width: int, height: int) -> str:
 
 
 def expand_prompt(prompt: str, settings: dict[str, Any]) -> str:
-    detail = {
-        "simple": "few large regions and minimal interior detail",
-        "balanced": "clear foreground, midground, and background with moderate detail",
-        "detailed": "rich scene detail while keeping every feature substantial and cuttable",
-    }[settings["preset"]]
+    colours = settings["desired_colours"]
     required = ", ".join(item.strip() for item in settings["required_motifs"] if item.strip())
-    rejected = ", ".join(item.strip() for item in settings["rejected_motifs"] if item.strip())
-    clauses = [
-        f"Create one complete full-frame sci-fi or fantasy scene featuring: {prompt.strip()}.",
-        "Use flat, substantial, hard-edged graphic shapes and solid colour fills.",
-        "No collage, grid, split composition, variants, text, gradients, transparency, glow, blur, dithering, hairlines, or flecks.",
-        "Use one strong focal point and create depth through overlap, scale, perspective, and silhouette.",
-        f"Art detail: {detail}.",
-    ]
+    extra_rejected = [item.strip() for item in settings["rejected_motifs"] if item.strip()]
+    rejected = ", ".join(dict.fromkeys((*BASELINE_REJECTED_MOTIFS, *extra_rejected)))
+    divisor = math.gcd(settings["width"], settings["height"])
+    aspect_ratio = f'{settings["width"] // divisor}:{settings["height"] // divisor}'
+    motif_rules = []
     if required:
-        clauses.append(f"Required motifs: {required}.")
-    if rejected:
-        clauses.append(f"Do not include: {rejected}.")
-    return " ".join(clauses)
+        motif_rules.append(f"Required subjects, objects, or motifs: {required}.")
+    motif_rules.append(
+        f"Absolutely forbidden subjects or motifs: {rejected}. Do not include them as "
+        "background decoration, symbols, carvings, insignia, or secondary characters.")
+    motifs = "\n".join(motif_rules)
+    return f"""# Generate One High-Quality Sci-Fi / Fantasy Image
+
+Generate exactly ONE solitary, complete, full-frame image. Do not generate multiple concepts,
+variants, panels, alternatives, or outputs. Do not create a contact sheet, collage, grid,
+quadrants, diptych, triptych, or split-screen. Do not use any earlier generated image or
+conversation image as a visual reference.
+
+## IMAGE FORMAT
+
+- Final delivery target after normalization: {aspect_ratio} ({settings['width']} × {settings['height']})
+- Compose the full scene so its focal subject and essential details survive a centred crop to
+  that target ratio
+- One solitary complete scene filling the canvas
+- No border, frame, caption, lettering, or typography
+- One strong central focal point
+- Clear foreground, midground, and background
+- Strong depth through overlapping forms, scale, perspective, silhouette, and composition
+- Layered subjects filling the full canvas
+- Maximum visual quality and rich, intricate scene detail
+- Crisp, deliberate edges and clearly resolved forms at every depth
+- No tiny flecks, noisy micro-texture, hair-thin lines, or excessively delicate isolated details
+
+## SUBJECT
+
+Create a science-fiction or fantasy scene featuring: {prompt.strip()}
+
+{motifs}
+
+## STRICT {colours}-COLOUR PALETTE
+
+The finished image must contain exactly {colours} colours total—not approximately {colours}, not
+{colours} main colours plus highlights, and not {colours} colours plus darker or lighter versions.
+Choose the complete {colours}-colour palette before constructing the scene, then use only those
+exact {colours} discrete flat solid colours everywhere, including outlines and background. No
+additional colour may appear.
+
+Do not derive darker shades, lighter shades, intermediate shades, tints, tones, highlight colours,
+shadow colours, reflected colours, atmospheric colours, edge colours, transitional colours,
+glow colours, or lighting colours. If the scene needs a shadow, highlight, or atmospheric depth,
+use one of the same {colours} palette colours.
+
+Think of the construction as exactly {colours} rolls of pre-coloured adhesive vinyl. Every visible
+shape must use one of those {colours} colours because no additional material exists.
+
+## FLAT GRAPHIC STYLE
+
+Construct the entire image from crisp hard-edged shapes, solid colour fills, bold silhouettes,
+layered graphic forms, and substantial clean regions. Make it richly detailed and visually
+sophisticated through deliberate shape design, internal structure, composition, and layering—not
+through extra tones or noisy micro-detail. Keep edges clean and every region clearly resolved.
+
+Absolutely no gradients, shading gradients, soft shadows, transparency, opacity effects, glow,
+bloom, blur, colour blending, painterly or photographic rendering, realistic lighting,
+airbrushing, textured colour variation, dithering, stippling, halftones, pixel-noise patterns,
+compression-like speckling, or tiny colour flecks. Do not simulate tones with dots, broken marks,
+alternating pixels, or texture. Avoid hair-thin lines and excessively delicate isolated details.
+
+Create depth through composition, overlap, scale, perspective, silhouette, and strategic
+placement of the {colours} flat colours. Prioritize maximum execution quality, intricate but clean
+detail, strong visual hierarchy, and a polished professional result within this flat style.
+
+## FINAL REQUIREMENT
+
+Return one independent, highly detailed, maximum-quality flat graphic image made from exactly
+{colours} solid colours and composed for the {aspect_ratio} final delivery target. The scene must fill the
+provider canvas, remain crop-safe for that target, and be clean, coherent, and easy to separate
+into colour regions."""
 
 
 class GenerationRunner:
@@ -325,15 +365,16 @@ class GenerationRunner:
         requested_size = provider_size(settings["width"], settings["height"])
         progress(.15, "Sending prompt to image provider")
         result = provider.generate(prompt=expanded, size=requested_size,
-                                   quality=settings["quality"], cancelled=cancelled,
+                                   quality="high", cancelled=cancelled,
                                    progress=progress)
         if cancelled():
             raise asyncio.CancelledError
         progress(.82, "Normalizing generated image")
         try:
             with Image.open(io.BytesIO(result.content)) as image:
+                # Preserve hard palette boundaries: interpolating resamplers invent colours.
                 image = ImageOps.fit(image.convert("RGB"), (settings["width"], settings["height"]),
-                                     method=Image.Resampling.LANCZOS)
+                                     method=Image.Resampling.NEAREST)
                 output = io.BytesIO()
                 image.save(output, format="PNG")
                 output.seek(0)
@@ -341,7 +382,10 @@ class GenerationRunner:
             raise RuntimeError("image provider returned a malformed image") from exc
         if cancelled():
             raise asyncio.CancelledError
-        complete = {**settings, "short_prompt": prompt, "expanded_prompt": expanded,
+        complete = {**settings, "provider_quality": "high",
+                    "requested_source_colour_count": settings["desired_colours"],
+                    "short_prompt": prompt,
+                    "expanded_prompt": expanded,
                     "provider_metadata": result.metadata, "reference_artifact_ids": []}
         revision_id = commit(lambda: self.store.create_generated_source(
             project_id, message=f"Generated from: {prompt[:160]}",

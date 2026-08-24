@@ -31,6 +31,8 @@ The current tests cover:
 
 - The output PNG exact distinct-colour count equals the reported inferred
   count.
+- Fixed-count runs either produce exactly the requested distinct RGB count or
+  fail before a pipeline revision is committed.
 - Palette flattening folds sub-threshold anti-alias regions only when a similar
   touching colour exists. High-contrast small detail remains for tracing.
 - The nine-image batch completes successfully with four concurrent workers.

@@ -102,6 +102,19 @@ describe('ImageWorkspace interactions', () => {
     expect(within(desktop).getByRole('button', { name: 'Show before image' })).toBeTruthy()
   })
 
+  it('keeps split mode and the selected before image when the Before dropdown changes', () => {
+    const result = render(<ImageWorkspace layers={layers} preferredLayerId="source" />)
+    const desktop = result.container.querySelector('.desktop-view-controls') as HTMLElement
+    const before = within(desktop).getByLabelText('Before') as HTMLSelectElement
+
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    fireEvent.change(before, { target: { value: 'flat' } })
+
+    expect(before.value).toBe('flat')
+    expect(within(desktop).getByRole('button', { name: 'split' }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(desktop).getByLabelText('Split position', { exact: true })).toBeTruthy()
+  })
+
   it('starts blink paused when reduced motion is preferred', () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
     const { container } = prepare()

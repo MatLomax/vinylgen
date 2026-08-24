@@ -112,15 +112,6 @@ settings retain effective palette and trace defaults and list stale downstream
 concerns; this makes retracing and export provenance explicit without mutating
 an earlier result.
 
-Masked edits first create an immutable `masked-edit-candidates` review revision
-with `edit-mask`, `masked-candidate-N`, and
-`masked-flattened-preview-N` artifacts. Candidate sources are full-size,
-hard-mask-composed PNGs; preview flattening is a quick deterministic
-eight-colour review aid, not the authoritative palette pipeline. Applying one
-creates a sibling `masked-edit` branch from the pre-edit revision and registers
-the selected full-size image as its new `source` artifact. Unselected candidate
-revisions remain available for audit and comparison.
-
 An `inkscape-edit` revision preserves an arbitrary reimport as the neutral
 `inkscape-svg` artifact and adds its freshly rendered `inkscape-preview` plus
 `inkscape-audit`. It does not relabel one SVG payload as both the semantically

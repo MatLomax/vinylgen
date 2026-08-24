@@ -105,6 +105,27 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared_path.read_bytes(), b"shared")
         self.assertEqual(list((Path(self.temp.name) / "artifacts").glob(".*.incoming")), [])
 
+    async def test_duplicate_artifact_upload_returns_conflict_not_server_error(self) -> None:
+        project = (await self.client.post("/api/projects", json={"name": "Dupe"})).json()
+        revision = (await self.client.post(
+            f"/api/projects/{project['id']}/revisions",
+            json={"kind": "source", "settings": {}},
+        )).json()
+
+        first = await self.client.post(
+            f"/api/revisions/{revision['id']}/artifacts",
+            data={"kind": "source"},
+            files={"file": ("same.png", b"one", "image/png")},
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+
+        second = await self.client.post(
+            f"/api/revisions/{revision['id']}/artifacts",
+            data={"kind": "source"},
+            files={"file": ("same.png", b"two", "image/png")},
+        )
+        self.assertEqual(second.status_code, 409, second.text)
+
     async def test_revision_branch_and_artifact_queries(self) -> None:
         project = (await self.client.post("/api/projects", json={"name": "Branches"})).json()
         first = (await self.client.post(
@@ -156,6 +177,13 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
             body = "".join([chunk async for chunk in stream.aiter_text()])
         self.assertIn('"status": "succeeded"', body)
         self.assertIn('"progress": 1.0', body)
+
+    async def test_completed_subscription_leaves_no_residual_subscriber_entry(self) -> None:
+        response = await self.client.post("/api/jobs", json={"steps": 2, "step_delay_ms": 10})
+        job = response.json()
+        async with self.client.stream("GET", f"/api/jobs/{job['id']}/events") as stream:
+            "".join([chunk async for chunk in stream.aiter_text()])
+        self.assertNotIn(job["id"], self.app.state.jobs._subscribers)
 
     async def test_job_can_be_cancelled(self) -> None:
         job = (await self.client.post("/api/jobs", json={"steps": 100, "step_delay_ms": 20})).json()

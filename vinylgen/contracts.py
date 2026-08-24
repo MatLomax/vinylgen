@@ -9,6 +9,7 @@ import numpy as np
 @dataclass(frozen=True)
 class PaletteSettings:
     initial_colours: int = 16
+    final_colours: int | None = None
     histogram_bits: int = 5
     analysis_max_dimension: int = 640
     similar_delta_e: float = 28.0

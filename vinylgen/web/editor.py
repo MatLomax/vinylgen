@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import io
 import json
-from collections import deque
 from copy import deepcopy
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from vinylgen.contracts import SegmentationBundle
 
@@ -39,51 +38,6 @@ def _check_label(value: int | None, count: int, field: str = "label") -> int:
     return value
 
 
-def _check_point(point: tuple[int, int], labels: np.ndarray) -> tuple[int, int]:
-    x, y = point
-    if not (0 <= x < labels.shape[1] and 0 <= y < labels.shape[0]):
-        raise ValueError(f"point ({x}, {y}) is outside the image")
-    return x, y
-
-
-def _connected(labels: np.ndarray, x: int, y: int) -> np.ndarray:
-    wanted = int(labels[y, x])
-    selected = np.zeros(labels.shape, dtype=bool)
-    selected[y, x] = True
-    queue = deque([(x, y)])
-    while queue:
-        cx, cy = queue.popleft()
-        for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
-            if (0 <= nx < labels.shape[1] and 0 <= ny < labels.shape[0]
-                    and not selected[ny, nx] and labels[ny, nx] == wanted):
-                selected[ny, nx] = True
-                queue.append((nx, ny))
-    return selected
-
-
-def _shape_mask(labels: np.ndarray, operation: LabelEditOperation) -> np.ndarray:
-    if not operation.points:
-        raise ValueError(f"{operation.tool} requires at least one point")
-    points = [_check_point(point, labels) for point in operation.points]
-    mask_image = Image.new("1", (labels.shape[1], labels.shape[0]))
-    draw = ImageDraw.Draw(mask_image)
-    if operation.tool == "lasso":
-        if len(points) < 3:
-            raise ValueError("lasso requires at least three points")
-        draw.polygon(points, fill=1)
-    else:
-        radius = 0 if operation.tool == "pencil" else operation.radius
-        width = radius * 2 + 1
-        if len(points) == 1:
-            x, y = points[0]
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=1)
-        else:
-            draw.line(points, fill=1, width=width, joint="curve")
-            for x, y in (points[0], points[-1]):
-                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=1)
-    return np.asarray(mask_image, dtype=bool)
-
-
 def _refresh_report(report: dict[str, Any], bundle: SegmentationBundle) -> None:
     total = max(1, bundle.labels.size)
     report["inferred_colour_count"] = len(bundle.palette_rgb)
@@ -92,6 +46,22 @@ def _refresh_report(report: dict[str, Any], bundle: SegmentationBundle) -> None:
         row.update(index=index, rgb=rgb, hex="#" + "".join(f"{value:02X}" for value in rgb),
                    share_percent=round(float(np.count_nonzero(bundle.labels == index)) * 100 / total, 4))
     report["editor"] = {"authoritative": "segmentation.labels", "connectivity": 4}
+
+
+def _component_at(labels: np.ndarray, x: int, y: int) -> np.ndarray:
+    if x < 0 or y < 0 or y >= labels.shape[0] or x >= labels.shape[1]:
+        raise ValueError("point must lie inside the flattened image")
+    source = int(labels[y, x])
+    selected = np.zeros(labels.shape, dtype=bool)
+    selected[y, x] = True
+    stack = [(x, y)]
+    while stack:
+        cx, cy = stack.pop()
+        for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+            if 0 <= nx < labels.shape[1] and 0 <= ny < labels.shape[0] and not selected[ny, nx] and int(labels[ny, nx]) == source:
+                selected[ny, nx] = True
+                stack.append((nx, ny))
+    return selected
 
 
 def apply_edits(store: Store, project_id: str, revision_id: str,
@@ -105,33 +75,11 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
 
     for operation in operations:
         count = len(bundle.palette_rgb)
-        if operation.tool in {"pencil", "brush", "lasso"}:
-            label = _check_label(operation.label, count)
-            bundle.labels[_shape_mask(bundle.labels, operation)] = label
-        elif operation.tool in {"flood_fill", "component"}:
-            label = _check_label(operation.label, count)
-            if len(operation.points) != 1:
-                raise ValueError(f"{operation.tool} requires exactly one seed point")
-            x, y = _check_point(operation.points[0], bundle.labels)
-            bundle.labels[_connected(bundle.labels, x, y)] = label
-        elif operation.tool == "protect":
-            if len(operation.points) == 1:
-                x, y = _check_point(operation.points[0], bundle.labels)
-                mask = _connected(bundle.labels, x, y)
-            else:
-                mask = _shape_mask(bundle.labels, operation.model_copy(update={"tool": "lasso"}))
-            bundle.explicit_protected_features[mask] = True
-            bundle.protected_features[mask] = True
-        elif operation.tool == "rename_colour":
+        if operation.tool == "rename_colour":
             label = _check_label(operation.label, count)
             if not operation.name:
                 raise ValueError("rename_colour requires a name")
             palette[label]["name"] = operation.name
-        elif operation.tool == "adjust_colour":
-            label = _check_label(operation.label, count)
-            if operation.rgb is None or any(not 0 <= value <= 255 for value in operation.rgb):
-                raise ValueError("adjust_colour requires RGB values from 0 to 255")
-            bundle.palette_rgb[label] = operation.rgb
         elif operation.tool == "merge_colour":
             source = _check_label(operation.source_label, count, "source_label")
             target = _check_label(operation.target_label, count, "target_label")
@@ -142,6 +90,15 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
             bundle.palette_rgb = np.delete(bundle.palette_rgb, source, axis=0)
             bundle.palette_costs = np.delete(bundle.palette_costs, source, axis=2)
             palette.pop(source)
+        elif operation.tool == "reassign_region":
+            target = _check_label(operation.target_label, count, "target_label")
+            if operation.point is None:
+                raise ValueError("reassign_region requires a point")
+            x, y = operation.point
+            component = _component_at(bundle.labels, x, y)
+            if int(bundle.labels[y, x]) == target:
+                raise ValueError("selected region already uses the target colour")
+            bundle.labels[component] = target
         else:  # pragma: no cover - Pydantic constrains the value
             raise ValueError(f"unsupported editor tool: {operation.tool}")
 

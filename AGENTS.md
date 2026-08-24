@@ -34,6 +34,10 @@ readiness is not yet claimed.
 - Before ending a substantial work session, update task statuses and write a
   concise worklog session summary so the next session can resume without
   reconstructing context from chat history.
+- Deployment is part of implementation completion. After the required review
+  and verification pass and the task status is changed to done, run the
+  established deployment workflow and verify both local and public health
+  before reporting completion.
 - Preserve original inputs in `images/` unless the user explicitly requests a
   rename or replacement.
 - Put all disposable scripts, previews, experiments, and benchmarks in

@@ -4,14 +4,16 @@ import { distance, fitTransform, midpoint, sameImageSize, splitPositionInImage, 
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; overlay?: string; editorMode?: boolean; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const pointers = useRef(new Map<number, Point>())
+  const pointerStarts = useRef(new Map<number, Point>())
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
   const [size, setSize] = useState({ width: 0, height: 0 })
-  const [beforeId, setBeforeId] = useState('')
-  const [afterId, setAfterId] = useState('')
+  const [beforeId, setBeforeId] = useState(() => layers.some(layer => layer.role === 'image' && layer.id === preferredLayerId) ? preferredLayerId! : layers.find(layer => layer.role === 'image')?.id ?? '')
+  const [afterId, setAfterId] = useState(() => layers.filter(layer => layer.role === 'image').at(-1)?.id ?? '')
+  const previousPreferredLayerId = useRef(preferredLayerId)
   const [mode, setMode] = useState<CompareMode>('single')
   const [split, setSplit] = useState(50)
   const [blinkAfter, setBlinkAfter] = useState(false)
@@ -36,9 +38,17 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
   const incompatibleInspections = inspections.filter(layer => enabledInspections[layer.id] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
-    if (!beforeId && visible[0]) setBeforeId(visible[0].id)
-    if (!afterId && visible.length) setAfterId(visible[visible.length - 1].id)
-  }, [layers, beforeId, afterId, visible])
+    if (!visible.some(layer => layer.id === beforeId) && visible[0]) setBeforeId(visible[0].id)
+    if (!visible.some(layer => layer.id === afterId) && visible.length) setAfterId(visible[visible.length - 1].id)
+  }, [layers, beforeId, afterId])
+
+  useEffect(() => {
+    if (preferredLayerId === previousPreferredLayerId.current) return
+    previousPreferredLayerId.current = preferredLayerId
+    if (preferredLayerId && visible.some(layer => layer.id === preferredLayerId)) {
+      setBeforeId(preferredLayerId)
+    }
+  }, [preferredLayerId, layers])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
@@ -144,7 +154,9 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
 
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture(event.pointerId)
-    pointers.current.set(event.pointerId, localPoint(event.clientX, event.clientY))
+    const here = localPoint(event.clientX, event.clientY)
+    pointers.current.set(event.pointerId, here)
+    pointerStarts.current.set(event.pointerId, here)
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()]
       gesture.current = { distance: distance(a, b), centre: midpoint(a, b), transform }
@@ -167,7 +179,15 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
   }
 
   function pointerUp(event: PointerEvent<HTMLDivElement>) {
+    const start = pointerStarts.current.get(event.pointerId)
+    const end = localPoint(event.clientX, event.clientY)
+    if (onSelectPoint && start && distance(start, end) < 5 && size.width && size.height) {
+      const x = Math.floor((end.x - transform.x) / transform.scale)
+      const y = Math.floor((end.y - transform.y) / transform.scale)
+      if (x >= 0 && y >= 0 && x < size.width && y < size.height) onSelectPoint([x, y])
+    }
     pointers.current.delete(event.pointerId)
+    pointerStarts.current.delete(event.pointerId)
     gesture.current = null
   }
 
@@ -181,7 +201,7 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
 
   const controls = <>
-    <section className="control-section">
+    {!editorMode && <section className="control-section">
       <h3>Compare</h3>
       <div className="segmented" aria-label="Comparison mode">
         {(['single', 'split', 'blink'] as CompareMode[]).map(value => <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} onClick={() => { setMode(value); if (value === 'blink') setBlinkAfter(false) }}>{value}</button>)}
@@ -195,8 +215,8 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
         <button onClick={() => setBlinkAfter(value => !value)}>Show {blinkAfter ? 'before' : 'after'} image</button>
         {reducedMotion && blinkPaused && <p role="status">Blink is paused to respect your reduced-motion preference.</p>}
       </div>}
-    </section>
-    {inspections.length > 0 && <section className="control-section inspection-controls">
+    </section>}
+    {!editorMode && inspections.length > 0 && <section className="control-section inspection-controls">
       <h3>Masks &amp; inspection layers</h3>
       {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[layer.id])} onChange={event => setEnabledInspections(value => ({ ...value, [layer.id]: event.target.checked }))} />{layer.name}</label>)}
       {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
@@ -211,13 +231,14 @@ export function ImageWorkspace({ layers }: { layers: WorkspaceLayer[] }) {
 
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
-  return <div className="image-workspace">
-    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong><button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button></div>
-    <div ref={viewport} className="viewport" inert={sheetOpen} aria-label="Image comparison viewport" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={wheel}>
+  return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
+    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}<button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button></div>
+    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
+        {overlay && <img className="editor-overlay" src={overlay} alt="" aria-hidden="true" draggable={false} />}
       </div>
       {mode === 'split' && <div className="split-line" style={{ left: `${split}%` }} aria-hidden="true" />}
     </div>

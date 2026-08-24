@@ -48,13 +48,14 @@ def source_thin_feature_mask(
     minimum_span: float = 6.0,
     maximum_half_width: int = 4,
 ) -> np.ndarray:
-    """Detect coherent light/dark ridges using evidence on *both* sides.
+    """Detect coherent dark ridges using evidence on *both* sides.
 
-    A normal antialiased edge has unlike evidence on its two sides and therefore
-    is not a ridge.  An intentional stroke is brighter or darker than both
-    sides along at least one normal, regardless of whether the two backgrounds
-    have the same colour.  Multiple offsets make the test insensitive to a
-    stroke being one to several pixels wide.
+    Detection is dark-ridge only: an intentional stroke must be darker than the
+    samples on both sides along at least one normal, regardless of whether the
+    two backgrounds share a colour.  A normal antialiased edge has unlike
+    evidence on its two sides and is therefore not a ridge.  Multiple offsets
+    make the test insensitive to a stroke being one to several pixels wide.
+    Lighter-than-both-sides accents are not detected here.
     """
     rgb = np.asarray(source_rgb)
     if rgb.ndim != 3 or rgb.shape[2] != 3:

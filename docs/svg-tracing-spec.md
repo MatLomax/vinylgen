@@ -103,10 +103,11 @@ SVG retains the raster dimensions as its `viewBox`.
 
 ## Vector cleanup
 
-Physical/detail cleanup runs on vector geometry after tracing. It does not
-alter `flattened.png`. This permits retracing the same palette raster at
-different physical sizes and keeps palette reduction separate from cutter
-geometry decisions.
+Physical/detail cleanup runs during the trace stage on a trace-local copy of
+the labelled partition, before shared-boundary construction and curve fitting.
+It does not alter `flattened.png`. This permits retracing the same palette
+raster at different physical sizes and keeps palette reduction separate from
+cutter geometry decisions.
 
 Cleanup is optional, configurable, and disabled by default. All removal,
 filling, and widening thresholds default to zero, so enabling cleanup without

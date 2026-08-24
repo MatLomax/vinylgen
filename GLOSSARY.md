@@ -1,0 +1,151 @@
+# Vinylgen Glossary
+
+This file defines Vinylgen's canonical terminology. Product copy, code,
+documentation, worklog tasks, reports, and discussions should use the canonical
+term where practical. Aliases help interpret existing language; they are not
+automatically interchangeable when an entry calls out a narrower meaning.
+
+## Language conventions
+
+- Use British English in user-facing language: **colour**, **centre**, and
+  **optimisation**. Existing code identifiers may retain established spellings.
+- Describe deterministic facts as guarantees only when they are mechanically
+  checked. Describe composition, appearance, and physical usability as judgments.
+- Describe raster geometry by colour ownership rather than assuming a universal
+  foreground, background, positive, negative, vinyl, or gap side.
+- Use **source-pixel coordinates** for image-specific preservation selections.
+- Name a setting by what it controls, not by an implementation shortcut.
+
+## Product and workflow
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **Vinylgen** | The complete workflow and application. | the app, the project | VinylGen, Vinyl Gen |
+| **subject** | The lowercase, hyphenated identity used for a standalone CLI input and its durable output directory. | subject name | project, when referring to web state |
+| **project** | A durable web-workflow container with a name, slug, revisions, and artifacts. | artwork project | subject, except when explaining CLI correspondence |
+| **workflow stage** | A user-facing phase: Generate, Inspect, Flatten, Trace, Validate, or Export. | stage | page, job, revision |
+| **pipeline stage** | A deterministic processing boundary that owns a contract and settings: palette, trace, validation, or export. | processing stage | workflow stage when the distinction matters |
+| **art detail** | Semantic or compositional complexity changed through generation or generative editing. | generation detail | cut detail, trace fidelity |
+| **cut detail** | The minimum physical feature retained, removed, or widened for practical cutting and weeding. | cleanup detail | art detail, trace fidelity |
+| **trace fidelity** | How closely fitted vector geometry follows the authoritative flattened raster. | tracing accuracy | art detail, cut detail |
+| **inspector** | The explicitly opened closer-look surface where pan, zoom, comparison, preservation-point overlays, and inspection overlays may capture gestures. | full image viewer, closer look | viewer when it could mean an inline preview; protection painting |
+| **inline preview** | A passive image embedded in the workflow that preserves ordinary page scrolling and native touch behavior. | image preview, thumbnail | canvas, interactive viewer |
+
+## Source generation and masks
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **original input** | The authoritative user-supplied or provider-produced raster before any later generative edit or deterministic derivation. Corpus inputs under `images/` are preserved unless explicitly replaced or renamed. | original image, original raster | source image, when a later branch input is meant |
+| **source image** | The immutable raster input to a particular deterministic project branch or revision. Import, generation, or an applied generative edit may establish a new source image without overwriting its ancestor. | source raster, effective source | original input, unless it is the first source |
+| **generated source** | A source image produced by a provider from a prompt. | generated image | flattened image, candidate |
+| **generative edit** | A probabilistic semantic image change that always creates a recoverable source revision. | AI edit | deterministic edit |
+| **masked generative edit** | A generative replacement or removal constrained by an exact binary mask. | masked edit, inpainting | mask edit, if it implies editing the mask artifact itself |
+| **generative mask** | A full-source binary selection defining where generated pixels may survive hard composition. Painting this mask selects an area; it does not paint output colours. | edit mask, binary mask, selection mask | preservation area, colour painting |
+| **hard-mask composition** | Copying candidate pixels only where the exact binary mask permits them, so no generated pixel outside the mask survives. | exact-mask composition | soft mask, approximate preservation |
+| **candidate** | One generated result offered for review before application. | edit candidate, replacement candidate | revision, source, variant when identity matters |
+
+## Palette inference and raster data
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **palette inference** | Deterministically deriving a limited set of meaningful colours from a source image using configured analysis, merge, and cleanup rules. | palette stage, colour inference | quantisation, when referring to the whole stage |
+| **initial colour candidates** | The deliberately over-complete cluster centres from which the final palette is inferred. | initial colours, starting palette | colour count, final colours |
+| **final colour count** | The exact number of distinct RGB palette entries used by the flattened image after all merges and cleanup. | output colour count, inferred colour count in Automatic mode | initial colours |
+| **Automatic colour count** | The mode in which deterministic inference decides the final colour count. | inferred count, automatic palette | fixed count |
+| **Fixed colour count** | **Planned, not currently implemented:** a requested exact final colour count. Its validity and protected-feature behavior must be defined before release. | forced colour count, target colour count | initial colours, maximum colours; claiming current support |
+| **palette** | The ordered final set of exact RGB colours and their names used by the flattened image and downstream layers. | final palette | colour candidates |
+| **palette colour** | One exact RGB member of the final palette. | colour, swatch, palette entry | shade family, source colour |
+| **colour family** | A source-derived cluster identity considered during inference and merge decisions. | cluster family, candidate family | palette colour, once final merging is complete |
+| **palette merge** | Replacing one complete palette colour and all of its labels with another palette colour. | merge colours, whole-colour merge | recolour, paint, blend |
+| **manual colour painting** | Per-pixel or selected-region reassignment, freehand recolouring, flood filling, or direct output-colour adjustment. This is not a supported flattened-image UI capability; that UI permits whole-colour merge only. | raster painting, manual recolouring | palette merge, generative-mask painting |
+| **flattening** | Rendering every output pixel as exactly one member of the final palette after deterministic labelling and cleanup. | palette flattening, flatten stage | image generation, tracing |
+| **flattened image** | The authoritative exact-colour raster output, `flattened.png`. | flattened raster, palette raster | preview, report image |
+| **label** | The integer palette index assigned to one pixel in the authoritative label map. | palette label, colour label | RGB value |
+| **label map** | The full per-pixel array of palette labels stored in `segmentation.npz`. | segmentation labels | flattened image, mask |
+| **segmentation contract** | The versioned `segmentation.npz` handoff containing labels, Lab costs, palette identity, and protection evidence. | segmentation bundle, tracing handoff | cache, inferred PNG data |
+| **Lab cost** | The stored perceptual colour-assignment cost for one pixel and one palette entry. | palette cost, colour distance field | confidence, unless the conversion is defined |
+| **anti-alias resolution** | Deterministic spatial reassignment of ambiguous boundary pixels while protected evidence remains fixed. | AA cleanup, boundary cleanup | blur removal, smoothing |
+
+## Regions, connectivity, and preservation
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **colour region** | A four-connected set of pixels with the same palette label. | region, connected region, component | shape, object, layer |
+| **four-connected** | Connected through shared pixel edges only; corner contact does not connect regions. | edge-connected, four-way connected | touching, without saying whether corners count |
+| **touching colour** | A different palette colour sharing a region boundary and therefore eligible for applicable replacement rules. | neighbouring colour, adjacent colour | nearest colour, unless boundary contact is also required |
+| **small-region cleanup** | Palette-stage replacement of colour regions strictly below the configured pixel threshold, subject to protection rules. | speck cleanup, raster region cleanup | cutter cleanup, vector cleanup |
+| **whole-colour usage cleanup** | Palette-stage folding of a globally under-represented palette colour into a surviving colour. | minimum-colour-share cleanup, usage cutoff | small-region cleanup |
+| **protected feature evidence** | Stored evidence that a feature should survive applicable cleanup and receive trace validation attention. | protection evidence, protected feature | guaranteed cutter-ready feature |
+| **automatic protection** | Protection evidence inferred from coherent source-aware thin-feature analysis. | automatic protected feature | explicit protection |
+| **explicit component protection** | A user-selected source point preserving only the four-connected flattened colour region beneath it. | protect component, protected component selection | preservation area, whole-colour preservation |
+| **whole-colour preservation** | A user-selected source point exempting the entire inferred palette colour beneath it from the global usage cutoff. | preserve colour, colour preservation | component protection |
+| **distinct-family constraint** | A selected pair of source points preventing their two initial colour families from merging with each other. | keep colours distinct, distinct-colour pair | palette lock, unless broader locking exists |
+| **preservation selection** | The general UI category for explicit component protection, whole-colour preservation, and distinct-family constraints. | preservation control, preservation constraint | generative mask, manual painting |
+
+## Tracing, layers, and cleanup
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **tracing** | Deterministically converting the segmentation contract into shared-boundary SVG geometry and audits. | trace stage, SVG tracing | vectorisation, if shared-boundary guarantees matter |
+| **canonical boundary** | The single shared interface fitted once and consumed in reverse by the neighbouring colour. | shared boundary, canonical interface | two matching paths, independently traced edge |
+| **colour layer** | The named SVG layer containing the cut geometry owned by one final palette colour. | palette layer, vinyl layer when material use is intended | region, component |
+| **layer order** | The bottom-to-top stacking order used to construct overlap and edge variants. | stacking order, z-order | palette order, area order |
+| **omitted colour** | A palette colour intentionally excluded from traced cut layers. | excluded colour, omitted layer colour | removed colour, deleted colour, background colour |
+| **overlap distance** | The configured distance by which lower colour layers extend beneath upper layers. | overlap, underlap allowance | stroke, bleed unless explicitly defined |
+| **overlap variant** | `traced-overlap.svg`, in which lower layers may extend beneath upper layers. | overlap SVG | layered SVG, without naming the variant |
+| **edge variant** | `traced-edge.svg`, the gap-free edge-to-edge partition derived from ordered overlap geometry. | edge-to-edge SVG, edge SVG | tiled SVG, independently traced SVG |
+| **cutter cleanup** | Optional trace-stage cleanup of a trace-local copy of the labelled partition, before boundary fitting, using physical or pixel width/area thresholds. It does not alter `flattened.png`. | trace cleanup, cut-detail cleanup | small-region cleanup, post-fit SVG editing, vector cleanup when it implies path mutation; physical-detail cleanup outside physical mode |
+| **remove** | Replacing grouped undersized labelled regions with a stable touching colour. | remove undersized regions, fill into neighbour | delete, erase, gap fill |
+| **widen** | Expanding a narrow labelled region into neighbouring labelled regions until the threshold is met, unless neighbour constraints make it unsafe. | thicken, widen feature | dilate, gap widen as a separate algorithm |
+| **remove then widen** | First removing regions below configured area or removal-width thresholds, then widening surviving narrow regions to the target width. | combined cleanup | remove or widen, when both stages matter |
+| **narrow gap** | A narrow labelled region viewed as separation between neighbouring colours. It is geometrically the same as a narrow area on that colour layer. | labelled gap, colour channel | bare gap or negative space without naming the owning colour layer; empty space unless the colour is actually omitted |
+| **narrow area** | A locally thin part of a labelled colour region. | narrow feature, thin region | foreground feature |
+| **minimum detail width** | The symmetric threshold used to identify and, when configured, widen narrow labelled geometry on either side of a boundary. | target width, widening threshold | minimum gap width as a separate operation |
+| **minimum region area** | The area threshold used by cutter cleanup to classify undersized regions. | removal area threshold | minimum region pixels |
+| **remove-below width** | In remove-then-widen mode, the separate width below which regions are removed before surviving geometry is widened. | removal width threshold | minimum detail width |
+| **physical mode** | Trace configuration with output dimensions, making width and area settings use millimetres and square millimetres. | physical units mode | cutter-ready mode |
+| **pixel mode** | Trace configuration without physical dimensions, making width and area settings use pixels and square pixels. | raster units mode | physical mode |
+| **trace fallback** | A recorded local recovery used when ordinary fitted geometry cannot satisfy protected-feature validation. | local fallback, dense fallback when that final step is meant | global raster trace |
+
+## Revisions, artifacts, and state
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **revision** | An immutable, parent-linked record of one workflow result and its settings. | version, project revision | file version, mutable state |
+| **revision branch** | A child revision that preserves its parent and allows alternate subsequent work. | branch, edit branch | overwrite |
+| **artifact** | An immutable stored file associated with a revision and identified by kind. | output artifact, generated file | revision |
+| **effective artifacts** | The newest artifact of each kind found by walking a revision's ancestry. | inherited artifacts, effective artifact set | current folder contents |
+| **settings provenance** | The complete effective configuration and origin recorded with a revision or audit. | configuration provenance, settings snapshot | defaults, when inherited or modified values exist |
+| **stale concern** | A downstream result category invalidated by an upstream change and requiring recomputation. | stale output, invalidated stage | invalid artifact, corrupt artifact |
+| **durable output** | A reviewable generated result stored under `outputs/<subject>/` or immutable web project storage. | generated result | scratch file, preview experiment |
+| **scratch artifact** | A disposable experiment, render, or benchmark kept under `vinylgen/.tmp/`. | temporary artifact, scratch output | durable output |
+
+## Validation and readiness
+
+| Canonical term | Definition | Accepted aliases | Avoid or qualify |
+|---|---|---|---|
+| **mechanical validation** | The broad category of deterministic checks over measurable properties such as dimensions, exact colours, connectivity, SVG structure, topology, or bounds. | automated validation, mechanical checks | visual validation, cutter-readiness proof, structural validation as a synonym for the whole category |
+| **mechanically validated** | Passing the explicitly named set of mechanical checks for an artifact or workflow result. The named scope must accompany the claim. | automated checks passed | structurally valid, cutter-ready, visually approved |
+| **structural validation** | The defined subset of mechanical validation concerned with SVG/XML structure, layer/path properties, supported effects, and applicable topology checks. | SVG structural checks | all mechanical validation, visual inspection |
+| **structurally valid** | Passing the explicitly named structural-validation suite; it makes no claim about unrelated raster checks, appearance, or physical use. | SVG structure passed | mechanically validated without scope, cutter-ready, visually approved |
+| **visual inspection** | Human judgment of composition, subject correctness, appearance, or whether automated geometry looks acceptable. | visual review | validation, when no mechanical assertion is involved |
+| **physical cutter readiness** | Evidence that reviewed geometry, sizing, material assumptions, device setup, and physical testing make an output suitable to send to a cutter. | cutter-ready | structurally valid, validated |
+| **cutter preparation** | The safety-gated workflow for sizing, layer selection, bounds review, presets, dry run, and eventual explicit hardware confirmation. | cut preparation | tracing, export |
+| **dry run** | A non-hardware-moving preparation result that exposes paths, bounds, settings, and logs for review. | cutter preview, preparation preview | cut, send |
+| **armed** | The temporary safety state reached only after cutter-host detection and required review, before a separate explicit send confirmation. | ready to confirm | running, cutter-ready |
+
+## Terms intentionally kept distinct
+
+- **Generative mask** selects where probabilistic source pixels may change;
+  **preservation selection** constrains deterministic palette inference.
+- **Palette merge** combines complete colours; it is not freehand recolouring,
+  region painting, blending, manual colour adjustment, or generative editing.
+- **Small-region cleanup** operates on raster pixels during palette processing;
+  **cutter cleanup** operates during tracing with width/area thresholds.
+- **Initial colour candidates** are not the **final colour count**.
+- **Overlap distance** changes layer construction; **trace fidelity** changes
+  geometric approximation; **cut detail** changes feature cleanup.
+- A **narrow gap** is a **narrow area** on another colour layer in the complete
+  labelled partition. Widening is one symmetric operation, not two algorithms.
+- **Structural validation** is a subset of **mechanical validation**; neither
+  means **visually approved** or **physically cutter-ready**.

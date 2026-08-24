@@ -91,7 +91,7 @@ def analysis_image(image: Image.Image, maximum: int) -> Image.Image:
 
 def reduced_histogram(rgb: np.ndarray, bits: int) -> tuple[np.ndarray, np.ndarray]:
     shift = 8 - bits
-    bins = (rgb.astype(np.uint16) >> shift).reshape(-1, 3)
+    bins = (rgb.astype(np.uint32) >> shift).reshape(-1, 3)
     packed = (bins[:, 0] << (2 * bits)) | (bins[:, 1] << bits) | bins[:, 2]
     values, counts = np.unique(packed, return_counts=True)
     mask = (1 << bits) - 1

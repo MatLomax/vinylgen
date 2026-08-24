@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,10 +15,9 @@ from .config import WebConfig
 from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
-from .masked_edit import MaskedEditRunner
 from .editor import apply_edits, editor_state
 from .models import (ApplyLabelEdits, Artifact, CreateProject, CreateRevision, EditorState,
-                     ApplyMaskedEdit, GenerationStarted, Health, Job, MaskedEditCandidates,
+                     GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob)
 from .store import Store
@@ -30,7 +30,6 @@ def create_app(config: WebConfig | None = None,
     providers = generation_providers if generation_providers is not None else {
         "codex": CodexImageProvider()}
     jobs = JobManager(store, providers)
-    masked_edits = MaskedEditRunner(store, providers)
     inkscape = InkscapeHandoff(store)
     admission_lock = asyncio.Lock()
 
@@ -110,54 +109,6 @@ def create_app(config: WebConfig | None = None,
         return {"project": project, "job": job,
                 "expanded_prompt": expand_prompt(payload.prompt, settings)}
 
-    @app.post("/api/projects/{project_id}/revisions/{revision_id}/masked-edits",
-              response_model=MaskedEditCandidates, status_code=201)
-    async def generate_masked_edit(project_id: str, revision_id: str,
-                                   mask: UploadFile = File(...), prompt: str = Form(...),
-                                   mode: str = Form("replace"), count: int = Form(1),
-                                   padding: int = Form(64), provider: str = Form("codex"),
-                                   quality: str = Form("medium")) -> dict:
-        if mode not in {"replace", "remove"} or count not in {1, 3}:
-            raise HTTPException(422, "mode must be replace/remove and count must be one or three")
-        if not 0 <= padding <= 1024 or quality not in {"low", "medium", "high"}:
-            raise HTTPException(422, "invalid masked edit settings")
-        try:
-            mask_bytes = await mask.read()
-            job = await admit_job(kind="masked-edit", project_id=project_id,
-                                  revision_id=revision_id)
-            operation = jobs.start_inline(
-                job["id"], "Generating masked edit candidates",
-                lambda cancelled: masked_edits.generate(
-                    project_id, revision_id, mask_bytes=mask_bytes, prompt=prompt,
-                    mode=mode, count=count, padding=padding, provider_name=provider,
-                    quality=quality, cancelled=cancelled))
-            # The provider call is not interruptible.  Shield the manager-owned
-            # task so client disconnect/request cancellation cannot orphan its
-            # active job row; it will settle after the provider returns.
-            result = await asyncio.shield(operation)
-            if store.get_job(job["id"])["status"] == "cancelled":
-                raise HTTPException(409, "Masked edit was cancelled")
-            result["candidates"] = [{"source": artifact(source),
-                                     "flattened_preview": artifact(preview)}
-                                    for source, preview in result["candidates"]]
-            return result
-        except KeyError as exc:
-            raise missing(exc) from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
-    @app.post("/api/projects/{project_id}/masked-edits/apply",
-              response_model=Revision, status_code=201)
-    async def apply_masked_edit(project_id: str, payload: ApplyMaskedEdit) -> dict:
-        try:
-            revision_id = masked_edits.apply(project_id, payload.candidate_revision_id,
-                                             payload.candidate_index)
-            return store.get_revision(revision_id)
-        except KeyError as exc:
-            raise missing(exc) from exc
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-
     @app.get("/api/projects/{project_id}", response_model=ProjectDetail)
     async def get_project(project_id: str) -> dict:
         try:
@@ -211,6 +162,13 @@ def create_app(config: WebConfig | None = None,
             ))
         except KeyError as exc:
             raise missing(exc) from exc
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(
+                409,
+                "an artifact with this kind and filename already exists for this revision",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/revisions/{revision_id}/inkscape-handoff")
     async def inkscape_handoff(revision_id: str) -> dict:
@@ -250,8 +208,9 @@ def create_app(config: WebConfig | None = None,
         if svg.size is not None and svg.size > config.max_upload_bytes:
             raise HTTPException(413, "Upload exceeds the configured limit")
         try:
-            return inkscape.reimport(project_id, revision_id,
-                                     filename=svg.filename or "edited.svg", source=svg.file)
+            return await asyncio.to_thread(
+                inkscape.reimport, project_id, revision_id,
+                filename=svg.filename or "edited.svg", source=svg.file)
         except KeyError as exc:
             raise missing(exc) from exc
         except ValueError as exc:
@@ -260,7 +219,7 @@ def create_app(config: WebConfig | None = None,
     @app.get("/api/revisions/{revision_id}/editor", response_model=EditorState)
     async def get_editor_state(revision_id: str) -> dict:
         try:
-            return editor_state(store, revision_id)
+            return await asyncio.to_thread(editor_state, store, revision_id)
         except KeyError as exc:
             raise missing(exc) from exc
         except ValueError as exc:
@@ -270,7 +229,8 @@ def create_app(config: WebConfig | None = None,
               response_model=Revision, status_code=201)
     async def edit_labels(project_id: str, revision_id: str, payload: ApplyLabelEdits) -> dict:
         try:
-            result_id = apply_edits(store, project_id, revision_id, payload.operations, payload.message)
+            result_id = await asyncio.to_thread(
+                apply_edits, store, project_id, revision_id, payload.operations, payload.message)
             return store.get_revision(result_id)
         except KeyError as exc:
             raise missing(exc) from exc

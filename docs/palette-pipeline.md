@@ -11,7 +11,8 @@
 5. Run deterministic weighted k-means, starting with 16 colours and weighted
    farthest-point seeding.
 6. Merge candidates based on Lab distance, pixel share, and spatial
-   fragmentation.
+   fragmentation. In optional fixed-count mode, continue with the nearest
+   allowed pair until the requested exact count is reached.
 7. Compute the full per-pixel/per-palette Lab cost field and initial labels.
 8. Detect coherent two-sided dark strokes from the original Lab pixels, before
    any destructive cleanup. Consolidate mixed quantisation fragments using the
@@ -39,6 +40,7 @@ meaningful colour," not an objective law of human vision.
 | Setting | Default | Meaning |
 |---|---:|---|
 | `initial_colours` | 16 | Deliberately over-complete starting palette |
+| `final_colours` | automatic | Optional exact final palette size (2–64, not above the initial candidates) |
 | `histogram_bits` | 5 | RGB histogram precision per channel |
 | `analysis_max_dimension` | 640 | Maximum palette-analysis dimension |
 | `similar_delta_e` | 28.0 | Merge any sufficiently close Lab candidates |
@@ -68,6 +70,14 @@ explicit selection always takes priority over inferred AA/stroke cleanup.
 
 Only selected settings currently have CLI flags. The JSON report records the
 complete settings dataclass for every run.
+
+Fixed-count mode is an explicit contract, not another name for initial
+quantisation candidates. Automatic mode retains the normal merge rules and
+corpus baseline. Fixed mode uses those rules first, then deterministically
+merges the closest pair not prohibited by a keep-distinct constraint. It fails
+before committing output when the source has too few analysed colours, the
+requested count exceeds the initial candidates, explicit distinct constraints
+make the target impossible, or cleanup cannot retain the exact count.
 
 ## Small-region cleanup
 

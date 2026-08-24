@@ -115,6 +115,23 @@ class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
             "kind": "palette", "project_id": "x", "revision_id": "y",
             "palette": {"min_region_pixels": -1}})
         self.assertEqual(response.status_code, 422)
+        response = await self.client.post("/api/jobs", json={
+            "kind": "palette", "project_id": "x", "revision_id": "y",
+            "palette": {"final_colours": 1}})
+        self.assertEqual(response.status_code, 422)
+        response = await self.client.post("/api/jobs", json={
+            "kind": "palette", "project_id": "x", "revision_id": "y",
+            "palette": {"initial_colours": 4, "final_colours": 5}})
+        self.assertEqual(response.status_code, 422)
+        for field, value in (
+            ("protected_component_points", [[-1, 0]]),
+            ("preserved_colour_points", [[0, -1]]),
+            ("distinct_colour_point_pairs", [[[-1, 0], [0, 0]]]),
+        ):
+            response = await self.client.post("/api/jobs", json={
+                "kind": "palette", "project_id": "x", "revision_id": "y",
+                "palette": {field: value}})
+            self.assertEqual(response.status_code, 422, field)
 
     async def test_stale_inherited_trace_cannot_be_validated_or_exported(self) -> None:
         imported = await self.client.post(

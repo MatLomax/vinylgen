@@ -180,59 +180,9 @@ class JobManager:
             await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
         return self.store.get_job(job_id)
 
-    def start_inline(self, job_id: str, message: str, function: Any) -> asyncio.Task[Any]:
-        """Own request-originated blocking work until its DB job is terminal.
-
-        The returned task should be awaited through ``asyncio.shield`` by the
-        request handler.  Losing the HTTP request must not abandon either the
-        worker future or the capacity-accounting job row.
-        """
-        self._pipeline_cancellations[job_id] = threading.Event()
-        task = asyncio.create_task(
-            self._run_inline(job_id, message, function),
-            name=f"vinylgen-inline-{job_id}",
-        )
-        self._tasks[job_id] = task
-        return task
-
-    async def _run_inline(self, job_id: str, message: str, function: Any) -> Any:
-        cancellation = self._pipeline_cancellations[job_id]
-        try:
-            await self._update(job_id, status="running", started_at=_now(), message=message)
-            result = await self.run_blocking(
-                lambda: function(cancellation.is_set)
-            )
-            if cancellation.is_set():
-                await self._update(job_id, status="cancelled", message="Cancelled",
-                                   finished_at=_now())
-            else:
-                await self._update(job_id, status="succeeded", progress=1, message="Complete",
-                                   finished_at=_now())
-            return result
-        except asyncio.CancelledError:
-            await self._update(job_id, status="cancelled", message="Cancelled",
-                               finished_at=_now())
-            raise
-        except Exception as exc:
-            await self._update(job_id, status="failed", error=str(exc), message="Failed",
-                               finished_at=_now())
-            raise
-        finally:
-            self._tasks.pop(job_id, None)
-            self._pipeline_cancellations.pop(job_id, None)
-
-    async def run_blocking(self, function: Any) -> Any:
-        """Run provider/image work off-loop in Vinylgen's owned executor."""
-        future = self._worker_executor.submit(function)
-        # Polling also keeps this robust in embedded ASGI/test loops whose
-        # cross-thread wakeup can be suppressed during request handling.
-        while not future.done():
-            await asyncio.sleep(.01)
-        return future.result()
-
     async def _update(self, job_id: str, **changes: Any) -> None:
         job = self.store.update_job(job_id, **changes)
-        for queue in tuple(self._subscribers[job_id]):
+        for queue in tuple(self._subscribers.get(job_id, ())):
             queue.put_nowait(job)
 
     async def subscribe(self, job_id: str) -> AsyncIterator[dict[str, Any]]:
@@ -253,7 +203,11 @@ class JobManager:
                 if job["status"] in {"succeeded", "failed", "cancelled"}:
                     return
         finally:
-            self._subscribers[job_id].discard(queue)
+            subs = self._subscribers.get(job_id)
+            if subs is not None:
+                subs.discard(queue)
+                if not subs:
+                    self._subscribers.pop(job_id, None)
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks.values())

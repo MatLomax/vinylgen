@@ -179,7 +179,6 @@ def remove_small_regions(
     centres: np.ndarray,
     minimum_pixels: int,
     maximum_passes: int = 8,
-    maximum_delta_e: float | None = None,
     protected_features: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Fold specks, never pixels protected by source-aware segmentation."""
@@ -245,10 +244,6 @@ def remove_small_regions(
                     continue
                 distances = np.linalg.norm(centres[neighbours] - centres[source], axis=1)
                 nearest = int(np.argmin(distances))
-                if maximum_delta_e is not None and float(distances[nearest]) > maximum_delta_e:
-                    # Contrast alone is not evidence of intent. Source-aware
-                    # ridge detection has already marked any real thin stroke.
-                    pass
                 target = int(neighbours[nearest])
                 changes.append((bounds, mask, source, target, int(sizes[component])))
         if not changes:

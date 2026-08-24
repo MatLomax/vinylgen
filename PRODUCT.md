@@ -20,16 +20,16 @@ Vinylgen combines generative source creation with a deterministic, auditable ras
 
 ## Operating Context
 
-The core loop is `Generate → inspect → flatten → inspect/edit → trace → inspect/export`. Users may start with a short prompt or upload, work through immutable revisions in a responsive web interface, make palette-constrained label edits, apply exact-mask generative replacements, compare raster and SVG layers at shared zoom, and hand advanced path work to Inkscape. Durable generated artifacts live under subject-specific output or project revision storage. Cutter preparation is a separate, safety-gated workflow.
+The core loop is `Generate → inspect → flatten → inspect/edit → trace → inspect/export`. Users may start with a short prompt or upload, work through immutable revisions in a responsive web interface, merge complete palette colours, compare raster and SVG layers in an explicitly opened inspector, and hand advanced path work to Inkscape. Durable generated artifacts live under subject-specific output or project revision storage. Cutter preparation is a separate, safety-gated workflow.
 
 ## Capabilities and Constraints
 
 - Source generation uses a fresh ephemeral locally authenticated Codex session for each request; it must not copy OAuth credentials, silently reuse prior images, or fall back to hidden API billing.
 - Deterministic flattening infers a limited palette, preserves exact palette membership, and treats four-way edge connectivity as authoritative for physical vinyl regions.
-- Manual raster edits operate on authoritative palette label maps and cannot introduce off-palette colours.
-- Generative edits always create recoverable source revisions; masked edits hard-compose through the exact user mask by default.
+- Palette edits operate on complete colours in authoritative label maps; the UI does not expose manual pixel painting or arbitrary colour adjustment.
+- Generative source creation always creates a recoverable root revision.
 - Tracing emits shared-boundary overlap and edge SVG variants, audits, and a synchronized 768 DPI preview. Structural validation does not establish physical cutter readiness.
-- Art detail, cut detail, and trace fidelity are separate controls even when presets link them.
+- Source generation always requests maximum provider quality and rich detail within a configurable limited-colour flat graphic style designed for clean flattening; cut detail and trace fidelity remain separate deterministic controls.
 - External SVG edits return as new revisions rather than overwriting generated traces.
 - Physical cutter operation requires cutter-host detection, reviewed path bounds, arming, and a separate explicit confirmation. Tiling, registration, visual inspection, and physical cutter testing remain later or human-reviewed work.
 
@@ -39,7 +39,7 @@ The product name is Vinylgen. Product language should be practical, direct, and 
 
 ## Evidence on Hand
 
-- The implemented FastAPI and React/TypeScript application covers project revisions, background jobs, responsive raster/SVG inspection, deterministic flattening and tracing, palette-label editing, source generation, masked replacement, validation/export, and Inkscape handoff.
+- The implemented FastAPI and React/TypeScript application covers project revisions, background jobs, dismissible raster/SVG inspection, deterministic flattening and tracing, whole-colour palette merging, source generation, validation/export, and Inkscape handoff.
 - The nine-image corpus and regression suite provide deterministic pipeline evidence.
 - Generated trace audits and previews provide structural evidence, but there is no claimed physical cutter-readiness evidence yet.
 - Product constraints and workflow details are documented in `docs/product-brief.md` and the project architecture and validation specifications.

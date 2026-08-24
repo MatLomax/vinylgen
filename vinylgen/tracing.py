@@ -105,10 +105,12 @@ def infer_order(labels: np.ndarray, included: list[int], palette: list[dict]) ->
         mask = labels == index
         border = int(mask[0].sum() + mask[-1].sum() + mask[:, 0].sum() + mask[:, -1].sum())
         rows.append((-border, -int(mask.sum()), str(palette[index]["hex"]), index))
-    order = [row[-1] for row in sorted(rows)]
+    ordered = sorted(rows)
+    order = [row[-1] for row in ordered]
     warnings = []
-    if len(rows) > 1 and rows[0][:2] == rows[1][:2]:
-        warnings.append("Layer-order evidence was tied; hexadecimal order broke the tie.")
+    if any(ordered[i][:2] == ordered[i + 1][:2] for i in range(len(ordered) - 1)):
+        warnings.append(
+            "Layer-order evidence tied adjacent colours; hexadecimal order broke the tie.")
     return order, warnings
 
 
@@ -327,6 +329,12 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                 changed = True
         if not changed:
             break
+    else:
+        # The final pass advanced recovery without a following build. Rebuild so
+        # the emitted SVG and every audit artifact describe the same recovery
+        # state that the reporting below counts.
+        variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
+            recovery)
     topology["shared_curve_fit"] = shared_fit_audit
     dense_fallbacks = [identity for identity, state in recovery.items()
                        if int(state["stage"]) >= 4]

@@ -91,7 +91,6 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
             summary["removed_regions"] += len(original_components)
             summary["removed_pixels"] += int(group_mask.sum())
         return result, summary
-    colour_counts = np.bincount(result.ravel(), minlength=len(palette)).astype(np.int64)
     for source in included:
         components, count = ndimage.label(snapshot == source, structure=structure)
         objects = ndimage.find_objects(components)
@@ -141,16 +140,35 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                 grown = ndimage.binary_dilation(component_mask, iterations=needed)
             result_view = result[expanded]
             targets = grown & (result_view == target)
-            # Conservative constraint: never consume a neighbour component below threshold.
-            target_pixels = int(targets.sum())
-            if int(colour_counts[target] - target_pixels) < max(area_px, width_px):
+            # Protect each neighbouring band by its own residual geometry rather
+            # than a global colour total: consuming these pixels must not thin any
+            # affected neighbour component below the feature-width threshold, nor
+            # below the area threshold when one is configured.
+            consumed = np.zeros(result.shape, dtype=bool)
+            consumed[expanded] = targets
+            neighbour_labels, _ = ndimage.label(result == target, structure=structure)
+            neighbour_objects = ndimage.find_objects(neighbour_labels)
+            refused = False
+            for neighbour_id in np.unique(neighbour_labels[consumed]):
+                if neighbour_id == 0:
+                    continue
+                neighbour_bounds = neighbour_objects[neighbour_id - 1]
+                component_local = neighbour_labels[neighbour_bounds] == neighbour_id
+                residual = component_local & ~consumed[neighbour_bounds]
+                residual_pixels = int(residual.sum())
+                residual_distance = ndimage.distance_transform_edt(
+                    np.pad(residual, 1))[1:-1, 1:-1]
+                residual_width = 2.0 * float(residual_distance.max())
+                if ((width_px > 0 and residual_width < width_px) or
+                        (area_px > 0 and residual_pixels < area_px)):
+                    refused = True
+                    break
+            if refused:
                 summary["unchanged_regions"] += 1
                 summary["warnings"].append(f"{palette[source]['name']} component {component}: widening constrained by neighbour threshold")
             else:
                 result_view[targets] = source
-                colour_counts[target] -= target_pixels
-                colour_counts[source] += target_pixels
                 summary["widened_regions"] += 1
-                summary["widened_pixels"] += target_pixels
+                summary["widened_pixels"] += int(targets.sum())
     return result, summary
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ApiModel(BaseModel):
@@ -75,6 +75,7 @@ class CreateRevision(BaseModel):
 
 class PaletteJobSettings(BaseModel):
     initial_colours: int = Field(default=16, ge=2, le=64)
+    final_colours: int | None = Field(default=None, ge=2, le=64)
     histogram_bits: int = Field(default=5, ge=1, le=8)
     analysis_max_dimension: int = Field(default=640, ge=32)
     similar_delta_e: float = Field(default=28.0, ge=0)
@@ -94,6 +95,16 @@ class PaletteJobSettings(BaseModel):
     protected_component_points: tuple[tuple[int, int], ...] = ()
     preserved_colour_points: tuple[tuple[int, int], ...] = ()
     distinct_colour_point_pairs: tuple[tuple[tuple[int, int], tuple[int, int]], ...] = ()
+
+    @model_validator(mode="after")
+    def final_count_fits_candidates(self) -> "PaletteJobSettings":
+        if self.final_colours is not None and self.final_colours > self.initial_colours:
+            raise ValueError("final_colours cannot exceed initial_colours")
+        points = [*self.protected_component_points, *self.preserved_colour_points]
+        points.extend(point for pair in self.distinct_colour_point_pairs for point in pair)
+        if any(x < 0 or y < 0 for x, y in points):
+            raise ValueError("palette selection coordinates must be non-negative")
+        return self
 
 
 class TraceJobSettings(BaseModel):
@@ -133,8 +144,7 @@ class StartJob(BaseModel):
 class GenerationSettings(BaseModel):
     width: int = Field(default=1536, ge=256, le=4096)
     height: int = Field(default=1024, ge=256, le=4096)
-    preset: Literal["simple", "balanced", "detailed"] = "balanced"
-    quality: Literal["low", "medium", "high"] = "medium"
+    desired_colours: int = Field(default=6, ge=2, le=12)
     required_motifs: list[str] = Field(default_factory=list, max_length=20)
     rejected_motifs: list[str] = Field(default_factory=list, max_length=20)
 
@@ -152,24 +162,7 @@ class GenerationStarted(BaseModel):
     expanded_prompt: str
 
 
-class MaskedEditCandidate(ApiModel):
-    source: Artifact
-    flattened_preview: Artifact
-
-
-class MaskedEditCandidates(ApiModel):
-    revision: Revision
-    expanded_prompt: str
-    candidates: list[MaskedEditCandidate]
-
-
-class ApplyMaskedEdit(BaseModel):
-    candidate_revision_id: str
-    candidate_index: int = Field(ge=1, le=3)
-
-
-EditorTool = Literal["pencil", "brush", "flood_fill", "lasso", "component",
-                     "protect", "merge_colour", "rename_colour", "adjust_colour"]
+EditorTool = Literal["merge_colour", "rename_colour", "reassign_region"]
 
 
 class LabelEditOperation(BaseModel):
@@ -177,10 +170,8 @@ class LabelEditOperation(BaseModel):
     label: int | None = Field(default=None, ge=0)
     source_label: int | None = Field(default=None, ge=0)
     target_label: int | None = Field(default=None, ge=0)
-    points: tuple[tuple[int, int], ...] = ()
-    radius: int = Field(default=0, ge=0, le=256)
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    rgb: tuple[int, int, int] | None = None
+    point: tuple[int, int] | None = None
 
 
 class ApplyLabelEdits(BaseModel):

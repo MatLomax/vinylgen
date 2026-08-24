@@ -111,6 +111,32 @@ class SvgTraceTests(unittest.TestCase):
         self.assertGreater(summary["widened_regions"], 0)
         self.assertEqual(summary["widened_regions"], 1)
 
+    def test_widen_refused_when_it_would_thin_a_two_pixel_neighbour_band(self):
+        # A thin source sits directly below a 2px-wide neighbour band whose
+        # colour also has a large disconnected blob, so a global colour total
+        # stays well above threshold. Widening the source would consume the band
+        # and drop that component below the configured minimum width, so the
+        # neighbour must be protected by its own residual geometry.
+        labels = np.zeros((16, 40), dtype=np.int16)
+        labels[7:9, 0:20] = 2
+        labels[9, 0:20] = 1
+        labels[:, 34:40] = 2
+        palette = [
+            {"rgb": [0, 0, 0], "name": "Black"},
+            {"rgb": [230, 100, 20], "name": "Orange"},
+            {"rgb": [200, 90, 30], "name": "Red"},
+        ]
+        cleaned, summary = cleanup_labels(
+            labels, [0, 1, 2], palette,
+            TraceSettings(cleanup=True, cleanup_action="widen",
+                          min_detail_width=3), 1.0)
+        self.assertTrue(np.all(cleaned[7:9, 0:20] == 2))
+        self.assertEqual(int((cleaned == 2).sum()), int((labels == 2).sum()))
+        self.assertEqual(summary["widened_regions"], 0)
+        self.assertGreaterEqual(summary["unchanged_regions"], 1)
+        self.assertTrue(any("constrained by neighbour threshold" in warning
+                            for warning in summary["warnings"]))
+
     def test_shared_curve_fit_smooths_shallow_turns_but_keeps_square_corners(self):
         settings = TraceSettings(corner_threshold=1.0, curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)

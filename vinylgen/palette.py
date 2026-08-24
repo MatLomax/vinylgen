@@ -49,7 +49,8 @@ def merge_clusters(
     total = float(counts.sum())
     groups = [{index} for index in range(len(centres))]
     distinct = distinct_cluster_pairs or set()
-    while len(centres) > settings.min_output_colours:
+    target_count = settings.final_colours or settings.min_output_colours
+    while len(centres) > target_count:
         stats = spatial_stats(label_map, len(centres))
         distances = np.linalg.norm(centres[:, None, :] - centres[None, :, :], axis=2)
         np.fill_diagonal(distances, np.inf)
@@ -79,7 +80,21 @@ def merge_clusters(
                     reason = "small, fragmented, and similar"
                 if reason:
                     candidates.append((distance, a, b, reason))
+        if not candidates and settings.final_colours is not None:
+            for a in range(len(centres)):
+                for b in range(a + 1, len(centres)):
+                    if any(
+                        (left in groups[a] and right in groups[b])
+                        or (right in groups[a] and left in groups[b])
+                        for left, right in distinct
+                    ):
+                        continue
+                    candidates.append((float(distances[a, b]), a, b, "fixed colour count"))
         if not candidates:
+            if settings.final_colours is not None:
+                raise ValueError(
+                    f"cannot reach fixed colour count {settings.final_colours}; explicit distinct-colour constraints prevent further merges"
+                )
             break
         distance, a, b, reason = min(candidates)
         keep, remove = (a, b) if counts[a] >= counts[b] else (b, a)
@@ -110,6 +125,13 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
     analysed = analysis_image(source, settings.analysis_max_dimension)
     analysis_rgb = np.asarray(analysed)
     histogram_rgb, histogram_weights = reduced_histogram(analysis_rgb, settings.histogram_bits)
+    if settings.final_colours is not None:
+        if settings.final_colours > settings.initial_colours:
+            raise ValueError("fixed final colour count cannot exceed initial colour candidates")
+        if settings.final_colours > len(histogram_rgb):
+            raise ValueError(
+                f"fixed colour count {settings.final_colours} exceeds the source's {len(histogram_rgb)} analysed colours"
+            )
     histogram_lab = srgb_to_lab(histogram_rgb)
     centres, histogram_labels = weighted_kmeans(
         histogram_lab, histogram_weights, settings.initial_colours
@@ -126,7 +148,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
     source_height, source_width = source_rgb.shape[:2]
     for first, second in settings.distinct_colour_point_pairs:
         for x, y in (first, second):
-            if x >= source_width or y >= source_height:
+            if x < 0 or y < 0 or x >= source_width or y >= source_height:
                 raise ValueError(
                     f"distinct-colour point ({x}, {y}) is outside {source_width}x{source_height} source"
                 )
@@ -165,23 +187,27 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings) -> di
     )
     full_labels, cleanup = remove_small_regions(
         full_labels, centres, settings.min_region_pixels,
-        maximum_delta_e=settings.small_delta_e,
         protected_features=protected_features,
     )
     preserved_colours: set[int] = set()
     preserved_colour_points: list[dict[str, int]] = []
     height, width = full_labels.shape
     for x, y in settings.preserved_colour_points:
-        if x >= width or y >= height:
+        if x < 0 or y < 0 or x >= width or y >= height:
             raise ValueError(f"preserved colour point ({x}, {y}) is outside {width}x{height} source")
         colour = int(full_labels[y, x])
         preserved_colours.add(colour)
         preserved_colour_points.append({"x": x, "y": y, "colour_index_before_final_remap": colour})
     full_labels, colour_cleanup = fold_underrepresented_colours(
-        full_labels, centres, settings.min_colour_share, settings.min_output_colours,
+        full_labels, centres, settings.min_colour_share,
+        settings.final_colours or settings.min_output_colours,
         preserved_colours=preserved_colours,
     )
     used = np.unique(full_labels)
+    if settings.final_colours is not None and len(used) != settings.final_colours:
+        raise ValueError(
+            f"fixed colour count requested {settings.final_colours}, but deterministic cleanup produced {len(used)} colours"
+        )
     centres = centres[used]
     used_remap = np.full(int(used.max()) + 1, -1, dtype=np.int32)
     used_remap[used] = np.arange(len(used))
