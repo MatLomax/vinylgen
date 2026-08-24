@@ -1,15 +1,20 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { TraceSettings } from './api'
+import type { PaletteColour, TraceSettings } from './api'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls } from './PipelineControls'
 
 afterEach(cleanup)
 
+const COLOURS: PaletteColour[] = [
+  { index: 0, name: 'Red', hex: '#ff0000', rgb: [255, 0, 0], share_percent: 50 },
+  { index: 1, name: 'Blue', hex: '#0000ff', rgb: [0, 0, 255], share_percent: 50 },
+]
+
 describe('numeric field empty handling', () => {
   it('retains the last valid value when a required field is cleared to empty', () => {
     const setPalette = vi.fn()
-    render(<PipelineControls stage="flatten" palette={DEFAULT_PALETTE_SETTINGS} setPalette={setPalette} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS}
+    render(<PipelineControls stage="flatten" palette={DEFAULT_PALETTE_SETTINGS} setPalette={setPalette} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
       selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
 
     fireEvent.change(screen.getByLabelText(/Initial candidates/), { target: { value: '' } })
@@ -22,10 +27,44 @@ describe('numeric field empty handling', () => {
   it('clears an optional field to null when emptied', () => {
     const setTrace = vi.fn()
     const trace: TraceSettings = { ...DEFAULT_TRACE_SETTINGS, width_mm: 120 }
-    render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS}
+    render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
       selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
 
     fireEvent.change(screen.getByLabelText(/Width \(mm\)/), { target: { value: '' } })
     expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ width_mm: null }))
+  })
+})
+
+function renderTrace(trace: TraceSettings, setTrace: (value: TraceSettings) => void, colours = COLOURS) {
+  render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={colours}
+    selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
+}
+
+describe('layer order control', () => {
+  it('hides the layer order control when solid underlayers is off', () => {
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: false }, () => undefined)
+    expect(screen.queryByText(/Layer order/)).toBeNull()
+  })
+
+  it('shows a reorderable palette list when solid underlayers is on', () => {
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: true }, () => undefined)
+    expect(screen.getByText(/Layer order/)).toBeTruthy()
+    expect(screen.getByText('Red')).toBeTruthy()
+    expect(screen.getByText('Blue')).toBeTruthy()
+  })
+
+  it('serialises a reorder as bottom-to-top hex values', () => {
+    const setTrace = vi.fn()
+    // Automatic order: natural palette [Red, Blue] is bottom-to-top, so the list shows Blue on top.
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: true, layer_order: null }, setTrace)
+    fireEvent.click(screen.getByLabelText(/Move Blue down a layer/))
+    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ layer_order: ['#0000ff', '#ff0000'] }))
+  })
+
+  it('reverts to automatic order', () => {
+    const setTrace = vi.fn()
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: true, layer_order: ['#0000ff', '#ff0000'] }, setTrace)
+    fireEvent.click(screen.getByText(/Reset to automatic/))
+    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ layer_order: null }))
   })
 })

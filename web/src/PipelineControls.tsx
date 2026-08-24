@@ -1,4 +1,5 @@
-import type { PaletteSettings, TraceSettings } from './api'
+import { useState } from 'react'
+import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
@@ -35,9 +36,63 @@ function PointList({ title, points, onRemove }: { title: string; points: [number
   return points.length ? <div className="selection-list"><strong>{title}</strong>{points.map((point, index) => <span key={`${point}-${index}`}><code>{point.join(', ')}</code><button type="button" className="secondary" onClick={() => onRemove(index)}>Remove</button></span>)}</div> : null
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, selectionMode, setSelectionMode, onReset, onRestoreLast, onCommitDraft }: {
+// Arrange the palette colours to reflect a stored bottom-to-top order. Entries match a
+// colour by hex or by name (older text-entered orders used names); colours the order does
+// not mention keep their natural position after the matched ones.
+function orderColours(colours: PaletteColour[], order: string[] | null): PaletteColour[] {
+  if (!order?.length) return [...colours]
+  const rank = (colour: PaletteColour) => {
+    const at = order.findIndex(entry => entry.toLowerCase() === colour.hex.toLowerCase() || entry === colour.name)
+    return at === -1 ? order.length : at
+  }
+  return [...colours].sort((a, b) => rank(a) - rank(b))
+}
+
+// A drag-and-drop reorderable list of the palette colours, bottom to top. Each drag or
+// button move rewrites the whole order as hex values, so any stale or partial stored order
+// is normalised to the full palette on first interaction. Up/down buttons cover touch and
+// keyboard, since native HTML5 drag does not fire on touch screens.
+function LayerOrderList({ colours, order, onChange, dirty }: {
+  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean
+}) {
+  const [dragging, setDragging] = useState<number | null>(null)
+  // Display top-down (top of the list is the top layer); the stored order is bottom-to-top,
+  // so serialise the reversed display back to hex on every move.
+  const display = orderColours(colours, order).reverse()
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= display.length || from === to) return
+    const next = [...display]
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    onChange([...next].reverse().map(colour => colour.hex))
+  }
+  if (!colours.length) return <Field label="Layer order" help="Comma-separated colour names or hex values, bottom to top." dirty={dirty}><p className="stage-guidance">Flatten this revision to choose a layer order.</p></Field>
+  return <div className="setting-field layer-order-field">
+    <span>Layer order (top layer first)<DirtyDot dirty={dirty} /></span>
+    <ul className="layer-order-list" role="list">
+      {display.map((colour, index) => <li key={colour.index}
+        draggable
+        onDragStart={() => setDragging(index)}
+        onDragEnd={() => setDragging(null)}
+        onDragOver={event => event.preventDefault()}
+        onDrop={event => { event.preventDefault(); if (dragging !== null) move(dragging, index); setDragging(null) }}
+        className={dragging === index ? 'is-dragging' : undefined}>
+        <span className="drag-handle" aria-hidden="true">⣿</span>
+        <span className="swatch" style={{ background: colour.hex }} />
+        <span className="layer-order-name">{colour.name || colour.hex}</span>
+        <span className="layer-order-buttons">
+          <button type="button" className="secondary" disabled={index === 0} aria-label={`Move ${colour.name || colour.hex} up a layer`} onClick={() => move(index, index - 1)}>↑</button>
+          <button type="button" className="secondary" disabled={index === display.length - 1} aria-label={`Move ${colour.name || colour.hex} down a layer`} onClick={() => move(index, index + 1)}>↓</button>
+        </span>
+      </li>)}
+    </ul>
+    <small>Drag or use the arrows to stack colours, top layer at the top. {order ? <button type="button" className="link-button" onClick={() => onChange(null)}>Reset to automatic</button> : 'Automatic order until you reorder.'}</small>
+  </div>
+}
+
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, onRestoreLast, onCommitDraft }: {
   stage: 'flatten' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
-  selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; onRestoreLast: () => void; onCommitDraft: () => void
+  paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; onRestoreLast: () => void; onCommitDraft: () => void
 }) {
   const p = <K extends keyof PaletteSettings>(key: K, value: PaletteSettings[K]) => setPalette({ ...palette, [key]: value })
   const t = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => setTrace({ ...trace, [key]: value })
@@ -87,7 +142,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <NumberField label="Layer overlap" help="Extra shared-boundary overlap added to each vinyl layer." value={trace.overlap} dirty={td('overlap')} onChange={value => t('overlap', value!)} />
         <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>Each lower layer stays solid under everything stacked above it, so no cut edges are shared. Overrides the overlap distance.</small></span></label>
         <Field label="Remove colour" help="Omit one palette colour, usually the material background." dirty={td('remove_colour')}><input value={trace.remove_colour ?? ''} placeholder="None" onChange={event => t('remove_colour', event.target.value || null)} /></Field>
-        <Field label="Layer order" help="Comma-separated colour names or hex values, bottom to top." dirty={td('layer_order')}><input value={trace.layer_order?.join(', ') ?? ''} placeholder="Automatic" onChange={event => t('layer_order', event.target.value.trim() ? event.target.value.split(',').map(value => value.trim()).filter(Boolean) : null)} /></Field>
+        {trace.solid_underlayers && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} />}
         <label className="check-field"><input type="checkbox" checked={trace.cleanup} onChange={event => t('cleanup', event.target.checked)} /><span><strong>Enable cutter cleanup<DirtyDot dirty={td('cleanup')} /></strong><small>Apply the width and area rules below before tracing.</small></span></label>
         <Field label="Cleanup action" help="Remove tiny features, widen narrow ones, or do both." dirty={td('cleanup_action')}><select value={trace.cleanup_action} onChange={event => t('cleanup_action', event.target.value as TraceSettings['cleanup_action'])}><option value="remove">Remove</option><option value="widen">Widen</option><option value="remove_then_widen">Remove then widen</option></select></Field>
         <NumberField label="Minimum detail width" help="Widen retained details narrower than this." value={trace.min_detail_width} dirty={td('min_detail_width')} onChange={value => t('min_detail_width', value!)} /><NumberField label="Minimum region area" help="Remove connected regions smaller than this area." value={trace.min_region_area} dirty={td('min_region_area')} onChange={value => t('min_region_area', value!)} /><NumberField label="Remove below width" help="Remove regions whose usable width is below this." value={trace.remove_below_width} dirty={td('remove_below_width')} onChange={value => t('remove_below_width', value!)} />

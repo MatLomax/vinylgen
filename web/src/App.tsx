@@ -598,7 +598,7 @@ export default function App() {
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
           <button disabled={!revision || busy} onClick={() => runPipeline('palette')}>Flatten image</button>
         </div>
-        <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace}
+        <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette}
           selectionMode={selectionMode} setSelectionMode={setSelectionMode}
           onReset={() => { setPaletteSettings(DEFAULT_PALETTE_SETTINGS); setSelectionMode(null) }}
           onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('palette')} />
@@ -606,7 +606,7 @@ export default function App() {
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('trace')} />
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('trace')} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}

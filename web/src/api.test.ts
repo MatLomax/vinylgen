@@ -69,7 +69,7 @@ describe('abortable project artifact requests', () => {
       kind: 'trace', project_id: 'project-1', revision_id: 'revision-1', trace: DEFAULT_TRACE_SETTINGS,
     })
     expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(21)
-    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(20)
+    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(21)
   })
 
 })
