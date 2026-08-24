@@ -77,6 +77,9 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .viewport:active { cursor: grabbing; }
 .viewport.selecting-point { cursor: crosshair; }
 .viewport.painting { cursor: crosshair; }
+.viewport.pan-ready { cursor: grab; }
+.viewport.pan-active { cursor: grabbing; }
+.pencil-hover { position: absolute; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px var(--surface-root), inset 0 0 0 1px var(--split-line); }
 .image-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .image-stage img, .compare-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
 .image-stage img { display: block; object-fit: fill; pointer-events: none; }

@@ -11,6 +11,11 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
   const painting = useRef(false)
   const lastPaint = useRef<[number, number] | null>(null)
+  const panningPointer = useRef(false)
+  const spaceHeld = useRef(false)
+  const [spacePan, setSpacePan] = useState(false)
+  const [panDragging, setPanDragging] = useState(false)
+  const [hoverPixel, setHoverPixel] = useState<[number, number] | null>(null)
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [beforeId, setBeforeId] = useState(() => layers.some(layer => layer.role === 'image' && layer.id === preferredLayerId) ? preferredLayerId! : layers.find(layer => layer.role === 'image')?.id ?? '')
@@ -123,6 +128,31 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   }, [sheetOpen])
 
   useEffect(() => {
+    if (!paintMode) return
+    const down = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || event.repeat) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      event.preventDefault()
+      spaceHeld.current = true
+      setSpacePan(true)
+    }
+    const up = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return
+      spaceHeld.current = false
+      setSpacePan(false)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      spaceHeld.current = false
+      setSpacePan(false)
+    }
+  }, [paintMode])
+
+  useEffect(() => {
     const element = viewport.current
     if (!element || !size.width || !size.height || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(entries => {
@@ -172,8 +202,18 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       // a line to the zoom's focus.
       painting.current = false
       lastPaint.current = null
+      panningPointer.current = false
+      setPanDragging(false)
       const [a, b] = [...pointers.current.values()]
       gesture.current = { distance: distance(a, b), centre: midpoint(a, b), transform }
+    } else if (paintMode && (event.button === 1 || spaceHeld.current)) {
+      // Middle-button or Space-held drag pans the canvas instead of painting.
+      if (event.button === 1) event.preventDefault()
+      painting.current = false
+      lastPaint.current = null
+      panningPointer.current = true
+      setPanDragging(true)
+      setHoverPixel(null)
     } else if (paintMode && onPaint) {
       const pixel = imagePixel(event.clientX, event.clientY)
       painting.current = true
@@ -183,6 +223,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (paintMode) setHoverPixel(panningPointer.current || spaceHeld.current ? null : imagePixel(event.clientX, event.clientY))
     const previous = pointers.current.get(event.pointerId)
     if (!previous) return
     const current = localPoint(event.clientX, event.clientY)
@@ -192,6 +233,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       const centre = midpoint(a, b)
       const zoomed = zoomAt(gesture.current.transform, gesture.current.centre, distance(a, b) / gesture.current.distance)
       setTransform({ ...zoomed, x: zoomed.x + centre.x - gesture.current.centre.x, y: zoomed.y + centre.y - gesture.current.centre.y })
+    } else if (panningPointer.current) {
+      setTransform(value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
     } else if (paintMode && onPaint) {
       if (!painting.current) return
       const pixel = imagePixel(event.clientX, event.clientY)
@@ -216,6 +259,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     }
     painting.current = false
     lastPaint.current = null
+    panningPointer.current = false
+    setPanDragging(false)
     pointers.current.delete(event.pointerId)
     pointerStarts.current.delete(event.pointerId)
     gesture.current = null
@@ -255,7 +300,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       <h3>View</h3>
       <div><button onClick={() => setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, 1.25))}>Zoom in</button><button onClick={() => setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, .8))}>Zoom out</button></div>
       <button onClick={() => fit()}>Fit image</button>
-      <p>{Math.round(transform.scale * 100)}% · drag to pan · pinch or wheel to zoom</p>
+      <p>{Math.round(transform.scale * 100)}% · {paintMode ? 'space or middle-drag to pan' : 'drag to pan'} · pinch or wheel to zoom</p>
     </section>
   </>
 
@@ -263,7 +308,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
     <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}<button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button></div>
-    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onWheel={wheel}>
+    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
@@ -271,6 +316,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {overlay && <img className="editor-overlay" src={overlay} alt="" aria-hidden="true" draggable={false} />}
       </div>
       {mode === 'split' && <div className="split-line" style={{ left: `${split}%` }} aria-hidden="true" />}
+      {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
     </div>
     <div className="layer-probes" inert={sheetOpen} aria-hidden="true">{layers.map(layer => <img key={layer.id} src={layer.url} alt="" onLoad={event => imageLoaded(layer.id, event)} />)}</div>
     <div className="desktop-view-controls" inert={sheetOpen}>{controls}</div>
