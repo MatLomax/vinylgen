@@ -490,19 +490,105 @@ def _rows_to_components(rows: list[dict]) -> list[dict]:
     return components
 
 
+def _ring_is_ccw(points) -> bool:
+    return sum((b[0] - a[0]) * (b[1] + a[1]) for a, b in zip(points, points[1:])) < 0
+
+
+def _fit_vertices(fit: "ChainFit") -> list:
+    return [fit.start, *(primitive[-1] for primitive in fit.primitives)]
+
+
+def _region_ring_path(chains: dict, fits: dict[str, "ChainFit"],
+                      segment_owner: dict, ring) -> dict:
+    """Emit one union boundary ring, reusing each chain's once-fitted curve.
+
+    The ring already comes from the geometry union, so its vertices are the canonical
+    chain samples. Each maximal run of edges owned by one chain replays that chain's
+    cached fit (reversed when the run runs backwards); the rare edge that the union
+    renoded away from any chain falls back to its own straight segment, whose endpoints
+    are shared by every neighbour, so registration holds either way.
+    """
+    coords = list(ring.coords)
+    edges = list(zip(coords, coords[1:]))
+    owners = [segment_owner.get(frozenset((a, b))) for a, b in edges]
+    runs: list[list] = []
+    for (a, b), owner in zip(edges, owners):
+        if runs and runs[-1][0] == owner and owner is not None:
+            runs[-1][1].append(b)
+        else:
+            runs.append([owner, [a, b]])
+    # A chain straddling the ring's arbitrary start point splits across the seam; rejoin
+    # it so each chain is one run and its run starts on a real junction.
+    if len(runs) > 1 and runs[0][0] is not None and runs[0][0] == runs[-1][0]:
+        tail = runs.pop()
+        runs[0][1] = tail[1] + runs[0][1][1:]
+    commands: list[str] = []
+    lines = cubics = 0
+    for owner, points in runs:
+        chain = chains.get(owner) if owner is not None else None
+        oriented_fit = None
+        if chain is not None:
+            if chain.closed:
+                # A closed interface is a whole ring on its own; the union ring starts at an
+                # arbitrary vertex, so orient by winding rather than a shared endpoint.
+                forward = fits[owner]
+                oriented_fit = forward if _ring_is_ccw(_fit_vertices(forward)) == _ring_is_ccw(points) \
+                    else forward.reversed()
+            elif points[0] == chain.points[0]:
+                oriented_fit = fits[owner]
+            elif points[0] == chain.points[-1]:
+                oriented_fit = fits[owner].reversed()
+        if oriented_fit is not None:
+            if not commands:
+                commands.append(f"M{_fmt(oriented_fit.start)}")
+            for primitive in oriented_fit.primitives:
+                if primitive[0] == "L":
+                    commands.append(f"L{_fmt(primitive[1])}")
+                    lines += 1
+                else:
+                    commands.append(
+                        f"C{_fmt(primitive[1])} {_fmt(primitive[2])} {_fmt(primitive[3])}")
+                    cubics += 1
+        else:
+            if not commands:
+                commands.append(f"M{_fmt(points[0])}")
+            for point in points[1:]:
+                commands.append(f"L{_fmt(point)}")
+                lines += 1
+    commands.append("Z")
+    return {"d": " ".join(commands), "lines": lines, "cubics": cubics}
+
+
 def region_components(track, fits: dict[str, "ChainFit"], geometry) -> list[dict]:
     """Trace the outline of a planar region from the canonical chains it is built on.
 
     Reuses each interface's once-fitted curve (recovery included), dissolving only the
     interior interfaces the region swallows, so a solid underlayer registers exactly
-    against every neighbour instead of being re-optimised into gaps.
+    against every neighbour instead of being re-optimised into gaps. The region's own
+    boundary rings drive the walk, so no separate topology traversal can fail to close.
     """
-    from vinylgen.boundary_graph import assemble_region_rings
-
     chains = {chain.identity: chain for chain in track.chains}
-    rows = [_ring_row(chains, fits, ring_uses)
-            for ring_uses in assemble_region_rings(track, geometry)]
-    return _rows_to_components(rows)
+    segment_owner: dict = {}
+    for chain in track.chains:
+        points = chain.points
+        for index in range(len(points) - 1):
+            segment_owner[frozenset((points[index], points[index + 1]))] = chain.identity
+    polygons = [] if geometry.is_empty else (
+        [geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms))
+    components = []
+    for polygon in polygons:
+        rings = [_region_ring_path(chains, fits, segment_owner, polygon.exterior),
+                 *(_region_ring_path(chains, fits, segment_owner, hole)
+                   for hole in polygon.interiors)]
+        lines = sum(ring["lines"] for ring in rings)
+        cubics = sum(ring["cubics"] for ring in rings)
+        components.append({"d": " ".join(ring["d"] for ring in rings),
+                           "nodes": lines + cubics,
+                           "holes": len(polygon.interiors),
+                           "fit_metrics": FitMetrics(lines, cubics, 0, 0, lines + cubics).as_dict(),
+                           "area": float(polygon.area)})
+    components.sort(key=lambda item: -item["area"])
+    return components
 
 
 def shared_boundary_components(track, included: list[int], settings: TraceSettings,

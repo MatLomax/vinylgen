@@ -8,7 +8,6 @@ from typing import Literal
 import numpy as np
 from scipy import ndimage
 from shapely.geometry import LineString, Polygon, box
-from shapely.geometry import Point as ShapelyPoint
 from shapely.ops import polygonize, unary_union
 
 
@@ -143,48 +142,6 @@ def assemble_colour_rings(
         rings.sort(key=lambda ring: tuple((use.identity, use.forward) for use in ring.uses))
         result[colour] = tuple(rings)
     return result
-
-
-def _chain_sides_inside(chain: SharedBoundaryChain, geometry) -> tuple[bool, bool]:
-    """Whether the left and right sides of a chain lie inside a planar region.
-
-    Sampled a quarter-pixel off a mid-chain segment, so a chain interior to the
-    region reports both sides inside and a boundary chain reports exactly one. The
-    left side matches the left/right colour convention (the +90° normal of travel).
-    """
-    points = chain.points
-    index = max(1, len(points) // 2)
-    first, second = points[index - 1], points[index]
-    midpoint = ((first[0] + second[0]) / 2.0, (first[1] + second[1]) / 2.0)
-    normal = (-(second[1] - first[1]), second[0] - first[0])
-    length = math.hypot(*normal) or 1.0
-    nx, ny = normal[0] / length * 0.25, normal[1] / length * 0.25
-    return (geometry.covers(ShapelyPoint(midpoint[0] + nx, midpoint[1] + ny)),
-            geometry.covers(ShapelyPoint(midpoint[0] - nx, midpoint[1] - ny)))
-
-
-def assemble_region_rings(track: SharedBoundaryTrack, geometry,
-                          ) -> list[tuple[BoundaryChainUse, ...]]:
-    """Boundary rings of a planar region, reusing the canonical shared chains.
-
-    A chain lies on the region boundary when exactly one of its sides is inside;
-    interior interfaces (both sides inside) dissolve. Each boundary chain keeps the
-    region on its left, matching the colour-ring convention, so its once-fitted curve
-    is reused unchanged and neighbouring layers register against the identical geometry.
-    """
-    by_identity = {chain.identity: chain for chain in track.chains}
-    uses: list[BoundaryChainUse] = []
-    closed_rings: list[tuple[BoundaryChainUse, ...]] = []
-    for chain in track.chains:
-        left_inside, right_inside = _chain_sides_inside(chain, geometry)
-        if left_inside == right_inside:
-            continue
-        use = BoundaryChainUse(chain.identity, left_inside)
-        if chain.closed:
-            closed_rings.append((use,))
-        else:
-            uses.append(use)
-    return _assemble_rings(by_identity, uses, closed_rings)
 
 
 def _canonical_chain(points: list[GridPoint]) -> tuple[GridPoint, ...]:
