@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -272,6 +273,30 @@ class SvgTraceTests(unittest.TestCase):
             # identical fourth-of-the-same-shape layer.
             self.assertGreaterEqual(overlap["#0F233C"]["holes"], 1)
             self.assertTrue(report["validation"]["overlap"]["passed"])
+
+    def drawing_commands(self, svg_path: Path) -> list[str]:
+        # Every line/curve command in the file; the M start is excluded because a ring's
+        # start vertex depends on assembly order, not on the fitted geometry.
+        tree = ET.parse(svg_path)
+        commands: list[str] = []
+        for path in tree.iter(f"{{{SVG}}}path"):
+            commands.extend(token.strip()
+                            for token in re.findall(r"[LC][^MLCZ]*", path.attrib["d"]))
+        return commands
+
+    def test_solid_underlayers_reuse_shared_fits_without_reoptimising(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.nested_fixture(Path(name))
+            trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            edge = set(self.drawing_commands(subject / "traced-edge.svg"))
+            overlap = self.drawing_commands(subject / "traced-overlap.svg")
+            self.assertTrue(overlap, "expected the solid underlayers to emit fitted geometry")
+            # Each solid-underlayer edge is a canonical shared-chain fit reused verbatim, so
+            # it registers against its neighbours. A re-optimised union would introduce
+            # curves absent from the gap-free edge variant and reopen the gaps.
+            introduced = sorted(command for command in overlap if command not in edge)
+            self.assertEqual(introduced, [],
+                             f"solid underlayers re-optimised {len(introduced)} segment(s)")
 
     def test_trace_reports_monotonic_progress(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:

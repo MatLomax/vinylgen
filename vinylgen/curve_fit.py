@@ -404,10 +404,111 @@ def geometry_components(geometry, settings: TraceSettings,
     return result
 
 
+def _ring_row(chains: dict, fits: dict[str, "ChainFit"], ring_uses) -> dict:
+    """Assemble one closed ring of oriented chain uses into a path row.
+
+    Each use contributes the canonical chain's once-fitted primitives, reversed when
+    the use runs backwards, so a boundary shared by two rings is byte-identical in both.
+    """
+    commands: list[str] = []
+    raw_points: list[Point] = []
+    metrics: list[FitMetrics] = []
+    for use in ring_uses:
+        chain = chains[use.identity]
+        fit = fits[use.identity] if use.forward else fits[use.identity].reversed()
+        oriented = chain.points if use.forward else tuple(reversed(chain.points))
+        if not commands:
+            commands.append(f"M{_fmt(fit.start)}")
+            raw_points.extend(oriented)
+        else:
+            if raw_points[-1] != oriented[0]:
+                raise RuntimeError(
+                    f"assembled chain {use.identity} does not join its predecessor")
+            raw_points.extend(oriented[1:])
+        for primitive in fit.primitives:
+            if primitive[0] == "L":
+                commands.append(f"L{_fmt(primitive[1])}")
+            else:
+                commands.append(
+                    f"C{_fmt(primitive[1])} {_fmt(primitive[2])} {_fmt(primitive[3])}")
+        metrics.append(fit.metrics)
+    commands.append("Z")
+    if raw_points[0] != raw_points[-1]:
+        raw_points.append(raw_points[0])
+    polygon = Polygon(raw_points)
+    if polygon.is_empty or polygon.area <= 0:
+        raise RuntimeError("assembled boundary ring is empty")
+    aggregate = FitMetrics(
+        sum(item.lines for item in metrics), sum(item.cubics for item in metrics),
+        sum(item.hard_anchors for item in metrics), sum(item.source_samples for item in metrics),
+        sum(item.final_nodes for item in metrics))
+    return {"d": " ".join(commands), "polygon": polygon, "fit_metrics": aggregate}
+
+
+def _rows_to_components(rows: list[dict]) -> list[dict]:
+    """Nest rings by even-odd containment into filled components with their holes."""
+    parents: list[int | None] = []
+    for index, row in enumerate(rows):
+        point = row["polygon"].representative_point()
+        containers = [candidate for candidate, other in enumerate(rows)
+                      if candidate != index
+                      and other["polygon"].area > row["polygon"].area
+                      and other["polygon"].contains(point)]
+        parents.append(min(containers, key=lambda candidate: rows[candidate]["polygon"].area)
+                       if containers else None)
+
+    def depth(index: int) -> int:
+        value, seen = 0, set()
+        while parents[index] is not None:
+            if index in seen:
+                raise RuntimeError("cyclic ring containment")
+            seen.add(index)
+            index = int(parents[index])
+            value += 1
+        return value
+
+    components = []
+    for index, row in enumerate(rows):
+        if depth(index) % 2:
+            continue
+        holes = [candidate for candidate, parent in enumerate(parents)
+                 if parent == index and depth(candidate) % 2]
+        members = [row, *(rows[candidate] for candidate in holes)]
+        aggregate = FitMetrics(
+            sum(item["fit_metrics"].lines for item in members),
+            sum(item["fit_metrics"].cubics for item in members),
+            sum(item["fit_metrics"].hard_anchors for item in members),
+            sum(item["fit_metrics"].source_samples for item in members),
+            sum(item["fit_metrics"].final_nodes for item in members),
+        )
+        components.append({"d": " ".join(item["d"] for item in members),
+                           "nodes": aggregate.final_nodes,
+                           "holes": len(holes),
+                           "fit_metrics": aggregate.as_dict(),
+                           "area": float(row["polygon"].area)})
+    components.sort(key=lambda item: -item["area"])
+    return components
+
+
+def region_components(track, fits: dict[str, "ChainFit"], geometry) -> list[dict]:
+    """Trace the outline of a planar region from the canonical chains it is built on.
+
+    Reuses each interface's once-fitted curve (recovery included), dissolving only the
+    interior interfaces the region swallows, so a solid underlayer registers exactly
+    against every neighbour instead of being re-optimised into gaps.
+    """
+    from vinylgen.boundary_graph import assemble_region_rings
+
+    chains = {chain.identity: chain for chain in track.chains}
+    rows = [_ring_row(chains, fits, ring_uses)
+            for ring_uses in assemble_region_rings(track, geometry)]
+    return _rows_to_components(rows)
+
+
 def shared_boundary_components(track, included: list[int], settings: TraceSettings,
                                recovery: dict[str, dict[str, object]] | None = None,
                                progress: Progress | None = None,
-                               ) -> tuple[dict[int, list[dict]], dict[str, object]]:
+                               ) -> tuple[dict[int, list[dict]], dict[str, "ChainFit"], dict[str, object]]:
     """Fit canonical interfaces once, then assemble exact reverse uses into paths."""
     from vinylgen.boundary_graph import assemble_colour_rings
 
@@ -457,88 +558,8 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
     assembled = assemble_colour_rings(track, included)
     result: dict[int, list[dict]] = {}
     for colour, rings in assembled.items():
-        rows = []
-        for ring in rings:
-            commands: list[str] = []
-            raw_points: list[Point] = []
-            metrics = []
-            for use in ring.uses:
-                chain = chains[use.identity]
-                fit = fits[use.identity] if use.forward else fits[use.identity].reversed()
-                oriented = chain.points if use.forward else tuple(reversed(chain.points))
-                if not commands:
-                    commands.append(f"M{_fmt(fit.start)}")
-                    raw_points.extend(oriented)
-                else:
-                    if raw_points[-1] != oriented[0]:
-                        raise RuntimeError(
-                            f"assembled chain {use.identity} does not join its predecessor"
-                        )
-                    raw_points.extend(oriented[1:])
-                for primitive in fit.primitives:
-                    if primitive[0] == "L":
-                        commands.append(f"L{_fmt(primitive[1])}")
-                    else:
-                        commands.append(
-                            f"C{_fmt(primitive[1])} {_fmt(primitive[2])} {_fmt(primitive[3])}"
-                        )
-                metrics.append(fit.metrics)
-            commands.append("Z")
-            if raw_points[0] != raw_points[-1]:
-                raw_points.append(raw_points[0])
-            polygon = Polygon(raw_points)
-            if polygon.is_empty or polygon.area <= 0:
-                raise RuntimeError(f"assembled colour {colour} contains an empty boundary ring")
-            aggregate = FitMetrics(
-                sum(item.lines for item in metrics), sum(item.cubics for item in metrics),
-                sum(item.hard_anchors for item in metrics),
-                sum(item.source_samples for item in metrics),
-                sum(item.final_nodes for item in metrics),
-            )
-            rows.append({"d": " ".join(commands), "polygon": polygon,
-                         "fit_metrics": aggregate})
-
-        parents: list[int | None] = []
-        for index, row in enumerate(rows):
-            point = row["polygon"].representative_point()
-            containers = [candidate for candidate, other in enumerate(rows)
-                          if candidate != index
-                          and other["polygon"].area > row["polygon"].area
-                          and other["polygon"].contains(point)]
-            parents.append(min(containers, key=lambda candidate: rows[candidate]["polygon"].area)
-                           if containers else None)
-
-        def depth(index: int) -> int:
-            value, seen = 0, set()
-            while parents[index] is not None:
-                if index in seen:
-                    raise RuntimeError(f"cyclic ring containment for colour {colour}")
-                seen.add(index)
-                index = int(parents[index])
-                value += 1
-            return value
-
-        components = []
-        for index, row in enumerate(rows):
-            if depth(index) % 2:
-                continue
-            holes = [candidate for candidate, parent in enumerate(parents)
-                     if parent == index and depth(candidate) % 2]
-            members = [row, *(rows[candidate] for candidate in holes)]
-            aggregate = FitMetrics(
-                sum(item["fit_metrics"].lines for item in members),
-                sum(item["fit_metrics"].cubics for item in members),
-                sum(item["fit_metrics"].hard_anchors for item in members),
-                sum(item["fit_metrics"].source_samples for item in members),
-                sum(item["fit_metrics"].final_nodes for item in members),
-            )
-            components.append({"d": " ".join(item["d"] for item in members),
-                               "nodes": aggregate.final_nodes,
-                               "holes": len(holes),
-                               "fit_metrics": aggregate.as_dict(),
-                               "area": float(row["polygon"].area)})
-        components.sort(key=lambda item: -item["area"])
-        result[colour] = components
+        result[colour] = _rows_to_components(
+            [_ring_row(chains, fits, ring.uses) for ring in rings])
 
     unique = FitMetrics(
         sum(fit.metrics.lines for fit in fits.values()),
@@ -547,7 +568,7 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
         sum(fit.metrics.source_samples for fit in fits.values()),
         sum(fit.metrics.final_nodes for fit in fits.values()),
     )
-    return result, {"unique_chains": len(fits),
+    return result, fits, {"unique_chains": len(fits),
                     "recovery_stages": [
                         "tighten_curve", "reclassify_geometry",
                         "add_local_constraint", "dense_fallback"],

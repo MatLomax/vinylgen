@@ -22,7 +22,7 @@ from shapely.ops import unary_union
 from vinylgen.colour import colour_names
 from vinylgen.contracts import SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import cleanup_labels
-from vinylgen.curve_fit import geometry_components, shared_boundary_components
+from vinylgen.curve_fit import geometry_components, region_components, shared_boundary_components
 from vinylgen.palette import Progress, _noop
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
@@ -244,7 +244,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     canvas = box(0, 0, width, height)
 
     def build_and_validate(recovery: dict[str, dict[str, object]], report=_noop):
-        components_by_colour, fit_audit = shared_boundary_components(
+        components_by_colour, chain_fits, fit_audit = shared_boundary_components(
             boundary_track, included, tracing_settings, recovery,
             progress=lambda fraction, message: report(fraction * 0.6, message))
         variant_stats: dict[str, list[dict]] = {"overlap": [], "edge": []}
@@ -273,7 +273,10 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                             stacked.append(shape)
                 solid = len(stacked) > 1
                 overlap_geometry = unary_union(stacked)
-                overlap_components = (geometry_components(overlap_geometry, tracing_settings)
+                # Reassemble the solid outline from the same once-fitted chains, dissolving
+                # only the interfaces it swallows. Re-fitting the union instead (as an
+                # independent curve pass) is what opened gaps between adjacent underlayers.
+                overlap_components = (region_components(boundary_track, chain_fits, overlap_geometry)
                                      if solid else edge_components)
                 construction = ("solid stacked underlayer" if solid
                                 else "canonical shared-chain fit")
