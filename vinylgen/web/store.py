@@ -78,11 +78,11 @@ def _timestamp_slug(created_at: str) -> str:
 def blob_relpath(slug: str, stage: str, created_at: str, filename: str) -> Path:
     """Canonical on-disk location of an artifact blob, relative to the data directory.
 
-    ``files/<project-slug>/<stage>-<revision-timestamp>/<filename>`` — one folder per
-    revision, so a project's directory reads as its history top to bottom. Shared by the
-    save path and the migration so both agree on where a blob lives.
+    ``files/<project-slug>/<revision-timestamp>-<stage>/<filename>`` — one folder per
+    revision, timestamp first so a project's stages interleave in chronological order when
+    listed. Shared by the save path and the reconcile step so both agree where a blob lives.
     """
-    return Path("files") / slug / f"{stage}-{_timestamp_slug(created_at)}" / Path(filename).name
+    return Path("files") / slug / f"{_timestamp_slug(created_at)}-{stage}" / Path(filename).name
 
 
 class Store:

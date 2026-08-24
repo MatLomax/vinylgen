@@ -38,5 +38,5 @@ class WebConfig:
 
     @property
     def files_dir(self) -> Path:
-        """Human-navigable blob root: files/<project-slug>/<stage>-<timestamp>/<filename>."""
+        """Human-navigable blob root: files/<project-slug>/<timestamp>-<stage>/<filename>."""
         return self.data_dir / "files"

@@ -46,7 +46,7 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         content = await self.client.get(artifacts[0]["download_url"])
         self.assertEqual(content.content, b"not-really-a-png")
 
-        stored = list((Path(self.temp.name) / "files").glob("desert-mech/source-*/*"))
+        stored = list((Path(self.temp.name) / "files").glob("desert-mech/*-source/*"))
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0].name, "source.png")
         self.assertEqual(stored[0].read_bytes(), b"not-really-a-png")

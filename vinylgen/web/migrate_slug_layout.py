@@ -1,20 +1,21 @@
-"""One-time migration from content-addressed blob storage to slug folders.
+"""Reconcile artifact blobs on disk to the canonical slug layout.
 
-Old layout stored each artifact once at ``artifacts/<sha[:2]>/<sha>`` and let several
-revisions share a blob. The new layout gives every artifact its own file at
-``files/<project-slug>/<stage>-<revision-timestamp>/<filename>`` (see
-``store.blob_relpath``), so the tree is human-navigable at the cost of that dedup.
+Artifacts live at ``files/<project-slug>/<timestamp>-<stage>/<filename>`` (see
+``store.blob_relpath``). Whenever that formula changes — the original move off
+content-addressed ``artifacts/<sha>`` storage, or the later timestamp-first reordering —
+this reconciles every artifact whose recorded ``storage_path`` no longer matches.
 
-The migration copies each blob to its new home and rewrites ``storage_path``; it never
-moves or deletes, so it is safe to run while the service is live and safe to re-run. The
-old ``artifacts/`` tree is left in place for inspection — remove it only after
-``verify_rehomed`` reports every old blob accounted for.
+It relinks in place: each blob is hard-linked to its new path, the database is committed,
+and only then is the old name removed. At every instant the path the database points at
+exists, so it is safe to run against a live store; it copies only if a hard link is
+impossible (a cross-filesystem move), never doubles the tree, and is safe to re-run.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -41,45 +42,58 @@ def _artifact_rows(db: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def migrate(config: WebConfig) -> dict[str, object]:
-    """Copy every artifact blob into its slug folder and rewrite its storage_path."""
-    moved, skipped, errors = 0, 0, []
+def restructure(config: WebConfig) -> dict[str, object]:
+    """Relink every artifact whose storage_path diverges from its canonical location."""
+    relinked: list[tuple[str, Path, str]] = []
+    skipped, errors = 0, []
     db = sqlite3.connect(config.database_path, timeout=30)
     db.row_factory = sqlite3.Row
     try:
         for row in _artifact_rows(db):
-            target_rel = blob_relpath(row["slug"], row["stage"], row["rev_created_at"], row["filename"])
-            target_rel_str = str(target_rel)
-            if row["storage_path"] == target_rel_str:
+            target = blob_relpath(row["slug"], row["stage"], row["rev_created_at"], row["filename"])
+            target_str = str(target)
+            if row["storage_path"] == target_str:
                 skipped += 1
                 continue
             source = config.data_dir / row["storage_path"]
-            destination = config.data_dir / target_rel
-            if not source.exists():
-                # Already relocated by an earlier run: accept the new home if it is present.
-                if destination.exists():
-                    db.execute("UPDATE artifacts SET storage_path=? WHERE id=?", (target_rel_str, row["id"]))
-                    moved += 1
-                else:
-                    errors.append(f"{row['id']}: source blob missing at {row['storage_path']}")
+            destination = config.data_dir / target
+            if destination.exists():
+                if _sha256(destination) != row["sha256"]:
+                    errors.append(f"{row['id']}: {target_str} already holds different content")
+                    continue
+            elif source.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(source, destination)  # instant, same inode, both paths valid
+                except OSError:
+                    shutil.copyfile(source, destination)  # fallback across filesystems
+            else:
+                errors.append(f"{row['id']}: source blob missing at {row['storage_path']}")
                 continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists() and _sha256(destination) != row["sha256"]:
-                errors.append(f"{row['id']}: {target_rel_str} already holds different content")
-                continue
-            # Copy (never move): several rows may share one old blob and each needs its own file.
-            shutil.copyfile(source, destination)
-            db.execute("UPDATE artifacts SET storage_path=? WHERE id=?", (target_rel_str, row["id"]))
-            moved += 1
+            relinked.append((row["id"], source, target_str))
+
+        # Commit every storage_path first, so the DB never points at a name we then remove.
+        for artifact_id, _, target_str in relinked:
+            db.execute("UPDATE artifacts SET storage_path=? WHERE id=?", (target_str, artifact_id))
         db.commit()
     finally:
         db.close()
-    return {"moved": moved, "skipped": skipped, "errors": errors}
+
+    old_dirs: set[Path] = set()
+    for _, source, target_str in relinked:
+        if source.exists() and source != config.data_dir / target_str:
+            source.unlink()
+        old_dirs.add(source.parent)
+    for directory in old_dirs:
+        try:
+            directory.rmdir()  # only succeeds once the folder is empty
+        except OSError:
+            pass
+    return {"relinked": len(relinked), "skipped": skipped, "errors": errors}
 
 
-def verify_rehomed(config: WebConfig) -> dict[str, object]:
-    """Confirm every artifact resolves to a present, content-correct file, and that every
-    blob in the old ``artifacts/`` tree is accounted for by a rehomed artifact."""
+def verify(config: WebConfig) -> dict[str, object]:
+    """Confirm every artifact resolves to a present file whose bytes match its sha256."""
     db = sqlite3.connect(config.database_path, timeout=30)
     db.row_factory = sqlite3.Row
     try:
@@ -88,62 +102,36 @@ def verify_rehomed(config: WebConfig) -> dict[str, object]:
         db.close()
 
     verified, bad = 0, []
-    rehomed_shas: set[str] = set()
     for row in rows:
         path = config.data_dir / row["storage_path"]
         if not path.exists():
             bad.append(f"{row['id']}: missing file at {row['storage_path']}")
-            continue
-        if _sha256(path) != row["sha256"]:
-            bad.append(f"{row['id']}: content at {row['storage_path']} does not match recorded sha256")
-            continue
-        verified += 1
-        rehomed_shas.add(row["sha256"])
-
-    old_blobs, orphans = 0, []
-    artifact_dir = config.artifact_dir
-    if artifact_dir.exists():
-        for blob in artifact_dir.rglob("*"):
-            if not blob.is_file() or blob.name.startswith("."):
-                continue
-            old_blobs += 1
-            if blob.name not in rehomed_shas:
-                orphans.append(str(blob.relative_to(config.data_dir)))
-
-    return {
-        "artifacts": len(rows),
-        "verified": verified,
-        "bad": bad,
-        "old_blobs": old_blobs,
-        "orphans": orphans,
-        "all_rehomed": not bad and not orphans,
-    }
+        elif _sha256(path) != row["sha256"]:
+            bad.append(f"{row['id']}: content at {row['storage_path']} does not match sha256")
+        else:
+            verified += 1
+    return {"artifacts": len(rows), "verified": verified, "bad": bad, "ok": not bad}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Migrate artifact storage to slug folders.")
+    parser = argparse.ArgumentParser(description="Reconcile artifact storage to the slug layout.")
     parser.add_argument("data_dir", nargs="?", help="Data directory (defaults to $VINYLGEN_DATA_DIR).")
     args = parser.parse_args()
     config = WebConfig(Path(args.data_dir).expanduser().resolve()) if args.data_dir else WebConfig.from_env()
 
-    result = migrate(config)
-    print(f"Migrated {result['moved']} artifact(s); {result['skipped']} already in place.")
+    result = restructure(config)
+    print(f"Relinked {result['relinked']} artifact(s); {result['skipped']} already in place.")
     for error in result["errors"]:
         print(f"  ERROR: {error}")
 
-    check = verify_rehomed(config)
+    check = verify(config)
     print(f"Verified {check['verified']}/{check['artifacts']} artifacts against their sha256.")
-    print(f"Old blob files: {check['old_blobs']}; orphaned (no rehomed artifact references them): "
-          f"{len(check['orphans'])}.")
-    for orphan in check["orphans"]:
-        print(f"  ORPHAN: {orphan}")
     for bad in check["bad"]:
         print(f"  BAD: {bad}")
-    if check["all_rehomed"] and not result["errors"]:
-        print("All files from the old sha tree have been rehomed. The old artifacts/ tree "
-              "is retained; remove it once you have confirmed the result.")
+    if check["ok"] and not result["errors"]:
+        print("Every artifact resolves to a present, content-correct file.")
         return 0
-    print("Migration incomplete — the old artifacts/ tree was left untouched.")
+    print("Reconcile incomplete.")
     return 1
 
 
