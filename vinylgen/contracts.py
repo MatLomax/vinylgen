@@ -86,9 +86,10 @@ class TraceSettings:
     width_mm: float | None = None
     height_mm: float | None = None
     overlap: float = 0.0
+    solid_underlayers: bool = False
     remove_colour: str | None = None
     layer_order: list[str] | None = None
-    corner_threshold: float = 1.0
+    corner_threshold: float = 57.3
     curve_optimization: bool = True
     curve_fit_tolerance: float = 0.8
     # Geometry classification is deliberately independent from curve fitting.

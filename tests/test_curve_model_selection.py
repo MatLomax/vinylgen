@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import numpy as np
@@ -54,7 +55,7 @@ class CurveModelSelectionTests(unittest.TestCase):
         points = [(0, 0), (2, .2), (4, .8), (6, 1.8),
                   (6, 8), (0, 8), (0, 0)]
         fitted = ring_path(points, TraceSettings(
-            corner_threshold=1.2, curve_fit_tolerance=1.0),
+            corner_threshold=math.degrees(1.2), curve_fit_tolerance=1.0),
             [HardAnchor((4., .8), "junction")])
         self.assertIn("4 0.8", fitted.path)
         self.assertEqual(fitted.metrics.hard_anchors, 1)
@@ -96,7 +97,7 @@ class CurveModelSelectionTests(unittest.TestCase):
         fitted = SharedChainFitter().fit(chain, TraceSettings(
             curve_fit_tolerance=.8, straight_line_max_deviation=.25,
             minimum_straight_length=3, corner_analysis_span=5,
-            corner_threshold=.7))
+            corner_threshold=math.degrees(.7)))
         self.assertEqual(fitted.metrics.cubics, 0)
         self.assertEqual(fitted.metrics.lines, 2)
         self.assertTrue(any(item.classification == "corner"

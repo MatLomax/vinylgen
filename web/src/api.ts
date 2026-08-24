@@ -16,7 +16,7 @@ export type PaletteSettings = {
   distinct_colour_point_pairs: [[number, number], [number, number]][]
 }
 export type TraceSettings = {
-  width_mm: number | null; height_mm: number | null; overlap: number
+  width_mm: number | null; height_mm: number | null; overlap: number; solid_underlayers: boolean
   remove_colour: string | null; layer_order: string[] | null
   corner_threshold: number; curve_optimization: boolean; curve_fit_tolerance: number
   straight_line_max_deviation: number; minimum_straight_length: number

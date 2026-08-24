@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import numpy as np
@@ -48,7 +49,7 @@ class GeometryAcceptanceTests(unittest.TestCase):
         fitted = ring_path(points, TraceSettings(
             curve_fit_tolerance=0.3,
             corner_analysis_span=4,
-            corner_threshold=0.7,
+            corner_threshold=math.degrees(0.7),
         ))
 
         self.assertEqual(fitted.metrics.lines, 4)

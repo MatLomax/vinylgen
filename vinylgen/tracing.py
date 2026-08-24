@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 import shapely
 from scipy import ndimage
 from shapely.geometry import box
+from shapely.ops import unary_union
 
 from vinylgen.colour import colour_names
 from vinylgen.contracts import SegmentationBundle, TraceSettings
@@ -239,16 +240,24 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             edge_stats["construction"] = "canonical shared-chain fit"
             edge_stats["source_colour_components"] = len(component_sizes(working == index))
             variant_stats["edge"].append(edge_stats)
-            overlap_geometry = edge_geometry
-            if overlap_px > 0 and position < len(order) - 1:
+            if settings.solid_underlayers:
+                overlap_geometry = unary_union(
+                    [partition[order[higher]] for higher in range(position, len(order))])
+                solid = position < len(order) - 1
+                overlap_components = (geometry_components(overlap_geometry, tracing_settings)
+                                     if solid else edge_components)
+                construction = ("solid stacked underlayer" if solid
+                                else "canonical shared-chain fit")
+            elif overlap_px > 0 and position < len(order) - 1:
                 overlap_geometry = edge_geometry.buffer(overlap_px, join_style=1).intersection(canvas)
-            overlap_components = (edge_components if overlap_px == 0 else
-                                  geometry_components(overlap_geometry, tracing_settings))
+                overlap_components = geometry_components(overlap_geometry, tracing_settings)
+                construction = "shared partition plus lower-layer overlap buffer"
+            else:
+                overlap_components = edge_components
+                construction = "canonical shared-chain fit"
             overlap_stats = add_layer(roots["overlap"], palette[index], overlap_components, "",
                                       subject_dir.name, "overlap", 0.0)
-            overlap_stats["construction"] = (
-                "canonical shared-chain fit" if overlap_px == 0
-                else "shared partition plus lower-layer overlap buffer")
+            overlap_stats["construction"] = construction
             overlap_stats["raster_component_pixels_descending"] = component_sizes(working == index)
             variant_stats["overlap"].append(overlap_stats)
         for variant, root in roots.items():

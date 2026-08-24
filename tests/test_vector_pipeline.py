@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import numpy as np
@@ -38,7 +39,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0), (2, 1), (4, 1), (4, 2), (6, 2),
                   (6, 10), (0, 10), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=0.7,
+            points, TraceSettings(corner_threshold=math.degrees(0.7),
                                   corner_analysis_span=4,
                                   curve_fit_tolerance=0.8), set())
         self.assertLess(fitted.metrics.final_nodes, len(points) - 1)
@@ -50,7 +51,7 @@ class VectorPipelineTests(unittest.TestCase):
                for x in range(-8, 9)]
         points = [*arc, (8, 12), (-8, 12), arc[0]]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=0.8,
+            points, TraceSettings(corner_threshold=math.degrees(0.8),
                                   corner_analysis_span=3,
                                   curve_fit_tolerance=0.35), set())
         self.assertGreater(fitted.metrics.cubics, 0)
@@ -62,7 +63,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (1, 0.05), (2, 0), (3, 0.1),
                   (3, 2), (0, 2), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=1.2,
+            points, TraceSettings(corner_threshold=math.degrees(1.2),
                                   corner_analysis_span=1,
                                   curve_fit_tolerance=0.2), set())
         numbers = [float(value) for value in __import__('re').findall(
@@ -73,7 +74,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0.2), (4, 0.8), (6, 1.8),
                   (6, 8), (0, 8), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=1.2,
+            points, TraceSettings(corner_threshold=math.degrees(1.2),
                                   curve_fit_tolerance=1.0),
             [HardAnchor((4.0, 0.8), "junction")])
         self.assertIn("4 0.8", fitted.path)

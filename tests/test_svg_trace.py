@@ -1,4 +1,5 @@
 import json
+import math
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -138,7 +139,7 @@ class SvgTraceTests(unittest.TestCase):
                             for warning in summary["warnings"]))
 
     def test_shared_curve_fit_smooths_shallow_turns_but_keeps_square_corners(self):
-        settings = TraceSettings(corner_threshold=1.0, curve_fit_tolerance=0.2,
+        settings = TraceSettings(corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         square = ring_path(
             [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], settings)
@@ -150,7 +151,7 @@ class SvgTraceTests(unittest.TestCase):
         self.assertIn("C", shallow.path)
 
     def test_corner_analysis_looks_past_single_pixel_stair_step(self):
-        settings = TraceSettings(corner_threshold=1.0, curve_fit_tolerance=0.2,
+        settings = TraceSettings(corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         fitted = ring_path(
             [(0, 0), (4, 0), (4, 1), (8, 1), (8, 8), (0, 8), (0, 0)],
@@ -208,6 +209,22 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(orange["paths"], 2)
             self.assertEqual(orange["source_colour_components"], 2)
             self.assertGreaterEqual(sum(layer["holes"] for layer in first["geometry"]["edge"]), 1)
+
+    def test_solid_underlayers_make_lower_layers_solid_without_shared_edges(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            report = trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            # The edge variant remains the gap-free registration partition, so the
+            # bottom layer still carries the shared-edge cutout under the top layer.
+            self.assertGreaterEqual(
+                sum(layer["holes"] for layer in report["geometry"]["edge"]), 1)
+            # In the overlap variant the bottom layer absorbs everything above it and
+            # becomes a hole-free solid, so no edge is shared with the top layer.
+            background = next(layer for layer in report["geometry"]["overlap"]
+                              if layer["hex"] == "#0F233C")
+            self.assertEqual(background["holes"], 0)
+            self.assertEqual(background["construction"], "solid stacked underlayer")
+            self.assertTrue(report["validation"]["overlap"]["passed"])
 
     def test_optional_colour_removal(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:

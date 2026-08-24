@@ -165,6 +165,7 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
     deviation = max(1e-4, float(settings.straight_line_max_deviation))
     minimum = max(1e-4, float(settings.minimum_straight_length))
     span = max(minimum, float(settings.corner_analysis_span))
+    threshold = math.radians(float(settings.corner_threshold))
     candidates: list[tuple[float, int, Point]] = []
     for index in range(1, len(points) - 1):
         evidence = []
@@ -177,7 +178,7 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
                 valid = False
                 break
             turn = math.acos(float(np.clip(np.dot(before.direction, after.direction), -1, 1)))
-            if turn < float(settings.corner_threshold):
+            if turn < threshold:
                 valid = False
                 break
             evidence.append((turn, before, after))

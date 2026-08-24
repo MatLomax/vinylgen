@@ -18,9 +18,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--width-mm", type=float)
     p.add_argument("--height-mm", type=float)
     p.add_argument("--overlap", type=float)
+    p.add_argument("--solid-underlayers", action="store_true", default=None,
+                   help="make each lower layer a solid stacked shape under everything above it, so no cut edges are shared")
     p.add_argument("--remove-colour")
     p.add_argument("--layer-order", help="comma-separated bottom-to-top colour names or hex values")
-    p.add_argument("--corner-threshold", type=float)
+    p.add_argument("--corner-threshold", type=float,
+                   help="minimum corner turn in degrees before a bend becomes a hard corner (default 57.3)")
     p.add_argument("--curve-fit-tolerance", type=float)
     p.add_argument("--straight-line-max-deviation", type=float)
     p.add_argument("--minimum-straight-length", type=float)

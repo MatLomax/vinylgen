@@ -111,9 +111,10 @@ class TraceJobSettings(BaseModel):
     width_mm: float | None = Field(default=None, gt=0)
     height_mm: float | None = Field(default=None, gt=0)
     overlap: float = Field(default=0.0, ge=0)
+    solid_underlayers: bool = False
     remove_colour: str | None = None
     layer_order: list[str] | None = None
-    corner_threshold: float = Field(default=1.0, ge=0)
+    corner_threshold: float = Field(default=57.3, ge=0, le=180)
     curve_optimization: bool = True
     curve_fit_tolerance: float = Field(default=0.8, gt=0)
     straight_line_max_deviation: float = Field(default=0.8, ge=0)
