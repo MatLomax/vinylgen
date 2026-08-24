@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
 import { artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash } from './App'
 
 const mocks = vi.hoisted(() => ({
-  projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), editor: vi.fn(),
-  generate: vi.fn(), inkscapeHandoff: vi.fn(), saveForInkscape: vi.fn(),
+  projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
+  generate: vi.fn(), startPipeline: vi.fn(), inkscapeHandoff: vi.fn(), saveForInkscape: vi.fn(),
   followJob: vi.fn(),
 }))
 
@@ -32,8 +32,10 @@ beforeEach(() => {
   mocks.projects.mockResolvedValue([])
   mocks.project.mockResolvedValue({ ...project, revisions: [revision] })
   mocks.effectiveArtifacts.mockResolvedValue([])
+  mocks.artifacts.mockResolvedValue([])
   mocks.editor.mockResolvedValue({ width: 0, height: 0, protected_pixels: 0, palette: [] })
   mocks.inkscapeHandoff.mockResolvedValue({ exports: [], shared_folder_enabled: false, guidance: '' })
+  mocks.startPipeline.mockResolvedValue(queuedJob)
   mocks.followJob.mockReturnValue(() => undefined)
 })
 afterEach(cleanup)
@@ -129,6 +131,21 @@ describe('generation frame dimensions', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('Choose a whole-number ratio between 1:6 and 6:1')
     expect(mocks.generate).not.toHaveBeenCalled()
   })
+
+  it('prefills the Create form from the source revision that produced the shown image', async () => {
+    const generated = { ...revision, settings: { short_prompt: 'sky whale city', width: 1024, height: 1024, desired_colours: 8, required_motifs: ['whale'], rejected_motifs: ['text'] } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [generated] })
+    mocks.effectiveArtifacts.mockResolvedValue([{ ...artifact('source'), revision_id: generated.id }])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+
+    await vi.waitFor(() => expect((screen.getByLabelText('Short subject') as HTMLTextAreaElement).value).toBe('sky whale city'))
+    expect((screen.getByLabelText(/Number of colours/) as HTMLInputElement).value).toBe('8')
+    expect((screen.getByLabelText(/Required motifs/) as HTMLInputElement).value).toBe('whale')
+    expect((screen.getByLabelText(/Rejected motifs/) as HTMLInputElement).value).toBe('text')
+    expect((screen.getByLabelText(/Frame/) as HTMLSelectElement).value).toBe('square')
+  })
 })
 
 describe('pipeline setting provenance', () => {
@@ -170,13 +187,59 @@ describe('pipeline setting provenance', () => {
     expect(screen.queryByText('Protected details')).toBeNull()
   })
 
-  it('persists form settings under the active project', async () => {
+  it('flags an edited field with a pending dot and saves the draft on blur, not on keystroke', async () => {
     mocks.projects.mockResolvedValue([project])
     render(createElement((await import('./App')).default))
     fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
-    fireEvent.change(screen.getByLabelText(/Initial candidates/), { target: { value: '23' } })
-    await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').palette.initial_colours).toBe(23))
+    const field = screen.getByLabelText(/Initial candidates/)
+
+    fireEvent.change(field, { target: { value: '23' } })
+    // The dot tracks divergence from the baseline immediately; the draft is only
+    // committed to storage once the field loses focus.
+    expect(field.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    expect(localStorage.getItem(`vinylgen.project-settings.${project.id}`)).toBeNull()
+
+    fireEvent.blur(field)
+    expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').palette.initial_colours).toBe(23)
+  })
+
+  it('fills flatten fields from the producing revision and shows no pending dot', async () => {
+    const flattened = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: { initial_colours: 30 } } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [flattened] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+
+    const field = await screen.findByLabelText(/Initial candidates/)
+    await vi.waitFor(() => expect((field as HTMLInputElement).value).toBe('30'))
+    expect(field.closest('label')?.querySelector('.field-dirty')).toBeNull()
+  })
+
+  it('clears the step draft once the stage is run', async () => {
+    mocks.projects.mockResolvedValue([project])
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`,
+      JSON.stringify({ palette: { initial_colours: 23 }, trace: { overlap: 4 } }))
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => {
+      onJob({ ...queuedJob, kind: 'palette', status: 'succeeded', result_revision_id: 'palette-2' })
+      return () => undefined
+    })
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+    const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+
+    // The palette run bakes the values into a revision; its draft is dropped while
+    // the untouched trace draft is left intact.
+    await vi.waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
+      expect(stored.palette).toBeUndefined()
+      expect(stored.trace).toEqual({ overlap: 4 })
+    })
   })
 })
 
@@ -308,5 +371,59 @@ describe('application status accessibility', () => {
     const status = await screen.findByRole('status')
     expect(status.getAttribute('aria-live')).toBe('polite')
     expect(status.textContent).toContain('Saved traced-overlap.svg to the shared folder.')
+  })
+})
+
+describe('artwork view toggle', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette' }
+  const editRevision: Revision = { ...revision, id: 'edit-1', parent_revision_id: 'palette-1', kind: 'label-edit' }
+
+  it('offers only the views the revision lineage has reached', async () => {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [paletteRevision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+
+    const group = await screen.findByRole('group', { name: 'Artwork view' })
+    expect(within(group).getByRole('button', { name: 'Source' })).toBeTruthy()
+    expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
+    expect(within(group).queryByRole('button', { name: 'Edited' })).toBeNull()
+    expect(within(group).queryByRole('button', { name: 'Traced' })).toBeNull()
+  })
+
+  it('drives the canvas image and disables area editing off the editable image', async () => {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [paletteRevision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    const group = await screen.findByRole('group', { name: 'Artwork view' })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+
+    fireEvent.click(within(group).getByRole('button', { name: 'Source' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
+    expect(screen.getByText(/Switch to the Flattened image to select and edit areas\./)).toBeTruthy()
+  })
+
+  it('adds an Edited view for edited revisions and restricts editing to it', async () => {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [editRevision, paletteRevision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    mocks.artifacts.mockResolvedValue([{ ...artifact('flattened'), id: 'flattened-original', revision_id: 'palette-1' }])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    const group = await screen.findByRole('group', { name: 'Artwork view' })
+    expect(within(group).getByRole('button', { name: 'Edited' })).toBeTruthy()
+    expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+
+    fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
+    expect(screen.getByText(/Switch to the Edited image to select and edit areas\./)).toBeTruthy()
   })
 })

@@ -241,6 +241,9 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .inspect-trigger:hover:not(:disabled) { background: var(--surface-control-strong); color: var(--accent); }
 .active-project { display: grid; min-width: 230px; margin-inline-start: auto; gap: 3px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .active-project select { min-height: 38px; padding-block: 6px; color: var(--text-strong); font-size: 13px; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.view-toggle { display: flex; gap: 3px; padding: 3px; margin-inline-start: auto; border-radius: var(--radius-sm); background: var(--surface-root); max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
+.view-toggle button { flex: 0 0 auto; min-height: 34px; padding: 6px 12px; background: transparent; color: var(--text-label); font-size: 13px; font-weight: 650; }
+.view-toggle button.active { background: var(--accent); color: var(--accent-ink); }
 .section-intro { margin: -4px 0 22px; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
 .generation-form, .upload-section form { gap: 18px; }
 .generation-form label, .upload-section label { gap: 7px; }
@@ -254,6 +257,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .settings-grid { gap: 20px; padding: 0; }
 .setting-field { gap: 7px; }
 .setting-field > span { color: var(--text-label); font-size: 13px; font-weight: 700; }
+.field-dirty { display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--warning); vertical-align: middle; }
 .setting-field > small, .check-field small { color: var(--text-muted); font-size: 11px; font-weight: 450; line-height: 1.45; }
 .setting-field input, .setting-field select { min-height: 44px; }
 .check-field { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 12px; border-radius: var(--radius-sm); background: var(--surface-control); }

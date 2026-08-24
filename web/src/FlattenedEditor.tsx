@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type Artifact, type EditorState } from './api'
 
-export function FlattenedEditor({ projectId, revisionId, flattened: _flattened, onCommit }: { projectId: string; revisionId: string; flattened: Artifact; onCommit: (id: string) => void }) {
+export function FlattenedEditor({ projectId, revisionId, flattened: _flattened, onCommit, disabled = false, disabledHint }: { projectId: string; revisionId: string; flattened: Artifact; onCommit: (id: string) => void; disabled?: boolean; disabledHint?: string }) {
   const [state, setState] = useState<EditorState | null>(null)
   const [names, setNames] = useState<Record<number, string>>({})
   const [source, setSource] = useState(0)
@@ -42,20 +42,21 @@ export function FlattenedEditor({ projectId, revisionId, flattened: _flattened, 
   if (!state) return <section className="palette-editor"><h2>Palette</h2><p role={error ? 'alert' : 'status'}>{error || 'Loading palette…'}</p></section>
   const sourceColour = state.palette[source]
   const targetColour = state.palette[target]
+  const locked = busy || disabled
   return <section className="palette-editor" aria-labelledby="palette-editor-title">
     <div className="section-heading"><h2 id="palette-editor-title">Palette</h2><span>{state.palette.length} colours</span></div>
-    <p className="stage-guidance">The flattened image stays on the main canvas. Palette edits apply to complete colours—there are no painting tools.</p>
+    <p className="stage-guidance">{disabled && disabledHint ? disabledHint : 'The flattened image stays on the main canvas. Palette edits apply to complete colours—there are no painting tools.'}</p>
     <div className="palette-list">{state.palette.map(colour => <div key={colour.index}>
       <span className="swatch" style={{ background: colour.hex }} aria-hidden="true" />
-      <label><span className="visually-hidden">Name for {colour.hex}</span><input value={names[colour.index] ?? colour.name} disabled={busy} onChange={event => setNames(current => ({ ...current, [colour.index]: event.target.value }))} onBlur={event => event.target.value.trim() !== colour.name && void rename(colour.index, event.target.value)} /></label>
+      <label><span className="visually-hidden">Name for {colour.hex}</span><input value={names[colour.index] ?? colour.name} disabled={locked} onChange={event => setNames(current => ({ ...current, [colour.index]: event.target.value }))} onBlur={event => event.target.value.trim() !== colour.name && void rename(colour.index, event.target.value)} /></label>
       <span className="palette-value">{colour.hex}<small>{colour.share_percent.toFixed(2)}%</small></span>
     </div>)}</div>
-    {state.palette.length > 1 && <fieldset className="merge-colours">
+    {state.palette.length > 1 && <fieldset className="merge-colours" disabled={locked}>
       <legend>Merge complete colours</legend>
       <label>From<select value={source} onChange={event => setSource(Number(event.target.value))}>{state.palette.map(colour => <option key={colour.index} value={colour.index}>{colour.name} · {colour.hex}</option>)}</select></label>
       <label>Into<select value={target} onChange={event => setTarget(Number(event.target.value))}>{state.palette.map(colour => <option key={colour.index} value={colour.index}>{colour.name} · {colour.hex}</option>)}</select></label>
       <p>{source === target ? 'Choose two different colours.' : <>Every <strong>{sourceColour?.name}</strong> pixel will become <strong>{targetColour?.name}</strong>. A new revision will be created.</>}</p>
-      <button disabled={busy || source === target} onClick={() => void merge()}>{busy ? 'Saving…' : `Merge ${sourceColour?.name} into ${targetColour?.name}`}</button>
+      <button disabled={locked || source === target} onClick={() => void merge()}>{busy ? 'Saving…' : `Merge ${sourceColour?.name} into ${targetColour?.name}`}</button>
     </fieldset>}
     {error && <p className="error" role="alert">{error}</p>}
   </section>

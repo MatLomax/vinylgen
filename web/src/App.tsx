@@ -17,6 +17,7 @@ const OVERLAY_ARTIFACT_KINDS = new Set([
 
 type Dimensions = [number, number]
 type WorkflowStage = 'create' | 'upload' | 'flatten' | 'trace' | 'palette' | 'edit' | 'export'
+type ArtworkView = 'source' | 'flattened' | 'edited' | 'traced'
 
 const WORKFLOW_STAGES: { id: WorkflowStage; label: string; description: string; icon: typeof Sparkles }[] = [
   { id: 'create', label: 'Create', description: 'Generate a source', icon: Sparkles },
@@ -69,6 +70,29 @@ export function artifactToWorkspaceLayer(artifact: Artifact): WorkspaceLayer | n
   }
 }
 
+const draftKey = (projectId: string) => `vinylgen.project-settings.${projectId}`
+
+type GenerationRecord = { short_prompt: string; width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
+
+export function generationFromRevision(revision: Revision | undefined): GenerationRecord | null {
+  const settings = revision?.settings
+  if (!settings || typeof settings.short_prompt !== 'string') return null
+  return {
+    short_prompt: settings.short_prompt,
+    width: Number(settings.width), height: Number(settings.height),
+    desired_colours: Number(settings.desired_colours),
+    required_motifs: Array.isArray(settings.required_motifs) ? settings.required_motifs as string[] : [],
+    rejected_motifs: Array.isArray(settings.rejected_motifs) ? settings.rejected_motifs as string[] : [],
+  }
+}
+
+export function frameFromDimensions(width: number, height: number): string {
+  if (width === 1536 && height === 1024) return 'landscape'
+  if (width === 1024 && height === 1536) return 'portrait'
+  if (width === 1024 && height === 1024) return 'square'
+  return 'custom'
+}
+
 export function inheritedPipelineSettings(revisions: Revision[], revisionId: string | null): { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } {
   let current = revisions.find(row => row.id === revisionId)
   let palette: Partial<PaletteSettings> | undefined
@@ -96,6 +120,8 @@ export default function App() {
   const [frame, setFrame] = useState('landscape')
   const [customRatio, setCustomRatio] = useState<Dimensions>([16, 9])
   const [stage, setStage] = useState<WorkflowStage>(() => stageFromHash(window.location.hash))
+  const [view, setView] = useState<ArtworkView>('source')
+  const [preEditFlattened, setPreEditFlattened] = useState<Artifact | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
   const [paletteSettings, setPaletteSettings] = useState<PaletteSettings>(DEFAULT_PALETTE_SETTINGS)
   const [traceSettings, setTraceSettings] = useState<TraceSettings>(DEFAULT_TRACE_SETTINGS)
@@ -109,10 +135,44 @@ export default function App() {
   const [regionError, setRegionError] = useState('')
   const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
   const stageScroll = useRef<Partial<Record<WorkflowStage, number>>>({})
-  const settingsProject = useRef<string | null>(null)
   const loadedProject = useRef<string | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
+  const tracedPreview = artifacts.find(row => row.kind === 'traced-preview')
+  const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
+    let node = revisions.find(row => row.id === revision)
+    const seen = new Set<string>()
+    let flatten = false, edit = false, paletteId: string | null = null
+    while (node && !seen.has(node.id)) {
+      seen.add(node.id)
+      if (node.kind === 'palette') { flatten = true; if (!paletteId) paletteId = node.id }
+      if (node.kind === 'label-edit') edit = true
+      const parent = node.parent_revision_id
+      node = parent ? revisions.find(row => row.id === parent) : undefined
+    }
+    return { hasFlatten: flatten, hasEdit: edit, paletteAncestorId: paletteId }
+  }, [revision, revisions])
+  const source = artifacts.find(row => row.kind === 'source')
+  const flattenAvailable = hasFlatten || Boolean(flattened)
+  const editableView: ArtworkView = hasEdit ? 'edited' : 'flattened'
+  const defaultView: ArtworkView = hasEdit ? 'edited' : flattenAvailable ? 'flattened' : 'source'
+  const viewOptions: { id: ArtworkView; label: string; available: boolean }[] = [
+    { id: 'source', label: 'Source', available: Boolean(source) },
+    { id: 'flattened', label: 'Flattened', available: flattenAvailable },
+    { id: 'edited', label: 'Edited', available: hasEdit },
+    { id: 'traced', label: 'Traced', available: Boolean(tracedPreview) },
+  ]
+  const availableViews = viewOptions.filter(option => option.available).map(option => option.id)
+  const editSelectable = view === editableView
+  const editableLabel = hasEdit ? 'Edited' : 'Flattened'
+  // The baseline is the settings that produced the shown image (recorded on the
+  // nearest ancestor revision), falling back to defaults before the step has run.
+  // Fields diverging from it are flagged as pending edits.
+  const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
+  const baselinePalette = useMemo<PaletteSettings>(() => ({ ...DEFAULT_PALETTE_SETTINGS, ...pipelineBaseline.palette }), [pipelineBaseline])
+  const baselineTrace = useMemo<TraceSettings>(() => ({ ...DEFAULT_TRACE_SETTINGS, ...pipelineBaseline.trace }), [pipelineBaseline])
+  const sourceRevision = revisions.find(row => row.id === source?.revision_id)
+  const generation = generationFromRevision(sourceRevision)
 
   useEffect(() => { api.projects().then(setProjects).catch(e => setError(String(e))) }, [])
   useEffect(() => {
@@ -123,7 +183,13 @@ export default function App() {
   useEffect(() => job ? followJob(job.id, next => {
     setError('')
     setJob(next)
-    if (next.status === 'succeeded' && next.result_revision_id) setRevision(next.result_revision_id)
+    if (next.status === 'succeeded' && next.result_revision_id) {
+      // The run recorded these values on the new revision; that revision is now the
+      // baseline, so the pending draft for this step is spent — drop it before the
+      // settings effect reloads (baseline alone then equals the applied values).
+      if ((next.kind === 'palette' || next.kind === 'trace') && next.project_id) clearDraft(next.project_id, next.kind)
+      setRevision(next.result_revision_id)
+    }
   }, () => setError('Lost the live job connection')) : undefined, [job?.id])
   useEffect(() => {
     if (!selected) { setArtifacts([]); setRevision(null); setRevisions([]); loadedProject.current = null; return }
@@ -181,17 +247,28 @@ export default function App() {
     }
   }, [revision, artifacts.map(row => row.id).join(',')])
   useEffect(() => {
+    // Fill each stage's fields from the settings that produced the shown revision
+    // (defaults before it ran), then overlay any pending per-step draft so un-run
+    // edits survive a refresh until the stage is run.
     const { palette: storedPalette, trace: storedTrace } = inheritedPipelineSettings(revisions, current?.id || null)
     let draft: { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } = {}
-    try { draft = selected ? JSON.parse(localStorage.getItem(`vinylgen.project-settings.${selected}`) || '{}') : {} } catch { /* use revision values */ }
+    try { draft = selected ? JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') : {} } catch { /* use revision values */ }
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draft.palette })
     setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...draft.trace })
-    settingsProject.current = selected
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
   useEffect(() => {
-    if (selected && settingsProject.current === selected) localStorage.setItem(`vinylgen.project-settings.${selected}`, JSON.stringify({ palette: paletteSettings, trace: traceSettings }))
-  }, [selected, paletteSettings, traceSettings])
+    // Point the Create frame controls at whatever generated the shown source; text
+    // fields fill via the form's keyed defaultValues, but frame/ratio are state.
+    // With no generation on the shown source (uploaded, or nothing yet), fall back
+    // to the default frame so the Create form reads as a clean slate.
+    if (!generation || !Number.isFinite(generation.width) || !Number.isFinite(generation.height)) { setFrame('landscape'); return }
+    setFrame(frameFromDimensions(generation.width, generation.height))
+    if (frameFromDimensions(generation.width, generation.height) === 'custom') {
+      const divisor = greatestCommonDivisor(generation.width, generation.height) || 1
+      setCustomRatio([generation.width / divisor, generation.height / divisor])
+    }
+  }, [sourceRevision?.id])
   useEffect(() => {
     setRegionSelection([]); setRegionError('')
     if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); return }
@@ -225,6 +302,25 @@ export default function App() {
     context.putImageData(image, 0, 0)
     setOverlayUrl(canvas.toDataURL())
   }, [regionSelection, flattenedPixels])
+
+  useEffect(() => {
+    if (availableViews.length && !availableViews.includes(view)) setView(defaultView)
+  }, [availableViews.join(','), view, defaultView])
+  useEffect(() => {
+    if (stage === 'palette' || stage === 'edit') setView(editableView)
+  }, [stage, editableView])
+  useEffect(() => {
+    if (selectionMode) setView('source')
+  }, [selectionMode])
+  useEffect(() => {
+    setPreEditFlattened(null)
+    if (!hasEdit || !paletteAncestorId) return
+    const controller = new AbortController()
+    api.artifacts(paletteAncestorId, controller.signal)
+      .then(rows => { const original = rows.find(row => row.kind === 'flattened'); if (original) setPreEditFlattened(original) })
+      .catch(() => { /* leave null; the Flattened view falls back to the current flattened */ })
+    return () => controller.abort()
+  }, [hasEdit, paletteAncestorId])
 
   async function importImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -275,6 +371,19 @@ export default function App() {
     }
     catch (cause) { setError(String(cause)) }
   }
+  function persistDraft(step: 'palette' | 'trace') {
+    if (!selected) return
+    let draft: { palette?: PaletteSettings; trace?: TraceSettings } = {}
+    try { draft = JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') } catch { draft = {} }
+    if (step === 'palette') draft.palette = paletteSettings; else draft.trace = traceSettings
+    localStorage.setItem(draftKey(selected), JSON.stringify(draft))
+  }
+  function clearDraft(projectId: string, step: 'palette' | 'trace') {
+    let draft: { palette?: PaletteSettings; trace?: TraceSettings } = {}
+    try { draft = JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') } catch { return }
+    delete draft[step]
+    localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
+  }
   async function reimportSvg(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selected || !revision) return
@@ -288,13 +397,22 @@ export default function App() {
     } catch (cause) { setError(String(cause)) }
   }
   const redo = revisions.filter(row => row.parent_revision_id === revision).sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)
-  const source = artifacts.find(row => row.kind === 'source')
   const jobMessage = job?.status === 'failed'
     ? job.error || job.message || 'Job failed'
     : job?.message || job?.status
   const customDimensions = customRatioDimensions(...customRatio)
   const busy = ['queued', 'running'].includes(job?.status || '')
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
+  const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
+    id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
+    url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',
+  } : null
+  const displayLayers = preEditLayer ? [...workspaceLayers, preEditLayer] : workspaceLayers
+  const viewLayerId = (target: ArtworkView): string | undefined =>
+    target === 'source' ? source?.id
+      : target === 'traced' ? tracedPreview?.id
+        : target === 'edited' ? flattened?.id
+          : hasEdit ? (preEditLayer?.id ?? flattened?.id) : flattened?.id
 
   const regionLabels = selectionLabels(regionSelection)
   const regionNeighbours = useMemo(
@@ -376,7 +494,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div><label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{availableViews.length > 1 && <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
@@ -390,25 +508,25 @@ export default function App() {
     <section className={`workspace workflow-${stage}`}>
       <div className={`workflow-surface artwork-surface ${projectLoading || busy ? 'is-loading' : ''} ${['flatten', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
         {stage === 'palette' || stage === 'edit' || selectionMode ? <ImageWorkspace
-          layers={workspaceLayers} editorMode
-          preferredLayerId={stage === 'palette' || stage === 'edit' ? flattened?.id : source?.id}
+          layers={displayLayers} editorMode
+          preferredLayerId={viewLayerId(view)}
           selectionLabel={stage === 'edit' ? 'Flattened artwork area selector' : selectionMode ? 'Source image preservation-point selector' : undefined}
-          onSelectPoint={stage === 'edit' ? toggleRegion : selectionMode ? selectPreservationPoint : undefined}
-          overlay={stage === 'edit' ? overlayUrl : undefined}
-        /> : <ArtworkPreview layers={workspaceLayers} preferredLayerId={flattened?.id || source?.id} />}
+          onSelectPoint={stage === 'edit' ? (editSelectable ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
+          overlay={stage === 'edit' && editSelectable ? overlayUrl : undefined}
+        /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
         {(projectLoading || busy) && <section className="canvas-loading"><span className="spinner" aria-hidden="true"/><h2>{projectLoading ? 'Loading artwork' : jobMessage || 'Working'}</h2><div className="progress indeterminate" role="progressbar" aria-label="Job progress"><i /></div><p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
       </div>
       <aside>
         <section id="workflow-panel-create" role="tabpanel" aria-labelledby="workflow-tab-create" className={`side-section create-section workflow-surface ${stage === 'create' ? 'mobile-stage-active' : ''}`} data-stage="create">
         <h2>Create artwork</h2>
-        <form className="generation-form" onSubmit={generateImage}>
-          <label>Short subject<textarea name="prompt" placeholder="e.g. sky whale city" required /></label>
+        <form className="generation-form" key={sourceRevision?.id ?? 'new-source'} onSubmit={generateImage}>
+          <label>Short subject<textarea name="prompt" placeholder="e.g. sky whale city" defaultValue={generation?.short_prompt ?? ''} required /></label>
           <label>Project name<input name="project_name" placeholder="Defaults to subject" /></label>
           <label>Frame<select name="ratio" value={frame} onChange={event => setFrame(event.target.value)}><option value="landscape">Landscape 3:2</option><option value="portrait">Portrait 2:3</option><option value="square">Square 1:1</option><option value="custom">Custom ratio</option></select><small>Sets the generated canvas shape and maximum output dimensions.</small></label>
           {frame === 'custom' && <div className="custom-ratio"><div className="form-pair"><label>Ratio width<input name="ratio_width" type="number" min="1" step="1" value={customRatio[0]} onChange={event => setCustomRatio(current => [Number(event.target.value), current[1]])} aria-describedby="custom-ratio-guidance" aria-invalid={!customDimensions} required /></label><label>Ratio height<input name="ratio_height" type="number" min="1" step="1" value={customRatio[1]} onChange={event => setCustomRatio(current => [current[0], Number(event.target.value)])} aria-describedby="custom-ratio-guidance" aria-invalid={!customDimensions} required /></label></div><p id="custom-ratio-guidance" role="status" aria-live="polite">{customDimensions ? `Maximum output: ${customDimensions.join(' × ')} px` : 'Use a whole-number ratio between 1:6 and 6:1.'}</p></div>}
-          <label>Number of colours<input name="desired_colours" type="number" min="2" max="12" step="1" defaultValue="6" required /><small>The source will use this exact flat palette. Choose the number of vinyl colours you want the artwork designed around.</small></label>
-          <label>Required motifs<input name="required" placeholder="comma separated" /><small>Objects or ideas that must appear in the generated scene.</small></label>
-          <label>Rejected motifs<input name="rejected" placeholder="comma separated" /><small>Objects or ideas the generation prompt must explicitly avoid.</small></label>
+          <label>Number of colours<input name="desired_colours" type="number" min="2" max="12" step="1" defaultValue={String(generation?.desired_colours ?? 6)} required /><small>The source will use this exact flat palette. Choose the number of vinyl colours you want the artwork designed around.</small></label>
+          <label>Required motifs<input name="required" placeholder="comma separated" defaultValue={generation?.required_motifs.join(', ') ?? ''} /><small>Objects or ideas that must appear in the generated scene.</small></label>
+          <label>Rejected motifs<input name="rejected" placeholder="comma separated" defaultValue={generation?.rejected_motifs.join(', ') ?? ''} /><small>Objects or ideas the generation prompt must explicitly avoid.</small></label>
           <button type="submit" disabled={busy}>Generate source</button>
         </form>
         </section>
@@ -426,26 +544,26 @@ export default function App() {
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
           <button disabled={!revision || busy} onClick={() => runPipeline('palette')}>Flatten image</button>
         </div>
-        <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} trace={traceSettings} setTrace={setTraceSettings}
+        <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace}
           selectionMode={selectionMode} setSelectionMode={setSelectionMode}
           onReset={() => { setPaletteSettings(DEFAULT_PALETTE_SETTINGS); setSelectionMode(null) }}
-          onRestoreLast={restoreLastSettings} />
+          onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('palette')} />
         </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} trace={traceSettings} setTrace={setTraceSettings} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} onRestoreLast={restoreLastSettings} />
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('trace')} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}
           {selected && revision && flattened && <>
             <nav className="history" aria-label="Revision history"><button disabled={!current?.parent_revision_id} onClick={() => current?.parent_revision_id && setRevision(current.parent_revision_id)}>Undo</button><select aria-label="Revision" value={revision} onChange={event => setRevision(event.target.value)}>{revisions.map(row => <option key={row.id} value={row.id}>{row.kind} · {new Date(row.created_at).toLocaleString()}</option>)}</select><button disabled={!redo} onClick={() => redo && setRevision(redo.id)}>Redo</button></nav>
-            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={setRevision} />
+            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={setRevision} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to edit its palette.`} />
           </>}
           {selected && revision && source && !flattened && <><h2>Palette unavailable</h2><p className="stage-guidance">Flatten this revision first to edit its palette.</p></>}
         </section>
         <section id="workflow-panel-edit" role="tabpanel" aria-labelledby="workflow-tab-edit" className={`side-section region-edit-section workflow-surface ${stage === 'edit' ? 'mobile-stage-active' : ''}`} data-stage="edit">
-          {!selected || !revision || !flattened ? <><h2>Edit selected areas</h2><p className="stage-guidance">Flatten the active project before editing individual areas.</p></> : <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} />}
+          {!selected || !revision || !flattened ? <><h2>Edit selected areas</h2><p className="stage-guidance">Flatten the active project before editing individual areas.</p></> : <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to select and edit areas.`} />}
         </section>
       </aside>
     </section>
