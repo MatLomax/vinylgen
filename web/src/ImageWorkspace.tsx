@@ -1,4 +1,5 @@
 import { PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
+import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
@@ -169,6 +170,10 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     setTransform(fitTransform(viewport.current?.clientWidth ?? 0, viewport.current?.clientHeight ?? 0, width, height))
   }
 
+  function zoomCentre(factor: number) {
+    setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, factor))
+  }
+
   function imageLoaded(layerId: string, event: React.SyntheticEvent<HTMLImageElement>) {
     const image = event.currentTarget
     if (image.naturalWidth) setDimensions(value => ({ ...value, [layerId]: { width: image.naturalWidth, height: image.naturalHeight } }))
@@ -296,18 +301,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[layer.id])} onChange={event => setEnabledInspections(value => ({ ...value, [layer.id]: event.target.checked }))} />{layer.name}</label>)}
       {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
     </section>}
-    <section className="control-section view-actions">
-      <h3>View</h3>
-      <div><button onClick={() => setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, 1.25))}>Zoom in</button><button onClick={() => setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, .8))}>Zoom out</button></div>
-      <button onClick={() => fit()}>Fit image</button>
-      <p>{Math.round(transform.scale * 100)}% · {paintMode ? 'space or middle-drag to pan' : 'drag to pan'} · pinch or wheel to zoom</p>
-    </section>
   </>
 
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
-    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}<button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button></div>
+    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
     <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
@@ -317,16 +316,21 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       </div>
       {mode === 'split' && <div className="split-line" style={{ left: `${split}%` }} aria-hidden="true" />}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
+      <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
+        <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
+        <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>
+        <button type="button" className="canvas-tool" aria-label="Fit image" title="Fit image" onClick={() => fit()}><Maximize aria-hidden="true" /></button>
+      </div>
     </div>
     <div className="layer-probes" inert={sheetOpen} aria-hidden="true">{layers.map(layer => <img key={layer.id} src={layer.url} alt="" onLoad={event => imageLoaded(layer.id, event)} />)}</div>
-    <div className="desktop-view-controls" inert={sheetOpen}>{controls}</div>
-    <div ref={sheetRoot} className={`bottom-sheet ${sheetOpen ? 'open' : ''}`} aria-hidden={!sheetOpen} inert={!sheetOpen}>
+    {!editorMode && <div className="desktop-view-controls" inert={sheetOpen}>{controls}</div>}
+    {!editorMode && <div ref={sheetRoot} className={`bottom-sheet ${sheetOpen ? 'open' : ''}`} aria-hidden={!sheetOpen} inert={!sheetOpen}>
       <div className="sheet-backdrop" aria-hidden="true" onClick={() => setSheetOpen(false)} />
       <div ref={sheetPanel} className="sheet-panel" role="dialog" aria-modal="true" aria-labelledby={sheetTitleId}>
         <div className="sheet-handle" aria-hidden="true" />
         <div className="sheet-title"><strong id={sheetTitleId}>Workspace controls</strong><button ref={doneButton} onClick={() => setSheetOpen(false)}>Done</button></div>
         {controls}
       </div>
-    </div>
+    </div>}
   </div>
 }
