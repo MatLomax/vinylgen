@@ -35,6 +35,17 @@ from vinylgen.validation import (
     validate_svg,
 )
 
+# Two exact partition polygons neighbour each other when they share a boundary of
+# positive length. A corner-only touch is a zero-length point intersection and is
+# not adjacency under the authoritative four-connectivity model.
+_UNDERLAYER_ADJACENCY_EPS = 1e-9
+
+
+def _partition_polygons(geometry) -> list:
+    if geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
+        return []
+    return [geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms)
+
 
 
 def resolve_subjects(inputs: list[Path]) -> list[Path]:
@@ -249,9 +260,19 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             edge_stats["source_colour_components"] = len(component_sizes(working == index))
             variant_stats["edge"].append(edge_stats)
             if settings.solid_underlayers:
-                overlap_geometry = unary_union(
-                    [partition[order[higher]] for higher in range(position, len(order))])
-                solid = position < len(order) - 1
+                base = partition[index]
+                # A solid underlayer backs only the higher shapes this colour
+                # actually touches. Extending it beneath non-adjacent colours would
+                # stack identical shapes with no physical purpose, so each higher
+                # partition contributes only the components sharing a boundary with
+                # this colour's region.
+                stacked = [base]
+                for higher in range(position + 1, len(order)):
+                    for shape in _partition_polygons(partition[order[higher]]):
+                        if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
+                            stacked.append(shape)
+                solid = len(stacked) > 1
+                overlap_geometry = unary_union(stacked)
                 overlap_components = (geometry_components(overlap_geometry, tracing_settings)
                                      if solid else edge_components)
                 construction = ("solid stacked underlayer" if solid

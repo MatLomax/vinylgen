@@ -226,6 +226,53 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(background["construction"], "solid stacked underlayer")
             self.assertTrue(report["validation"]["overlap"]["passed"])
 
+    def nested_fixture(self, root: Path) -> Path:
+        # A blue background, an orange block inside it, and a green square fully
+        # enclosed by the orange block. The green square borders only orange, never
+        # the background.
+        subject = root / "nested"
+        subject.mkdir()
+        pixels = np.zeros((32, 40, 3), dtype=np.uint8)
+        pixels[:] = (15, 35, 60)
+        pixels[8:24, 10:30] = (225, 95, 45)
+        pixels[13:19, 16:24] = (60, 180, 90)
+        Image.fromarray(pixels, "RGB").save(subject / "flattened.png")
+        Image.fromarray(pixels, "RGB").save(subject / "source.png")
+        palette = {"dimensions": [40, 32], "palette": [
+            {"index": 0, "hex": "#0F233C", "rgb": [15, 35, 60], "share_percent": 55},
+            {"index": 1, "hex": "#E15F2D", "rgb": [225, 95, 45], "share_percent": 35},
+            {"index": 2, "hex": "#3CB45A", "rgb": [60, 180, 90], "share_percent": 10}]}
+        (subject / "palette.json").write_text(json.dumps(palette))
+        centres = np.array([[15, 35, 60], [225, 95, 45], [60, 180, 90]])
+        labels = np.argmin(
+            np.sum((pixels.astype(np.int32)[:, :, None, :] - centres[None, None]) ** 2, axis=3),
+            axis=2).astype(np.int16)
+        costs = np.full((*labels.shape, 3), 50.0, dtype=np.float32)
+        np.put_along_axis(costs, labels[..., None], 0.0, axis=2)
+        SegmentationBundle(
+            labels=labels,
+            protected_features=np.zeros(labels.shape, dtype=bool),
+            explicit_protected_features=np.zeros(labels.shape, dtype=bool),
+            palette_rgb=centres.astype(np.uint8),
+            palette_costs=costs,
+        ).save(subject / "segmentation.npz")
+        return subject
+
+    def test_solid_underlayers_skip_non_adjacent_upper_colours(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.nested_fixture(Path(name))
+            report = trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            overlap = {layer["hex"]: layer for layer in report["geometry"]["overlap"]}
+            # The orange middle layer borders the green square, so it backs it into a
+            # hole-free solid.
+            self.assertEqual(overlap["#E15F2D"]["holes"], 0)
+            self.assertEqual(overlap["#E15F2D"]["construction"], "solid stacked underlayer")
+            # The background never touches the green square (orange encloses it), so it
+            # is not extended beneath it: the square stays a hole instead of stacking an
+            # identical fourth-of-the-same-shape layer.
+            self.assertGreaterEqual(overlap["#0F233C"]["holes"], 1)
+            self.assertTrue(report["validation"]["overlap"]["passed"])
+
     def test_trace_reports_monotonic_progress(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
