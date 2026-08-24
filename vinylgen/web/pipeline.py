@@ -228,7 +228,8 @@ class PipelineRunner:
         source_row = artifacts["source"]
         source = work / source_row["filename"]
         staged_source = work / f"{project['slug']}{source.suffix.lower()}"
-        shutil.copyfile(source, staged_source)
+        if not (staged_source.exists() and source.samefile(staged_source)):
+            shutil.copyfile(source, staged_source)
         effective = asdict(PaletteSettings(**values))
         run_worker(
             {"op": "palette", "source": str(staged_source),

@@ -113,6 +113,23 @@ class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("initial_colours", settings_by_kind["trace"]["palette"])
         self.assertIn("curve_fit_tolerance", settings_by_kind["trace"]["trace"])
 
+    async def test_flatten_when_source_filename_equals_slug(self) -> None:
+        # A file whose stem slugifies to the project slug (the default when the
+        # name is the filename) made the palette stage copy the source onto
+        # itself and raise SameFileError; flattening must still succeed.
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": "1000012355"},
+            files={"source": ("1000012355.png", self.source_png(), "image/png")})
+        self.assertEqual(imported.status_code, 201, imported.text)
+        project = imported.json()
+        self.assertEqual(project["slug"], "1000012355")
+        palette_job = await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 2, "min_colour_share": 0})
+        artifacts = (await self.client.get(
+            f"/api/revisions/{palette_job['result_revision_id']}/artifacts")).json()
+        self.assertIn("flattened", {row["kind"] for row in artifacts})
+
     async def test_pipeline_settings_are_typed_and_bounded(self) -> None:
         response = await self.client.post("/api/jobs", json={
             "kind": "palette", "project_id": "x", "revision_id": "y",
