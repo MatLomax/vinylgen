@@ -67,11 +67,29 @@ def _slug(value: str) -> str:
     return result or "project"
 
 
+def _timestamp_slug(created_at: str) -> str:
+    """Filesystem-safe, chronologically sortable form of an ISO 8601 timestamp.
+
+    Microsecond precision is kept so two revisions of one stage cannot share a folder.
+    """
+    return datetime.fromisoformat(created_at).strftime("%Y%m%d-%H%M%S-%f")
+
+
+def blob_relpath(slug: str, stage: str, created_at: str, filename: str) -> Path:
+    """Canonical on-disk location of an artifact blob, relative to the data directory.
+
+    ``files/<project-slug>/<stage>-<revision-timestamp>/<filename>`` — one folder per
+    revision, so a project's directory reads as its history top to bottom. Shared by the
+    save path and the migration so both agree on where a blob lives.
+    """
+    return Path("files") / slug / f"{stage}-{_timestamp_slug(created_at)}" / Path(filename).name
+
+
 class Store:
     def __init__(self, config: WebConfig):
         self.config = config
         config.data_dir.mkdir(parents=True, exist_ok=True)
-        config.artifact_dir.mkdir(parents=True, exist_ok=True)
+        config.files_dir.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(SCHEMA)
             job_columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
@@ -105,6 +123,29 @@ class Store:
             row = db.execute(query, args).fetchone()
         return dict(row) if row else None
 
+    def _stage_incoming(self, artifact_id: str, source: BinaryIO) -> tuple[str, int, Path]:
+        """Stream an upload into a temp file at the files-dir root, hashing as it lands."""
+        self.config.files_dir.mkdir(parents=True, exist_ok=True)
+        incoming = self.config.files_dir / f".{artifact_id}.incoming"
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with incoming.open("wb") as target:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+                    target.write(chunk)
+        except BaseException:
+            incoming.unlink(missing_ok=True)
+            raise
+        return digest.hexdigest(), size, incoming
+
+    def _finalize(self, incoming: Path, storage_path: str) -> None:
+        """Move a staged blob to its canonical slug path once its row is written."""
+        destination = self.config.data_dir / storage_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(incoming, destination)
+
     def create_project(self, name: str) -> dict[str, Any]:
         project_id, now, base = _id(), _now(), _slug(name)
         with self.connection() as db:
@@ -122,24 +163,13 @@ class Store:
         """Create an imported project and its source revision as one DB transaction."""
         project_id, revision_id, artifact_id = _id(), _id(), _id()
         now, base = _now(), _slug(name)
-        incoming = self.config.artifact_dir / f".{artifact_id}.incoming"
-        digest = hashlib.sha256()
-        size = 0
+        sha256, size, incoming = self._stage_incoming(artifact_id, source)
         try:
-            with incoming.open("wb") as target:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
-                    size += len(chunk)
-                    target.write(chunk)
-
-            sha256 = digest.hexdigest()
-            destination = self.config.artifact_dir / sha256[:2] / sha256
-            destination.parent.mkdir(parents=True, exist_ok=True)
-
             with self.connection() as db:
                 slug, suffix = base, 2
                 while db.execute("SELECT 1 FROM projects WHERE slug=?", (slug,)).fetchone():
                     slug, suffix = f"{base}-{suffix}", suffix + 1
+                storage_path = str(blob_relpath(slug, "source", now, filename))
                 db.execute(
                     "INSERT INTO projects VALUES (?, ?, ?, ?, ?)",
                     (project_id, slug, name.strip(), now, now),
@@ -151,12 +181,9 @@ class Store:
                 db.execute(
                     "INSERT INTO artifacts VALUES (?, ?, 'source', ?, ?, ?, ?, ?, ?)",
                     (artifact_id, revision_id, Path(filename).name, media_type, size, sha256,
-                     str(destination.relative_to(self.config.data_dir)), now),
+                     storage_path, now),
                 )
-                if destination.exists():
-                    incoming.unlink()
-                else:
-                    shutil.move(incoming, destination)
+                self._finalize(incoming, storage_path)
         finally:
             incoming.unlink(missing_ok=True)
 
@@ -192,20 +219,11 @@ class Store:
     def create_generated_source(self, project_id: str, *, message: str,
                                 settings: dict[str, Any], source: BinaryIO) -> str:
         """Persist a generated revision and its sole source artifact atomically."""
-        self.get_project(project_id)
+        project = self.get_project(project_id)
         revision_id, artifact_id, now = _id(), _id(), _now()
-        incoming = self.config.artifact_dir / f".{artifact_id}.incoming"
-        digest = hashlib.sha256()
-        size = 0
+        sha256, size, incoming = self._stage_incoming(artifact_id, source)
+        storage_path = str(blob_relpath(project["slug"], "generated-source", now, "source.png"))
         try:
-            with incoming.open("wb") as target:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
-                    size += len(chunk)
-                    target.write(chunk)
-            sha256 = digest.hexdigest()
-            destination = self.config.artifact_dir / sha256[:2] / sha256
-            destination.parent.mkdir(parents=True, exist_ok=True)
             with self.connection() as db:
                 db.execute(
                     "INSERT INTO revisions VALUES (?, ?, NULL, 'generated-source', ?, ?, ?)",
@@ -215,14 +233,10 @@ class Store:
                 db.execute(
                     "INSERT INTO artifacts VALUES (?, ?, 'source', 'source.png', "
                     "'image/png', ?, ?, ?, ?)",
-                    (artifact_id, revision_id, size, sha256,
-                     str(destination.relative_to(self.config.data_dir)), now),
+                    (artifact_id, revision_id, size, sha256, storage_path, now),
                 )
                 db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
-                if destination.exists():
-                    incoming.unlink()
-                else:
-                    shutil.move(incoming, destination)
+                self._finalize(incoming, storage_path)
         finally:
             incoming.unlink(missing_ok=True)
         return revision_id
@@ -246,33 +260,23 @@ class Store:
 
     def add_artifact(self, revision_id: str, *, kind: str, filename: str,
                      media_type: str, source: BinaryIO) -> dict[str, Any]:
-        self.get_revision(revision_id)
+        revision = self.get_revision(revision_id)
+        project = self.get_project(revision["project_id"])
         artifact_id, now = _id(), _now()
-        incoming = self.config.artifact_dir / f".{artifact_id}.incoming"
-        digest = hashlib.sha256()
-        size = 0
+        sha256, size, incoming = self._stage_incoming(artifact_id, source)
+        storage_path = str(blob_relpath(
+            project["slug"], revision["kind"], revision["created_at"], filename))
         try:
-            with incoming.open("wb") as target:
-                while chunk := source.read(1024 * 1024):
-                    digest.update(chunk)
-                    size += len(chunk)
-                    target.write(chunk)
-            sha256 = digest.hexdigest()
-            destination = self.config.artifact_dir / sha256[:2] / sha256
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                incoming.unlink()
-            else:
-                shutil.move(incoming, destination)
             with self.connection() as db:
                 db.execute(
                     "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (artifact_id, revision_id, kind, Path(filename).name, media_type,
-                     size, sha256, str(destination.relative_to(self.config.data_dir)), now),
+                     size, sha256, storage_path, now),
                 )
+                self._finalize(incoming, storage_path)
         finally:
-            # The final blob is content-addressed and may be shared; only the private staging
-            # file is always safe to remove when a read, write, move, or DB operation fails.
+            # Only the private staging file is safe to remove when a write or DB op fails;
+            # the committed blob lives under the revision's slug folder.
             incoming.unlink(missing_ok=True)
         return self.get_artifact(artifact_id)
 

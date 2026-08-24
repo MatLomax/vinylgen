@@ -35,3 +35,8 @@ class WebConfig:
     @property
     def artifact_dir(self) -> Path:
         return self.data_dir / "artifacts"
+
+    @property
+    def files_dir(self) -> Path:
+        """Human-navigable blob root: files/<project-slug>/<stage>-<timestamp>/<filename>."""
+        return self.data_dir / "files"

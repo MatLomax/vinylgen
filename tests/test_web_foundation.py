@@ -46,9 +46,10 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         content = await self.client.get(artifacts[0]["download_url"])
         self.assertEqual(content.content, b"not-really-a-png")
 
-        stored = list((Path(self.temp.name) / "artifacts").glob("*/*"))
+        stored = list((Path(self.temp.name) / "files").glob("desert-mech/source-*/*"))
         self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0].name, artifacts[0]["sha256"])
+        self.assertEqual(stored[0].name, "source.png")
+        self.assertEqual(stored[0].read_bytes(), b"not-really-a-png")
 
     async def test_import_rolls_back_rows_and_cleans_staging_file_when_blob_move_fails(self) -> None:
         store = self.app.state.store
@@ -63,7 +64,7 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         with store.connection() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM revisions").fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT count(*) FROM artifacts").fetchone()[0], 0)
-        self.assertEqual(list((Path(self.temp.name) / "artifacts").glob(".*.incoming")), [])
+        self.assertEqual(list((Path(self.temp.name) / "files").glob(".*.incoming")), [])
 
     async def test_failed_artifact_read_cleans_staging_file(self) -> None:
         class FailingSource:
@@ -81,9 +82,9 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
                 media_type="image/png", source=FailingSource(),
             )
 
-        self.assertEqual(list((Path(self.temp.name) / "artifacts").glob(".*.incoming")), [])
+        self.assertEqual(list((Path(self.temp.name) / "files").glob(".*.incoming")), [])
 
-    async def test_failed_artifact_insert_keeps_shared_blob_and_cleans_staging_file(self) -> None:
+    async def test_failed_artifact_insert_preserves_existing_file_and_cleans_staging(self) -> None:
         store = self.app.state.store
         project = store.create_project("Shared")
         revision = store.create_revision(
@@ -103,7 +104,7 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(shared_path.is_file())
         self.assertEqual(shared_path.read_bytes(), b"shared")
-        self.assertEqual(list((Path(self.temp.name) / "artifacts").glob(".*.incoming")), [])
+        self.assertEqual(list((Path(self.temp.name) / "files").glob(".*.incoming")), [])
 
     async def test_duplicate_artifact_upload_returns_conflict_not_server_error(self) -> None:
         project = (await self.client.post("/api/projects", json={"name": "Dupe"})).json()
