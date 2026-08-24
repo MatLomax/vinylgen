@@ -226,6 +226,22 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(background["construction"], "solid stacked underlayer")
             self.assertTrue(report["validation"]["overlap"]["passed"])
 
+    def test_trace_reports_monotonic_progress(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            seen: list[tuple[float, str]] = []
+            trace_subject(subject, TraceSettings(), {},
+                          progress=lambda fraction, message: seen.append((fraction, message)))
+            self.assertTrue(seen, "expected trace to report progress")
+            fractions = [fraction for fraction, _ in seen]
+            # The bar only ever advances: fitting, per-layer assembly, render, and
+            # write each report a higher fraction than the stage before it.
+            self.assertEqual(fractions, sorted(fractions))
+            self.assertLessEqual(fractions[0], 0.1)
+            self.assertEqual(fractions[-1], 1.0)
+            self.assertTrue(all(message for _, message in seen))
+            self.assertTrue(any("layer 1 of" in message.lower() for _, message in seen))
+
     def test_optional_colour_removal(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))

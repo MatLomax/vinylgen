@@ -37,7 +37,7 @@ def _run(spec: dict) -> None:
         from vinylgen.tracing import trace_subject
 
         trace_subject(Path(spec["subject"]), TraceSettings(**spec["settings"]),
-                      spec["colour_names"])
+                      spec["colour_names"], progress=_emit)
     else:
         raise ValueError(f"unknown pipeline worker op: {op}")
 

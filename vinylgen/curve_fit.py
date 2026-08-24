@@ -8,6 +8,7 @@ import numpy as np
 from shapely.geometry import Polygon
 
 from vinylgen.contracts import TraceSettings
+from vinylgen.palette import Progress, _noop
 
 Point = tuple[float, float]
 Primitive = tuple
@@ -405,6 +406,7 @@ def geometry_components(geometry, settings: TraceSettings,
 
 def shared_boundary_components(track, included: list[int], settings: TraceSettings,
                                recovery: dict[str, dict[str, object]] | None = None,
+                               progress: Progress | None = None,
                                ) -> tuple[dict[int, list[dict]], dict[str, object]]:
     """Fit canonical interfaces once, then assemble exact reverse uses into paths."""
     from vinylgen.boundary_graph import assemble_colour_rings
@@ -413,7 +415,11 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
     chains = {chain.identity: chain for chain in track.chains}
     fits: dict[str, ChainFit] = {}
     recovery = recovery or {}
-    for chain in track.chains:
+    tick = progress or _noop
+    total = len(track.chains)
+    for index, chain in enumerate(track.chains):
+        tick(index / total if total else 1.0,
+             f"Fitting boundary curves ({index + 1} of {total})")
         anchors = [HardAnchor(anchor.point, anchor.kind) for anchor in chain.anchors]
         chain_settings = settings
         samples = chain.points

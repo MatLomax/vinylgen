@@ -12,7 +12,7 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from vinylgen.contracts import PaletteSettings
+from vinylgen.contracts import PaletteSettings, TraceSettings
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
 from vinylgen.web.pipeline import run_worker
@@ -197,6 +197,22 @@ class PipelineWorkerTest(unittest.TestCase):
                    cancelled=lambda: False)
         self.assertTrue(self.flattened.exists())
         self.assertTrue(seen, "expected relayed progress events")
+        self.assertEqual([value for value, _ in seen], sorted(value for value, _ in seen))
+        self.assertEqual(seen[-1][0], 1.0)
+
+    def test_trace_worker_relays_progress(self) -> None:
+        # Flatten first so the subject carries the artifacts trace consumes, then
+        # trace through the same killable subprocess and confirm it streams progress
+        # rather than sitting silent until completion.
+        run_worker(self.spec, on_progress=lambda value, message: None, cancelled=lambda: False)
+        subject = self.work / "outputs" / "subject"
+        seen: list[tuple[float, str]] = []
+        trace_spec = {"op": "trace", "subject": str(subject),
+                      "settings": asdict(TraceSettings()), "colour_names": {}}
+        run_worker(trace_spec, on_progress=lambda value, message: seen.append((value, message)),
+                   cancelled=lambda: False)
+        self.assertTrue((subject / "traced-overlap.svg").exists())
+        self.assertTrue(seen, "expected relayed trace progress events")
         self.assertEqual([value for value, _ in seen], sorted(value for value, _ in seen))
         self.assertEqual(seen[-1][0], 1.0)
 

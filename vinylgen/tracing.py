@@ -23,6 +23,7 @@ from vinylgen.colour import colour_names
 from vinylgen.contracts import SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import geometry_components, shared_boundary_components
+from vinylgen.palette import Progress, _noop
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
     component_sizes,
@@ -168,7 +169,10 @@ document.querySelector('#opacity').addEventListener('input', event => {{
 
 
 
-def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str]) -> dict:
+def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
+                  progress: Progress | None = None) -> dict:
+    tick = progress or _noop
+    tick(0.01, "Reading segmentation")
     flattened_path = subject_dir / "flattened.png"
     palette_path = subject_dir / "palette.json"
     report = json.loads(palette_path.read_text())
@@ -216,6 +220,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     tolerance = float(tracing_settings.max_deviation or 0.0)
+    tick(0.05, "Building shared boundaries")
     partition, boundary_track, topology = shared_boundary_polygons(
         working, included, segmentation.palette_costs,
         protected_features=segmentation.protected_features)
@@ -227,12 +232,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     palette_rgb = segmentation.palette_rgb.astype(np.int32)
     canvas = box(0, 0, width, height)
 
-    def build_and_validate(recovery: dict[str, dict[str, object]]):
+    def build_and_validate(recovery: dict[str, dict[str, object]], report=_noop):
         components_by_colour, fit_audit = shared_boundary_components(
-            boundary_track, included, tracing_settings, recovery)
+            boundary_track, included, tracing_settings, recovery,
+            progress=lambda fraction, message: report(fraction * 0.6, message))
         variant_stats: dict[str, list[dict]] = {"overlap": [], "edge": []}
         roots = {name: svg_document(width, height, settings) for name in variant_stats}
         for position, index in enumerate(order):
+            report(0.6 + 0.2 * position / len(order),
+                   f"Fitting layer {position + 1} of {len(order)}")
             edge_geometry = partition[index]
             edge_components = components_by_colour[index]
             edge_stats = add_layer(roots["edge"], palette[index], edge_components, "",
@@ -263,6 +271,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         for variant, root in roots.items():
             write_svg(subject_dir / f"traced-{variant}.svg", root)
         write_trace_html(subject_dir, width, height)
+        report(0.85, "Rendering for validation")
         validations = {
             variant: validate_svg(subject_dir / f"traced-{variant}.svg", palette, order)
             for variant in variant_stats
@@ -285,6 +294,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             protected_features=segmentation.protected_features,
             segmentation_labels=segmentation.labels, vector_labels=vector_labels,
             maximum_deviation=tolerance)
+        report(1.0, "Validated")
         return variant_stats, validations, vector_rgb, fit_audit
 
     chain_bounds = {}
@@ -298,9 +308,19 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # Recovery is deliberately ordered and local. It first improves the model,
     # then introduces one non-corner fit constraint, and only finally emits the
     # dense evidence as an explicit, reported fallback.
+    def _attempt_report(attempt: int):
+        if attempt == 0:
+            # The first pass is the common case and owns the whole 0.05..0.85 band.
+            return lambda fraction, message: tick(0.05 + fraction * 0.80, message)
+        # Protected-feature recovery re-runs are rare; report them in a compressed
+        # tail so the bar keeps advancing without ever jumping backwards.
+        return lambda fraction, message: tick(
+            0.85 + min(1.0, fraction) * 0.03,
+            f"Refining protected features (pass {attempt + 1})")
+
     for fit_attempt in range(5):
         variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
-            recovery)
+            recovery, _attempt_report(fit_attempt))
         failures = []
         for row in validations["semantic"]["protected_features"]["vector_postfit"]["components"]:
             if row["passed"]:
@@ -343,7 +363,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         # the emitted SVG and every audit artifact describe the same recovery
         # state that the reporting below counts.
         variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
-            recovery)
+            recovery, _attempt_report(4))
     topology["shared_curve_fit"] = shared_fit_audit
     dense_fallbacks = [identity for identity, state in recovery.items()
                        if int(state["stage"]) >= 4]
@@ -405,10 +425,13 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     audit["determinism"] = {"input_sha256": hashlib.sha256(
         flattened_path.read_bytes() + palette_path.read_bytes()
         + segmentation_path.read_bytes()).hexdigest()}
+    tick(0.9, "Writing artifacts")
     (subject_dir / "trace.json").write_text(json.dumps(audit, indent=2) + "\n")
+    tick(0.95, "Rendering preview")
     subprocess.run([
         str(renderer), str(subject_dir / "traced-overlap.svg"),
         "--export-type=png", "--export-dpi=768",
         f"--export-filename={subject_dir / 'traced.png'}",
     ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    tick(1.0, "Complete")
     return audit
