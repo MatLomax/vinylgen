@@ -342,7 +342,8 @@ export default function App() {
   async function importImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
-    const form = new FormData(event.currentTarget)
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     const file = form.get('source') as File
     if (!file?.size) return setError('Choose an image to import')
     try {
@@ -350,7 +351,7 @@ export default function App() {
       setProjects(current => [project, ...current])
       setSelected(project.id)
       setRevision(project.revisions[0].id)
-      event.currentTarget.reset()
+      formElement.reset()
     } catch (cause) { setError(String(cause)) }
   }
 
@@ -404,13 +405,14 @@ export default function App() {
   async function reimportSvg(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selected || !revision) return
-    const form = new FormData(event.currentTarget)
+    const formElement = event.currentTarget
+    const form = new FormData(formElement)
     const file = form.get('svg') as File
     if (!file?.size) return setError('Choose an edited SVG to reimport')
     try {
       const next = await api.reimportInkscape(selected, revision, file)
       setRevision(next.id); setHandoffMessage('Edited SVG validated and saved as a new revision.')
-      event.currentTarget.reset()
+      formElement.reset()
     } catch (cause) { setError(String(cause)) }
   }
   const redo = revisions.filter(row => row.parent_revision_id === revision).sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)
