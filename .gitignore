@@ -29,9 +29,13 @@ Thumbs.db
 outputs/
 
 # Web dependencies and build output
+/node_modules/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
+
+# impeccable tooling dependencies
+.impeccable/node_modules/
 
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-developer overrides.
