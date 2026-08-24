@@ -48,7 +48,7 @@ header h1, header p { margin: 0; } header h1 { font-size: 20px; } header p { col
 .mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--radius-md); background: var(--accent); color: var(--accent-ink); font-weight: 900; }
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: calc(100vh - 70px); }
 .canvas { display: grid; place-items: center; min-height: 500px; background-color: var(--surface-canvas); background-image: linear-gradient(45deg,var(--surface-grid) 25%,transparent 25%),linear-gradient(-45deg,var(--surface-grid) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--surface-grid) 75%),linear-gradient(-45deg,transparent 75%,var(--surface-grid) 75%); background-size: 30px 30px; background-position: 0 0,0 15px,15px -15px,-15px 0; }
-.empty { text-align: center; color: var(--text-muted); } .empty span { color: var(--accent); font-size: 34px; } .empty h2 { color: var(--text-heading); margin-bottom: 4px; } .empty p { margin-top: 0; }
+.empty { text-align: center; color: var(--text-muted); } .empty span { color: var(--accent); font-size: var(--font-glyph); } .empty h2 { color: var(--text-heading); margin-bottom: 4px; } .empty p { margin-top: 0; }
 aside { padding: 22px; border-left: 1px solid var(--border); background: var(--surface-panel); overflow: auto; }
 aside h2 { margin: 0 0 18px; font-size: 15px; }
 form { display: grid; gap: 12px; } label { display: grid; gap: 6px; color: var(--text-label); font-size: 13px; }
@@ -67,7 +67,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 
 .image-workspace { min-width: 0; display: grid; grid-template: 46px minmax(420px, 1fr) / minmax(0, 1fr) 280px; background: var(--surface-canvas); overflow: hidden; }
 .empty-workspace { display: grid; place-content: center; min-height: 500px; text-align: center; color: var(--text-muted); }
-.empty-workspace span { color: var(--accent); font-size: 34px; }
+.empty-workspace span { color: var(--accent); font-size: var(--font-glyph); }
 .empty-workspace h2 { margin: 8px 0 3px; color: var(--text-heading); }
 .empty-workspace p { margin: 0; }
 .viewport-toolbar { grid-column: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; background: var(--surface-panel); border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
@@ -158,7 +158,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
   .mobile-context strong, .mobile-context span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-context strong { color: var(--text-strong); font-size: 13px; }
   .mobile-context span { color: var(--text-muted); font-size: 11px; text-transform: capitalize; }
-  .workflow-nav { position: fixed; z-index: 30; inset: auto 0 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 5px max(5px, env(safe-area-inset-right)) max(5px, env(safe-area-inset-bottom)) max(5px, env(safe-area-inset-left)); border-top: 1px solid var(--border); background: rgba(18, 21, 18, .98); box-shadow: 0 -10px 30px rgba(0, 0, 0, .22); }
+  .workflow-nav { position: fixed; z-index: 30; inset: auto 0 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 5px max(5px, env(safe-area-inset-right)) max(5px, env(safe-area-inset-bottom)) max(5px, env(safe-area-inset-left)); border-top: 1px solid var(--border); background: rgba(18, 21, 18, .98); box-shadow: var(--shadow-nav); }
   .workflow-nav button { position: relative; min-width: 0; min-height: 48px; padding: 6px 2px; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 11px; letter-spacing: .015em; }
   .workflow-nav button:hover { background: var(--surface-control); color: var(--text); }
   .workflow-nav button[aria-selected='true'] { background: var(--accent-quiet); color: var(--accent); }
@@ -335,7 +335,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
   header > div { display: none; }
   .active-project { min-width: 0; width: min(68vw, 280px); }
   .active-project > span { display: none; }
-  .workflow-nav { position: sticky; z-index: 25; inset: 58px auto auto; display: flex; width: 100%; padding: 8px; gap: 6px; overflow-x: auto; border-bottom: 1px solid var(--border); border-top: 0; background: var(--surface-panel); box-shadow: 0 8px 22px rgba(0,0,0,.18); scrollbar-width: thin; }
+  .workflow-nav { position: sticky; z-index: 25; inset: 58px auto auto; display: flex; width: 100%; padding: 8px; gap: 6px; overflow-x: auto; border-bottom: 1px solid var(--border); border-top: 0; background: var(--surface-panel); box-shadow: var(--shadow-strip); scrollbar-width: thin; }
   .workflow-nav button { display: grid; min-width: 112px; min-height: 58px; grid-template-columns: 20px 1fr; padding: 8px 9px; align-items: center; gap: 8px; text-align: start; }
   .workflow-nav button svg { width: 18px; height: 18px; }
   .workflow-nav button > span { display: grid; gap: 2px; }
@@ -379,6 +379,15 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
   --radius-sm: 6px;
   --radius-md: 12px;
   --shadow-float: 0 18px 48px rgba(0, 0, 0, .28);
+  --shadow-sticky: 0 10px 30px rgba(0, 0, 0, .16);
+  --shadow-inset: inset 0 0 80px rgba(0, 0, 0, .18);
+  --shadow-nav: 0 -10px 30px rgba(0, 0, 0, .22);
+  --shadow-strip: 0 8px 22px rgba(0, 0, 0, .18);
+  --shadow-mark: 0 5px 18px rgba(48, 151, 224, .18);
+  --text-placeholder: #838b82;
+  --surface-error: #2b1916;
+  --font-glyph: 34px;
+  --font-glyph-compact: 28px;
 }
 
 ::selection { color: var(--accent-ink); background: var(--accent); }
@@ -397,7 +406,7 @@ header {
 }
 header h1 { font-size: 20px; line-height: 1.05; letter-spacing: -.025em; }
 header p { margin-top: 4px; font-size: 11px; letter-spacing: .025em; }
-.mark { width: 42px; height: 42px; border-radius: var(--radius-sm); font-size: 20px; letter-spacing: -.04em; box-shadow: 0 5px 18px rgba(48, 151, 224, .18); }
+.mark { width: 42px; height: 42px; border-radius: var(--radius-sm); font-size: 20px; letter-spacing: -.04em; box-shadow: var(--shadow-mark); }
 .header-context { margin-left: auto; padding: 6px 9px; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 11px; text-transform: capitalize; }
 
 .workspace { grid-template-columns: minmax(0, 1fr) 372px; min-height: calc(100vh - 76px); }
@@ -405,10 +414,10 @@ header p { margin-top: 4px; font-size: 11px; letter-spacing: .025em; }
 .viewport-toolbar { padding: 0 18px; background: #111411; }
 .viewport-toolbar strong { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 .viewport-toolbar > span { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
-.viewport { box-shadow: inset 0 0 80px rgba(0, 0, 0, .18); }
+.viewport { box-shadow: var(--shadow-inset); }
 .empty-workspace h2 { font-size: 20px; letter-spacing: -.025em; }
 .empty-workspace p { max-width: 28ch; line-height: 1.55; }
-.empty-workspace span { font-size: 28px; }
+.empty-workspace span { font-size: var(--font-glyph-compact); }
 
 aside { padding: 0; border-left-color: var(--border); }
 .side-section { padding: 26px 24px 28px; border-bottom: 1px solid var(--border); }
@@ -426,7 +435,7 @@ input, textarea { padding: 11px 12px; }
 textarea { min-height: 88px; line-height: 1.45; }
 input:hover, textarea:hover, select:hover { border-color: #536053; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); background: #252b25; }
-input::placeholder, textarea::placeholder { color: #838b82; }
+input::placeholder, textarea::placeholder { color: var(--text-placeholder); }
 button, .button-link { border-radius: var(--radius-sm); transition: background-color .15s ease-out, color .15s ease-out, transform .15s ease-out; }
 button:hover:not(:disabled), .button-link:hover { background: var(--accent-hover); }
 button:active:not(:disabled), .button-link:active { transform: translateY(1px); }
@@ -443,7 +452,7 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 .projects button.selected { padding-left: 16px; border-color: transparent; background: var(--accent-quiet); color: var(--accent); }
 .projects button.selected::before { content: ''; position: absolute; inset-block: 10px; left: 5px; width: 2px; border-radius: var(--radius-sm); background: var(--accent); }
 .projects small { margin-top: 3px; font-size: 11px; }
-.error { padding: 10px 12px; border-radius: var(--radius-sm); background: #2b1916; line-height: 1.45; }
+.error { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-error); line-height: 1.45; }
 .job { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 16px; }
 .job > button { min-height: 42px; padding: 9px 7px; font-size: 11px; }
 .job .progress, .job p { grid-column: 1 / -1; }
@@ -457,7 +466,7 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 .segmented button { border-radius: var(--radius-sm); font-size: 11px; }
 .view-actions p { font-size: 11px; }
 
-.history { position: sticky; z-index: 10; top: 76px; padding: 10px 18px; background: rgba(18, 21, 18, .97); box-shadow: 0 10px 30px rgba(0, 0, 0, .16); }
+.history { position: sticky; z-index: 10; top: 76px; padding: 10px 18px; background: rgba(18, 21, 18, .97); box-shadow: var(--shadow-sticky); }
 .history button { min-width: 76px; background: var(--surface-control-strong); color: var(--text); }
 .history button:hover:not(:disabled) { background: #3b453b; }
 .palette-list > div { align-items: center; padding: 5px; }
@@ -649,7 +658,7 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
   .sidebar-brand { display: none; }
   header > .mobile-brand { display: flex; }
   .workflow-nav { position: sticky; inset: 58px auto auto; display: flex; width: 100%; padding: 8px; gap: 6px; overflow-x: auto; border-top: 0; border-bottom: 1px solid var(--border); background: var(--surface-panel); }
-  .workflow-nav { box-shadow: inset -24px 0 20px -24px var(--accent), 0 8px 22px rgba(0,0,0,.18); scrollbar-color: var(--accent) var(--surface-control); scrollbar-width: thin; }
+  .workflow-nav { box-shadow: inset -24px 0 20px -24px var(--accent), var(--shadow-strip); scrollbar-color: var(--accent) var(--surface-control); scrollbar-width: thin; }
   .workflow-nav button { display: grid; min-width: 112px; width: 112px; min-height: 58px; height: 58px; padding: 8px 9px; flex: 0 0 112px; grid-template-columns: 20px 1fr; align-items: center; gap: 8px; text-align: start; }
   .workflow-nav button strong { font-size: 13px; }
   .workflow-nav button small { display: none; }
