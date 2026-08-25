@@ -134,6 +134,36 @@ def merge_clusters(
     return centres, merges
 
 
+def _scale2x_labels(labels: np.ndarray, guard: np.ndarray) -> np.ndarray:
+    """Double a palette-index grid with Scale2x/EPX staircase smoothing.
+
+    Each pixel becomes a 2x2 block whose outer corners are filled with an
+    adjacent label only where a diagonal step exists, so the result never leaves
+    the source palette. Pixels flagged in ``guard`` keep a solid block, leaving
+    protected features and intentional linework un-eroded.
+    """
+    padded = np.pad(labels, 1, mode="edge")
+    centre = labels
+    up = padded[:-2, 1:-1]
+    down = padded[2:, 1:-1]
+    left = padded[1:-1, :-2]
+    right = padded[1:-1, 2:]
+    top_left = np.where((left == up) & (up != right) & (left != down), left, centre)
+    top_right = np.where((up == right) & (up != left) & (right != down), right, centre)
+    bottom_left = np.where((down == left) & (down != right) & (left != up), left, centre)
+    bottom_right = np.where((right == down) & (right != left) & (down != up), right, centre)
+    quadrants = (top_left, top_right, bottom_left, bottom_right)
+    top_left, top_right, bottom_left, bottom_right = (
+        np.where(guard, centre, quadrant) for quadrant in quadrants
+    )
+    out = np.empty((labels.shape[0] * 2, labels.shape[1] * 2), dtype=labels.dtype)
+    out[0::2, 0::2] = top_left
+    out[0::2, 1::2] = top_right
+    out[1::2, 0::2] = bottom_left
+    out[1::2, 1::2] = bottom_right
+    return out
+
+
 def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
                   progress: Progress | None = None) -> dict[str, object]:
     tick = progress or _noop
@@ -250,7 +280,19 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     )
     factor = settings.flatten_upscale
     if factor > 1:
-        full_labels = np.repeat(np.repeat(full_labels, factor, axis=0), factor, axis=1)
+        smoothed = full_labels
+        remaining = factor
+        if settings.flatten_smooth_edges:
+            # Scale2x doubles the grid, so consume the power-of-two part of the
+            # factor with smoothing passes and repeat any odd remainder plainly.
+            guard = protected_features | explicit_protection
+            while remaining % 2 == 0:
+                smoothed = _scale2x_labels(smoothed, guard)
+                guard = np.repeat(np.repeat(guard, 2, axis=0), 2, axis=1)
+                remaining //= 2
+        if remaining > 1:
+            smoothed = np.repeat(np.repeat(smoothed, remaining, axis=0), remaining, axis=1)
+        full_labels = smoothed
         protected_features = np.repeat(np.repeat(protected_features, factor, axis=0), factor, axis=1)
         explicit_protection = np.repeat(np.repeat(explicit_protection, factor, axis=0), factor, axis=1)
         final_costs = np.repeat(np.repeat(final_costs, factor, axis=0), factor, axis=1)

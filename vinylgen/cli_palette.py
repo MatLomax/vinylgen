@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         help="nearest-neighbour upscale applied to the flattened output and segmentation grid",
     )
     parser.add_argument(
+        "--flatten-smooth-edges",
+        action=argparse.BooleanOptionalAction,
+        default=PaletteSettings.flatten_smooth_edges,
+        help="Scale2x edge smoothing of the upscaled steps, using only palette colours",
+    )
+    parser.add_argument(
         "--protect-component-at",
         action="append",
         default=[],
@@ -144,6 +150,7 @@ def main() -> None:
         aa_ambiguity_margin=args.aa_ambiguity_margin,
         aa_smoothness=args.aa_smoothness,
         flatten_upscale=args.flatten_upscale,
+        flatten_smooth_edges=args.flatten_smooth_edges,
         protected_component_points=component_points(args.protect_component_at),
         preserved_colour_points=component_points(args.preserve_colour_at),
         distinct_colour_point_pairs=distinct_point_pairs(args.keep_colours_distinct_at),

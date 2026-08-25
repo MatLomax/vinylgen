@@ -7,7 +7,7 @@ from PIL import Image
 
 from vinylgen.cli_palette import input_files
 from vinylgen.colour import reduced_histogram
-from vinylgen.palette import infer_palette, merge_clusters
+from vinylgen.palette import infer_palette, merge_clusters, _scale2x_labels
 from vinylgen.contracts import PaletteSettings
 from vinylgen.contracts import SegmentationBundle
 from vinylgen.segmentation import (
@@ -130,7 +130,8 @@ class PaletteInferenceTests(unittest.TestCase):
             infer_palette(source, root / "native",
                           PaletteSettings(initial_colours=6, flatten_upscale=1))
             infer_palette(source, root / "scaled",
-                          PaletteSettings(initial_colours=6, flatten_upscale=2))
+                          PaletteSettings(initial_colours=6, flatten_upscale=2,
+                                          flatten_smooth_edges=False))
             with Image.open(root / "native" / "fixture" / "flattened.png") as native_image:
                 native = np.asarray(native_image.convert("RGB"))
             with Image.open(root / "scaled" / "fixture" / "flattened.png") as scaled_image:
@@ -148,6 +149,46 @@ class PaletteInferenceTests(unittest.TestCase):
         self.assertEqual(scaled_bundle.labels.shape, (80, 120))
         np.testing.assert_array_equal(
             scaled_bundle.labels, np.repeat(np.repeat(native_labels, 2, 0), 2, 1))
+
+    def test_scale2x_smooths_diagonals_within_palette_and_guards_protection(self):
+        labels = np.array([[0, 0, 1],
+                           [0, 1, 1],
+                           [1, 1, 1]], dtype=np.int32)
+        plain = np.repeat(np.repeat(labels, 2, axis=0), 2, axis=1)
+        unguarded = _scale2x_labels(labels, np.zeros_like(labels, dtype=bool))
+        self.assertEqual(unguarded.shape, (6, 6))
+        # Corner fills only ever reuse existing labels, never a new one.
+        self.assertTrue(set(np.unique(unguarded)).issubset({0, 1}))
+        # A diagonal step is actually smoothed away from the plain repeat.
+        self.assertTrue(np.any(unguarded != plain))
+        # Fully protecting every pixel leaves a solid block-for-block repeat.
+        guarded = _scale2x_labels(labels, np.ones_like(labels, dtype=bool))
+        np.testing.assert_array_equal(guarded, plain)
+
+    def test_flatten_edge_smoothing_stays_within_palette_and_changes_output(self):
+        pixels = np.empty((48, 48, 3), dtype=np.uint8)
+        pixels[:] = (12, 28, 48)
+        for row in range(48):
+            pixels[row, :row] = (238, 196, 95)  # a diagonal boundary to smooth
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.png"
+            Image.fromarray(pixels, "RGB").save(source)
+            report = infer_palette(source, root / "smooth",
+                                   PaletteSettings(initial_colours=4, flatten_smooth_edges=True))
+            infer_palette(source, root / "plain",
+                          PaletteSettings(initial_colours=4, flatten_smooth_edges=False))
+            with Image.open(root / "smooth" / "fixture" / "flattened.png") as smoothed_image:
+                smoothed = np.asarray(smoothed_image.convert("RGB"))
+            with Image.open(root / "plain" / "fixture" / "flattened.png") as plain_image:
+                plain = np.asarray(plain_image.convert("RGB"))
+        self.assertEqual(smoothed.shape, plain.shape)
+        # Smoothing reassigns staircase corners...
+        self.assertTrue(np.any(smoothed != plain))
+        # ...but introduces no colour outside the inferred palette.
+        palette_colours = {tuple(row["rgb"]) for row in report["palette"]}
+        smoothed_colours = {tuple(pixel) for pixel in smoothed.reshape(-1, 3)}
+        self.assertTrue(smoothed_colours.issubset(palette_colours))
 
     def test_fixed_colour_count_above_source_colours_fails_before_output(self):
         pixels = np.zeros((20, 20, 3), dtype=np.uint8)

@@ -4,7 +4,7 @@ import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
   fragmented_share: .035, fragmented_largest_region: .30, fragmented_delta_e: 24, min_output_colours: 2, min_region_pixels: 24, min_colour_share: .01,
-  intentional_line_min_contrast: 12, intentional_line_min_length: 8, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, flatten_upscale: 2,
+  intentional_line_min_contrast: 12, intentional_line_min_length: 8, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, flatten_upscale: 2, flatten_smooth_edges: true,
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
 }
 export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
@@ -114,6 +114,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <NumberField label="Minimum whole-colour share" help="Colours below this image fraction become merge candidates." value={palette.min_colour_share} max={1} step={.001} dirty={pd('min_colour_share')} onChange={value => p('min_colour_share', value!)} />
         <NumberField label="Minimum region (pixels)" help="Four-way connected regions smaller than this fold into a touching colour." value={palette.min_region_pixels} step={1} dirty={pd('min_region_pixels')} onChange={value => p('min_region_pixels', value!)} />
         <NumberField label="Output upscale (×)" help="Nearest-neighbour scale for the flattened image and every traced layer. 1 keeps native resolution." value={palette.flatten_upscale} min={1} max={4} step={1} dirty={pd('flatten_upscale')} onChange={value => p('flatten_upscale', value!)} />
+        <label className="check-field"><input type="checkbox" checked={palette.flatten_smooth_edges} onChange={event => p('flatten_smooth_edges', event.target.checked)} /><span><strong>Smooth upscaled edges<DirtyDot dirty={pd('flatten_smooth_edges')} /></strong><small>Scale2x corner fill that softens the upscaled staircase using only palette colours. Applies at even upscale factors; protected details keep their hard edge.</small></span></label>
       </div></section>
       <section className="settings-group"><h3>Fine detail &amp; anti-aliasing</h3><p>Separate deliberate narrow artwork from blended edge fragments.</p><div className="settings-grid">
         <NumberField label="Small-colour share" help="Image fraction below which a colour is treated as small." value={palette.small_share} max={1} step={.001} dirty={pd('small_share')} onChange={value => p('small_share', value!)} />
