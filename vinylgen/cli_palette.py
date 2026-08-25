@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aa-smoothness", type=float,
                         default=PaletteSettings.aa_smoothness)
     parser.add_argument(
+        "--flatten-upscale",
+        type=int,
+        default=PaletteSettings.flatten_upscale,
+        help="nearest-neighbour upscale applied to the flattened output and segmentation grid",
+    )
+    parser.add_argument(
         "--protect-component-at",
         action="append",
         default=[],
@@ -137,6 +143,7 @@ def main() -> None:
         intentional_line_min_length=args.intentional_line_min_length,
         aa_ambiguity_margin=args.aa_ambiguity_margin,
         aa_smoothness=args.aa_smoothness,
+        flatten_upscale=args.flatten_upscale,
         protected_component_points=component_points(args.protect_component_at),
         preserved_colour_points=component_points(args.preserve_colour_at),
         distinct_colour_point_pairs=distinct_point_pairs(args.keep_colours_distinct_at),

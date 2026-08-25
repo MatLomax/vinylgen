@@ -11,7 +11,7 @@ export type PaletteSettings = {
   fragmented_share: number; fragmented_largest_region: number; fragmented_delta_e: number
   min_output_colours: number; min_region_pixels: number; min_colour_share: number
   intentional_line_min_contrast: number; intentional_line_min_length: number
-  aa_ambiguity_margin: number; aa_smoothness: number; aa_resolution_passes: number
+  aa_ambiguity_margin: number; aa_smoothness: number; aa_resolution_passes: number; flatten_upscale: number
   protected_component_points: [number, number][]; preserved_colour_points: [number, number][]
   distinct_colour_point_pairs: [[number, number], [number, number]][]
 }

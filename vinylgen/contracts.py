@@ -26,6 +26,7 @@ class PaletteSettings:
     aa_ambiguity_margin: float = 7.0
     aa_smoothness: float = 2.5
     aa_resolution_passes: int = 5
+    flatten_upscale: int = 2
     protected_component_points: tuple[tuple[int, int], ...] = ()
     preserved_colour_points: tuple[tuple[int, int], ...] = ()
     distinct_colour_point_pairs: tuple[tuple[tuple[int, int], tuple[int, int]], ...] = ()

@@ -95,12 +95,13 @@ class PaletteInferenceTests(unittest.TestCase):
             source = root / "fixture.png"
             Image.fromarray(pixels.astype(np.uint8), "RGB").save(source)
             output = root / "output"
-            report = infer_palette(source, output, settings or PaletteSettings(initial_colours=10))
+            effective = settings or PaletteSettings(initial_colours=10)
+            report = infer_palette(source, output, effective)
             self.assertEqual((output / "fixture" / "source.png").read_bytes(),
                              source.read_bytes())
             with Image.open(output / "fixture" / "report.png") as report_image:
-                self.assertEqual(report_image.width, pixels.shape[1])
-                self.assertGreater(report_image.height, pixels.shape[0])
+                self.assertEqual(report_image.width, pixels.shape[1] * effective.flatten_upscale)
+                self.assertGreater(report_image.height, pixels.shape[0] * effective.flatten_upscale)
             return report
 
     def test_fixed_colour_count_is_exact_and_deterministic(self):
@@ -116,6 +117,37 @@ class PaletteInferenceTests(unittest.TestCase):
         self.assertEqual(first["inferred_colour_count"], 3)
         self.assertEqual(first["palette"], second["palette"])
         self.assertTrue(any(row["reason"] == "fixed colour count" for row in first["merges"]))
+
+    def test_flatten_upscale_is_exact_nearest_neighbour_of_native_output(self):
+        pixels = np.empty((40, 60, 3), dtype=np.uint8)
+        pixels[:, :30] = (12, 28, 48)
+        pixels[:, 30:] = (238, 196, 95)
+        pixels[10:20, 10:20] = (225, 40, 30)
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.png"
+            Image.fromarray(pixels, "RGB").save(source)
+            infer_palette(source, root / "native",
+                          PaletteSettings(initial_colours=6, flatten_upscale=1))
+            infer_palette(source, root / "scaled",
+                          PaletteSettings(initial_colours=6, flatten_upscale=2))
+            with Image.open(root / "native" / "fixture" / "flattened.png") as native_image:
+                native = np.asarray(native_image.convert("RGB"))
+            with Image.open(root / "scaled" / "fixture" / "flattened.png") as scaled_image:
+                scaled = np.asarray(scaled_image.convert("RGB"))
+            native_labels = SegmentationBundle.load(
+                root / "native" / "fixture" / "segmentation.npz").labels
+            scaled_bundle = SegmentationBundle.load(
+                root / "scaled" / "fixture" / "segmentation.npz")
+        self.assertEqual(native.shape, (40, 60, 3))
+        self.assertEqual(scaled.shape, (80, 120, 3))
+        # The upscale is a pure block expansion applied after inference, so doubling
+        # the native raster reproduces the scaled one exactly.
+        np.testing.assert_array_equal(scaled, np.repeat(np.repeat(native, 2, 0), 2, 1))
+        scaled_bundle.validate()
+        self.assertEqual(scaled_bundle.labels.shape, (80, 120))
+        np.testing.assert_array_equal(
+            scaled_bundle.labels, np.repeat(np.repeat(native_labels, 2, 0), 2, 1))
 
     def test_fixed_colour_count_above_source_colours_fails_before_output(self):
         pixels = np.zeros((20, 20, 3), dtype=np.uint8)

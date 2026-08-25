@@ -245,10 +245,16 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     remap = np.empty(len(order), dtype=np.int32)
     remap[order] = np.arange(len(order))
     full_labels = remap[full_labels]
-    flattened = palette_rgb[full_labels]
     final_costs = palette_costs(full_lab_flat, centres).reshape(
         (*full_labels.shape, len(centres))
     )
+    factor = settings.flatten_upscale
+    if factor > 1:
+        full_labels = np.repeat(np.repeat(full_labels, factor, axis=0), factor, axis=1)
+        protected_features = np.repeat(np.repeat(protected_features, factor, axis=0), factor, axis=1)
+        explicit_protection = np.repeat(np.repeat(explicit_protection, factor, axis=0), factor, axis=1)
+        final_costs = np.repeat(np.repeat(final_costs, factor, axis=0), factor, axis=1)
+    flattened = palette_rgb[full_labels]
 
     tick(0.92, "Rendering flattened image")
     stem = path.stem
@@ -287,7 +293,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     report: dict[str, object] = {
         "source": str(path),
         "segmentation": str(segmentation_path),
-        "dimensions": list(source.size),
+        "dimensions": [full_labels.shape[1], full_labels.shape[0]],
         "inferred_colour_count": len(centres),
         "palette": palette,
         "merges": merges,

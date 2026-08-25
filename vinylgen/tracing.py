@@ -194,6 +194,14 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     original_path = subject_dir / "source.png"
     original = np.asarray(Image.open(original_path).convert("RGB"))
     height, width = source.shape[:2]
+    # The flatten stage may emit the segmentation at an integer nearest-neighbour
+    # upscale of the source, so bring the pristine source onto that working grid
+    # before it is compared against, and blended with, the flattened raster.
+    if original.shape[:2] != (height, width):
+        scale_y, scale_x = height // original.shape[0], width // original.shape[1]
+        if original.shape[0] * scale_y != height or original.shape[1] * scale_x != width:
+            raise ValueError("source dimensions are not an integer factor of the flattened output")
+        original = np.repeat(np.repeat(original, scale_y, axis=0), scale_x, axis=1)
     segmentation_path = subject_dir / "segmentation.npz"
     if not segmentation_path.exists():
         raise FileNotFoundError(
