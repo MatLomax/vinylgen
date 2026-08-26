@@ -12,6 +12,7 @@ class PaletteSettings:
     final_colours: int | None = None
     histogram_bits: int = 5
     analysis_max_dimension: int = 640
+    dither_radius: int = 0
     similar_delta_e: float = 28.0
     small_share: float = 0.004
     small_delta_e: float = 36.0

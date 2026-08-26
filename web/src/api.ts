@@ -6,7 +6,7 @@ export type PaletteColour = { index: number; name: string; hex: string; rgb: [nu
 export type EditorState = { width: number; height: number; palette: PaletteColour[]; protected_pixels: number }
 export type EditOperation = { tool: 'merge_colour' | 'rename_colour' | 'recolour_colour' | 'reassign_region' | 'paint_pixels'; label?: number; source_label?: number; target_label?: number; name?: string; rgb?: [number, number, number]; point?: [number, number]; pixels?: [number, number][] }
 export type PaletteSettings = {
-  initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number
+  initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number; dither_radius: number
   similar_delta_e: number; small_share: number; small_delta_e: number
   fragmented_share: number; fragmented_largest_region: number; fragmented_delta_e: number
   min_output_colours: number; min_region_pixels: number; min_colour_share: number

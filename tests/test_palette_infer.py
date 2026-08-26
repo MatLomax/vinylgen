@@ -11,6 +11,7 @@ from vinylgen.palette import infer_palette, merge_clusters, _scale2x_labels
 from vinylgen.contracts import PaletteSettings
 from vinylgen.contracts import SegmentationBundle
 from vinylgen.segmentation import (
+    collapse_dither_speckle,
     fold_underrepresented_colours,
     protect_components_at_points,
     remove_small_regions,
@@ -321,6 +322,92 @@ class PaletteInferenceTests(unittest.TestCase):
 
         np.testing.assert_array_equal(cleaned, labels)
         self.assertEqual(summary["removed_colours"], 0)
+
+    def test_dither_radius_defaults_to_disabled(self):
+        self.assertEqual(PaletteSettings.dither_radius, 0)
+
+    def test_dither_vote_radius_zero_is_a_noop(self):
+        labels = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=np.int32)
+
+        result, summary = collapse_dither_speckle(
+            labels, np.zeros_like(labels), 2, 0, np.zeros_like(labels, dtype=bool)
+        )
+
+        np.testing.assert_array_equal(result, labels)
+        self.assertEqual(summary["changed_assignments"], 0)
+
+    def test_dither_consensus_folds_speckle_when_both_proposals_agree(self):
+        labels = np.zeros((7, 7), dtype=np.int32)
+        labels[1, 1] = 1
+        labels[3, 4] = 1
+        labels[5, 2] = 1
+        # The despeckled-source assignment reads the whole field as background,
+        # matching the neighbourhood majority, so every speck folds.
+        despeckled = np.zeros_like(labels)
+
+        result, summary = collapse_dither_speckle(
+            labels, despeckled, 2, 1, np.zeros_like(labels, dtype=bool)
+        )
+
+        self.assertFalse(np.any(result == 1))
+        self.assertEqual(summary["changed_assignments"], 3)
+
+    def test_dither_consensus_keeps_a_speck_the_despeckled_source_still_asserts(self):
+        labels = np.zeros((7, 7), dtype=np.int32)
+        labels[3, 3] = 1
+        # The despeckled source still assigns this pixel to label 1, so it
+        # disagrees with the majority and the pixel is left untouched.
+        despeckled = np.zeros_like(labels)
+        despeckled[3, 3] = 1
+
+        result, summary = collapse_dither_speckle(
+            labels, despeckled, 2, 1, np.zeros_like(labels, dtype=bool)
+        )
+
+        self.assertEqual(result[3, 3], 1)
+        self.assertEqual(summary["changed_assignments"], 0)
+
+    def test_dither_vote_never_touches_protected_pixels(self):
+        labels = np.zeros((7, 7), dtype=np.int32)
+        labels[3, 3] = 1
+        despeckled = np.zeros_like(labels)  # would otherwise fold the speck
+        protected = np.zeros_like(labels, dtype=bool)
+        protected[3, 3] = True
+
+        result, summary = collapse_dither_speckle(labels, despeckled, 2, 1, protected)
+
+        self.assertEqual(result[3, 3], 1)
+        self.assertEqual(summary["changed_assignments"], 0)
+
+    def test_dither_removal_erases_source_speckle_before_flattening(self):
+        # A blue field peppered with sparse contrasting specks beside a solid
+        # dark anchor. Cleanup is disabled so any difference comes only from the
+        # dither pre-filter, not from small-region folding.
+        pixels = np.empty((48, 48, 3), dtype=np.uint8)
+        pixels[:, :24] = (60, 110, 170)
+        pixels[:, 24:] = (30, 40, 60)
+        pixels[3:24:3, 3:24:3] = (235, 210, 95)
+        settings = lambda radius: PaletteSettings(
+            initial_colours=6, min_region_pixels=0, min_colour_share=0,
+            flatten_upscale=1, dither_radius=radius,
+        )
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.png"
+            Image.fromarray(pixels, "RGB").save(source)
+            speckled = infer_palette(source, root / "speckled", settings(0))
+            cleaned = infer_palette(source, root / "cleaned", settings(1))
+            with Image.open(root / "speckled" / "fixture" / "flattened.png") as image:
+                speckled_left = np.asarray(image.convert("RGB"))[:, :24]
+            with Image.open(root / "cleaned" / "fixture" / "flattened.png") as image:
+                cleaned_left = np.asarray(image.convert("RGB"))[:, :24]
+        speckled_colours = {tuple(pixel) for pixel in speckled_left.reshape(-1, 3)}
+        cleaned_colours = {tuple(pixel) for pixel in cleaned_left.reshape(-1, 3)}
+        # Without removal the specks survive as a second colour in the field...
+        self.assertGreater(len(speckled_colours), 1)
+        # ...with removal the whole field flattens to one solid colour.
+        self.assertEqual(len(cleaned_colours), 1)
+        self.assertEqual(cleaned["dither_speckle_cleanup"]["radius"], 1)
 
     def test_reduced_histogram_round_trips_high_bit_depths(self):
         rgb = np.array([[[200, 100, 50]]], dtype=np.uint8)

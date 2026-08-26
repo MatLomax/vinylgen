@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
-  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
+  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 0, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
   fragmented_share: .035, fragmented_largest_region: .30, fragmented_delta_e: 24, min_output_colours: 2, min_region_pixels: 24, min_colour_share: .01,
   intentional_line_min_contrast: 12, intentional_line_min_length: 8, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, flatten_upscale: 2, flatten_smooth_edges: true,
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
@@ -129,6 +129,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <NumberField label="Resolution passes" help="Deterministic cleanup passes over ambiguous pixels." value={palette.aa_resolution_passes} step={1} dirty={pd('aa_resolution_passes')} onChange={value => p('aa_resolution_passes', value!)} />
         <NumberField label="Histogram precision" help="Bits of colour precision used during candidate discovery." value={palette.histogram_bits} min={1} max={8} step={1} dirty={pd('histogram_bits')} onChange={value => p('histogram_bits', value!)} />
         <NumberField label="Analysis max dimension" help="Sampling size for palette discovery; final assignment remains full-resolution." value={palette.analysis_max_dimension} min={32} step={1} dirty={pd('analysis_max_dimension')} onChange={value => p('analysis_max_dimension', value!)} />
+        <NumberField label="Dither removal radius" help="Neighbourhood radius for removing dither and pixel noise before flattening. 0 leaves the source untouched. Only speckle that a despeckled copy and the local majority both agree on is reassigned, so isolated real detail and protected details are kept." value={palette.dither_radius} min={0} max={5} step={1} dirty={pd('dither_radius')} onChange={value => p('dither_radius', value!)} />
       </div></section>
       <section className="settings-group preservation-settings"><h3>Preserve important source details<DirtyDot dirty={preservationDirty} /></h3><p>These are precise exceptions, not painting tools. Pick an action, then click the original image.</p><div className="preservation-options">
         <button type="button" className={selectionMode === 'protect-component' ? 'active' : 'secondary'} onClick={() => setSelectionMode(selectionMode === 'protect-component' ? null : 'protect-component')}><strong>Protect connected detail</strong><small>Keep the four-way connected feature at this point.</small></button>

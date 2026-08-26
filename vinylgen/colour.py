@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
@@ -81,6 +81,16 @@ def colour_names(palette_rgb: np.ndarray) -> list[str]:
         totals[name] = totals.get(name, 0) + 1
         result.append(name if totals[name] == 1 else f"{name} {totals[name]}")
     return result
+
+
+def despeckle(image: Image.Image, radius: int) -> Image.Image:
+    """Remove dither and pixel noise from a source before palette inference by
+    replacing each channel with the median of its surrounding neighbourhood. A
+    radius of zero returns the image untouched, so the default leaves the source
+    exactly as supplied."""
+    if radius <= 0:
+        return image
+    return image.filter(ImageFilter.MedianFilter(2 * radius + 1))
 
 
 def analysis_image(image: Image.Image, maximum: int) -> Image.Image:

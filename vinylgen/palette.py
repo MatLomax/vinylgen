@@ -20,6 +20,7 @@ from vinylgen.contracts import PaletteSettings, SegmentationBundle
 from vinylgen.colour import (
     analysis_image,
     assign,
+    despeckle,
     palette_costs,
     colour_names,
     hex_colour,
@@ -29,6 +30,7 @@ from vinylgen.colour import (
     weighted_kmeans,
 )
 from vinylgen.segmentation import (
+    collapse_dither_speckle,
     fold_underrepresented_colours,
     detect_intentional_strokes,
     protect_components_at_points,
@@ -168,7 +170,12 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
                   progress: Progress | None = None) -> dict[str, object]:
     tick = progress or _noop
     tick(0.0, "Analysing source colours")
-    source = Image.open(path).convert("RGB")
+    # Palette discovery runs on a median-despeckled copy so dither blends never
+    # spawn their own palette entries, while the raw source drives the faithful
+    # full-resolution baseline and thin-feature detection. The original file is
+    # still copied verbatim to source.png below; nothing here overwrites it.
+    original = Image.open(path).convert("RGB")
+    source = despeckle(original, settings.dither_radius)
     analysed = analysis_image(source, settings.analysis_max_dimension)
     analysis_rgb = np.asarray(analysed)
     histogram_rgb, histogram_weights = reduced_histogram(analysis_rgb, settings.histogram_bits)
@@ -191,7 +198,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     analysis_lab = srgb_to_lab(analysis_rgb.reshape(-1, 3))
     label_map = assign(analysis_lab, centres).reshape(analysis_rgb.shape[:2])
     distinct_cluster_pairs: set[tuple[int, int]] = set()
-    source_rgb = np.asarray(source)
+    source_rgb = np.asarray(original)
     source_height, source_width = source_rgb.shape[:2]
     for first, second in settings.distinct_colour_point_pairs:
         for x, y in (first, second):
@@ -219,6 +226,13 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         (*full_rgb.shape[:2], len(centres))
     )
     full_labels = initial_costs.argmin(axis=2).astype(np.int32)
+    # An independent assignment of the despeckled copy. The dither pass below
+    # reassigns a pixel only where this proposal and the neighbourhood majority
+    # agree, so speckle is removed by consensus while lone true detail survives.
+    # When despeckling is off this equals the baseline, so the pass is a no-op.
+    despeckled_labels = palette_costs(
+        srgb_to_lab(np.asarray(source).reshape(-1, 3)), centres
+    ).reshape((*full_rgb.shape[:2], len(centres))).argmin(axis=2).astype(np.int32)
     tick(0.35, "Protecting connected details")
     explicit_protection, protected_components = protect_components_at_points(
         full_labels, settings.protected_component_points
@@ -229,6 +243,11 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         minimum_contrast=settings.intentional_line_min_contrast,
         minimum_length=settings.intentional_line_min_length,
         locked_features=explicit_protection,
+    )
+    tick(0.50, "Collapsing dither speckle")
+    full_labels, dither_cleanup = collapse_dither_speckle(
+        full_labels, despeckled_labels, len(centres), settings.dither_radius,
+        protected_features | explicit_protection,
     )
     tick(0.52, "Resolving anti-aliased boundaries")
     full_labels, aa_resolution = resolve_ambiguous_boundaries(
@@ -339,6 +358,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         "inferred_colour_count": len(centres),
         "palette": palette,
         "merges": merges,
+        "dither_speckle_cleanup": dither_cleanup,
         "small_region_cleanup": cleanup,
         "intentional_feature_detection": feature_detection,
         "aa_boundary_resolution": aa_resolution,

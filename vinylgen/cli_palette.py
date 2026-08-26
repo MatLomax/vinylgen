@@ -79,6 +79,14 @@ def parse_args() -> argparse.Namespace:
         default=PaletteSettings.min_colour_share,
         help="fold colours below this image share into the nearest colour; 0 disables",
     )
+    parser.add_argument(
+        "--dither-radius",
+        type=int,
+        default=PaletteSettings.dither_radius,
+        help="neighbourhood radius for dither and pixel-noise removal before flattening; "
+             "0 disables it. Only speckle that a despeckled copy and the local majority "
+             "both agree on is reassigned, so isolated real detail is kept",
+    )
     return parser.parse_args()
 
 
@@ -145,6 +153,7 @@ def main() -> None:
         small_delta_e=args.small_delta_e,
         min_region_pixels=args.min_region_pixels,
         min_colour_share=args.min_colour_share,
+        dither_radius=args.dither_radius,
         intentional_line_min_contrast=args.intentional_line_min_contrast,
         intentional_line_min_length=args.intentional_line_min_length,
         aa_ambiguity_margin=args.aa_ambiguity_margin,

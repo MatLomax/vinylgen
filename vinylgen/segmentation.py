@@ -158,6 +158,37 @@ def resolve_ambiguous_boundaries(
     }
 
 
+def collapse_dither_speckle(
+    labels: np.ndarray,
+    despeckled_labels: np.ndarray,
+    count: int,
+    radius: int,
+    protected: np.ndarray,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Remove dither speckle by consensus: reassign an unprotected pixel only
+    where the neighbourhood majority label and the independent despeckled-source
+    assignment agree on the same new colour. Requiring both to concur collapses
+    the salt-and-pepper that dithered regions produce once every pixel is snapped
+    to its nearest palette colour, while a lone genuine detail — which only one
+    of the two ever proposes changing — is left intact. Protected details keep
+    their own label, and a radius of zero returns the labels unchanged. Ties in
+    the majority fall to the lowest label index, keeping the pass deterministic."""
+    if radius <= 0:
+        return labels, {"radius": 0, "changed_assignments": 0}
+    size = 2 * radius + 1
+    shares = np.stack([
+        ndimage.uniform_filter((labels == index).astype(np.float64), size=size, mode="nearest")
+        for index in range(count)
+    ])
+    voted = shares.argmax(axis=0).astype(labels.dtype)
+    agreed = (voted == despeckled_labels) & (voted != labels) & ~protected
+    result = np.where(agreed, voted, labels)
+    return result, {
+        "radius": radius,
+        "changed_assignments": int(np.count_nonzero(agreed)),
+    }
+
+
 def spatial_stats(label_map: np.ndarray, count: int) -> list[dict[str, float | int]]:
     stats: list[dict[str, float | int]] = []
     structure = np.ones((3, 3), dtype=np.uint8)
