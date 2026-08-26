@@ -22,7 +22,8 @@ from shapely.ops import unary_union
 from vinylgen.colour import colour_names
 from vinylgen.contracts import SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import cleanup_labels
-from vinylgen.curve_fit import geometry_components, region_components, shared_boundary_components
+from vinylgen.curve_fit import (
+    SharedChainFitter, geometry_components, region_components, shared_boundary_components)
 from vinylgen.palette import Progress, _noop
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
@@ -251,10 +252,19 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     palette_rgb = segmentation.palette_rgb.astype(np.int32)
     canvas = box(0, 0, width, height)
 
+    # One fitter persists across every recovery pass. Its cache key encodes the
+    # per-chain settings recovery varies, so an unchanged chain returns from cache
+    # instead of re-running the curve fit on each of the up-to-five passes.
+    shared_fitter = SharedChainFitter()
+    # Source-side semantic-validation work is identical every pass (only the
+    # rasterized vector changes), so it is computed once and reused.
+    semantic_cache: dict = {}
+
     def build_and_validate(recovery: dict[str, dict[str, object]], report=_noop):
         components_by_colour, chain_fits, fit_audit = shared_boundary_components(
             boundary_track, included, tracing_settings, recovery,
-            progress=lambda fraction, message: report(fraction * 0.6, message))
+            progress=lambda fraction, message: report(fraction * 0.6, message),
+            fitter=shared_fitter)
         variant_stats: dict[str, list[dict]] = {"overlap": [], "edge": []}
         roots = {name: svg_document(width, height, settings) for name in variant_stats}
         for position, index in enumerate(order):
@@ -325,7 +335,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             original, source, vector_rgb=vector_rgb,
             protected_features=segmentation.protected_features,
             segmentation_labels=segmentation.labels, vector_labels=vector_labels,
-            maximum_deviation=tolerance)
+            maximum_deviation=tolerance, invariant_cache=semantic_cache)
         report(1.0, "Validated")
         return variant_stats, validations, vector_rgb, fit_audit
 

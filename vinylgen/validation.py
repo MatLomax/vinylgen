@@ -288,13 +288,21 @@ def validate_semantic_preservation(
     maximum_deviation: float = 2.0,
     minimum_feature_contrast: float = 0.055,
     minimum_feature_span: float = 6.0,
+    invariant_cache: dict | None = None,
 ) -> dict[str, object]:
     """Audit source feature recall independently of upstream protection flags.
 
     ``vector_rgb`` is a rasterization of the final vector partition at the
     source dimensions.  Keeping rendering outside this module makes the audit
     independent of a particular SVG renderer and useful in unit tests.
+
+    Everything derived from the source, segmentation, and protected masks is
+    independent of the candidate vector.  A caller re-validating the same subject
+    across the recovery loop's repeated passes may supply ``invariant_cache`` (a
+    plain dict) so that source-side work is computed once and reused; only the
+    ``vector_*`` results are recomputed per pass.
     """
+    cache = invariant_cache if invariant_cache is not None else {}
     source = np.asarray(source_rgb)
     segmented = np.asarray(segmentation_rgb)
     if source.shape != segmented.shape:
@@ -307,16 +315,22 @@ def validate_semantic_preservation(
         "minimum_contrast": minimum_feature_contrast,
         "minimum_span": minimum_feature_span,
     }
-    source_features = source_thin_feature_mask(source, **feature_arguments)
+    if "source_features" not in cache:
+        cache["source_features"] = source_thin_feature_mask(source, **feature_arguments)
+    source_features = cache["source_features"]
     # Candidate support need not independently pass source continuity again:
     # the reference already establishes that this is a coherent feature. Test
     # whether matching two-sided contrast survives near its source position.
-    segmentation_features = (
-        _dark_feature_support(_luminance(segmented), 4)
-        >= minimum_feature_contrast * 0.75
-    )
-    segmentation = _feature_metrics(source_features, segmentation_features,
-                                    maximum_deviation)
+    if "segmentation_features" not in cache:
+        cache["segmentation_features"] = (
+            _dark_feature_support(_luminance(segmented), 4)
+            >= minimum_feature_contrast * 0.75
+        )
+    segmentation_features = cache["segmentation_features"]
+    if "segmentation" not in cache:
+        cache["segmentation"] = _feature_metrics(source_features, segmentation_features,
+                                                 maximum_deviation)
+    segmentation = cache["segmentation"]
     vector = None
     if vector_rgb is not None:
         rendered = np.asarray(vector_rgb)
@@ -332,16 +346,21 @@ def validate_semantic_preservation(
         protected_mask = np.asarray(protected_features, dtype=bool)
         if protected_mask.shape != source.shape[:2]:
             raise ValueError("protected-feature dimensions differ from source")
-        protected = _feature_metrics(protected_mask, segmentation_features,
-                                     maximum_deviation)
-        segmentation_postfit_features = (
-            np.ones(protected_mask.shape, dtype=bool)
-            if segmentation_labels is not None else segmentation_features)
-        protected["postfit"] = validate_postfit_protected_features(
-            protected_mask, segmentation_postfit_features,
-            reference_labels=segmentation_labels,
-            candidate_labels=segmentation_labels,
-            maximum_deviation=maximum_deviation)
+        if "protected_base" not in cache:
+            cache["protected_base"] = _feature_metrics(
+                protected_mask, segmentation_features, maximum_deviation)
+            segmentation_postfit_features = (
+                np.ones(protected_mask.shape, dtype=bool)
+                if segmentation_labels is not None else segmentation_features)
+            cache["protected_postfit"] = validate_postfit_protected_features(
+                protected_mask, segmentation_postfit_features,
+                reference_labels=segmentation_labels,
+                candidate_labels=segmentation_labels,
+                maximum_deviation=maximum_deviation)
+        # Fresh top-level dict per pass: the vector_* keys below are added onto it,
+        # so the cached invariants must not accumulate them.
+        protected = dict(cache["protected_base"])
+        protected["postfit"] = cache["protected_postfit"]
         if vector_rgb is not None:
             protected["vector"] = _feature_metrics(
                 protected_mask, vector_features, maximum_deviation)

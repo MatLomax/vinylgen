@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Iterable, Literal
 
@@ -9,6 +11,16 @@ from shapely.geometry import Polygon
 
 from vinylgen.contracts import TraceSettings
 from vinylgen.palette import Progress, _noop
+
+# A per-chain fit is independent, so pass 1 (which fits every chain from a cold
+# cache) fans out across processes. Threads would not help: the work is Python
+# bytecode over tiny arrays plus a per-window SVD, all under the GIL. Recovery
+# passes re-fit only a handful of chains, so they stay serial below the threshold.
+_PARALLEL_FIT_THRESHOLD = 200
+
+
+def _fit_worker_count() -> int:
+    return max(1, (os.cpu_count() or 2) - 1)
 
 Point = tuple[float, float]
 Primitive = tuple
@@ -289,6 +301,49 @@ def _fit_classified(points: np.ndarray, settings: TraceSettings,
                                      min(line.maximum_error, tolerance), len(primitives))
 
 
+def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
+                       settings: TraceSettings) -> ChainFit:
+    """Fit one canonical chain. Pure and picklable, so it runs in a worker process."""
+    anchor_points = {anchor.point for anchor in anchors}
+    split_points = anchor_points | set(constraint_key)
+    array = np.asarray(canonical, dtype=float)
+    corners = _geometric_corners(array, settings)
+    split_indices = [0, *[index for index, point in enumerate(canonical[1:-1], 1)
+                          if point in split_points or index in corners], len(canonical) - 1]
+    split_indices = sorted(set(split_indices))
+    model_points = array.copy()
+    for index, point in corners.items():
+        if canonical[index] not in anchor_points:
+            model_points[index] = point
+    pieces: list[Primitive] = []
+    diagnostics: list[RunDiagnostic] = [
+        RunDiagnostic("corner", index, index,
+                      float(np.linalg.norm(model_points[index] - array[index])), 0)
+        for index in sorted(corners)
+        if canonical[index] not in anchor_points
+    ]
+    for start, end in zip(split_indices, split_indices[1:]):
+        section = model_points[start:end + 1]
+        if not settings.curve_optimization:
+            fitted_piece = [("L", tuple(section[-1]))]
+            diagnostic = RunDiagnostic("straight", start, end, 0.0, 1)
+        else:
+            fitted_piece, diagnostic = _fit_classified(section, settings, start, end)
+        pieces.extend(fitted_piece)
+        diagnostics.append(diagnostic)
+    primitives = tuple(pieces)
+    lines = sum(p[0] == "L" for p in primitives)
+    cubics = len(primitives) - lines
+    used = len(anchor_points.intersection(canonical))
+    return ChainFit(canonical[0], primitives, FitMetrics(
+        lines, cubics, used, len(canonical), len(primitives)), tuple(diagnostics))
+
+
+def _compute_chain_fit_star(args: tuple) -> ChainFit:
+    """Positional adapter so ProcessPoolExecutor.map can drive _compute_chain_fit."""
+    return _compute_chain_fit(*args)
+
+
 class SharedChainFitter:
     """Canonical cache ensures both users of a shared chain get one fit."""
 
@@ -299,9 +354,14 @@ class SharedChainFitter:
     def cache_entries(self) -> int:
         return len(self._cache)
 
-    def fit(self, coords: Iterable[Point], settings: TraceSettings,
-            hard_anchors: Iterable[HardAnchor] = (),
-            fit_constraints: Iterable[Point] = ()) -> ChainFit:
+    def prepare(self, coords: Iterable[Point], settings: TraceSettings,
+                hard_anchors: Iterable[HardAnchor] = (),
+                fit_constraints: Iterable[Point] = ()) -> tuple:
+        """Canonicalize a chain and build its cache key without fitting it.
+
+        Returns ``(key, forward, canonical, anchors, constraint_key)``; the four
+        latter values are exactly the inputs ``_compute_chain_fit`` needs.
+        """
         points = tuple(tuple(map(float, p)) for p in coords)
         if len(points) < 2:
             raise ValueError("a shared chain needs at least two samples")
@@ -318,40 +378,16 @@ class SharedChainFitter:
                float(settings.minimum_straight_length),
                float(settings.corner_analysis_span), float(settings.corner_threshold),
                settings.max_deviation)
+        return key, forward, canonical, anchors, constraint_key
+
+    def fit(self, coords: Iterable[Point], settings: TraceSettings,
+            hard_anchors: Iterable[HardAnchor] = (),
+            fit_constraints: Iterable[Point] = ()) -> ChainFit:
+        key, forward, canonical, anchors, constraint_key = self.prepare(
+            coords, settings, hard_anchors, fit_constraints)
         if key not in self._cache:
-            anchor_points = {anchor.point for anchor in anchors}
-            split_points = anchor_points | set(constraint_key)
-            array = np.asarray(canonical, dtype=float)
-            corners = _geometric_corners(array, settings)
-            split_indices = [0, *[index for index, point in enumerate(canonical[1:-1], 1)
-                                  if point in split_points or index in corners], len(canonical) - 1]
-            split_indices = sorted(set(split_indices))
-            model_points = array.copy()
-            for index, point in corners.items():
-                if canonical[index] not in anchor_points:
-                    model_points[index] = point
-            pieces: list[Primitive] = []
-            diagnostics: list[RunDiagnostic] = [
-                RunDiagnostic("corner", index, index,
-                              float(np.linalg.norm(model_points[index] - array[index])), 0)
-                for index in sorted(corners)
-                if canonical[index] not in anchor_points
-            ]
-            for start, end in zip(split_indices, split_indices[1:]):
-                section = model_points[start:end + 1]
-                if not settings.curve_optimization:
-                    fitted_piece = [("L", tuple(section[-1]))]
-                    diagnostic = RunDiagnostic("straight", start, end, 0.0, 1)
-                else:
-                    fitted_piece, diagnostic = _fit_classified(section, settings, start, end)
-                pieces.extend(fitted_piece)
-                diagnostics.append(diagnostic)
-            primitives = tuple(pieces)
-            lines = sum(p[0] == "L" for p in primitives)
-            cubics = len(primitives) - lines
-            used = len({a.point for a in anchors}.intersection(canonical))
-            self._cache[key] = ChainFit(canonical[0], primitives, FitMetrics(
-                lines, cubics, used, len(canonical), len(primitives)), tuple(diagnostics))
+            self._cache[key] = _compute_chain_fit(
+                canonical, anchors, constraint_key, settings)
         fitted = self._cache[key]
         return fitted if forward else fitted.reversed()
 
@@ -594,16 +630,25 @@ def region_components(track, fits: dict[str, "ChainFit"], geometry) -> list[dict
 def shared_boundary_components(track, included: list[int], settings: TraceSettings,
                                recovery: dict[str, dict[str, object]] | None = None,
                                progress: Progress | None = None,
+                               fitter: "SharedChainFitter | None" = None,
                                ) -> tuple[dict[int, list[dict]], dict[str, "ChainFit"], dict[str, object]]:
-    """Fit canonical interfaces once, then assemble exact reverse uses into paths."""
+    """Fit canonical interfaces once, then assemble exact reverse uses into paths.
+
+    A caller may supply a persistent ``fitter`` so its cache survives across the
+    recovery loop's repeated passes: a chain whose recovery state is unchanged
+    keys identically and returns from cache instead of re-fitting.
+    """
     from vinylgen.boundary_graph import assemble_colour_rings
 
-    fitter = SharedChainFitter()
+    fitter = fitter or SharedChainFitter()
     chains = {chain.identity: chain for chain in track.chains}
     fits: dict[str, ChainFit] = {}
     recovery = recovery or {}
     tick = progress or _noop
     total = len(track.chains)
+    # Phase 1: resolve each chain's recovery-adjusted settings and cache key.
+    # This is cheap; the expensive curve fit is deferred to phase 2.
+    plans: list[tuple] = []
     for index, chain in enumerate(track.chains):
         tick(index / total if total else 1.0,
              f"Fitting boundary curves ({index + 1} of {total})")
@@ -634,12 +679,47 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
                     recovery_attempts=4, dense_fallback=True,
                     fallback_reason=(
                         "maximum deviation still exceeded after ordered local recovery")),))
+            continue
+        key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
+            samples, chain_settings, anchors, constraints)
+        plans.append((chain.identity, stage, forward, key,
+                      canonical, anchor_tuple, constraint_key, chain_settings))
+
+    # Phase 2: compute the cache misses. Distinct keys are fitted once; when many
+    # chains need fitting (the cold first pass) the work fans out across processes.
+    unique_pending: dict[tuple, tuple] = {}
+    for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
+        if key not in fitter._cache:
+            unique_pending.setdefault(
+                key, (canonical, anchor_tuple, constraint_key, chain_settings))
+    if unique_pending:
+        keys = list(unique_pending)
+        args = [unique_pending[key] for key in keys]
+        workers = min(len(args), _fit_worker_count())
+        if len(args) >= _PARALLEL_FIT_THRESHOLD and workers > 1:
+            chunk = max(1, len(args) // (workers * 8))
+            done = 0
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                for key, computed in zip(
+                        keys, executor.map(_compute_chain_fit_star, args, chunksize=chunk)):
+                    fitter._cache[key] = computed
+                    done += 1
+                    if done % 100 == 0 or done == len(args):
+                        tick(done / len(args),
+                             f"Fitting boundary curves ({done} of {len(args)})")
         else:
-            fitted = fitter.fit(samples, chain_settings, anchors, constraints)
-            if stage:
-                fitted = replace(fitted, diagnostics=tuple(
-                    replace(item, recovery_attempts=stage) for item in fitted.diagnostics))
-            fits[chain.identity] = fitted
+            for key, argument in zip(keys, args):
+                fitter._cache[key] = _compute_chain_fit(*argument)
+
+    # Phase 3: assemble oriented fits from the now-populated cache.
+    for identity, stage, forward, key, *_ in plans:
+        fitted = fitter._cache[key]
+        if not forward:
+            fitted = fitted.reversed()
+        if stage:
+            fitted = replace(fitted, diagnostics=tuple(
+                replace(item, recovery_attempts=stage) for item in fitted.diagnostics))
+        fits[identity] = fitted
 
     assembled = assemble_colour_rings(track, included)
     result: dict[int, list[dict]] = {}
