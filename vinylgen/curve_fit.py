@@ -111,9 +111,12 @@ class RingFit:
 
 def _distance_to_line(points: np.ndarray) -> tuple[float, int]:
     vector = points[-1] - points[0]
-    length = float(np.linalg.norm(vector))
-    distances = (np.linalg.norm(points - points[0], axis=1) if length < 1e-12 else
-                 np.abs(np.cross(vector, points - points[0])) / length)
+    length = math.sqrt(vector[0] * vector[0] + vector[1] * vector[1])
+    if length < 1e-12:
+        distances = np.linalg.norm(points - points[0], axis=1)
+    else:
+        d = points - points[0]
+        distances = np.abs(vector[0] * d[:, 1] - vector[1] * d[:, 0]) / length
     index = int(np.argmax(distances))
     return float(distances[index]), index
 
@@ -137,17 +140,19 @@ def _robust_line(points: np.ndarray) -> _LineEvidence:
     if np.dot(direction, points[-1] - points[0]) < 0:
         direction = -direction
     projections = centred @ direction
-    errors = np.abs(np.cross(direction, centred))
+    errors = np.abs(direction[0] * centred[:, 1] - direction[1] * centred[:, 0])
     return _LineEvidence(origin, direction, float(errors.max()),
                          float(projections.max() - projections.min()))
 
 
 def _line_intersection(first: _LineEvidence, second: _LineEvidence) -> np.ndarray | None:
-    cross = float(np.cross(first.direction, second.direction))
+    cross = float(first.direction[0] * second.direction[1]
+                  - first.direction[1] * second.direction[0])
     if abs(cross) < 1e-6:
         return None
     delta = second.origin - first.origin
-    distance = float(np.cross(delta, second.direction) / cross)
+    distance = float((delta[0] * second.direction[1]
+                      - delta[1] * second.direction[0]) / cross)
     return first.origin + distance * first.direction
 
 
@@ -158,7 +163,8 @@ def _side_window(points: np.ndarray, index: int, step: int, span: float) -> np.n
     cursor = index
     while 0 <= cursor + step < len(points) and travelled < span:
         following = cursor + step
-        travelled += float(np.linalg.norm(points[following] - points[cursor]))
+        delta = points[following] - points[cursor]
+        travelled += math.sqrt(delta[0] * delta[0] + delta[1] * delta[1])
         selected.append(points[following])
         cursor = following
     if step < 0:
@@ -203,7 +209,9 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
             continue
         maximum_move = (float(settings.max_deviation)
                         if settings.max_deviation is not None else deviation * 2.0)
-        if float(np.linalg.norm(intersection - points[index])) > maximum_move:
+        dx = intersection[0] - points[index][0]
+        dy = intersection[1] - points[index][1]
+        if math.sqrt(dx * dx + dy * dy) > maximum_move:
             continue
         candidates.append((turn, index, tuple(map(float, intersection))))
 
@@ -316,12 +324,14 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
         if canonical[index] not in anchor_points:
             model_points[index] = point
     pieces: list[Primitive] = []
-    diagnostics: list[RunDiagnostic] = [
-        RunDiagnostic("corner", index, index,
-                      float(np.linalg.norm(model_points[index] - array[index])), 0)
-        for index in sorted(corners)
-        if canonical[index] not in anchor_points
-    ]
+    diagnostics: list[RunDiagnostic] = []
+    for index in sorted(corners):
+        if canonical[index] in anchor_points:
+            continue
+        delta = model_points[index] - array[index]
+        diagnostics.append(RunDiagnostic(
+            "corner", index, index,
+            math.sqrt(delta[0] * delta[0] + delta[1] * delta[1]), 0))
     for start, end in zip(split_indices, split_indices[1:]):
         section = model_points[start:end + 1]
         if not settings.curve_optimization:
