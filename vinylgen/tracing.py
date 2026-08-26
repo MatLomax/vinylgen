@@ -259,8 +259,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # Source-side semantic-validation work is identical every pass (only the
     # rasterized vector changes), so it is computed once and reused.
     semantic_cache: dict = {}
+    # Recovery re-fits only a handful of chains per pass, so most of the rendered
+    # vector is byte-identical between passes. These hold the previous pass's
+    # rendered RGB and its nearest-palette labels so a later pass can recompute
+    # labels only where the RGB actually changed and reuse them everywhere else.
+    prev_vector_rgb = None
+    prev_vector_labels = None
 
     def build_and_validate(recovery: dict[str, dict[str, object]], report=_noop):
+        nonlocal prev_vector_rgb, prev_vector_labels
         components_by_colour, chain_fits, fit_audit = shared_boundary_components(
             boundary_track, included, tracing_settings, recovery,
             progress=lambda fraction, message: report(fraction * 0.6, message),
@@ -327,10 +334,31 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             vector_rgb = np.asarray(Image.open(semantic_render).convert("RGB"))
         finally:
             semantic_render.unlink(missing_ok=True)
-        vector_distances = np.sum(
-            (vector_rgb.astype(np.int32)[:, :, None, :] - palette_rgb[None, None, :, :]) ** 2,
-            axis=3, dtype=np.int64)
-        vector_labels = vector_distances.argmin(axis=2).astype(np.int16)
+        if prev_vector_rgb is None:
+            # First render: seed the labels with the full per-pixel nearest-palette
+            # argmin over the whole image.
+            vector_distances = np.sum(
+                (vector_rgb.astype(np.int32)[:, :, None, :] - palette_rgb[None, None, :, :]) ** 2,
+                axis=3, dtype=np.int64)
+            vector_labels = vector_distances.argmin(axis=2).astype(np.int16)
+        else:
+            # Later passes: only the re-fitted region of the render differs, so
+            # recompute labels solely where the RGB changed and reuse last pass's
+            # labels elsewhere. This is bit-identical to the full recomputation:
+            # unchanged pixels keep labels that equal the full argmin of the
+            # identical RGB there, and changed pixels use the IDENTICAL distance
+            # formula and dtypes (int32 diff, squared, summed as int64, argmin,
+            # cast int16). argmin's first-minimum tie-break is the same for the
+            # full 3-D reduction and the per-pixel 2-D reduction.
+            changed = np.any(vector_rgb != prev_vector_rgb, axis=2)
+            vector_labels = prev_vector_labels.copy()
+            if changed.any():
+                sub = vector_rgb[changed].astype(np.int32)
+                sub_d = np.sum((sub[:, None, :] - palette_rgb[None, :, :]) ** 2,
+                               axis=2, dtype=np.int64)
+                vector_labels[changed] = sub_d.argmin(axis=1).astype(np.int16)
+        prev_vector_rgb = vector_rgb
+        prev_vector_labels = vector_labels
         validations["semantic"] = validate_semantic_preservation(
             original, source, vector_rgb=vector_rgb,
             protected_features=segmentation.protected_features,

@@ -92,9 +92,15 @@ def _feature_metrics(reference: np.ndarray, candidate: np.ndarray,
     matched = reference_distances <= maximum_deviation
     recalled_components = 0
     component_recalls: list[float] = []
+    # ndimage.label emits contiguous labels 1..count, each with pixels, so
+    # find_objects yields one bounding-box slice per label and none are None.
+    # Scoring each component inside its bounding box gives the same per-pixel
+    # ratio as a whole-image scan without paying O(pixels) for every label.
+    objects = ndimage.find_objects(components)
     for index in range(1, count + 1):
-        local = components == index
-        recall = float(np.mean(distances[local] <= maximum_deviation))
+        window = objects[index - 1]
+        local = components[window] == index
+        recall = float(np.mean(distances[window][local] <= maximum_deviation))
         component_recalls.append(recall)
         recalled_components += int(recall >= 0.6)
     finite = reference_distances[np.isfinite(reference_distances)]
