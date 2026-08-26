@@ -197,6 +197,9 @@ export default function App() {
       // settings effect reloads (baseline alone then equals the applied values).
       if ((next.kind === 'palette' || next.kind === 'trace') && next.project_id) clearDraft(next.project_id, next.kind)
       setRevision(next.result_revision_id)
+      // A finished source generation lands the user on Flatten, the next step, so
+      // the freshly generated artwork is ready to reduce without hunting for the tab.
+      if (next.kind === 'generate') navigateStage('flatten')
     }
   }, () => setError('Lost the live job connection')) : undefined, [job?.id])
   useEffect(() => {
