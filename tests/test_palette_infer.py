@@ -323,8 +323,8 @@ class PaletteInferenceTests(unittest.TestCase):
         np.testing.assert_array_equal(cleaned, labels)
         self.assertEqual(summary["removed_colours"], 0)
 
-    def test_dither_radius_defaults_to_disabled(self):
-        self.assertEqual(PaletteSettings.dither_radius, 0)
+    def test_dither_radius_defaults_to_one(self):
+        self.assertEqual(PaletteSettings.dither_radius, 1)
 
     def test_dither_vote_radius_zero_is_a_noop(self):
         labels = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=np.int32)

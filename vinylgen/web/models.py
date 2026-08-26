@@ -78,6 +78,7 @@ class PaletteJobSettings(BaseModel):
     final_colours: int | None = Field(default=None, ge=2, le=64)
     histogram_bits: int = Field(default=5, ge=1, le=8)
     analysis_max_dimension: int = Field(default=640, ge=32)
+    dither_radius: int = Field(default=1, ge=0, le=5)
     similar_delta_e: float = Field(default=28.0, ge=0)
     small_share: float = Field(default=0.004, ge=0, le=1)
     small_delta_e: float = Field(default=36.0, ge=0)

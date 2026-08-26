@@ -113,6 +113,24 @@ class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("initial_colours", settings_by_kind["trace"]["palette"])
         self.assertIn("curve_fit_tolerance", settings_by_kind["trace"]["trace"])
 
+    async def test_dither_radius_survives_the_api_into_the_flatten_revision(self) -> None:
+        # A regression guard: the palette request model must carry dither_radius,
+        # otherwise pydantic drops the client's value and the flatten silently
+        # runs — and records — the default instead of what the user chose.
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": "Dither Fixture"},
+            files={"source": ("fixture.png", self.source_png(), "image/png")})
+        self.assertEqual(imported.status_code, 201, imported.text)
+        project = imported.json()
+        palette_job = await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 2, "min_colour_share": 0, "dither_radius": 2})
+        revisions = (await self.client.get(
+            f"/api/projects/{project['id']}/revisions")).json()
+        recorded = next(row for row in revisions
+                        if row["id"] == palette_job["result_revision_id"])
+        self.assertEqual(recorded["settings"]["palette"]["dither_radius"], 2)
+
     async def test_flatten_when_source_filename_equals_slug(self) -> None:
         # A file whose stem slugifies to the project slug (the default when the
         # name is the filename) made the palette stage copy the source onto
@@ -142,6 +160,10 @@ class WebPipelineTest(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/api/jobs", json={
             "kind": "palette", "project_id": "x", "revision_id": "y",
             "palette": {"initial_colours": 4, "final_colours": 5}})
+        self.assertEqual(response.status_code, 422)
+        response = await self.client.post("/api/jobs", json={
+            "kind": "palette", "project_id": "x", "revision_id": "y",
+            "palette": {"dither_radius": 6}})
         self.assertEqual(response.status_code, 422)
         for field, value in (
             ("protected_component_points", [[-1, 0]]),

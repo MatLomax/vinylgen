@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
-  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 0, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
+  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 1, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
   fragmented_share: .035, fragmented_largest_region: .30, fragmented_delta_e: 24, min_output_colours: 2, min_region_pixels: 24, min_colour_share: .01,
   intentional_line_min_contrast: 12, intentional_line_min_length: 8, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, flatten_upscale: 2, flatten_smooth_edges: true,
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
