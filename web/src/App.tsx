@@ -6,7 +6,7 @@ import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
-import { neighbourLabels, overlayPixels, paintOverlayPixels, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
+import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, recolourPreviewPixels, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
@@ -132,6 +132,8 @@ export default function App() {
   const [flattenedPixels, setFlattenedPixels] = useState<Pixels | null>(null)
   const [editorPalette, setEditorPalette] = useState<PaletteColour[]>([])
   const [overlayUrl, setOverlayUrl] = useState<string | undefined>(undefined)
+  const [paletteDraft, setPaletteDraft] = useState<{ index: number; hex: string } | null>(null)
+  const [palettePreview, setPalettePreview] = useState<string | undefined>(undefined)
   const [regionBusy, setRegionBusy] = useState(false)
   const [regionError, setRegionError] = useState('')
   const [editTool, setEditTool] = useState<'areas' | 'pencil'>('areas')
@@ -319,6 +321,26 @@ export default function App() {
     context.putImageData(image, 0, 0)
     setOverlayUrl(canvas.toDataURL())
   }, [editTool, regionSelection, paintedCells, flattenedPixels, editorPalette])
+  useEffect(() => {
+    // Live palette recolour: repaint the flattened raster in the browser so dragging
+    // the colour picker updates the canvas instantly, before anything is committed.
+    // rAF coalesces the picker's rapid onChange stream to one encode per frame.
+    const from = paletteDraft && editorPalette.find(colour => colour.index === paletteDraft.index)?.rgb
+    if (!paletteDraft || !flattenedPixels || !from) { setPalettePreview(undefined); return }
+    const { width, height } = flattenedPixels
+    const to = hexToRgb(paletteDraft.hex)
+    const frame = requestAnimationFrame(() => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width; canvas.height = height
+      const context = canvas.getContext('2d')
+      if (!context) return
+      const image = context.createImageData(width, height)
+      image.data.set(recolourPreviewPixels(flattenedPixels, from, to))
+      context.putImageData(image, 0, 0)
+      setPalettePreview(canvas.toDataURL())
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [paletteDraft, flattenedPixels, editorPalette])
 
   useEffect(() => {
     if (availableViews.length && !availableViews.includes(view)) setView(defaultView)
@@ -568,7 +590,7 @@ export default function App() {
           onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
           paintMode={stage === 'edit' && editTool === 'pencil' && editSelectable}
           onPaint={stage === 'edit' && editTool === 'pencil' && editSelectable ? paintPixel : undefined}
-          overlay={stage === 'edit' && editSelectable ? overlayUrl : undefined}
+          overlay={stage === 'palette' && editSelectable ? palettePreview : stage === 'edit' && editSelectable ? overlayUrl : undefined}
         /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
         {(projectLoading || busy) && <section className="canvas-loading">{jobProgress === null && <span className="spinner" aria-hidden="true"/>}<h2>{projectLoading ? 'Loading artwork' : 'Working'}</h2><div className={jobProgress === null ? 'progress indeterminate' : 'progress'} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={jobProgress === null ? undefined : Math.round(jobProgress * 100)} style={jobProgress === null ? undefined : { '--progress': jobProgress } as React.CSSProperties}><i /></div>{jobProgress !== null && <p className="progress-percent" aria-hidden="true">{Math.round(jobProgress * 100)}%</p>}<p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
       </div>
@@ -614,7 +636,7 @@ export default function App() {
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}
           {selected && revision && flattened && <>
             <nav className="history" aria-label="Revision history"><button disabled={!current?.parent_revision_id} onClick={() => current?.parent_revision_id && setRevision(current.parent_revision_id)}>Undo</button><select aria-label="Revision" value={revision} onChange={event => setRevision(event.target.value)}>{revisions.map(row => <option key={row.id} value={row.id}>{row.kind} · {new Date(row.created_at).toLocaleString()}</option>)}</select><button disabled={!redo} onClick={() => redo && setRevision(redo.id)}>Redo</button></nav>
-            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={setRevision} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to edit its palette.`} />
+            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={setRevision} onPreview={(index, hex) => setPaletteDraft({ index, hex })} onPreviewEnd={() => setPaletteDraft(null)} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to edit its palette.`} />
           </>}
           {selected && revision && source && !flattened && <><h2>Palette unavailable</h2><p className="stage-guidance">Flatten this revision first to edit its palette.</p></>}
         </section>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  combinedMask, componentIndexAt, floodComponent, labelForRgb, neighbourLabels,
-  overlayPixels, paintOverlayPixels, selectionLabels, toggleComponent, type Pixels, type Rgb,
+  combinedMask, componentIndexAt, floodComponent, hexToRgb, labelForRgb, neighbourLabels,
+  overlayPixels, paintOverlayPixels, recolourPreviewPixels, selectionLabels, toggleComponent, type Pixels, type Rgb,
 } from './regionSelection'
 
 const A: Rgb = [10, 0, 0]
@@ -83,5 +83,20 @@ describe('regionSelection', () => {
     expect([...at(1, 0)]).toEqual([...C, 255]) // painted C, opaque
     expect([...at(0, 2)]).toEqual([...B, 255]) // painted B, opaque
     expect([...at(0, 0)]).toEqual([0, 0, 0, 0]) // untouched -> transparent
+  })
+
+  it('parses full and shorthand hex into an rgb triple', () => {
+    expect(hexToRgb('#336699')).toEqual([51, 102, 153])
+    expect(hexToRgb('336699')).toEqual([51, 102, 153])
+    expect(hexToRgb('#0f0')).toEqual([0, 255, 0])
+  })
+
+  it('recolours every pixel of one palette colour, leaving the rest exact', () => {
+    const preview = recolourPreviewPixels(makePixels(), B, [7, 8, 9])
+    const at = (x: number, y: number) => [...preview.slice((y * 4 + x) * 4, (y * 4 + x) * 4 + 4)]
+    expect(at(2, 0)).toEqual([7, 8, 9, 255]) // was B -> new colour, opaque
+    expect(at(3, 1)).toEqual([7, 8, 9, 255]) // the whole B block moves
+    expect(at(0, 0)).toEqual([...A, 255]) // A untouched
+    expect(at(0, 2)).toEqual([...C, 255]) // C untouched
   })
 })

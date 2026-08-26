@@ -12,6 +12,7 @@
     "@vitejs/plugin-react": "latest",
     "lucide-react": "^1.33.0",
     "react": "latest",
+    "react-colorful": "^5.8.0",
     "react-dom": "latest",
     "typescript": "latest",
     "vite": "latest"

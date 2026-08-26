@@ -104,6 +104,46 @@ class WebEditorTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["palette_costs"].shape[2], 1)
             self.assertEqual(set(np.unique(data["labels"])), {0})
 
+    async def test_recolour_repaints_a_whole_palette_colour(self) -> None:
+        project, parent = await self.flattened_project()
+        response = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{parent}/edits",
+            json={"operations": [{"tool": "recolour_colour", "label": 1, "rgb": [10, 200, 60]}]})
+        self.assertEqual(response.status_code, 201, response.text)
+        revision = response.json()["id"]
+
+        # The whole colour moves to the new RGB/hex; the colour count is unchanged.
+        state = (await self.client.get(f"/api/revisions/{revision}/editor")).json()
+        self.assertEqual(len(state["palette"]), 2)
+        self.assertEqual(state["palette"][1]["rgb"], [10, 200, 60])
+        self.assertEqual(state["palette"][1]["hex"], "#0AC83C")
+
+        # The raster now shows the new colour and none of the old, and labels are
+        # preserved — a recolour only swaps the palette entry.
+        artifacts = (await self.client.get(f"/api/revisions/{revision}/artifacts")).json()
+        flattened = next(row for row in artifacts if row["kind"] == "flattened")
+        colours = set(Image.open(io.BytesIO((await self.client.get(flattened["download_url"])).content)).getdata())
+        self.assertIn((10, 200, 60), colours)
+        self.assertNotIn((225, 90, 45), colours)
+        segmentation = next(row for row in artifacts if row["kind"] == "segmentation")
+        with np.load(io.BytesIO((await self.client.get(segmentation["download_url"])).content)) as data:
+            self.assertEqual(set(np.unique(data["labels"])), {0, 1})
+
+        # The parent revision keeps its original colour — a clean branch point.
+        parent_state = (await self.client.get(f"/api/revisions/{parent}/editor")).json()
+        self.assertEqual(parent_state["palette"][1]["rgb"], [225, 90, 45])
+
+    async def test_recolour_requires_a_valid_rgb(self) -> None:
+        project, parent = await self.flattened_project()
+        missing = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{parent}/edits",
+            json={"operations": [{"tool": "recolour_colour", "label": 0}]})
+        self.assertEqual(missing.status_code, 409, missing.text)
+        out_of_range = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{parent}/edits",
+            json={"operations": [{"tool": "recolour_colour", "label": 0, "rgb": [0, 0, 256]}]})
+        self.assertEqual(out_of_range.status_code, 422, out_of_range.text)
+
     async def test_connected_region_reassign_changes_only_the_selected_component(self) -> None:
         project, parent = await self.flattened_project()
         response = await self.client.post(
@@ -164,15 +204,15 @@ class WebEditorTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 409, pixels)
 
     async def test_unsupported_manual_tools_are_rejected_at_api_boundary(self) -> None:
-        # Whole-colour merge, connected-area reassignment, and the per-pixel pencil
-        # are the only manual edits; broader painting and colour adjustment are not.
+        # Whole-colour merge and recolour, connected-area reassignment, and the
+        # per-pixel pencil are the manual edits; freehand brush, flood fill, and
+        # lasso painting are not.
         project, parent = await self.flattened_project()
         for operation in (
             {"tool": "brush", "label": 1, "points": [[0, 0]], "radius": 4},
             {"tool": "flood_fill", "label": 1, "points": [[0, 0]]},
             {"tool": "lasso", "label": 1, "points": [[0, 0], [1, 0], [0, 1]]},
             {"tool": "protect", "points": [[0, 0]]},
-            {"tool": "adjust_colour", "label": 0, "rgb": [1, 2, 3]},
         ):
             response = await self.client.post(
                 f"/api/projects/{project['id']}/revisions/{parent}/edits",

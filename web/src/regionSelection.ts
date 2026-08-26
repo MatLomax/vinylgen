@@ -13,6 +13,30 @@ function matches(pixels: Pixels, x: number, y: number, rgb: Rgb): boolean {
   return pixels.data[offset] === rgb[0] && pixels.data[offset + 1] === rgb[1] && pixels.data[offset + 2] === rgb[2]
 }
 
+// Parse a "#rrggbb" (or shorthand "#rgb") colour into an RGB triple. Values the
+// colour picker emits are always full six-digit hex; shorthand is accepted so
+// hand-typed hex still previews.
+export function hexToRgb(hex: string): Rgb {
+  const value = hex.replace('#', '')
+  const full = value.length === 3 ? value.replace(/./g, char => char + char) : value.padEnd(6, '0').slice(0, 6)
+  const int = parseInt(full, 16) || 0
+  return [(int >> 16) & 255, (int >> 8) & 255, int & 255]
+}
+
+// A full opaque RGBA copy of the flattened raster with one palette colour swapped
+// to a new RGB, for live-previewing a recolour before it is committed. Matching by
+// exact RGB mirrors labelForRgb: a flattened raster holds only exact palette colours.
+export function recolourPreviewPixels(pixels: Pixels, from: Rgb, to: Rgb): Uint8ClampedArray {
+  const source = pixels.data
+  const preview = new Uint8ClampedArray(source)
+  for (let offset = 0; offset < source.length; offset += 4) {
+    if (source[offset] === from[0] && source[offset + 1] === from[1] && source[offset + 2] === from[2]) {
+      preview[offset] = to[0]; preview[offset + 1] = to[1]; preview[offset + 2] = to[2]
+    }
+  }
+  return preview
+}
+
 export function labelForRgb(rgb: Rgb, palette: PaletteEntry[]): number {
   const found = palette.find(entry => entry.rgb[0] === rgb[0] && entry.rgb[1] === rgb[1] && entry.rgb[2] === rgb[2])
   return found ? found.index : -1

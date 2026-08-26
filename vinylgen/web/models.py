@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -165,7 +165,9 @@ class GenerationStarted(BaseModel):
     expanded_prompt: str
 
 
-EditorTool = Literal["merge_colour", "rename_colour", "reassign_region", "paint_pixels"]
+EditorTool = Literal["merge_colour", "rename_colour", "recolour_colour", "reassign_region", "paint_pixels"]
+
+Channel = Annotated[int, Field(ge=0, le=255)]
 
 
 class LabelEditOperation(BaseModel):
@@ -174,6 +176,7 @@ class LabelEditOperation(BaseModel):
     source_label: int | None = Field(default=None, ge=0)
     target_label: int | None = Field(default=None, ge=0)
     name: str | None = Field(default=None, min_length=1, max_length=80)
+    rgb: tuple[Channel, Channel, Channel] | None = None
     point: tuple[int, int] | None = None
     pixels: tuple[tuple[int, int], ...] | None = Field(default=None, max_length=4_000_000)
 

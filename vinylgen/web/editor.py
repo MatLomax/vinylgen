@@ -80,6 +80,14 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
             if not operation.name:
                 raise ValueError("rename_colour requires a name")
             palette[label]["name"] = operation.name
+        elif operation.tool == "recolour_colour":
+            label = _check_label(operation.label, count)
+            if operation.rgb is None:
+                raise ValueError("recolour_colour requires an rgb value")
+            # Repaint a whole palette colour: the raster is palette_rgb[labels], so
+            # swapping the entry recolours every pixel of that colour at once. Labels
+            # are untouched, so regions, costs, and connectivity carry over unchanged.
+            bundle.palette_rgb[label] = np.array(operation.rgb, dtype=np.uint8)
         elif operation.tool == "merge_colour":
             source = _check_label(operation.source_label, count, "source_label")
             target = _check_label(operation.target_label, count, "target_label")
