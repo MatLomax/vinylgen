@@ -199,6 +199,30 @@ class Store:
             raise KeyError(project_id)
         return row
 
+    def delete_project(self, project_id: str) -> None:
+        """Remove a project and everything under it: revisions, artifacts, jobs, and blobs.
+
+        Refuses while the project has a queued or running job, whose worker still writes
+        revisions against it; the caller cancels that job first. Rows go in foreign-key
+        order (children before the project) so the immediate FK checks hold; the blob tree
+        is dropped only after the rows commit.
+        """
+        project = self.get_project(project_id)
+        with self.connection() as db:
+            active = db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE project_id=? AND status IN ('queued', 'running')",
+                (project_id,),
+            ).fetchone()[0]
+            if active:
+                raise ValueError("Cancel the project's active job before deleting it")
+            db.execute(
+                "DELETE FROM artifacts WHERE revision_id IN "
+                "(SELECT id FROM revisions WHERE project_id=?)", (project_id,))
+            db.execute("DELETE FROM jobs WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM revisions WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        shutil.rmtree(self.config.files_dir / project["slug"], ignore_errors=True)
+
     def create_revision(self, project_id: str, *, parent_revision_id: str | None,
                         kind: str, message: str | None, settings: dict[str, Any]) -> dict[str, Any]:
         self.get_project(project_id)

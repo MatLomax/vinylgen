@@ -47,6 +47,22 @@ describe('abortable project artifact requests', () => {
     })
   })
 
+  it('deletes a project through the project endpoint', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await api.deleteProject('project-1')
+
+    expect(fetch).toHaveBeenCalledWith('/api/projects/project-1', { method: 'DELETE' })
+  })
+
+  it('surfaces the server message when a project delete is refused', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("Cancel the project's active job before deleting it", { status: 409 }))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(api.deleteProject('project-1')).rejects.toThrow("Cancel the project's active job before deleting it")
+  })
+
   it('starts text-only source generation with complete settings', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ project: {}, job: {}, expanded_prompt: 'expanded' })))
     vi.stubGlobal('fetch', fetch)

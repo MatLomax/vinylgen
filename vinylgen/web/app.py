@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 
 from .config import WebConfig
 from .jobs import JobManager
@@ -115,6 +115,16 @@ def create_app(config: WebConfig | None = None,
             return {**store.get_project(project_id), "revisions": store.list_revisions(project_id)}
         except KeyError as exc:
             raise missing(exc) from exc
+
+    @app.delete("/api/projects/{project_id}", status_code=204, response_class=Response)
+    async def delete_project(project_id: str) -> Response:
+        try:
+            store.delete_project(project_id)
+        except KeyError as exc:
+            raise missing(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return Response(status_code=204)
 
     @app.post("/api/projects/{project_id}/revisions", response_model=Revision, status_code=201)
     async def create_revision(project_id: str, payload: CreateRevision) -> dict:

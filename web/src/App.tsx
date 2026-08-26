@@ -364,6 +364,22 @@ export default function App() {
     return () => controller.abort()
   }, [hasEdit, paletteAncestorId])
 
+  async function deleteSelectedProject() {
+    if (!selected) return
+    const target = projects.find(project => project.id === selected)
+    if (!window.confirm(`Delete "${target?.name ?? 'this project'}"? This permanently removes its revisions and artwork and cannot be undone.`)) return
+    setError('')
+    const id = selected
+    try {
+      await api.deleteProject(id)
+      localStorage.removeItem(draftKey(id))
+      setProjects(current => current.filter(project => project.id !== id))
+      setJob(null)
+      setSelected(null)
+      setRevision(null)
+    } catch (cause) { setError(String(cause)) }
+  }
+
   async function importImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -573,7 +589,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{availableViews.length > 1 && <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{availableViews.length > 1 && <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{selected && <button type="button" className="delete-project" onClick={deleteSelectedProject}>Delete project</button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>

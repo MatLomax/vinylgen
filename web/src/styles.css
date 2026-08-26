@@ -256,6 +256,8 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .inspect-trigger:hover:not(:disabled) { background: var(--surface-control-strong); color: var(--accent); }
 .active-project { display: grid; min-width: 230px; margin-inline-start: auto; gap: 3px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .active-project select { min-height: 38px; padding-block: 6px; color: var(--text-strong); font-size: 13px; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.delete-project { align-self: end; min-height: 38px; padding: 6px 14px; background: transparent; border: 1px solid var(--border); color: var(--text-muted); font-size: 13px; font-weight: 650; }
+.delete-project:hover { border-color: var(--error); color: var(--error); }
 .view-toggle { display: flex; gap: 3px; padding: 3px; margin-inline-start: auto; border-radius: var(--radius-sm); background: var(--surface-root); max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
 .view-toggle button { flex: 0 0 auto; min-height: 34px; padding: 6px 12px; background: transparent; color: var(--text-label); font-size: 13px; font-weight: 650; }
 .view-toggle button.active { background: var(--accent); color: var(--accent-ink); }

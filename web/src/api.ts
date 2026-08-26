@@ -37,6 +37,7 @@ async function result<T>(response: Response): Promise<T> {
 export const api = {
   projects: () => fetch('/api/projects').then(result<Project[]>),
   project: (projectId: string, signal?: AbortSignal) => fetch(`/api/projects/${projectId}`, { signal }).then(result<Project & { revisions: Revision[] }>),
+  deleteProject: (projectId: string) => fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).then(async response => { if (!response.ok) throw new Error((await response.text()) || response.statusText) }),
   artifacts: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/artifacts`, { signal }).then(result<Artifact[]>),
   effectiveArtifacts: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/effective-artifacts`, { signal }).then(result<Artifact[]>),
   editor: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/editor`, { signal }).then(result<EditorState>),

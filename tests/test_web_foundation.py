@@ -165,6 +165,45 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(effective), {"source"})
         self.assertEqual(effective["source"]["revision_id"], edited["id"])
 
+    async def test_delete_project_removes_rows_and_blobs(self) -> None:
+        store = self.app.state.store
+        project = store.import_project(
+            "Doomed", filename="source.png", media_type="image/png",
+            source=io.BytesIO(b"pixels"),
+        )[0]
+        revision = store.list_revisions(project["id"])[0]
+        store.add_artifact(
+            revision["id"], kind="flattened", filename="flat.png",
+            media_type="image/png", source=io.BytesIO(b"flat"),
+        )
+        finished = store.create_job(kind="palette", project_id=project["id"], revision_id=revision["id"])
+        store.update_job(finished["id"], status="succeeded", finished_at="2026-01-01T00:00:00+00:00")
+        blob_dir = Path(self.temp.name) / "files" / project["slug"]
+        self.assertTrue(blob_dir.exists())
+
+        response = await self.client.delete(f"/api/projects/{project['id']}")
+        self.assertEqual(response.status_code, 204, response.text)
+
+        self.assertEqual(store.list_projects(), [])
+        with store.connection() as db:
+            for table in ("revisions", "artifacts", "jobs"):
+                self.assertEqual(
+                    db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 0, table)
+        self.assertFalse(blob_dir.exists())
+
+    async def test_delete_missing_project_returns_404(self) -> None:
+        response = await self.client.delete("/api/projects/does-not-exist")
+        self.assertEqual(response.status_code, 404, response.text)
+
+    async def test_delete_project_with_active_job_is_refused(self) -> None:
+        store = self.app.state.store
+        project = store.create_project("Busy")
+        store.create_job(kind="palette", project_id=project["id"], revision_id=None)
+
+        response = await self.client.delete(f"/api/projects/{project['id']}")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(store.get_project(project["id"])["id"], project["id"])
+
     async def test_built_frontend_is_served(self) -> None:
         response = await self.client.get("/")
         self.assertEqual(response.status_code, 200)
