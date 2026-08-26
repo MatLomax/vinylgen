@@ -1,3 +1,4 @@
 {
-  "buildPath": "code"
+  "buildPath": "code",
+  "enabled": false
 }
