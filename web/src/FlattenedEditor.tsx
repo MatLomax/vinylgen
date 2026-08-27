@@ -73,6 +73,7 @@ export function FlattenedEditor({ projectId, revisionId, flattened: _flattened, 
   const locked = busy || disabled
   return <section className="palette-editor" aria-labelledby="palette-editor-title">
     <div className="section-heading"><h2 id="palette-editor-title">Palette</h2><span>{state.palette.length} colours</span></div>
+    {state.requested_colour_count !== null && state.palette.length < state.requested_colour_count && <p className="stage-guidance" role="status">Produced {state.palette.length} of {state.requested_colour_count} requested — the image couldn't sustain {state.requested_colour_count - state.palette.length === 1 ? 'the last distinct colour' : `${state.requested_colour_count - state.palette.length} more distinct colours`}.</p>}
     <p className="stage-guidance">{disabled && disabledHint ? disabledHint : 'The flattened image stays on the main canvas. Pick a swatch to recolour a whole colour—changes preview live and apply as a new revision.'}</p>
     <div className="palette-list">{state.palette.map(colour => <div key={colour.index}>
       <button type="button" className="swatch swatch-button" style={{ background: colour.hex }} aria-label={`Recolour ${names[colour.index] ?? colour.name}`} aria-expanded={editing === colour.index} disabled={locked} onClick={() => editing === colour.index ? setEditing(null) : openPicker(colour)} />

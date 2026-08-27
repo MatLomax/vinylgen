@@ -143,6 +143,14 @@ def distinct_point_pairs(
     return tuple(pairs)
 
 
+def _colour_count_summary(report: dict) -> int | str:
+    produced = report["inferred_colour_count"]
+    requested = report.get("fixed_colour_count", {}).get("requested")
+    if requested is not None and produced < requested:
+        return f"{produced} (requested {requested})"
+    return produced
+
+
 def main() -> None:
     args = parse_args()
     settings = PaletteSettings(
@@ -177,7 +185,7 @@ def main() -> None:
                 )
             )
     summary = {
-        Path(report["source"]).name: report["inferred_colour_count"] for report in reports
+        Path(report["source"]).name: _colour_count_summary(report) for report in reports
     }
     print(json.dumps(summary, indent=2))
 

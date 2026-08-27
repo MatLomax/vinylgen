@@ -277,10 +277,6 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         preserved_colours=preserved_colours,
     )
     used = np.unique(full_labels)
-    if settings.final_colours is not None and len(used) != settings.final_colours:
-        raise ValueError(
-            f"fixed colour count requested {settings.final_colours}, but deterministic cleanup produced {len(used)} colours"
-        )
     tick(0.86, "Finalising palette")
     centres = centres[used]
     used_remap = np.full(int(used.max()) + 1, -1, dtype=np.int32)
@@ -356,6 +352,11 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         "segmentation": str(segmentation_path),
         "dimensions": [full_labels.shape[1], full_labels.shape[0]],
         "inferred_colour_count": len(centres),
+        "fixed_colour_count": {
+            "requested": settings.final_colours,
+            "produced": len(centres),
+            "met": settings.final_colours is None or len(centres) == settings.final_colours,
+        },
         "palette": palette,
         "merges": merges,
         "dither_speckle_cleanup": dither_cleanup,

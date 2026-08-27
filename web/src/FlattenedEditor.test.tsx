@@ -5,7 +5,7 @@ import { api, type Artifact, type EditorState } from './api'
 import { FlattenedEditor } from './FlattenedEditor'
 
 const state: EditorState = {
-  width: 1000, height: 500, protected_pixels: 0,
+  width: 1000, height: 500, protected_pixels: 0, requested_colour_count: null,
   palette: [
     { index: 0, name: 'black', hex: '#000000', rgb: [0, 0, 0], share_percent: 60 },
     { index: 1, name: 'white', hex: '#ffffff', rgb: [255, 255, 255], share_percent: 40 },

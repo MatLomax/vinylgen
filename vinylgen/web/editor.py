@@ -29,6 +29,7 @@ def editor_state(store: Store, revision_id: str) -> dict[str, Any]:
     bundle, report = _inputs(store, revision_id)
     return {"width": bundle.labels.shape[1], "height": bundle.labels.shape[0],
             "palette": report["palette"],
+            "requested_colour_count": report.get("fixed_colour_count", {}).get("requested"),
             "protected_pixels": int(bundle.explicit_protected_features.sum())}
 
 

@@ -116,8 +116,29 @@ class PaletteInferenceTests(unittest.TestCase):
         first = self.run_fixture(pixels, settings)
         second = self.run_fixture(pixels, settings)
         self.assertEqual(first["inferred_colour_count"], 3)
+        self.assertEqual(first["fixed_colour_count"],
+                         {"requested": 3, "produced": 3, "met": True})
         self.assertEqual(first["palette"], second["palette"])
         self.assertTrue(any(row["reason"] == "fixed colour count" for row in first["merges"]))
+
+    def test_fixed_colour_count_undershoot_reports_the_produced_count(self):
+        # Four solid quadrants plus a sub-min_region_pixels speck of a fifth
+        # colour: the speck survives histogram analysis and clustering, so five
+        # colours are requested, but remove_small_regions folds the speck at full
+        # resolution and four remain. The run succeeds and reports the shortfall
+        # rather than raising.
+        pixels = np.empty((80, 80, 3), dtype=np.uint8)
+        pixels[:40, :40] = (10, 20, 40)
+        pixels[:40, 40:] = (220, 70, 45)
+        pixels[40:, :40] = (235, 200, 90)
+        pixels[40:, 40:] = (40, 140, 120)
+        pixels[10:14, 10:15] = (200, 30, 200)  # 20 px, below min_region_pixels
+        settings = PaletteSettings(initial_colours=5, final_colours=5,
+                                   min_region_pixels=24, dither_radius=0)
+        report = self.run_fixture(pixels, settings)
+        self.assertEqual(report["inferred_colour_count"], 4)
+        self.assertEqual(report["fixed_colour_count"],
+                         {"requested": 5, "produced": 4, "met": False})
 
     def test_flatten_upscale_is_exact_nearest_neighbour_of_native_output(self):
         pixels = np.empty((40, 60, 3), dtype=np.uint8)
@@ -208,6 +229,8 @@ class PaletteInferenceTests(unittest.TestCase):
         report = self.run_fixture(pixels)
 
         self.assertEqual(report["inferred_colour_count"], 4)
+        self.assertIsNone(report["fixed_colour_count"]["requested"])
+        self.assertTrue(report["fixed_colour_count"]["met"])
         self.assertTrue(any(item["reason"] == "perceptually similar" for item in report["merges"]))
 
     def test_result_is_deterministic(self):
