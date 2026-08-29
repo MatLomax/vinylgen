@@ -85,10 +85,15 @@ def merge_clusters(
                 reason = None
                 if distance <= settings.similar_delta_e:
                     reason = "perceptually similar"
-                elif share <= settings.small_share and distance <= settings.small_delta_e:
+                elif (
+                    settings.fold_small_colours
+                    and share <= settings.small_share
+                    and distance <= settings.small_delta_e
+                ):
                     reason = "small and similar"
                 elif (
-                    share <= settings.fragmented_share
+                    settings.merge_fragmented_colours
+                    and share <= settings.fragmented_share
                     and stats[smaller]["largest_region_share"]
                     <= settings.fragmented_largest_region
                     and distance <= settings.fragmented_delta_e
@@ -238,24 +243,34 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         full_labels, settings.protected_component_points
     )
     tick(0.40, "Detecting intentional linework")
-    full_labels, protected_features, feature_detection = detect_intentional_strokes(
-        full_lab, full_labels, initial_costs, centres,
-        minimum_contrast=settings.intentional_line_min_contrast,
-        minimum_length=settings.intentional_line_min_length,
-        locked_features=explicit_protection,
-    )
+    if settings.protect_intentional_lines:
+        full_labels, protected_features, feature_detection = detect_intentional_strokes(
+            full_lab, full_labels, initial_costs, centres,
+            minimum_contrast=settings.intentional_line_min_contrast,
+            minimum_length=settings.intentional_line_min_length,
+            locked_features=explicit_protection,
+        )
+    else:
+        # Automatic line detection off: labels pass through unconsolidated and only
+        # the user's explicit point protections carry into later cleanup.
+        protected_features = explicit_protection.copy()
+        feature_detection = {"skipped": True,
+                             "explicitly_locked_pixels": int(explicit_protection.sum())}
     tick(0.50, "Collapsing dither speckle")
     full_labels, dither_cleanup = collapse_dither_speckle(
         full_labels, despeckled_labels, len(centres), settings.dither_radius,
         protected_features | explicit_protection,
     )
     tick(0.52, "Resolving anti-aliased boundaries")
-    full_labels, aa_resolution = resolve_ambiguous_boundaries(
-        full_labels, initial_costs, protected_features,
-        ambiguity_margin=settings.aa_ambiguity_margin,
-        smoothness=settings.aa_smoothness,
-        passes=settings.aa_resolution_passes,
-    )
+    if settings.resolve_antialiasing:
+        full_labels, aa_resolution = resolve_ambiguous_boundaries(
+            full_labels, initial_costs, protected_features,
+            ambiguity_margin=settings.aa_ambiguity_margin,
+            smoothness=settings.aa_smoothness,
+            passes=settings.aa_resolution_passes,
+        )
+    else:
+        aa_resolution = {"skipped": True}
     tick(0.72, "Removing small regions")
     full_labels, cleanup = remove_small_regions(
         full_labels, centres, settings.min_region_pixels,

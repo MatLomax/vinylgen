@@ -7,11 +7,11 @@ export type EditorState = { width: number; height: number; palette: PaletteColou
 export type EditOperation = { tool: 'merge_colour' | 'rename_colour' | 'recolour_colour' | 'reassign_region' | 'paint_pixels'; label?: number; source_label?: number; target_label?: number; name?: string; rgb?: [number, number, number]; point?: [number, number]; pixels?: [number, number][] }
 export type PaletteSettings = {
   initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number; dither_radius: number
-  similar_delta_e: number; small_share: number; small_delta_e: number
-  fragmented_share: number; fragmented_largest_region: number; fragmented_delta_e: number
+  similar_delta_e: number; small_share: number; small_delta_e: number; fold_small_colours: boolean
+  fragmented_share: number; fragmented_largest_region: number; fragmented_delta_e: number; merge_fragmented_colours: boolean
   min_output_colours: number; min_region_pixels: number; min_colour_share: number
-  intentional_line_min_contrast: number; intentional_line_min_length: number
-  aa_ambiguity_margin: number; aa_smoothness: number; aa_resolution_passes: number; flatten_upscale: number; flatten_smooth_edges: boolean
+  intentional_line_min_contrast: number; intentional_line_min_length: number; protect_intentional_lines: boolean
+  aa_ambiguity_margin: number; aa_smoothness: number; aa_resolution_passes: number; resolve_antialiasing: boolean; flatten_upscale: number; flatten_smooth_edges: boolean
   protected_component_points: [number, number][]; preserved_colour_points: [number, number][]
   distinct_colour_point_pairs: [[number, number], [number, number]][]
 }

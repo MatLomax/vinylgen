@@ -67,6 +67,47 @@ class PaletteInferenceTests(unittest.TestCase):
         self.assertEqual(len(merged), 3)
         self.assertEqual(decisions, [])
 
+    def test_small_colour_folding_toggle_gates_the_small_merge(self):
+        # Distance 15 exceeds similar_delta_e, so only the "small and similar" rule
+        # can merge; a contiguous small cluster keeps the fragmented rule from firing.
+        centres = np.array([[50.0, 0.0, 0.0], [65.0, 0.0, 0.0], [90.0, 0.0, 0.0]])
+        counts = np.array([1000.0, 3.0, 500.0])
+        labels = np.array([[0, 1, 2]], dtype=np.int32)
+
+        base = PaletteSettings(similar_delta_e=5.0, min_output_colours=2)
+        merged, decisions = merge_clusters(centres.copy(), counts.copy(), labels.copy(), base)
+        self.assertEqual(len(merged), 2)
+        self.assertTrue(any(item["reason"] == "small and similar" for item in decisions))
+
+        off = PaletteSettings(similar_delta_e=5.0, min_output_colours=2, fold_small_colours=False)
+        kept, none_merged = merge_clusters(centres.copy(), counts.copy(), labels.copy(), off)
+        self.assertEqual(len(kept), 3)
+        self.assertEqual(none_merged, [])
+
+    def test_fragmentation_toggle_gates_the_fragmented_merge(self):
+        # Share 0.01 is above small_share, so only the fragmented rule applies; the
+        # small cluster is scattered so its largest-region share stays under the cutoff.
+        centres = np.array([[50.0, 0.0, 0.0], [65.0, 0.0, 0.0], [90.0, 0.0, 0.0]])
+        counts = np.array([490.0, 10.0, 500.0])
+        labels = np.array([
+            [0, 1, 0, 1, 0],
+            [0, 0, 0, 0, 0],
+            [1, 0, 1, 0, 0],
+            [2, 2, 2, 2, 2],
+        ], dtype=np.int32)
+
+        base = PaletteSettings(similar_delta_e=5.0, min_output_colours=2)
+        merged, decisions = merge_clusters(centres.copy(), counts.copy(), labels.copy(), base)
+        self.assertEqual(len(merged), 2)
+        self.assertTrue(
+            any(item["reason"] == "small, fragmented, and similar" for item in decisions))
+
+        off = PaletteSettings(
+            similar_delta_e=5.0, min_output_colours=2, merge_fragmented_colours=False)
+        kept, none_merged = merge_clusters(centres.copy(), counts.copy(), labels.copy(), off)
+        self.assertEqual(len(kept), 3)
+        self.assertEqual(none_merged, [])
+
     def test_point_selects_only_its_four_connected_colour_component(self):
         labels = np.zeros((6, 7), dtype=np.int32)
         labels[1:3, 1:3] = 1
@@ -245,6 +286,30 @@ class PaletteInferenceTests(unittest.TestCase):
         self.assertEqual(first["inferred_colour_count"], second["inferred_colour_count"])
         self.assertEqual(first["palette"], second["palette"])
         self.assertEqual(first["merges"], second["merges"])
+
+    def test_line_protection_toggle_skips_stroke_detection(self):
+        # A thin dark line on a light field is exactly what stroke detection protects.
+        pixels = np.full((60, 60, 3), 235, dtype=np.uint8)
+        pixels[28:31, 6:54] = 20
+
+        default = self.run_fixture(pixels, PaletteSettings(initial_colours=4))
+        self.assertNotIn("skipped", default["intentional_feature_detection"])
+
+        off = self.run_fixture(
+            pixels, PaletteSettings(initial_colours=4, protect_intentional_lines=False))
+        self.assertTrue(off["intentional_feature_detection"]["skipped"])
+
+    def test_antialiasing_toggle_skips_boundary_resolution(self):
+        pixels = np.empty((60, 60, 3), dtype=np.uint8)
+        pixels[:, :30] = (10, 25, 45)
+        pixels[:, 30:] = (238, 196, 95)
+
+        default = self.run_fixture(pixels, PaletteSettings(initial_colours=4))
+        self.assertNotIn("skipped", default["aa_boundary_resolution"])
+
+        off = self.run_fixture(
+            pixels, PaletteSettings(initial_colours=4, resolve_antialiasing=False))
+        self.assertTrue(off["aa_boundary_resolution"]["skipped"])
 
     def test_small_region_uses_closest_touching_colour(self):
         labels = np.zeros((7, 7), dtype=np.int32)

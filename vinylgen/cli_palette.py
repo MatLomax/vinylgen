@@ -21,6 +21,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--small-share", type=float, default=PaletteSettings.small_share)
     parser.add_argument("--small-delta-e", type=float, default=PaletteSettings.small_delta_e)
     parser.add_argument(
+        "--fold-small-colours",
+        action=argparse.BooleanOptionalAction,
+        default=PaletteSettings.fold_small_colours,
+        help="fold tiny colours into a near neighbour; disable to keep small accents",
+    )
+    parser.add_argument(
+        "--merge-fragmented-colours",
+        action=argparse.BooleanOptionalAction,
+        default=PaletteSettings.merge_fragmented_colours,
+        help="merge small fragmented colours into a similar neighbour; disable to keep scattered detail",
+    )
+    parser.add_argument(
         "--min-region-pixels",
         type=int,
         default=PaletteSettings.min_region_pixels,
@@ -30,10 +42,22 @@ def parse_args() -> argparse.Namespace:
                         default=PaletteSettings.intentional_line_min_contrast)
     parser.add_argument("--intentional-line-min-length", type=int,
                         default=PaletteSettings.intentional_line_min_length)
+    parser.add_argument(
+        "--protect-intentional-lines",
+        action=argparse.BooleanOptionalAction,
+        default=PaletteSettings.protect_intentional_lines,
+        help="detect and protect narrow linework; disable to let thin marks flatten normally",
+    )
     parser.add_argument("--aa-ambiguity-margin", type=float,
                         default=PaletteSettings.aa_ambiguity_margin)
     parser.add_argument("--aa-smoothness", type=float,
                         default=PaletteSettings.aa_smoothness)
+    parser.add_argument(
+        "--resolve-antialiasing",
+        action=argparse.BooleanOptionalAction,
+        default=PaletteSettings.resolve_antialiasing,
+        help="spatially regularise ambiguous anti-aliased pixels; disable to leave them as assigned",
+    )
     parser.add_argument(
         "--flatten-upscale",
         type=int,
@@ -159,13 +183,17 @@ def main() -> None:
         similar_delta_e=args.similar_delta_e,
         small_share=args.small_share,
         small_delta_e=args.small_delta_e,
+        fold_small_colours=args.fold_small_colours,
+        merge_fragmented_colours=args.merge_fragmented_colours,
         min_region_pixels=args.min_region_pixels,
         min_colour_share=args.min_colour_share,
         dither_radius=args.dither_radius,
         intentional_line_min_contrast=args.intentional_line_min_contrast,
         intentional_line_min_length=args.intentional_line_min_length,
+        protect_intentional_lines=args.protect_intentional_lines,
         aa_ambiguity_margin=args.aa_ambiguity_margin,
         aa_smoothness=args.aa_smoothness,
+        resolve_antialiasing=args.resolve_antialiasing,
         flatten_upscale=args.flatten_upscale,
         flatten_smooth_edges=args.flatten_smooth_edges,
         protected_component_points=component_points(args.protect_component_at),

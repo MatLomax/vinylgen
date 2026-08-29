@@ -2,9 +2,9 @@ import { useState } from 'react'
 import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
-  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 1, similar_delta_e: 28, small_share: .004, small_delta_e: 36,
-  fragmented_share: .035, fragmented_largest_region: .30, fragmented_delta_e: 24, min_output_colours: 2, min_region_pixels: 24, min_colour_share: .01,
-  intentional_line_min_contrast: 12, intentional_line_min_length: 8, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, flatten_upscale: 2, flatten_smooth_edges: true,
+  initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 1, similar_delta_e: 28, small_share: .004, small_delta_e: 36, fold_small_colours: true,
+  fragmented_share: .035, fragmented_largest_region: .30, fragmented_delta_e: 24, merge_fragmented_colours: true, min_output_colours: 2, min_region_pixels: 24, min_colour_share: .01,
+  intentional_line_min_contrast: 12, intentional_line_min_length: 8, protect_intentional_lines: true, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, resolve_antialiasing: true, flatten_upscale: 2, flatten_smooth_edges: true,
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
 }
 export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
@@ -24,13 +24,23 @@ function DirtyDot({ dirty }: { dirty?: boolean }) {
   return dirty ? <i className="field-dirty" role="img" aria-label="Pending change, not yet applied" title="Pending change — not yet applied" /> : null
 }
 
-function Field({ label, help, dirty, children }: { label: string; help: string; dirty?: boolean; children: React.ReactNode }) {
-  return <label className="setting-field"><span>{label}<DirtyDot dirty={dirty} /></span>{children}<small>{help}</small></label>
+function Field({ label, help, dirty, disabled, children }: { label: string; help: string; dirty?: boolean; disabled?: boolean; children: React.ReactNode }) {
+  return <label className={`setting-field${disabled ? ' is-disabled' : ''}`}><span>{label}<DirtyDot dirty={dirty} /></span>{children}<small>{help}</small></label>
 }
-function NumberField({ label, help, value, onChange, min = 0, max, step = 'any', optional = false, dirty }: {
-  label: string; help: string; value: number | null; onChange: (value: number | null) => void; min?: number; max?: number; step?: number | 'any'; optional?: boolean; dirty?: boolean
+function NumberField({ label, help, value, onChange, min = 0, max, step = 'any', optional = false, dirty, disabled }: {
+  label: string; help: string; value: number | null; onChange: (value: number | null) => void; min?: number; max?: number; step?: number | 'any'; optional?: boolean; dirty?: boolean; disabled?: boolean
 }) {
-  return <Field label={label} help={help} dirty={dirty}><input type="number" min={min} max={max} step={step} value={value ?? ''} placeholder={optional ? 'Automatic' : undefined} onChange={event => { const raw = event.target.value; if (raw === '') { if (optional) onChange(null); return } onChange(Number(raw)) }} /></Field>
+  return <Field label={label} help={help} dirty={dirty} disabled={disabled}><input type="number" min={min} max={max} step={step} value={value ?? ''} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} onChange={event => { const raw = event.target.value; if (raw === '') { if (optional) onChange(null); return } onChange(Number(raw)) }} /></Field>
+}
+// A feature sub-group whose master checkbox skips its whole stage when off, greying
+// out the dependent fields. Mirrors the trace stage's cutter-cleanup gating.
+function ToggleGroup({ label, help, on, dirty, onToggle, children }: {
+  label: string; help: string; on: boolean; dirty?: boolean; onToggle: (on: boolean) => void; children: React.ReactNode
+}) {
+  return <div className="detail-group">
+    <label className="check-field"><input type="checkbox" checked={on} onChange={event => onToggle(event.target.checked)} /><span><strong>{label}<DirtyDot dirty={dirty} /></strong><small>{help}</small></span></label>
+    <div className="settings-grid">{children}</div>
+  </div>
 }
 function PointList({ title, points, onRemove }: { title: string; points: [number, number][]; onRemove: (index: number) => void }) {
   return points.length ? <div className="selection-list"><strong>{title}</strong>{points.map((point, index) => <span key={`${point}-${index}`}><code>{point.join(', ')}</code><button type="button" className="secondary" onClick={() => onRemove(index)}>Remove</button></span>)}</div> : null
@@ -116,21 +126,31 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <NumberField label="Output upscale (×)" help="Nearest-neighbour scale for the flattened image and every traced layer. 1 keeps native resolution." value={palette.flatten_upscale} min={1} max={4} step={1} dirty={pd('flatten_upscale')} onChange={value => p('flatten_upscale', value!)} />
         <label className="check-field"><input type="checkbox" checked={palette.flatten_smooth_edges} onChange={event => p('flatten_smooth_edges', event.target.checked)} /><span><strong>Smooth upscaled edges<DirtyDot dirty={pd('flatten_smooth_edges')} /></strong><small>Scale2x corner fill that softens the upscaled staircase using only palette colours. Applies at even upscale factors; protected details keep their hard edge.</small></span></label>
       </div></section>
-      <section className="settings-group"><h3>Fine detail &amp; anti-aliasing</h3><p>Separate deliberate narrow artwork from blended edge fragments.</p><div className="settings-grid">
-        <NumberField label="Small-colour share" help="Image fraction below which a colour is treated as small." value={palette.small_share} max={1} step={.001} dirty={pd('small_share')} onChange={value => p('small_share', value!)} />
-        <NumberField label="Small-colour distance (ΔE)" help="Maximum difference when folding a small colour into a neighbour." value={palette.small_delta_e} dirty={pd('small_delta_e')} onChange={value => p('small_delta_e', value!)} />
-        <NumberField label="Fragmented colour share" help="Maximum image share considered for fragmentation cleanup." value={palette.fragmented_share} max={1} step={.001} dirty={pd('fragmented_share')} onChange={value => p('fragmented_share', value!)} />
-        <NumberField label="Largest-region coherence" help="Share that must belong to one region before a colour is coherent." value={palette.fragmented_largest_region} max={1} step={.01} dirty={pd('fragmented_largest_region')} onChange={value => p('fragmented_largest_region', value!)} />
-        <NumberField label="Fragmentation distance (ΔE)" help="Colour-distance limit for merging fragmented pieces." value={palette.fragmented_delta_e} dirty={pd('fragmented_delta_e')} onChange={value => p('fragmented_delta_e', value!)} />
-        <NumberField label="Intentional-line contrast" help="Minimum contrast for a narrow feature to count as deliberate linework." value={palette.intentional_line_min_contrast} dirty={pd('intentional_line_min_contrast')} onChange={value => p('intentional_line_min_contrast', value!)} />
-        <NumberField label="Intentional-line length" help="Minimum coherent pixel length for narrow line protection." value={palette.intentional_line_min_length} min={1} step={1} dirty={pd('intentional_line_min_length')} onChange={value => p('intentional_line_min_length', value!)} />
-        <NumberField label="Anti-alias ambiguity" help="How close competing assignments can be before neighbourhood cleanup decides." value={palette.aa_ambiguity_margin} dirty={pd('aa_ambiguity_margin')} onChange={value => p('aa_ambiguity_margin', value!)} />
-        <NumberField label="Spatial smoothness" help="Preference for agreeing with edge-sharing neighbours." value={palette.aa_smoothness} dirty={pd('aa_smoothness')} onChange={value => p('aa_smoothness', value!)} />
-        <NumberField label="Resolution passes" help="Deterministic cleanup passes over ambiguous pixels." value={palette.aa_resolution_passes} step={1} dirty={pd('aa_resolution_passes')} onChange={value => p('aa_resolution_passes', value!)} />
-        <NumberField label="Histogram precision" help="Bits of colour precision used during candidate discovery." value={palette.histogram_bits} min={1} max={8} step={1} dirty={pd('histogram_bits')} onChange={value => p('histogram_bits', value!)} />
-        <NumberField label="Analysis max dimension" help="Sampling size for palette discovery; final assignment remains full-resolution." value={palette.analysis_max_dimension} min={32} step={1} dirty={pd('analysis_max_dimension')} onChange={value => p('analysis_max_dimension', value!)} />
-        <NumberField label="Dither removal radius" help="Neighbourhood radius for removing dither and pixel noise before flattening. 0 leaves the source untouched. Only speckle that a despeckled copy and the local majority both agree on is reassigned, so isolated real detail and protected details are kept." value={palette.dither_radius} min={0} max={5} step={1} dirty={pd('dither_radius')} onChange={value => p('dither_radius', value!)} />
-      </div></section>
+      <section className="settings-group"><h3>Fine detail &amp; anti-aliasing</h3><p>Separate deliberate narrow artwork from blended edge fragments. Turn a feature off to keep its details untouched.</p>
+        <ToggleGroup label="Fold small colours" help="Merge tiny colours into a near neighbour. Off keeps small accents as their own colour." on={palette.fold_small_colours} dirty={pd('fold_small_colours')} onToggle={value => p('fold_small_colours', value)}>
+          <NumberField label="Small-colour share" help="Image fraction below which a colour is treated as small." value={palette.small_share} max={1} step={.001} dirty={pd('small_share')} disabled={!palette.fold_small_colours} onChange={value => p('small_share', value!)} />
+          <NumberField label="Small-colour distance (ΔE)" help="Maximum difference when folding a small colour into a neighbour." value={palette.small_delta_e} dirty={pd('small_delta_e')} disabled={!palette.fold_small_colours} onChange={value => p('small_delta_e', value!)} />
+        </ToggleGroup>
+        <ToggleGroup label="Merge fragmented colours" help="Collapse small scattered colours into a similar neighbour. Off keeps fragmented detail." on={palette.merge_fragmented_colours} dirty={pd('merge_fragmented_colours')} onToggle={value => p('merge_fragmented_colours', value)}>
+          <NumberField label="Fragmented colour share" help="Maximum image share considered for fragmentation cleanup." value={palette.fragmented_share} max={1} step={.001} dirty={pd('fragmented_share')} disabled={!palette.merge_fragmented_colours} onChange={value => p('fragmented_share', value!)} />
+          <NumberField label="Largest-region coherence" help="Share that must belong to one region before a colour is coherent." value={palette.fragmented_largest_region} max={1} step={.01} dirty={pd('fragmented_largest_region')} disabled={!palette.merge_fragmented_colours} onChange={value => p('fragmented_largest_region', value!)} />
+          <NumberField label="Fragmentation distance (ΔE)" help="Colour-distance limit for merging fragmented pieces." value={palette.fragmented_delta_e} dirty={pd('fragmented_delta_e')} disabled={!palette.merge_fragmented_colours} onChange={value => p('fragmented_delta_e', value!)} />
+        </ToggleGroup>
+        <ToggleGroup label="Protect intentional lines" help="Detect and keep deliberate narrow linework un-flattened. Off lets thin marks flatten like any other detail — no need to defeat it with a large length." on={palette.protect_intentional_lines} dirty={pd('protect_intentional_lines')} onToggle={value => p('protect_intentional_lines', value)}>
+          <NumberField label="Intentional-line contrast" help="Minimum contrast for a narrow feature to count as deliberate linework." value={palette.intentional_line_min_contrast} dirty={pd('intentional_line_min_contrast')} disabled={!palette.protect_intentional_lines} onChange={value => p('intentional_line_min_contrast', value!)} />
+          <NumberField label="Intentional-line length" help="Minimum coherent pixel length for narrow line protection." value={palette.intentional_line_min_length} min={1} step={1} dirty={pd('intentional_line_min_length')} disabled={!palette.protect_intentional_lines} onChange={value => p('intentional_line_min_length', value!)} />
+        </ToggleGroup>
+        <ToggleGroup label="Resolve anti-aliasing" help="Spatially regularise ambiguous anti-aliased pixels. Off leaves each pixel at its nearest palette colour." on={palette.resolve_antialiasing} dirty={pd('resolve_antialiasing')} onToggle={value => p('resolve_antialiasing', value)}>
+          <NumberField label="Anti-alias ambiguity" help="How close competing assignments can be before neighbourhood cleanup decides." value={palette.aa_ambiguity_margin} dirty={pd('aa_ambiguity_margin')} disabled={!palette.resolve_antialiasing} onChange={value => p('aa_ambiguity_margin', value!)} />
+          <NumberField label="Spatial smoothness" help="Preference for agreeing with edge-sharing neighbours." value={palette.aa_smoothness} dirty={pd('aa_smoothness')} disabled={!palette.resolve_antialiasing} onChange={value => p('aa_smoothness', value!)} />
+          <NumberField label="Resolution passes" help="Deterministic cleanup passes over ambiguous pixels." value={palette.aa_resolution_passes} step={1} dirty={pd('aa_resolution_passes')} disabled={!palette.resolve_antialiasing} onChange={value => p('aa_resolution_passes', value!)} />
+        </ToggleGroup>
+        <div className="settings-grid">
+          <NumberField label="Histogram precision" help="Bits of colour precision used during candidate discovery." value={palette.histogram_bits} min={1} max={8} step={1} dirty={pd('histogram_bits')} onChange={value => p('histogram_bits', value!)} />
+          <NumberField label="Analysis max dimension" help="Sampling size for palette discovery; final assignment remains full-resolution." value={palette.analysis_max_dimension} min={32} step={1} dirty={pd('analysis_max_dimension')} onChange={value => p('analysis_max_dimension', value!)} />
+          <NumberField label="Dither removal radius" help="Neighbourhood radius for removing dither and pixel noise before flattening. 0 leaves the source untouched. Only speckle that a despeckled copy and the local majority both agree on is reassigned, so isolated real detail and protected details are kept." value={palette.dither_radius} min={0} max={5} step={1} dirty={pd('dither_radius')} onChange={value => p('dither_radius', value!)} />
+        </div>
+      </section>
       <section className="settings-group preservation-settings"><h3>Preserve important source details<DirtyDot dirty={preservationDirty} /></h3><p>These are precise exceptions, not painting tools. Pick an action, then click the original image.</p><div className="preservation-options">
         <button type="button" className={selectionMode === 'protect-component' ? 'active' : 'secondary'} onClick={() => setSelectionMode(selectionMode === 'protect-component' ? null : 'protect-component')}><strong>Protect connected detail</strong><small>Keep the four-way connected feature at this point.</small></button>
         <button type="button" className={selectionMode === 'preserve-colour' ? 'active' : 'secondary'} onClick={() => setSelectionMode(selectionMode === 'preserve-colour' ? null : 'preserve-colour')}><strong>Preserve colour family</strong><small>Keep this source colour represented in the palette.</small></button>
