@@ -213,6 +213,9 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .advanced-settings > details > summary { padding: 14px 0; color: var(--text-label); cursor: pointer; font-size: 11px; font-weight: 700; }
 .advanced-intro, .settings-note, .advanced-settings > details > p { margin: 0 0 14px; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 .settings-actions, .selection-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 14px; }
+.iteration-stepper { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.iteration-stepper button { min-width: 40px; padding: 8px 10px; }
+.iteration-indicator { text-align: center; color: var(--text-muted); font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selection-actions { grid-template-columns: 1fr; }
 .settings-grid { display: grid; gap: 11px; padding-bottom: 16px; }
 .check-field { grid-template-columns: 22px 1fr; align-items: center; min-height: 44px; }

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
-import { artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash } from './App'
+import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -156,6 +156,50 @@ describe('pipeline setting provenance', () => {
     expect(inheritedPipelineSettings([trace, edit, palette], 'trace')).toEqual({
       palette: { initial_colours: 9 }, trace: { curve_fit_tolerance: .4 },
     })
+  })
+
+  it('lists each stage iteration along the ancestry, newest first and merged over defaults', () => {
+    const older = { ...revision, id: 'p1', kind: 'palette', settings: { palette: { initial_colours: 8 } } }
+    const edit = { ...revision, id: 'e1', parent_revision_id: 'p1', kind: 'label-edit', settings: {} }
+    const newer = { ...revision, id: 'p2', parent_revision_id: 'e1', kind: 'palette', settings: { palette: { initial_colours: 20 } } }
+    const traced = { ...revision, id: 't1', parent_revision_id: 'p2', kind: 'trace', settings: { trace: { overlap: 3 } } }
+    const revisions = [traced, newer, edit, older]
+
+    const palettes = ancestorPaletteIterations(revisions, 't1')
+    expect(palettes.map(item => item.initial_colours)).toEqual([20, 8])
+    // Fields the stored settings never recorded fall back to defaults, so every
+    // iteration is a complete settings object the form can load.
+    expect(palettes[0].protect_intentional_lines).toBe(true)
+    expect(palettes[0].final_colours).toBeNull()
+
+    const traces = ancestorTraceIterations(revisions, 't1')
+    expect(traces.map(item => item.overlap)).toEqual([3])
+    expect(traces[0].curve_optimization).toBe(true)
+  })
+
+  it('steps the flatten form through prior iterations and restores un-run edits, image unchanged', async () => {
+    const older = { ...revision, id: 'palette-a', kind: 'palette', settings: { palette: { initial_colours: 8 } } }
+    const newer = { ...revision, id: 'palette-b', parent_revision_id: 'palette-a', kind: 'palette', settings: { palette: { initial_colours: 20 } } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [newer, older] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+
+    // Both stage panels mount a stepper, so scope queries to the flatten panel.
+    const panel = screen.getByRole('tabpanel', { name: 'Flatten' })
+    const field = await within(panel).findByLabelText(/Initial candidates/) as HTMLInputElement
+    await vi.waitFor(() => expect(field.value).toBe('20'))
+    // Edit the working form, then scrub back to the older iteration.
+    fireEvent.change(field, { target: { value: '13' } })
+    fireEvent.click(within(panel).getByLabelText("Load an older iteration's settings"))
+    expect(field.value).toBe('8')
+    expect(within(panel).getByText('Iteration 1 of 2')).toBeTruthy()
+    // Stepping forward returns to the working form with the un-run edit intact.
+    fireEvent.click(within(panel).getByLabelText("Load a newer iteration's settings"))
+    expect(field.value).toBe('13')
+    expect(within(panel).getByText('Iteration 2 of 2')).toBeTruthy()
   })
 
   it('activates the shared canvas while a preservation point is being selected', async () => {

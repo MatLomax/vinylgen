@@ -100,9 +100,9 @@ function LayerOrderList({ colours, order, onChange, dirty }: {
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, onRestoreLast, onCommitDraft }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, onCommitDraft }: {
   stage: 'flatten' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
-  paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; onRestoreLast: () => void; onCommitDraft: () => void
+  paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; onCommitDraft: () => void
 }) {
   const p = <K extends keyof PaletteSettings>(key: K, value: PaletteSettings[K]) => setPalette({ ...palette, [key]: value })
   const t = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => setTrace({ ...trace, [key]: value })
@@ -112,7 +112,14 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   // A field committed to localStorage on blur so a refresh keeps un-run edits; running
   // the stage bakes them into a revision and the parent then clears the draft.
   return <div className="stage-settings" onBlur={onCommitDraft}>
-    <div className="settings-actions"><button type="button" className="secondary" onClick={onRestoreLast}>Restore last run</button><button type="button" className="secondary" onClick={onReset}>Reset this stage</button></div>
+    <div className="settings-actions">
+      <div className="iteration-stepper" role="group" aria-label="Step through previous iterations">
+        <button type="button" className="secondary" aria-label="Load an older iteration's settings" disabled={iterationIndex >= iterationCount - 1} onClick={() => onStep(1)}>◀</button>
+        <span className="iteration-indicator">{iterationCount === 0 ? 'No past runs' : `Iteration ${iterationCount - iterationIndex} of ${iterationCount}`}</span>
+        <button type="button" className="secondary" aria-label="Load a newer iteration's settings" disabled={iterationIndex <= 0} onClick={() => onStep(-1)}>▶</button>
+      </div>
+      <button type="button" className="secondary" onClick={onReset}>Reset this stage</button>
+    </div>
     <p className="settings-save-note">Edited fields show an amber dot and are kept as a pending draft when you leave a field. Running the stage records the exact values in a new revision and clears the draft.</p>
     {stage === 'flatten' ? <>
       <section className="settings-group"><h3>Colour target</h3><p>Choose the final palette and how readily similar shades combine.</p><div className="settings-grid">

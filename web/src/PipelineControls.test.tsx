@@ -15,7 +15,7 @@ describe('numeric field empty handling', () => {
   it('retains the last valid value when a required field is cleared to empty', () => {
     const setPalette = vi.fn()
     render(<PipelineControls stage="flatten" palette={DEFAULT_PALETTE_SETTINGS} setPalette={setPalette} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
-      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
 
     fireEvent.change(screen.getByLabelText(/Initial candidates/), { target: { value: '' } })
     expect(setPalette).not.toHaveBeenCalled()
@@ -28,7 +28,7 @@ describe('numeric field empty handling', () => {
     const setTrace = vi.fn()
     const trace: TraceSettings = { ...DEFAULT_TRACE_SETTINGS, width_mm: 120 }
     render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
-      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
 
     fireEvent.change(screen.getByLabelText(/Width \(mm\)/), { target: { value: '' } })
     expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ width_mm: null }))
@@ -37,7 +37,7 @@ describe('numeric field empty handling', () => {
 
 function renderTrace(trace: TraceSettings, setTrace: (value: TraceSettings) => void, colours = COLOURS) {
   render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={colours}
-    selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} onRestoreLast={() => undefined} onCommitDraft={() => undefined} />)
+    selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
 }
 
 describe('layer order control', () => {
@@ -66,5 +66,43 @@ describe('layer order control', () => {
     renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: true, layer_order: ['#0000ff', '#ff0000'] }, setTrace)
     fireEvent.click(screen.getByText(/Reset to automatic/))
     expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ layer_order: null }))
+  })
+})
+
+describe('iteration stepper', () => {
+  function renderStepper(iterationCount: number, iterationIndex: number) {
+    const onStep = vi.fn()
+    render(<PipelineControls stage="flatten" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={iterationCount} iterationIndex={iterationIndex} onStep={onStep} onCommitDraft={() => undefined} />)
+    return {
+      onStep,
+      back: screen.getByLabelText("Load an older iteration's settings") as HTMLButtonElement,
+      forward: screen.getByLabelText("Load a newer iteration's settings") as HTMLButtonElement,
+    }
+  }
+
+  it('steps back toward older iterations from the working form, with forward disabled', () => {
+    const { onStep, back, forward } = renderStepper(3, 0)
+    expect(screen.getByText('Iteration 3 of 3')).toBeTruthy()
+    expect(forward.disabled).toBe(true)
+    expect(back.disabled).toBe(false)
+    fireEvent.click(back)
+    expect(onStep).toHaveBeenCalledWith(1)
+  })
+
+  it('disables stepping back at the oldest iteration and steps forward otherwise', () => {
+    const { onStep, back, forward } = renderStepper(3, 2)
+    expect(screen.getByText('Iteration 1 of 3')).toBeTruthy()
+    expect(back.disabled).toBe(true)
+    expect(forward.disabled).toBe(false)
+    fireEvent.click(forward)
+    expect(onStep).toHaveBeenCalledWith(-1)
+  })
+
+  it('disables both arrows and reads no past runs before any iteration exists', () => {
+    const { back, forward } = renderStepper(0, 0)
+    expect(screen.getByText('No past runs')).toBeTruthy()
+    expect(back.disabled).toBe(true)
+    expect(forward.disabled).toBe(true)
   })
 })

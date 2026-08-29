@@ -108,6 +108,33 @@ export function inheritedPipelineSettings(revisions: Revision[], revisionId: str
   return { palette, trace }
 }
 
+// Every complete stage setting recorded along the shown revision's ancestry, newest
+// to oldest, so the form can step back through past attempts without changing the
+// shown image. Each entry is merged over defaults so older revisions that predate a
+// field still yield a full settings object.
+export function ancestorPaletteIterations(revisions: Revision[], revisionId: string | null): PaletteSettings[] {
+  const list: PaletteSettings[] = []
+  const seen = new Set<string>()
+  let current = revisions.find(row => row.id === revisionId)
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    if (current.settings.palette) list.push({ ...DEFAULT_PALETTE_SETTINGS, ...(current.settings.palette as Partial<PaletteSettings>) })
+    current = revisions.find(row => row.id === current?.parent_revision_id)
+  }
+  return list
+}
+export function ancestorTraceIterations(revisions: Revision[], revisionId: string | null): TraceSettings[] {
+  const list: TraceSettings[] = []
+  const seen = new Set<string>()
+  let current = revisions.find(row => row.id === revisionId)
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    if (current.settings.trace) list.push({ ...DEFAULT_TRACE_SETTINGS, ...(current.settings.trace as Partial<TraceSettings>) })
+    current = revisions.find(row => row.id === current?.parent_revision_id)
+  }
+  return list
+}
+
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selected, setSelected] = useState<string | null>(() => hashParameters().get('project'))
@@ -126,6 +153,14 @@ export default function App() {
   const [projectLoading, setProjectLoading] = useState(false)
   const [paletteSettings, setPaletteSettings] = useState<PaletteSettings>(DEFAULT_PALETTE_SETTINGS)
   const [traceSettings, setTraceSettings] = useState<TraceSettings>(DEFAULT_TRACE_SETTINGS)
+  // Position within the settings history: 0 is the working form (the newest recorded
+  // iteration, plus any un-run edits), higher indices are older iterations. The
+  // working form is stashed on first step back so stepping forward restores the
+  // un-run edits it replaced.
+  const [paletteStep, setPaletteStep] = useState(0)
+  const [traceStep, setTraceStep] = useState(0)
+  const paletteLive = useRef<PaletteSettings | null>(null)
+  const traceLive = useRef<TraceSettings | null>(null)
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null)
   const [distinctFirst, setDistinctFirst] = useState<[number, number] | null>(null)
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
@@ -179,6 +214,22 @@ export default function App() {
   const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
   const baselinePalette = useMemo<PaletteSettings>(() => ({ ...DEFAULT_PALETTE_SETTINGS, ...pipelineBaseline.palette }), [pipelineBaseline])
   const baselineTrace = useMemo<TraceSettings>(() => ({ ...DEFAULT_TRACE_SETTINGS, ...pipelineBaseline.trace }), [pipelineBaseline])
+  const paletteIterations = useMemo(() => ancestorPaletteIterations(revisions, current?.id || null), [revisions, current?.id])
+  const traceIterations = useMemo(() => ancestorTraceIterations(revisions, current?.id || null), [revisions, current?.id])
+  function stepPalette(delta: number) {
+    const next = Math.max(0, Math.min(paletteIterations.length - 1, paletteStep + delta))
+    if (next === paletteStep) return
+    if (paletteStep === 0) paletteLive.current = paletteSettings
+    setPaletteSettings(next === 0 ? (paletteLive.current ?? paletteSettings) : paletteIterations[next])
+    setPaletteStep(next)
+  }
+  function stepTrace(delta: number) {
+    const next = Math.max(0, Math.min(traceIterations.length - 1, traceStep + delta))
+    if (next === traceStep) return
+    if (traceStep === 0) traceLive.current = traceSettings
+    setTraceSettings(next === 0 ? (traceLive.current ?? traceSettings) : traceIterations[next])
+    setTraceStep(next)
+  }
   const sourceRevision = revisions.find(row => row.id === source?.revision_id)
   const generation = generationFromRevision(sourceRevision)
 
@@ -266,6 +317,7 @@ export default function App() {
     try { draft = selected ? JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') : {} } catch { /* use revision values */ }
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draft.palette })
     setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...draft.trace })
+    setPaletteStep(0); setTraceStep(0); paletteLive.current = null; traceLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
   useEffect(() => {
@@ -425,7 +477,6 @@ export default function App() {
     try {
       const settings = kind === 'palette' ? { palette: paletteSettings }
         : kind === 'trace' ? { trace: traceSettings } : undefined
-      if (settings) localStorage.setItem('vinylgen.pipeline-settings', JSON.stringify({ palette: paletteSettings, trace: traceSettings }))
       setJob(await api.startPipeline(kind, selected, revision, settings))
     }
     catch (cause) { setError(String(cause)) }
@@ -553,13 +604,6 @@ export default function App() {
     }
   }
 
-  function restoreLastSettings() {
-    try {
-      const stored = JSON.parse(localStorage.getItem('vinylgen.pipeline-settings') || '{}')
-      setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...(stored.palette || {}) })
-      setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...(stored.trace || {}) })
-    } catch { setError('Saved pipeline settings could not be read. Reset them and try again.') }
-  }
 
   function navigateStage(next: WorkflowStage) {
     if (next === stage) return
@@ -644,12 +688,12 @@ export default function App() {
         <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette}
           selectionMode={selectionMode} setSelectionMode={setSelectionMode}
           onReset={() => { setPaletteSettings(DEFAULT_PALETTE_SETTINGS); setSelectionMode(null) }}
-          onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('palette')} />
+          iterationCount={paletteIterations.length} iterationIndex={paletteStep} onStep={stepPalette} onCommitDraft={() => persistDraft('palette')} />
         </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} onRestoreLast={restoreLastSettings} onCommitDraft={() => persistDraft('trace')} />
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceIterations.length} iterationIndex={traceStep} onStep={stepTrace} onCommitDraft={() => persistDraft('trace')} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}
