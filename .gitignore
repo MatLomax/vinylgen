@@ -20,10 +20,14 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Codex CLI OAuth credentials must never be committed
+.codex/auth.json
+
 # Project-local runtime and disposable data
 .tmp/
 .solstice/work.db*
 .vinylgen-data/
+.worklog/
 
 # Generated pipeline artifacts (keep curated references with git add -f)
 outputs/
@@ -34,8 +38,10 @@ web/node_modules/
 web/dist/
 web/*.tsbuildinfo
 
-# impeccable tooling dependencies
+# impeccable tooling dependencies and local outputs
 .impeccable/node_modules/
+.impeccable/design.json
+.impeccable/review/
 
 # impeccable-ignore-start
 # Ephemeral output, runtime state, and per-developer overrides.
