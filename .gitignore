@@ -32,6 +32,9 @@ Thumbs.db
 # Generated pipeline artifacts (keep curated references with git add -f)
 outputs/
 
+# Local-only working docs (not published)
+docs/cameo-5-alpha/
+
 # Web dependencies and build output
 /node_modules/
 web/node_modules/
