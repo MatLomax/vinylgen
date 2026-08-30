@@ -12,7 +12,6 @@ htmlcov/
 # Local environment and editor files
 .env
 .env.*
-!.env.example
 .DS_Store
 Thumbs.db
 *.swp
@@ -20,8 +19,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Codex CLI OAuth credentials must never be committed
-.codex/auth.json
+# Local agent tooling: Codex hooks/OAuth and impeccable config
+.codex/
 
 # Project-local runtime and disposable data
 .tmp/
@@ -43,6 +42,7 @@ web/*.tsbuildinfo
 
 # impeccable tooling dependencies and local outputs
 .impeccable/node_modules/
+.impeccable/config.json
 .impeccable/design.json
 .impeccable/review/
 
