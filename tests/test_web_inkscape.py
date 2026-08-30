@@ -130,7 +130,7 @@ class WebInkscapeTest(unittest.IsolatedAsyncioTestCase):
         try:
             denied = await client.post("/api/projects", json={"name": "Denied"})
             allowed = await client.post("/api/projects", json={"name": "Allowed"},
-                                        headers={"X-Gandalf-User": "mat@example.test"})
+                                        headers={"X-Gandalf-User": "user@example.test"})
             self.assertEqual(denied.status_code, 403)
             self.assertEqual(allowed.status_code, 201)
         finally:

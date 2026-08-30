@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/mat/Projects/vinylgen
-EnvironmentFile=/home/mat/Projects/vinylgen/.vinylgen-data/vinylgen.env
-ExecStart=/home/mat/Projects/vinylgen/.venv/bin/uvicorn vinylgen.web.app:app --host 127.0.0.1 --port 8275 --proxy-headers --forwarded-allow-ips=127.0.0.1
+WorkingDirectory=%h/vinylgen
+EnvironmentFile=%h/vinylgen/.vinylgen-data/vinylgen.env
+ExecStart=%h/vinylgen/.venv/bin/uvicorn vinylgen.web.app:app --host 127.0.0.1 --port 8275 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -15,7 +15,7 @@ NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/home/mat/Projects/vinylgen/.vinylgen-data /home/mat/Projects/vinylgen/.tmp
+ReadWritePaths=%h/vinylgen/.vinylgen-data %h/vinylgen/.tmp
 
 [Install]
 WantedBy=default.target

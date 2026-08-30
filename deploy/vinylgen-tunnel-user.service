@@ -1,12 +1,12 @@
 [Unit]
-Description=Private Vinylgen reverse tunnel to Gandalf host
+Description=Private Vinylgen reverse tunnel to the edge host
 After=network-online.target vinylgen.service
 Wants=network-online.target
 Requires=vinylgen.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:8275:127.0.0.1:8275 samwise
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:8275:127.0.0.1:8275 edge-host
 Restart=always
 RestartSec=5
 

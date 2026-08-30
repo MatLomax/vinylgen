@@ -1,13 +1,13 @@
 # Vinylgen deployment
 
-Vinylgen runs on workstation `jeffery` as a user service, bound only to
+Vinylgen runs on a workstation as a user service, bound only to
 `127.0.0.1:8275`. A persistent SSH reverse tunnel exposes that backend only at
-`127.0.0.1:8275` on `samwise`; Gandalf exposes it at
-`https://vinylgen.home.matlomax.com` with TLS and `vinylgen:app` ACL checks.
-The backend rejects every mutation that lacks Gandalf's trusted identity
-header; direct localhost health checks remain read-only.
+`127.0.0.1:8275` on an edge host; Gandalf (an identity-aware reverse proxy)
+exposes it at `https://vinylgen.example.com` with TLS and `vinylgen:app` ACL
+checks. The backend rejects every mutation that lacks Gandalf's trusted
+identity header; direct localhost health checks remain read-only.
 
-Persistent state lives in `.vinylgen-data/` on `jeffery`. Explicit desktop
+Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop
 handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
 25 MiB, at most two jobs may be active, and completed job metadata is pruned
 after 90 days when the service starts. Project revisions and content-addressed artifacts
@@ -53,7 +53,7 @@ automatic separately billed API fallback.
 ```bash
 systemctl --user status vinylgen vinylgen-tunnel --no-pager
 curl -fsS http://127.0.0.1:8275/api/health
-ssh samwise 'curl -fsS http://127.0.0.1:8275/api/health'
+ssh edge-host 'curl -fsS http://127.0.0.1:8275/api/health'
 journalctl --user -u vinylgen -u vinylgen-tunnel -n 100 --no-pager
 systemctl --user restart vinylgen vinylgen-tunnel
 ```

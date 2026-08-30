@@ -14,7 +14,7 @@ readiness is not yet claimed.
 
 ## Working rules
 
-- Work from `/home/mat/Projects/vinylgen`.
+- Work from the repository root.
 - At the start of each task, warm-load durable project state with
   `worklog context` (or the worklog MCP `task-next`/`task-list` tools). The
   project database is `.solstice/work.db`; it is local agent working state and

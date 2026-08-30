@@ -50,7 +50,7 @@ health:
 
 health-public:
     curl -fsS --retry 10 --retry-all-errors --retry-delay 1 --max-time 5 \
-        https://vinylgen.home.matlomax.com/api/health
+        https://vinylgen.example.com/api/health
     @echo
 
 status:
