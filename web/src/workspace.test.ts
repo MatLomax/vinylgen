@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fitTransform, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
+import { defaultComparePair, fitTransform, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
 
 describe('shared workspace transform', () => {
   it('keeps the pixel under the pointer registered while zooming', () => {
@@ -54,6 +54,33 @@ describe('shared workspace transform', () => {
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 768 })).toBe(true)
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 900 })).toBe(false)
     expect(sameImageSize({ width: 1024, height: 768 }, undefined)).toBe(false)
+  })
+
+  it('chooses distinct before/after images and no counterpart for a lone image', () => {
+    // Two or more images always resolve to different Before/After artifacts, so a
+    // split can never clip an image over itself.
+    expect(defaultComparePair(['source', 'flat', 'report'])).toEqual({ beforeId: 'source', afterId: 'flat' })
+    expect(defaultComparePair(['source', 'flat'], 'flat')).toEqual({ beforeId: 'flat', afterId: 'source' })
+    // A preferred id that is also the only remaining candidate still yields a distinct after.
+    expect(defaultComparePair(['source', 'flat'], 'source').afterId).not.toBe('source')
+    // A single image has no counterpart to compare against.
+    expect(defaultComparePair(['only'])).toEqual({ beforeId: 'only', afterId: '' })
+    expect(defaultComparePair([])).toEqual({ beforeId: '', afterId: '' })
+  })
+
+  it('prefers a dimension-compatible distinct after, skipping an earlier incompatible image', () => {
+    const dimensions = {
+      a: { width: 1000, height: 700 },
+      b: { width: 1000, height: 850 },
+      c: { width: 1000, height: 700 },
+    }
+    // b is earlier than c but incompatible with a, so After skips b for the compatible c.
+    expect(defaultComparePair(['a', 'b', 'c'], undefined, dimensions)).toEqual({ beforeId: 'a', afterId: 'c' })
+    // With no dimensions known yet it still resolves a distinct After (first distinct).
+    expect(defaultComparePair(['a', 'b', 'c'])).toEqual({ beforeId: 'a', afterId: 'b' })
+    expect(defaultComparePair(['a', 'b', 'c'], undefined, {})).toEqual({ beforeId: 'a', afterId: 'b' })
+    // When no distinct image is known-compatible, it falls back to the first distinct id.
+    expect(defaultComparePair(['a', 'b'], undefined, dimensions)).toEqual({ beforeId: 'a', afterId: 'b' })
   })
 
   it('paints only the destination pixel when a stroke has no prior point', () => {

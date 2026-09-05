@@ -36,6 +36,26 @@ export function splitPositionInImage(viewWidth: number, splitPercent: number, im
   return clamp((dividerX - transform.x) / transform.scale, 0, imageWidth)
 }
 
+/**
+ * Choose distinct Before/After comparison images from the ordered image ids.
+ * Before defaults to the preferred id when present, otherwise the first image.
+ * After prefers the first distinct image whose intrinsic pixel dimensions are
+ * known to match Before (via the optional dimensions map), so a default
+ * comparison lands on a pair that can actually register; when no distinct image
+ * is known-compatible yet — including at first render before any dimensions have
+ * loaded — it falls back to the first distinct id. A two-image (or larger) set
+ * therefore never resolves Before and After to the same artifact; a single image
+ * yields an empty After (no counterpart to compare against).
+ */
+export function defaultComparePair(imageIds: string[], preferredId?: string, dimensions?: Record<string, ImageSize>): { beforeId: string; afterId: string } {
+  const beforeId = preferredId && imageIds.includes(preferredId) ? preferredId : imageIds[0] ?? ''
+  const distinct = imageIds.filter(id => id !== beforeId)
+  const beforeSize = dimensions?.[beforeId]
+  const compatible = beforeSize ? distinct.find(id => sameImageSize(beforeSize, dimensions?.[id])) : undefined
+  const afterId = compatible ?? distinct[0] ?? ''
+  return { beforeId, afterId }
+}
+
 export function midpoint(a: Point, b: Point): Point {
   return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
 }

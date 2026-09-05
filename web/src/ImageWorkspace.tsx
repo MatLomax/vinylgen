@@ -1,6 +1,6 @@
-import { PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
-import { distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
+import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
 type CompareMode = 'single' | 'split' | 'blink'
@@ -11,6 +11,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const pointerStarts = useRef(new Map<number, Point>())
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
   const painting = useRef(false)
+  const dividerDragging = useRef(false)
   const lastPaint = useRef<[number, number] | null>(null)
   const panningPointer = useRef(false)
   const spaceHeld = useRef(false)
@@ -19,8 +20,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const [hoverPixel, setHoverPixel] = useState<[number, number] | null>(null)
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
   const [size, setSize] = useState({ width: 0, height: 0 })
-  const [beforeId, setBeforeId] = useState(() => layers.some(layer => layer.role === 'image' && layer.id === preferredLayerId) ? preferredLayerId! : layers.find(layer => layer.role === 'image')?.id ?? '')
-  const [afterId, setAfterId] = useState(() => layers.filter(layer => layer.role === 'image').at(-1)?.id ?? '')
+  const [beforeId, setBeforeId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).beforeId)
+  const [afterId, setAfterId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).afterId)
   const previousPreferredLayerId = useRef(preferredLayerId)
   const [mode, setMode] = useState<CompareMode>('single')
   const [split, setSplit] = useState(50)
@@ -38,17 +39,29 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   const visible = layers.filter(layer => layer.role === 'image')
   const before = visible.find(layer => layer.id === beforeId) ?? visible[0]
-  const after = visible.find(layer => layer.id === afterId) ?? visible[visible.length - 1]
+  const after = visible.find(layer => layer.id === afterId)
   const inspections = layers.filter(layer => layer.role === 'mask' || layer.role === 'overlay')
   const beforeSize = before ? dimensions[before.id] : undefined
-  const compatibleAfter = after && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
+  const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
+  const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
+  const comparisonAvailable = comparableImages.length > 0
   const compatibleInspections = inspections.filter(layer => enabledInspections[layer.id] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
   const incompatibleInspections = inspections.filter(layer => enabledInspections[layer.id] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
-    if (!visible.some(layer => layer.id === beforeId) && visible[0]) setBeforeId(visible[0].id)
-    if (!visible.some(layer => layer.id === afterId) && visible.length) setAfterId(visible[visible.length - 1].id)
-  }, [layers, beforeId, afterId])
+    const ids = visible.map(layer => layer.id)
+    const pair = defaultComparePair(ids, ids.includes(beforeId) ? beforeId : undefined, dimensions)
+    if (pair.beforeId !== beforeId) setBeforeId(pair.beforeId)
+    if ((!ids.includes(afterId) || afterId === pair.beforeId) && pair.afterId !== afterId) setAfterId(pair.afterId)
+  }, [layers, beforeId, afterId, dimensions])
+
+  useEffect(() => {
+    // Only force the single-view fallback once availability is genuinely known to
+    // be false: Before's intrinsic dimensions have loaded and no distinct
+    // compatible pair exists. While Before is still measuring, comparison
+    // availability is unknown, not false, so split/blink must not be dropped.
+    if (beforeSize && (mode === 'split' || mode === 'blink') && !comparisonAvailable) setMode('single')
+  }, [comparisonAvailable, mode, beforeSize])
 
   useEffect(() => {
     if (preferredLayerId === previousPreferredLayerId.current) return
@@ -276,6 +289,40 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     setTransform(value => zoomAt(value, localPoint(event.clientX, event.clientY), Math.exp(-event.deltaY * 0.0015)))
   }
 
+  function dividerPointerDown(event: PointerEvent<HTMLDivElement>) {
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dividerDragging.current = true
+  }
+
+  function dividerPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!dividerDragging.current) return
+    event.stopPropagation()
+    const bounds = viewport.current?.getBoundingClientRect()
+    if (!bounds?.width) return
+    setSplit(clamp(((event.clientX - bounds.left) / bounds.width) * 100, 0, 100))
+  }
+
+  function dividerPointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (!dividerDragging.current) return
+    event.stopPropagation()
+    dividerDragging.current = false
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
+  }
+
+  function dividerKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const move = (delta: number) => { event.preventDefault(); setSplit(value => clamp(value + delta, 0, 100)) }
+    const set = (position: number) => { event.preventDefault(); setSplit(position) }
+    switch (event.key) {
+      case 'ArrowLeft': case 'ArrowDown': return move(-1)
+      case 'ArrowRight': case 'ArrowUp': return move(1)
+      case 'PageDown': return move(-10)
+      case 'PageUp': return move(10)
+      case 'Home': return set(0)
+      case 'End': return set(100)
+    }
+  }
+
   const showAfter = mode === 'split' || (mode === 'blink' && blinkAfter)
   const transformStyle = { width: size.width, height: size.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
@@ -284,8 +331,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     {!editorMode && <section className="control-section">
       <h3>Compare</h3>
       <div className="segmented" aria-label="Comparison mode">
-        {(['single', 'split', 'blink'] as CompareMode[]).map(value => <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} onClick={() => { setMode(value); if (value === 'blink') setBlinkAfter(false) }}>{value}</button>)}
+        {(['single', 'split', 'blink'] as CompareMode[]).map(value => {
+          const locked = value !== 'single' && !comparisonAvailable
+          return <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} disabled={locked} aria-disabled={locked} title={locked ? 'Comparison needs a second image with matching pixel dimensions.' : undefined} onClick={() => { setMode(value); if (value === 'blink') setBlinkAfter(false) }}>{value}</button>
+        })}
       </div>
+      {!comparisonAvailable && <p className="layer-warning" role="status">Comparison needs a second image with matching pixel dimensions.</p>}
       <label>Before<select value={before?.id ?? ''} onChange={event => { setBeforeId(event.target.value); setSize({ width: 0, height: 0 }) }}>{visible.map(layer => <option key={layer.id} value={layer.id}>{layer.name}</option>)}</select></label>
       <label>After<select value={after?.id ?? ''} onChange={event => setAfterId(event.target.value)}>{visible.map(layer => <option key={layer.id} value={layer.id} disabled={Boolean(beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))}>{layer.name}{beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]) ? ' · different canvas' : ''}</option>)}</select></label>
       {after && beforeSize && dimensions[after.id] && !compatibleAfter && <p className="layer-warning" role="status">Comparison hidden: the selected images have different pixel dimensions and cannot be registered exactly.</p>}
@@ -314,7 +365,23 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
         {overlay && <img className="editor-overlay" src={overlay} alt="" aria-hidden="true" draggable={false} />}
       </div>
-      {mode === 'split' && <div className="split-line" style={{ left: `${split}%` }} aria-hidden="true" />}
+      {mode === 'split' && compatibleAfter && <div
+        className="split-divider"
+        role="slider"
+        tabIndex={0}
+        aria-label="Comparison split position"
+        aria-orientation="horizontal"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(split)}
+        aria-valuetext={`${Math.round(split)}%`}
+        style={{ left: `${split}%` }}
+        onPointerDown={dividerPointerDown}
+        onPointerMove={dividerPointerMove}
+        onPointerUp={dividerPointerUp}
+        onPointerCancel={dividerPointerUp}
+        onKeyDown={dividerKeyDown}
+      ><span className="split-line" aria-hidden="true" /></div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>

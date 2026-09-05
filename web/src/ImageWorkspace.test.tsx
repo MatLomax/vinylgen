@@ -123,7 +123,7 @@ describe('ImageWorkspace interactions', () => {
   })
 
   it('keeps split mode and the selected before image when the Before dropdown changes', () => {
-    const result = render(<ImageWorkspace layers={layers} preferredLayerId="source" />)
+    const result = prepare({ preferredLayerId: 'source' })
     const desktop = result.container.querySelector('.desktop-view-controls') as HTMLElement
     const before = within(desktop).getByLabelText('Before') as HTMLSelectElement
 
@@ -164,6 +164,120 @@ describe('ImageWorkspace interactions', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it('disables comparison modes and explains why when only one image exists', () => {
+    const single: WorkspaceLayer[] = [{ id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' }]
+    const result = render(<ImageWorkspace layers={single} />)
+    const viewport = within(result.container).getByLabelText('Image comparison viewport')
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
+    load(result.container, 'source', 1000, 700)
+    const desktop = result.container.querySelector('.desktop-view-controls') as HTMLElement
+    const split = within(desktop).getByRole('button', { name: 'split' }) as HTMLButtonElement
+    const blink = within(desktop).getByRole('button', { name: 'blink' }) as HTMLButtonElement
+    expect(split.disabled).toBe(true)
+    expect(split.getAttribute('aria-disabled')).toBe('true')
+    expect(blink.disabled).toBe(true)
+    expect(within(desktop).getByRole('status').textContent).toContain('matching pixel dimensions')
+    // Before and After cannot resolve to two rendered copies of the same artifact.
+    expect(result.container.querySelectorAll('.compare-layer').length).toBe(0)
+    expect(result.container.querySelectorAll('.image-stage img').length).toBe(1)
+  })
+
+  it('renders a distinct After image when entering split with a compatible pair', () => {
+    const { container } = prepare()
+    const desktop = container.querySelector('.desktop-view-controls') as HTMLElement
+    const before = within(desktop).getByLabelText('Before') as HTMLSelectElement
+    const after = within(desktop).getByLabelText('After') as HTMLSelectElement
+    expect(before.value).toBe('source')
+    expect(after.value).toBe('flat')
+    expect(after.value).not.toBe(before.value)
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    // A real After image is drawn, not a difference-free copy of Before.
+    expect(screen.getByAltText('Flattened')).toBeTruthy()
+    expect(container.querySelector('.compare-layer')).toBeTruthy()
+    expect(container.querySelector('[role="slider"][aria-label="Comparison split position"]')).toBeTruthy()
+  })
+
+  it('drags the divider to move the split without panning the image', () => {
+    const { container } = prepare()
+    const desktop = container.querySelector('.desktop-view-controls') as HTMLElement
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    const stage = container.querySelector('.image-stage') as HTMLElement
+    const compare = container.querySelector('.compare-layer') as HTMLElement
+    const handle = screen.getByRole('slider', { name: 'Comparison split position' })
+    const stageBefore = stage.style.transform
+    const clipBefore = compare.style.clipPath
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 400 })
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 200 })
+    fireEvent.pointerUp(handle, { pointerId: 1 })
+    // 200px of an 800px viewport is 25%.
+    expect(handle.getAttribute('aria-valuenow')).toBe('25')
+    expect(compare.style.clipPath).not.toBe(clipBefore)
+    // Dragging the divider must never pan the artwork.
+    expect(stage.style.transform).toBe(stageBefore)
+  })
+
+  it('reports a horizontal orientation for the split divider slider', () => {
+    const { container } = prepare()
+    const desktop = container.querySelector('.desktop-view-controls') as HTMLElement
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    const handle = screen.getByRole('slider', { name: 'Comparison split position' })
+    // The value axis is horizontal (ArrowRight/clientX increase the split), so the
+    // slider must advertise a horizontal orientation.
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal')
+  })
+
+  it('announces an integer percentage after a fractional divider drag', () => {
+    const { container } = prepare()
+    const desktop = container.querySelector('.desktop-view-controls') as HTMLElement
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    const handle = screen.getByRole('slider', { name: 'Comparison split position' })
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 400 })
+    // 205px of an 800px viewport is 25.625%, which must be announced as a rounded integer.
+    fireEvent.pointerMove(handle, { pointerId: 1, clientX: 205 })
+    fireEvent.pointerUp(handle, { pointerId: 1 })
+    expect(handle.getAttribute('aria-valuenow')).toBe('26')
+    expect(handle.getAttribute('aria-valuetext')).toBe('26%')
+  })
+
+  it('keeps split mode while a newly selected Before image is still measuring', () => {
+    const withExtra: WorkspaceLayer[] = [
+      { id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' },
+      { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
+      { id: 'other', name: 'Other', url: '/other.png', mediaType: 'image/png', role: 'image' },
+    ]
+    const result = render(<ImageWorkspace layers={withExtra} />)
+    const viewport = within(result.container).getByLabelText('Image comparison viewport')
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
+    // Measure source and flat (compatible); leave 'other' unmeasured.
+    load(result.container, 'source', 1000, 700)
+    load(result.container, 'flat', 1000, 700)
+    const desktop = result.container.querySelector('.desktop-view-controls') as HTMLElement
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    expect(within(desktop).getByRole('button', { name: 'split' }).getAttribute('aria-pressed')).toBe('true')
+    // Switching Before to the unmeasured image makes availability unknown, not false,
+    // so split mode must persist rather than being force-dropped to single (F3).
+    fireEvent.change(within(desktop).getByLabelText('Before'), { target: { value: 'other' } })
+    expect(within(desktop).getByRole('button', { name: 'split' }).getAttribute('aria-pressed')).toBe('true')
+    // Once measured and compatible the comparison stays available.
+    load(result.container, 'other', 1000, 700)
+    expect(within(desktop).getByRole('button', { name: 'split' }).getAttribute('aria-pressed')).toBe('true')
+    result.unmount()
+  })
+
+  it('moves the split with the keyboard on the divider handle', () => {
+    const { container } = prepare()
+    const desktop = container.querySelector('.desktop-view-controls') as HTMLElement
+    fireEvent.click(within(desktop).getByRole('button', { name: 'split' }))
+    const handle = screen.getByRole('slider', { name: 'Comparison split position' })
+    handle.focus()
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(handle.getAttribute('aria-valuenow')).toBe('51')
+    fireEvent.keyDown(handle, { key: 'Home' })
+    expect(handle.getAttribute('aria-valuenow')).toBe('0')
+    fireEvent.keyDown(handle, { key: 'End' })
+    expect(handle.getAttribute('aria-valuenow')).toBe('100')
   })
 
   it('isolates the full application background and redirects programmatic outside focus', () => {
