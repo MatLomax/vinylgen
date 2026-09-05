@@ -24,7 +24,6 @@ Thumbs.db
 
 # Project-local runtime and disposable data
 .tmp/
-.solstice/work.db*
 .vinylgen-data/
 .worklog/
 
