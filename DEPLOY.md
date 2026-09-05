@@ -7,6 +7,10 @@ exposes it at `https://vinylgen.example.com` with TLS and `vinylgen:app` ACL
 checks. The backend rejects every mutation that lacks Gandalf's trusted
 identity header; direct localhost health checks remain read-only.
 
+`just deploy` finishes by checking `$VINYLGEN_PUBLIC_URL/api/health`. Set
+`VINYLGEN_PUBLIC_URL` to the deployment's real public origin in the untracked
+`.vinylgen-data/vinylgen.env`; the template value is a placeholder.
+
 Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop
 handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
 25 MiB, at most two jobs may be active, and completed job metadata is pruned

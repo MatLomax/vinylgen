@@ -48,9 +48,14 @@ health:
         http://127.0.0.1:8275/api/health
     @echo
 
+# The public URL is deployment-specific and lives in the untracked
+# .vinylgen-data/vinylgen.env as VINYLGEN_PUBLIC_URL.
 health-public:
-    curl -fsS --retry 10 --retry-all-errors --retry-delay 1 --max-time 5 \
-        https://vinylgen.example.com/api/health
+    url=$(sed -n 's/^VINYLGEN_PUBLIC_URL=//p' .vinylgen-data/vinylgen.env 2>/dev/null || true); \
+    if [[ -z "$url" ]]; then \
+        echo "VINYLGEN_PUBLIC_URL is not set in .vinylgen-data/vinylgen.env" >&2; exit 1; \
+    fi; \
+    curl -fsS --retry 10 --retry-all-errors --retry-delay 1 --max-time 5 "$url/api/health"
     @echo
 
 status:
