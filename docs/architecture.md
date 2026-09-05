@@ -65,8 +65,8 @@ runtime fallback.
 
 The Inkscape handoff is an immutable branch after tracing. SVG and PNG
 downloads are explicit choices, and configured shared-folder saves are atomic.
-Reimport accepts only passive, self-contained SVG, renders it headlessly at
-768 DPI, and stores a neutral edited-SVG artifact, fresh inspection preview,
+Reimport accepts only passive, self-contained SVG, renders it headlessly with
+the shared preview policy (`vinylgen/preview.py`), and stores a neutral edited-SVG artifact, fresh inspection preview,
 and validation audit on a new `inkscape-edit` revision. Because an arbitrary
 edit cannot honestly be classified as both edge and overlap trace geometry,
 trace, validation, and export are stale until retracing. The generated trace on

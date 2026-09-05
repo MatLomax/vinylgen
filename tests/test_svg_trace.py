@@ -16,6 +16,7 @@ from vinylgen.boundary_graph import (
 from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import ring_path
 from vinylgen.svg_writer import SVG
+from vinylgen.preview import PREVIEW_MAX_SIDE, preview_plan
 from vinylgen.tracing import trace_subject
 
 
@@ -210,6 +211,13 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(orange["paths"], 2)
             self.assertEqual(orange["source_colour_components"], 2)
             self.assertGreaterEqual(sum(layer["holes"] for layer in first["geometry"]["edge"]), 1)
+            audit = json.loads((subject / "trace.json").read_text())
+            expected = preview_plan(subject / "traced-overlap.svg")
+            self.assertEqual(audit["preview"], {"file": "traced.png", **{
+                key: value for key, value in expected.items() if key != "arguments"}})
+            with Image.open(subject / "traced.png") as preview:
+                self.assertEqual(preview.size, (expected["width"], expected["height"]))
+            self.assertLessEqual(max(preview.size), PREVIEW_MAX_SIDE)
 
     def test_solid_underlayers_make_lower_layers_solid_without_shared_edges(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:

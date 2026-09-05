@@ -207,6 +207,14 @@ fuzz tests compare against them.
   colour and checks neighbour residuals with an exact windowed update instead
   of relabelling and re-transforming the full image per widened region.
 
+The `traced.png` preview targets 768 DPI, but `vinylgen/preview.py` caps its
+longer side at 1920 px: it is an inspection image, so large sources render at
+roughly 1080p instead of gigapixel size. The same policy sizes the Inkscape
+reimport preview. On the development machine a 5980×4208 source traces in
+roughly 47 seconds and corpus subjects (about 1.5 megapixels) in 8 to 12
+seconds; the Inkscape preview render is under a second of that. Inkscape 1.2.2 does not render very large previews
+deterministically, so byte identity of `traced.png` is only asserted at
+capped sizes.
 
 ## Configuration
 

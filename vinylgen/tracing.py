@@ -26,6 +26,7 @@ from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import (
     SharedChainFitter, geometry_components, region_components, shared_boundary_components)
 from vinylgen.palette import Progress, _noop
+from vinylgen.preview import preview_plan
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
     component_sizes,
@@ -523,12 +524,16 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     audit["determinism"] = {"input_sha256": hashlib.sha256(
         flattened_path.read_bytes() + palette_path.read_bytes()
         + segmentation_path.read_bytes()).hexdigest()}
+    audit["preview"] = {"file": "traced.png",
+                        **{key: value for key, value in preview_plan(
+                            subject_dir / "traced-overlap.svg").items() if key != "arguments"}}
     tick(0.9, "Writing artifacts")
     (subject_dir / "trace.json").write_text(json.dumps(audit, indent=2) + "\n")
     tick(0.95, "Rendering preview")
+    plan = preview_plan(subject_dir / "traced-overlap.svg")
     subprocess.run([
         str(renderer), str(subject_dir / "traced-overlap.svg"),
-        "--export-type=png", "--export-dpi=768",
+        "--export-type=png", *plan["arguments"],
         f"--export-filename={subject_dir / 'traced.png'}",
     ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     tick(1.0, "Complete")

@@ -96,8 +96,9 @@ contract.
 `traced-edge.svg` is a gap-free planar partition built from boundaries shared
 verbatim by neighbouring colours. `traced-overlap.svg` uses the same partition
 and expands lower layers when overlap is configured above zero. `traced.png` is
-the current 768 DPI preview rendered from `traced-overlap.svg` and must be
-regenerated whenever either SVG changes. `trace-fallbacks.png` is emitted only
+the current preview rendered from `traced-overlap.svg` and must be
+regenerated whenever either SVG changes. It targets 768 DPI, but its longer
+side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
 when local curve-fit fallback occurs. `trace.json` records effective
 configuration, backend versions, colour names/order, component/node/hole
 counts, cleanup, render comparisons, warnings, and structural validation.

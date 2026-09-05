@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +70,10 @@ class WebInkscapeTest(unittest.IsolatedAsyncioTestCase):
                          {"inkscape-svg", "inkscape-preview", "inkscape-audit"})
         imported = next(row for row in artifacts if row["kind"] == "inkscape-svg")
         self.assertEqual(self.app.state.store.artifact_path(imported["id"]).read_bytes(), edited)
+        audit_row = next(row for row in artifacts if row["kind"] == "inkscape-audit")
+        audit = json.loads(self.app.state.store.artifact_path(audit_row["id"]).read_text())
+        self.assertEqual((audit["preview_dpi"], audit["preview_width"], audit["preview_height"],
+                          audit["preview_capped"]), (768.0, 160, 160, False))
         self.assertEqual(revision["settings"]["stale_concerns"],
                          ["trace", "validation", "export"])
         self.assertEqual(self.app.state.store.artifact_path(svg["id"]).read_bytes(), SVG)

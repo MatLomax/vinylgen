@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from vinylgen.preview import preview_plan
 from typing import BinaryIO
 
 from .store import Store
@@ -111,14 +113,20 @@ class InkscapeHandoff:
             work = Path(directory)
             source, preview = work / "edited.svg", work / "traced.png"
             source.write_bytes(payload)
-            command = [str(runner), str(source), "--export-type=png", "--export-dpi=768",
+            try:
+                plan = preview_plan(payload)
+            except ValueError as error:
+                raise ValueError(f"SVG preview size cannot be determined: {error}") from error
+            command = [str(runner), str(source), "--export-type=png", *plan["arguments"],
                        f"--export-filename={preview}"]
             completed = subprocess.run(command, capture_output=True, text=True, timeout=120)
             if completed.returncode or not preview.is_file():
                 detail = (completed.stderr or completed.stdout).strip()
                 raise ValueError(f"Inkscape could not render the SVG: {detail or 'no preview produced'}")
             audit = {**validate, "inkscape_exit_code": completed.returncode,
-                     "preview_dpi": 768, "preview_bytes": preview.stat().st_size}
+                     "preview_dpi": plan["dpi"], "preview_width": plan["width"],
+                     "preview_height": plan["height"], "preview_max_side": plan["max_side"],
+                     "preview_capped": plan["capped"], "preview_bytes": preview.stat().st_size}
             return preview.read_bytes(), audit
 
     def reimport(self, project_id: str, revision_id: str, *, filename: str,

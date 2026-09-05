@@ -28,7 +28,7 @@ The core loop is `Generate → inspect → flatten → inspect/edit → trace �
 - Deterministic flattening infers a limited palette, preserves exact palette membership, and treats four-way edge connectivity as authoritative for physical vinyl regions.
 - Palette edits operate on complete colours in authoritative label maps. The flattened-image editor supports whole-colour merges, point-selected connected-area reassignment, and a per-pixel pencil that repaints individual pixels to an existing palette colour; it does not create new colours or adjust a palette colour's RGB value. Four-way connectivity stays authoritative, so a pencil stroke that severs a region splits it into separate regions on the next recompute.
 - Generative source creation always creates a recoverable root revision.
-- Tracing emits shared-boundary overlap and edge SVG variants, audits, and a synchronized 768 DPI preview. Structural validation does not establish physical cutter readiness.
+- Tracing emits shared-boundary overlap and edge SVG variants, audits, and a synchronized preview rendered at 768 DPI with its longer side capped at 1920 px. Structural validation does not establish physical cutter readiness.
 - Source generation always requests maximum provider quality and rich detail within a configurable limited-colour flat graphic style designed for clean flattening; cut detail and trace fidelity remain separate deterministic controls.
 - External SVG edits return as new revisions rather than overwriting generated traces.
 - Physical cutter operation requires cutter-host detection, reviewed path bounds, arming, and a separate explicit confirmation. Tiling, registration, visual inspection, and physical cutter testing remain later or human-reviewed work.
