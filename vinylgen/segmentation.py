@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import math
-
 import numpy as np
 from scipy import ndimage
+
+from vinylgen.ridge import two_sided_dark_ridge_response
 
 
 def detect_intentional_strokes(
@@ -25,22 +25,9 @@ def detect_intentional_strokes(
     """
     lightness = source_lab[..., 0].astype(np.float32)
     height, width = labels.shape
-    yy, xx = np.indices(labels.shape, dtype=np.float32)
-    response = np.zeros(labels.shape, dtype=np.float32)
-    best_radius = np.ones(labels.shape, dtype=np.uint8)
-    # Normals over half a circle; the opposite sample is generated explicitly.
-    for radius in (1, 2, 3):
-        for angle in np.linspace(0.0, np.pi, 8, endpoint=False):
-            dx = radius * math.cos(float(angle))
-            dy = radius * math.sin(float(angle))
-            a = ndimage.map_coordinates(lightness, (yy + dy, xx + dx), order=1,
-                                         mode="nearest")
-            b = ndimage.map_coordinates(lightness, (yy - dy, xx - dx), order=1,
-                                         mode="nearest")
-            two_sided = np.minimum(a - lightness, b - lightness)
-            improve = two_sided > response
-            response[improve] = two_sided[improve]
-            best_radius[improve] = radius
+    # The strongest two-sided dark-ridge contrast per pixel over eight normals
+    # and radii 1/2/3, with the winning radius; a fused parallel kernel.
+    response, best_radius = two_sided_dark_ridge_response(lightness)
 
     # A real dark stroke should also be assigned confidently enough that it is
     # not just a halfway blend between two palette colours.
@@ -50,7 +37,6 @@ def detect_intentional_strokes(
     seeds = ndimage.binary_closing(raw_seeds, structure=np.ones((3, 3)), iterations=1)
     components, count = ndimage.label(seeds, structure=np.ones((3, 3)))
     objects = ndimage.find_objects(components)
-    coherent = np.zeros_like(seeds)
     normalized = labels.copy()
     locked = (np.zeros_like(seeds) if locked_features is None
               else np.asarray(locked_features, dtype=bool))
@@ -59,6 +45,8 @@ def detect_intentional_strokes(
     protected = locked.copy()
     retained = 0
     retained_by_colour: dict[int, int] = {}
+    # The cheapest per-pixel assignment cost is loop-invariant; costs is only read.
+    best_cost = costs.min(axis=2)
     for component in range(1, count + 1):
         item = objects[component - 1]
         if item is None:
@@ -68,7 +56,6 @@ def detect_intentional_strokes(
         population = int(local_component.sum())
         if span < minimum_length or population < minimum_length:
             continue
-        coherent[item] |= local_component
         component_labels = np.unique(labels[item][local_component])
         local_response = response[item]
         core_threshold = float(np.percentile(local_response[local_component], 75))
@@ -82,21 +69,29 @@ def detect_intentional_strokes(
         ))
         target = int(component_labels[target])
         target_cost = costs[..., target]
-        best_cost = costs.min(axis=2)
-        global_component = np.zeros_like(seeds)
-        global_component[item] = local_component
+        # The band can only reach two pixels beyond the component box: the widest
+        # dilation is binary_dilation(..., iterations=radius - 1) with radius 3,
+        # i.e. two iterations of the cross structure. A two-pixel pad clamped to
+        # the image therefore contains every pixel the band can touch, so working
+        # in this window and writing through the views is identical to full-image
+        # construction; edges lost to clamping are outside the image regardless.
+        window = (
+            slice(max(0, item[0].start - 2), min(height, item[0].stop + 2)),
+            slice(max(0, item[1].start - 2), min(width, item[1].stop + 2)),
+        )
+        global_component = components[window] == component
         band = global_component.copy()
         for radius in (2, 3):
-            radius_centres = global_component & (best_radius == radius)
+            radius_centres = global_component & (best_radius[window] == radius)
             if radius_centres.any():
                 band |= ndimage.binary_dilation(radius_centres, iterations=radius - 1)
         # Include the AA/body pixels that plausibly belong to the consolidated
         # line colour, without painting across unrelated neighbouring regions.
-        band &= ((target_cost <= best_cost + minimum_contrast)
-                 & (response >= minimum_contrast * 0.25)) | global_component
-        band &= ~locked
-        normalized[band] = target
-        protected |= band
+        band &= ((target_cost[window] <= best_cost[window] + minimum_contrast)
+                 & (response[window] >= minimum_contrast * 0.25)) | global_component
+        band &= ~locked[window]
+        normalized[window][band] = target
+        protected[window] |= band
         retained += 1
         retained_by_colour[target] = retained_by_colour.get(target, 0) + 1
     return normalized, protected, {

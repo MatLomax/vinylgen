@@ -16,6 +16,9 @@ PrivateDevices=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ReadWritePaths=%h/vinylgen/.vinylgen-data %h/vinylgen/.tmp
+# Numba writes its JIT cache at import time and fails hard when every candidate
+# location is read-only, so point it inside a writable path.
+Environment=NUMBA_CACHE_DIR=%h/vinylgen/.tmp/numba-cache
 
 [Install]
 WantedBy=default.target

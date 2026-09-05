@@ -114,8 +114,18 @@ component and parallelises independent input images.
 - Multiple source images use a thread pool; `--jobs 0` automatically chooses up
   to four workers.
 - `--jobs 1` is the deterministic serial debugging mode.
+- The dark-stroke detector's two-sided ridge response (eight normals at radii
+  1, 2 and 3) is a fused, multithreaded Numba kernel in `vinylgen/ridge.py`.
+  It is bit-identical to the `scipy.ndimage.map_coordinates` order-1
+  formulation with nearest-edge extension, and is guarded by a lock so the
+  image thread pool never enters it concurrently. The first call in a fresh
+  environment pays a one-off JIT compile that is cached on disk.
+- Each retained stroke component is consolidated inside its own bounding box
+  padded by the widest band dilation, so the detector's cost is proportional to
+  stroke area rather than to component count times image area.
 - Current corpus runtime is approximately six seconds with four workers on the
-  development machine.
+  development machine. A 5980×4208 source flattens in roughly 46 seconds
+  serially, with no upscale.
 
 ## Known limitations
 
