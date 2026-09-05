@@ -2,35 +2,120 @@ from __future__ import annotations
 
 import re
 import math
+import hashlib
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
+from numba import njit, prange
 from scipy import ndimage
 
 from vinylgen.svg_writer import SVG
 
 
-def _luminance(rgb: np.ndarray) -> np.ndarray:
-    """Return perceptual luminance in [0, 1] without treating sRGB as linear."""
-    values = np.asarray(rgb, dtype=np.float32) / 255.0
+def _build_srgb_linear_lut() -> np.ndarray:
+    """sRGB-to-linear value for every uint8 channel byte, as float32.
+
+    Each byte maps to the same float32 the elementwise expression produces:
+    ``byte / 255`` in float32 followed by the piecewise sRGB decode. Indexing
+    this table by a uint8 channel therefore yields values bit-identical to the
+    elementwise path on the same input.
+    """
+    values = np.arange(256, dtype=np.float32) / 255.0
     linear = np.where(values <= 0.04045, values / 12.92,
                       ((values + 0.055) / 1.055) ** 2.4)
+    return linear.astype(np.float32)
+
+
+_SRGB_LINEAR_LUT = _build_srgb_linear_lut()
+
+
+def _luminance(rgb: np.ndarray) -> np.ndarray:
+    """Return perceptual luminance in [0, 1] without treating sRGB as linear."""
+    array = np.asarray(rgb)
+    if array.dtype == np.uint8:
+        linear = _SRGB_LINEAR_LUT[array]
+    else:
+        values = np.asarray(rgb, dtype=np.float32) / 255.0
+        linear = np.where(values <= 0.04045, values / 12.92,
+                          ((values + 0.055) / 1.055) ** 2.4)
     return (0.2126 * linear[..., 0] + 0.7152 * linear[..., 1]
             + 0.0722 * linear[..., 2])
 
 
+# One kernel call saturates every core, so concurrent callers (the CLI traces
+# independent subjects on a thread pool) gain nothing from overlapping. Holding
+# this lock across the call keeps it safe on numba's workqueue threading layer,
+# which rejects concurrent parallel entry when TBB or OpenMP is unavailable.
+_RIDGE_STRENGTH_LOCK = threading.Lock()
+
+
+@njit(parallel=True, cache=True, fastmath=False)
+def _ridge_strength_kernel(luminance: np.ndarray,
+                           maximum_half_width: int) -> np.ndarray:
+    """Strongest two-sided darkening per pixel over the four normals.
+
+    For each pixel and each distance 1..``maximum_half_width`` along the normals
+    ``(0,1)``, ``(1,0)``, ``(1,1)`` and ``(1,-1)``, both opposite samples must lie
+    inside the image; the darkening ``min(first, second) - centre`` in float32
+    then contributes to the running maximum. Out-of-range samples contribute
+    nothing, matching the NaN produced by the constant-fill scipy formulation.
+    """
+    height, width = luminance.shape
+    strength = np.zeros((height, width), dtype=np.float32)
+    for y in prange(height):
+        for x in range(width):
+            centre = luminance[y, x]
+            best = np.float32(0.0)
+            for distance in range(1, maximum_half_width + 1):
+                for normal in range(4):
+                    if normal == 0:
+                        step_y = 0
+                        step_x = distance
+                    elif normal == 1:
+                        step_y = distance
+                        step_x = 0
+                    elif normal == 2:
+                        step_y = distance
+                        step_x = distance
+                    else:
+                        step_y = distance
+                        step_x = -distance
+                    first_y = y - step_y
+                    first_x = x - step_x
+                    second_y = y + step_y
+                    second_x = x + step_x
+                    if (0 <= first_y < height and 0 <= first_x < width
+                            and 0 <= second_y < height and 0 <= second_x < width):
+                        first = luminance[first_y, first_x]
+                        second = luminance[second_y, second_x]
+                        nearer = first if first < second else second
+                        dark = nearer - centre
+                        if dark > best:
+                            best = dark
+            strength[y, x] = best
+    return strength
+
+
 def _two_sided_dark_ridge_strength(luminance: np.ndarray,
                                    maximum_half_width: int) -> np.ndarray:
-    strength = np.zeros(luminance.shape, dtype=np.float32)
+    array = np.asarray(luminance)
+    if array.dtype == np.float32 and np.isfinite(array).all():
+        contiguous = np.ascontiguousarray(array, dtype=np.float32)
+        with _RIDGE_STRENGTH_LOCK:
+            return _ridge_strength_kernel(contiguous, int(maximum_half_width))
+    # Non-float32 or non-finite luminance keeps the constant-fill scipy path so
+    # NaN propagation and wider dtypes stay exactly as the elementwise form.
+    strength = np.zeros(array.shape, dtype=np.float32)
     normals = ((0, 1), (1, 0), (1, 1), (1, -1))
     for distance in range(1, maximum_half_width + 1):
         for dy, dx in normals:
             offset = (dy * distance, dx * distance)
-            first = ndimage.shift(luminance, offset, order=0, mode="constant", cval=np.nan)
-            second = ndimage.shift(luminance, (-offset[0], -offset[1]), order=0,
+            first = ndimage.shift(array, offset, order=0, mode="constant", cval=np.nan)
+            second = ndimage.shift(array, (-offset[0], -offset[1]), order=0,
                                    mode="constant", cval=np.nan)
-            dark = np.minimum(first, second) - luminance
+            dark = np.minimum(first, second) - array
             strength = np.fmax(strength, dark)
     return strength
 
@@ -80,14 +165,26 @@ def source_thin_feature_mask(
     return result
 
 
+def _candidate_distances(candidate: np.ndarray) -> np.ndarray:
+    """Distance from every pixel to the nearest candidate pixel."""
+    if np.any(candidate):
+        return ndimage.distance_transform_edt(~candidate)
+    return np.full(candidate.shape, np.inf, dtype=np.float32)
+
+
 def _feature_metrics(reference: np.ndarray, candidate: np.ndarray,
-                     maximum_deviation: float) -> dict[str, float | int]:
+                     maximum_deviation: float,
+                     candidate_distances: np.ndarray | None = None) -> dict[str, float | int]:
+    """Score how well ``candidate`` recalls ``reference``.
+
+    ``candidate_distances`` is the candidate's distance field from
+    ``_candidate_distances``; a caller scoring several references against one
+    candidate passes it so the transform runs once.
+    """
     structure = np.ones((3, 3), dtype=np.uint8)
     components, count = ndimage.label(reference, structure=structure)
-    if np.any(candidate):
-        distances = ndimage.distance_transform_edt(~candidate)
-    else:
-        distances = np.full(reference.shape, np.inf, dtype=np.float32)
+    distances = (candidate_distances if candidate_distances is not None
+                 else _candidate_distances(candidate))
     reference_distances = distances[reference]
     matched = reference_distances <= maximum_deviation
     recalled_components = 0
@@ -135,6 +232,58 @@ def _mask_width(mask: np.ndarray) -> float:
     return 2.0 * float(ndimage.distance_transform_edt(mask).max())
 
 
+def _postfit_invariants(reference: np.ndarray,
+                        reference_labels: np.ndarray | None,
+                        maximum_deviation: float,
+                        structure: np.ndarray) -> dict[str, object]:
+    """Reference-only geometry a post-fit validation reuses across candidates.
+
+    Labelling, the nearest-protected-component map, and every per-component
+    window, corridor, source label, area and width depend solely on the
+    protected mask, its label field and the deviation corridor. None of them
+    read the candidate, so a recovery loop revalidating the same subject can
+    compute them once.
+    """
+    labelled, count = ndimage.label(reference, structure=structure)
+    nearest_indices = ndimage.distance_transform_edt(
+        ~reference, return_distances=False, return_indices=True)
+    nearest_component = labelled[tuple(nearest_indices)]
+    halo = int(math.ceil(maximum_deviation))
+    height, width = reference.shape
+    components: list[dict[str, object]] = []
+    for index, bounds in enumerate(ndimage.find_objects(labelled), start=1):
+        if bounds is None:
+            continue
+        y_bounds, x_bounds = bounds
+        expanded = (
+            slice(max(0, y_bounds.start - halo), min(height, y_bounds.stop + halo)),
+            slice(max(0, x_bounds.start - halo), min(width, x_bounds.stop + halo)),
+        )
+        component = labelled[expanded] == index
+        corridor = ndimage.distance_transform_edt(~component) <= maximum_deviation
+        source_label = None
+        if reference_labels is not None:
+            values, frequencies = np.unique(reference_labels[expanded][component],
+                                             return_counts=True)
+            source_label = int(values[int(np.argmax(frequencies))])
+        components.append({
+            "index": index,
+            "y_bounds": y_bounds,
+            "x_bounds": x_bounds,
+            "expanded": expanded,
+            "component": component,
+            "corridor": corridor,
+            "source_label": source_label,
+            "source_area": int(component.sum()),
+            "source_width": _mask_width(component),
+        })
+    return {
+        "count": count,
+        "nearest_component": nearest_component,
+        "components": components,
+    }
+
+
 def validate_postfit_protected_features(
     protected_features: np.ndarray,
     candidate_features: np.ndarray,
@@ -145,6 +294,7 @@ def validate_postfit_protected_features(
     minimum_area_ratio: float = 0.5,
     minimum_width_ratio: float = 0.5,
     minimum_component_pixel_recall: float = 0.6,
+    invariant_cache: dict | None = None,
 ) -> dict[str, object]:
     """Validate protected geometry after fitting without demanding pixel identity.
 
@@ -170,38 +320,57 @@ def validate_postfit_protected_features(
         raise ValueError("minimum area/width ratios must be between zero and one")
 
     structure = np.ones((3, 3), dtype=np.uint8)
-    labelled, count = ndimage.label(reference, structure=structure)
-    candidate_distance = (ndimage.distance_transform_edt(~candidate) if np.any(candidate)
-                          else np.full(reference.shape, np.inf))
     # Assign candidate pixels in overlapping deviation corridors to the nearest
     # protected source component. This prevents a nearby component from making
-    # an omitted one appear split, over-wide, or spuriously preserved.
-    nearest_indices = ndimage.distance_transform_edt(
-        ~reference, return_distances=False, return_indices=True)
-    nearest_component = labelled[tuple(nearest_indices)]
+    # an omitted one appear split, over-wide, or spuriously preserved. The whole
+    # nearest-component map, labelling, and per-component windows depend only on
+    # the protected mask, its labels and the corridor width, so a caller
+    # revalidating one subject across passes may reuse them through the cache.
+    if invariant_cache is not None:
+        reference_key = hashlib.sha256(np.ascontiguousarray(reference).tobytes()).hexdigest()
+        labels_key = (None if reference_labels is None
+                      else hashlib.sha256(
+                          np.ascontiguousarray(reference_labels).tobytes()).hexdigest())
+        cache_key = ("postfit_invariants", reference.shape, float(maximum_deviation),
+                     reference_key, labels_key)
+        invariants = invariant_cache.get(cache_key)
+        if invariants is None:
+            invariants = _postfit_invariants(reference, reference_labels,
+                                             maximum_deviation, structure)
+            invariant_cache[cache_key] = invariants
+    else:
+        invariants = _postfit_invariants(reference, reference_labels,
+                                         maximum_deviation, structure)
+    count = invariants["count"]
+    nearest_component = invariants["nearest_component"]
+    # The candidate distance transform is only read on the label-free path; the
+    # label-aware path never pays for this full-image transform.
+    lazy_candidate_distance: list[np.ndarray | None] = [None]
+
+    def candidate_distance() -> np.ndarray:
+        if lazy_candidate_distance[0] is None:
+            lazy_candidate_distance[0] = (
+                ndimage.distance_transform_edt(~candidate) if np.any(candidate)
+                else np.full(reference.shape, np.inf))
+        return lazy_candidate_distance[0]
+
     rows: list[dict[str, object]] = []
-    halo = int(math.ceil(maximum_deviation))
-    height, width = reference.shape
-    for index, bounds in enumerate(ndimage.find_objects(labelled), start=1):
-        if bounds is None:
-            continue
-        y_bounds, x_bounds = bounds
-        expanded = (
-            slice(max(0, y_bounds.start - halo), min(height, y_bounds.stop + halo)),
-            slice(max(0, x_bounds.start - halo), min(width, x_bounds.stop + halo)),
-        )
-        component = labelled[expanded] == index
-        corridor = ndimage.distance_transform_edt(~component) <= maximum_deviation
+    for record in invariants["components"]:
+        index = record["index"]
+        y_bounds = record["y_bounds"]
+        x_bounds = record["x_bounds"]
+        expanded = record["expanded"]
+        component = record["component"]
+        corridor = record["corridor"]
+        source_label = record["source_label"]
+        source_area = record["source_area"]
+        source_width = record["source_width"]
         associated = (candidate[expanded] & corridor
                       & (nearest_component[expanded] == index))
-        source_label = None
-        if reference_labels is not None:
-            values, frequencies = np.unique(reference_labels[expanded][component],
-                                             return_counts=True)
-            source_label = int(values[int(np.argmax(frequencies))])
+        if source_label is not None:
             associated &= candidate_labels[expanded] == source_label
         if source_label is None:
-            source_distances = candidate_distance[expanded][component]
+            source_distances = candidate_distance()[expanded][component]
         else:
             local_label_candidate = (candidate[expanded]
                                      & (candidate_labels[expanded] == source_label))
@@ -219,12 +388,10 @@ def validate_postfit_protected_features(
         sizes = np.bincount(associated_labels.ravel())[1:]
         # Ignore one-pixel rasterization crumbs when deciding whether fitting
         # split one physical feature into multiple pieces.
-        source_area = int(component.sum())
         viable_piece_floor = min(source_area, max(2, round(source_area * 0.05)))
         viable_pieces = int(np.count_nonzero(sizes >= viable_piece_floor))
         candidate_area = int(associated.sum())
         area_ratio = candidate_area / source_area
-        source_width = _mask_width(component)
         candidate_width = _mask_width(associated)
         width_ratio = candidate_width / source_width if source_width else 1.0
         survived = pixel_recall >= minimum_component_pixel_recall
@@ -334,8 +501,10 @@ def validate_semantic_preservation(
         )
     segmentation_features = cache["segmentation_features"]
     if "segmentation" not in cache:
-        cache["segmentation"] = _feature_metrics(source_features, segmentation_features,
-                                                 maximum_deviation)
+        cache["segmentation_distances"] = _candidate_distances(segmentation_features)
+        cache["segmentation"] = _feature_metrics(
+            source_features, segmentation_features, maximum_deviation,
+            candidate_distances=cache["segmentation_distances"])
     segmentation = cache["segmentation"]
     vector = None
     if vector_rgb is not None:
@@ -346,7 +515,9 @@ def validate_semantic_preservation(
             _dark_feature_support(_luminance(rendered), 4)
             >= minimum_feature_contrast * 0.75
         )
-        vector = _feature_metrics(source_features, vector_features, maximum_deviation)
+        vector_distances = _candidate_distances(vector_features)
+        vector = _feature_metrics(source_features, vector_features, maximum_deviation,
+                                  candidate_distances=vector_distances)
     protected = None
     if protected_features is not None:
         protected_mask = np.asarray(protected_features, dtype=bool)
@@ -354,7 +525,8 @@ def validate_semantic_preservation(
             raise ValueError("protected-feature dimensions differ from source")
         if "protected_base" not in cache:
             cache["protected_base"] = _feature_metrics(
-                protected_mask, segmentation_features, maximum_deviation)
+                protected_mask, segmentation_features, maximum_deviation,
+                candidate_distances=cache.get("segmentation_distances"))
             segmentation_postfit_features = (
                 np.ones(protected_mask.shape, dtype=bool)
                 if segmentation_labels is not None else segmentation_features)
@@ -362,14 +534,16 @@ def validate_semantic_preservation(
                 protected_mask, segmentation_postfit_features,
                 reference_labels=segmentation_labels,
                 candidate_labels=segmentation_labels,
-                maximum_deviation=maximum_deviation)
+                maximum_deviation=maximum_deviation,
+                invariant_cache=cache)
         # Fresh top-level dict per pass: the vector_* keys below are added onto it,
         # so the cached invariants must not accumulate them.
         protected = dict(cache["protected_base"])
         protected["postfit"] = cache["protected_postfit"]
         if vector_rgb is not None:
             protected["vector"] = _feature_metrics(
-                protected_mask, vector_features, maximum_deviation)
+                protected_mask, vector_features, maximum_deviation,
+                candidate_distances=vector_distances)
             vector_postfit_features = (
                 np.ones(protected_mask.shape, dtype=bool)
                 if vector_labels is not None else vector_features)
@@ -377,7 +551,8 @@ def validate_semantic_preservation(
                 protected_mask, vector_postfit_features,
                 reference_labels=segmentation_labels,
                 candidate_labels=vector_labels,
-                maximum_deviation=maximum_deviation)
+                maximum_deviation=maximum_deviation,
+                invariant_cache=cache)
     stages = [segmentation, *([vector] if vector is not None else [])]
     if protected is not None:
         stages.append(protected["postfit"])
@@ -433,11 +608,17 @@ def validate_feature_roi(
 def semantic_warning_mask(source_rgb: np.ndarray, candidate_rgb: np.ndarray,
                           *, maximum_deviation: float = 2.0,
                           minimum_feature_contrast: float = 0.055,
-                          minimum_feature_span: float = 6.0) -> np.ndarray:
-    """Return source feature pixels lacking nearby dark support in a result."""
-    reference = source_thin_feature_mask(
-        source_rgb, minimum_contrast=minimum_feature_contrast,
-        minimum_span=minimum_feature_span)
+                          minimum_feature_span: float = 6.0,
+                          source_features: np.ndarray | None = None) -> np.ndarray:
+    """Return source feature pixels lacking nearby dark support in a result.
+
+    A caller that has already computed the source thin-feature mask may pass it
+    as ``source_features`` to avoid recomputing it here.
+    """
+    reference = (source_features if source_features is not None
+                 else source_thin_feature_mask(
+                     source_rgb, minimum_contrast=minimum_feature_contrast,
+                     minimum_span=minimum_feature_span))
     support = (_dark_feature_support(_luminance(candidate_rgb), 4)
                >= minimum_feature_contrast * 0.75)
     distances = (ndimage.distance_transform_edt(~support) if np.any(support)

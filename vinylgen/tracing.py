@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
@@ -251,6 +252,40 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
     palette_rgb = segmentation.palette_rgb.astype(np.int32)
     canvas = box(0, 0, width, height)
+    # Raster component sizes depend only on the cleaned labels, so they are
+    # measured once per colour rather than on every recovery pass.
+    raster_component_sizes = {index: component_sizes(working == index) for index in order}
+    # The overlap-variant geometry of each layer derives from the fixed partition
+    # alone, so it is built once here. A solid underlayer backs only the higher
+    # shapes this colour actually touches: extending it beneath non-adjacent
+    # colours would stack identical shapes with no physical purpose, so each
+    # higher partition contributes only the components sharing a boundary of
+    # positive length with this colour's region. Without solid underlayers, a
+    # lower layer grows by the overlap buffer, clipped to the canvas. These are
+    # independent GEOS operations that release the GIL, so they run on threads.
+    layer_geometry: dict[int, tuple[object, bool]] = {}
+
+    def _solid_geometry(position: int) -> tuple[object, bool]:
+        base = partition[order[position]]
+        stacked = [base]
+        for higher in range(position + 1, len(order)):
+            for shape in _partition_polygons(partition[order[higher]]):
+                if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
+                    stacked.append(shape)
+        solid = len(stacked) > 1
+        return (unary_union(stacked) if solid else base), solid
+
+    def _buffered_geometry(position: int) -> tuple[object, bool]:
+        return partition[order[position]].buffer(overlap_px, join_style=1).intersection(canvas), True
+
+    if settings.solid_underlayers or overlap_px > 0:
+        builder = _solid_geometry if settings.solid_underlayers else _buffered_geometry
+        positions = [position for position in range(len(order))
+                     if settings.solid_underlayers or position < len(order) - 1]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {order[position]: executor.submit(builder, position)
+                       for position in positions}
+            layer_geometry = {index: future.result() for index, future in futures.items()}
 
     # One fitter persists across every recovery pass. Its cache key encodes the
     # per-chain settings recovery varies, so an unchanged chain returns from cache
@@ -277,27 +312,14 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         for position, index in enumerate(order):
             report(0.6 + 0.2 * position / len(order),
                    f"Fitting layer {position + 1} of {len(order)}")
-            edge_geometry = partition[index]
             edge_components = components_by_colour[index]
             edge_stats = add_layer(roots["edge"], palette[index], edge_components, "",
                                    subject_dir.name, "edge", 0.0)
             edge_stats["construction"] = "canonical shared-chain fit"
-            edge_stats["source_colour_components"] = len(component_sizes(working == index))
+            edge_stats["source_colour_components"] = len(raster_component_sizes[index])
             variant_stats["edge"].append(edge_stats)
             if settings.solid_underlayers:
-                base = partition[index]
-                # A solid underlayer backs only the higher shapes this colour
-                # actually touches. Extending it beneath non-adjacent colours would
-                # stack identical shapes with no physical purpose, so each higher
-                # partition contributes only the components sharing a boundary with
-                # this colour's region.
-                stacked = [base]
-                for higher in range(position + 1, len(order)):
-                    for shape in _partition_polygons(partition[order[higher]]):
-                        if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
-                            stacked.append(shape)
-                solid = len(stacked) > 1
-                overlap_geometry = unary_union(stacked)
+                overlap_geometry, solid = layer_geometry[index]
                 # Reassemble the solid outline from the same once-fitted chains, dissolving
                 # only the interfaces it swallows. Re-fitting the union instead (as an
                 # independent curve pass) is what opened gaps between adjacent underlayers.
@@ -306,8 +328,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                 construction = ("solid stacked underlayer" if solid
                                 else "canonical shared-chain fit")
             elif overlap_px > 0 and position < len(order) - 1:
-                overlap_geometry = edge_geometry.buffer(overlap_px, join_style=1).intersection(canvas)
-                overlap_components = geometry_components(overlap_geometry, tracing_settings)
+                overlap_geometry, _ = layer_geometry[index]
+                overlap_components = geometry_components(overlap_geometry, tracing_settings,
+                                                         fitter=shared_fitter)
                 construction = "shared partition plus lower-layer overlap buffer"
             else:
                 overlap_components = edge_components
@@ -315,11 +338,10 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             overlap_stats = add_layer(roots["overlap"], palette[index], overlap_components, "",
                                       subject_dir.name, "overlap", 0.0)
             overlap_stats["construction"] = construction
-            overlap_stats["raster_component_pixels_descending"] = component_sizes(working == index)
+            overlap_stats["raster_component_pixels_descending"] = raster_component_sizes[index]
             variant_stats["overlap"].append(overlap_stats)
         for variant, root in roots.items():
             write_svg(subject_dir / f"traced-{variant}.svg", root)
-        write_trace_html(subject_dir, width, height)
         report(0.85, "Rendering for validation")
         validations = {
             variant: validate_svg(subject_dir / f"traced-{variant}.svg", palette, order)
@@ -335,12 +357,16 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         finally:
             semantic_render.unlink(missing_ok=True)
         if prev_vector_rgb is None:
-            # First render: seed the labels with the full per-pixel nearest-palette
-            # argmin over the whole image.
-            vector_distances = np.sum(
-                (vector_rgb.astype(np.int32)[:, :, None, :] - palette_rgb[None, None, :, :]) ** 2,
-                axis=3, dtype=np.int64)
-            vector_labels = vector_distances.argmin(axis=2).astype(np.int16)
+            # First render: seed the labels with the per-pixel nearest-palette
+            # argmin over the whole image, in row bands so the (rows, columns,
+            # colours, channels) distance tensor never exists for the whole image.
+            vector_labels = np.empty((height, width), dtype=np.int16)
+            band = max(1, (1 << 24) // max(1, width * len(palette_rgb) * 3))
+            for start in range(0, height, band):
+                rows = vector_rgb[start:start + band].astype(np.int32)
+                distances = np.sum((rows[:, :, None, :] - palette_rgb[None, None, :, :]) ** 2,
+                                   axis=3, dtype=np.int64)
+                vector_labels[start:start + band] = distances.argmin(axis=2).astype(np.int16)
         else:
             # Later passes: only the re-fitted region of the render differs, so
             # recompute labels solely where the RGB changed and reuse last pass's
@@ -434,6 +460,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         # state that the reporting below counts.
         variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
             recovery, _attempt_report(4))
+    write_trace_html(subject_dir, width, height)
     topology["shared_curve_fit"] = shared_fit_audit
     dense_fallbacks = [identity for identity, state in recovery.items()
                        if int(state["stage"]) >= 4]
@@ -460,7 +487,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     semantic_inspection = subject_dir / "trace-semantic-warnings.png"
     if not validations["semantic"]["passed"]:
         missing = semantic_warning_mask(
-            original, vector_rgb, maximum_deviation=tolerance)
+            original, vector_rgb, maximum_deviation=tolerance,
+            source_features=semantic_cache.get("source_features"))
         faded = Image.blend(Image.fromarray(original),
                             Image.new("RGB", (width, height), "white"), 0.82)
         overlay = np.asarray(faded).copy()

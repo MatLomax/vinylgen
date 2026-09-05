@@ -178,6 +178,36 @@ one shared sub-pixel boundary graph, then emits deterministic line and cubic
 Bezier sections. Independent per-colour bitmap tracing is not part of the
 pipeline because it cannot guarantee identical shared interfaces.
 
+## Performance
+
+The tracer is built to scale to sources of several tens of megapixels while
+keeping its output a deterministic function of the segmentation and settings.
+Every acceleration below reproduces the reference formulation bit for bit;
+`tests/oracles/` holds frozen copies of the reference implementations and the
+fuzz tests compare against them.
+
+- Boundary-graph construction collects grid edges and sub-pixel crossings with
+  vectorised numpy, walks each colour pair's edges into chains with a Numba
+  kernel that replicates the lexicographic tie-breaks of the reference walk,
+  and runs the per-colour and included-face GEOS unions on threads, with the
+  coverage union following once every colour geometry exists.
+- Ring nesting queries an STRtree of representative points with each prepared
+  ring, so containment work is proportional to the nesting depth rather than
+  quadratic in the ring count.
+- Chain fits are cached by canonical geometry and settings in one fitter that
+  persists across the recovery passes; overlap-buffer rings share that cache
+  and the same worker pool as the shared chains.
+- Per-layer overlap buffers and solid-underlayer stacking geometry derive from
+  the fixed partition, so they are built once on threads before recovery.
+- Validation uses a lookup-table sRGB decode, a Numba two-sided ridge kernel,
+  one candidate distance field per rendered pass shared by every feature
+  metric, and a cache of the protected-feature invariants (labelling,
+  nearest-component map, corridors, widths) reused by every pass.
+- Cutter cleanup evaluates feature widths from one padded distance field per
+  colour and checks neighbour residuals with an exact windowed update instead
+  of relabelling and re-transforming the full image per widened region.
+
+
 ## Configuration
 
 The tracing command supports both individual CLI flags and a reusable JSON

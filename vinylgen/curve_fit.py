@@ -8,6 +8,7 @@ from typing import Iterable, Literal
 
 import numpy as np
 from shapely.geometry import Polygon
+from shapely.strtree import STRtree
 
 from vinylgen.contracts import TraceSettings
 from vinylgen.palette import Progress, _noop
@@ -17,6 +18,7 @@ from vinylgen.palette import Progress, _noop
 # bytecode over tiny arrays plus a per-window SVD, all under the GIL. Recovery
 # passes re-fit only a handful of chains, so they stay serial below the threshold.
 _PARALLEL_FIT_THRESHOLD = 200
+_PARALLEL_FIT_MIN_SAMPLES = 20_000
 
 
 def _fit_worker_count() -> int:
@@ -190,10 +192,14 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
         evidence = []
         valid = True
         for scale in (span, span * 1.75):
+            # Each side must independently show a sustained straight run; the
+            # far side is only measured once the near side has passed.
             before = _robust_line(_side_window(points, index, -1, scale))
+            if before.length < minimum or before.maximum_error > deviation:
+                valid = False
+                break
             after = _robust_line(_side_window(points, index, 1, scale))
-            if (before.length < minimum or after.length < minimum or
-                    before.maximum_error > deviation or after.maximum_error > deviation):
+            if after.length < minimum or after.maximum_error > deviation:
                 valid = False
                 break
             turn = math.acos(float(np.clip(np.dot(before.direction, after.direction), -1, 1)))
@@ -354,6 +360,43 @@ def _compute_chain_fit_star(args: tuple) -> ChainFit:
     return _compute_chain_fit(*args)
 
 
+def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
+                      tick: Progress = _noop) -> None:
+    """Fit every plan whose key is absent from the fitter cache.
+
+    Each plan is ``(key, canonical, anchors, constraint_key, settings)`` as
+    produced by ``SharedChainFitter.prepare``. Distinct keys are fitted once;
+    a large batch, by chain count or by total sample count, fans out across
+    worker processes, and every fit lands in the cache under its key.
+    """
+    unique_pending: dict[tuple, tuple] = {}
+    for key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
+        if key not in fitter._cache:
+            unique_pending.setdefault(
+                key, (canonical, anchor_tuple, constraint_key, chain_settings))
+    if not unique_pending:
+        return
+    keys = list(unique_pending)
+    args = [unique_pending[key] for key in keys]
+    samples = sum(len(argument[0]) for argument in args)
+    workers = min(len(args), _fit_worker_count())
+    if workers > 1 and (len(args) >= _PARALLEL_FIT_THRESHOLD
+                        or samples >= _PARALLEL_FIT_MIN_SAMPLES):
+        chunk = max(1, len(args) // (workers * 8))
+        done = 0
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            for key, computed in zip(
+                    keys, executor.map(_compute_chain_fit_star, args, chunksize=chunk)):
+                fitter._cache[key] = computed
+                done += 1
+                if done % 100 == 0 or done == len(args):
+                    tick(done / len(args),
+                         f"Fitting boundary curves ({done} of {len(args)})")
+    else:
+        for key, argument in zip(keys, args):
+            fitter._cache[key] = _compute_chain_fit(*argument)
+
+
 class SharedChainFitter:
     """Canonical cache ensures both users of a shared chain get one fit."""
 
@@ -436,6 +479,16 @@ def geometry_components(geometry, settings: TraceSettings,
     polygons = [] if geometry.is_empty else ([geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms))
     polygons.sort(key=lambda polygon: (-polygon.area, polygon.bounds))
     fitter = fitter or SharedChainFitter()
+    anchors = tuple(hard_anchors)
+    plans = []
+    for polygon in polygons:
+        for ring in (polygon.exterior, *polygon.interiors):
+            raw = [tuple(map(float, point)) for point in ring.coords]
+            points = raw[:-1] if raw and raw[0] == raw[-1] else raw
+            key, _, canonical, anchor_tuple, constraint_key = fitter.prepare(
+                [*points, points[0]], settings, anchors)
+            plans.append((key, canonical, anchor_tuple, constraint_key, settings))
+    _fit_cache_misses(fitter, plans)
     result = []
     for polygon in polygons:
         fitted = [ring_path(r.coords, settings, hard_anchors, fitter)
@@ -481,7 +534,7 @@ def _ring_row(chains: dict, fits: dict[str, "ChainFit"], ring_uses) -> dict:
     commands.append("Z")
     if raw_points[0] != raw_points[-1]:
         raw_points.append(raw_points[0])
-    polygon = Polygon(raw_points)
+    polygon = Polygon(np.asarray(raw_points, dtype=np.float64))
     if polygon.is_empty or polygon.area <= 0:
         raise RuntimeError("assembled boundary ring is empty")
     aggregate = FitMetrics(
@@ -492,15 +545,28 @@ def _ring_row(chains: dict, fits: dict[str, "ChainFit"], ring_uses) -> dict:
 
 
 def _rows_to_components(rows: list[dict]) -> list[dict]:
-    """Nest rings by even-odd containment into filled components with their holes."""
+    """Nest rings by even-odd containment into filled components with their holes.
+
+    A ring's parent is the smallest strictly larger ring containing its
+    representative point (lowest index among equal areas). Only rings whose
+    bounding box covers the point can contain it, so an STRtree narrows the
+    candidates before the exact containment test.
+    """
+    polygons = [row["polygon"] for row in rows]
+    areas = [polygon.area for polygon in polygons]
+    containing: list[list[int]] = [[] for _ in polygons]
+    if polygons:
+        # Querying the point tree with each ring prepares that ring once and
+        # tests only the representative points inside its bounding box.
+        points = [polygon.representative_point() for polygon in polygons]
+        ring_indices, point_indices = STRtree(points).query(polygons, predicate="contains")
+        for point_index, ring_index in zip(point_indices.tolist(), ring_indices.tolist()):
+            containing[point_index].append(ring_index)
     parents: list[int | None] = []
-    for index, row in enumerate(rows):
-        point = row["polygon"].representative_point()
-        containers = [candidate for candidate, other in enumerate(rows)
-                      if candidate != index
-                      and other["polygon"].area > row["polygon"].area
-                      and other["polygon"].contains(point)]
-        parents.append(min(containers, key=lambda candidate: rows[candidate]["polygon"].area)
+    for index in range(len(polygons)):
+        containers = [candidate for candidate in containing[index]
+                      if candidate != index and areas[candidate] > areas[index]]
+        parents.append(min(containers, key=lambda candidate: (areas[candidate], candidate))
                        if containers else None)
 
     def depth(index: int) -> int:
@@ -697,29 +763,10 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
 
     # Phase 2: compute the cache misses. Distinct keys are fitted once; when many
     # chains need fitting (the cold first pass) the work fans out across processes.
-    unique_pending: dict[tuple, tuple] = {}
-    for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
-        if key not in fitter._cache:
-            unique_pending.setdefault(
-                key, (canonical, anchor_tuple, constraint_key, chain_settings))
-    if unique_pending:
-        keys = list(unique_pending)
-        args = [unique_pending[key] for key in keys]
-        workers = min(len(args), _fit_worker_count())
-        if len(args) >= _PARALLEL_FIT_THRESHOLD and workers > 1:
-            chunk = max(1, len(args) // (workers * 8))
-            done = 0
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                for key, computed in zip(
-                        keys, executor.map(_compute_chain_fit_star, args, chunksize=chunk)):
-                    fitter._cache[key] = computed
-                    done += 1
-                    if done % 100 == 0 or done == len(args):
-                        tick(done / len(args),
-                             f"Fitting boundary curves ({done} of {len(args)})")
-        else:
-            for key, argument in zip(keys, args):
-                fitter._cache[key] = _compute_chain_fit(*argument)
+    _fit_cache_misses(
+        fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
+                 for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
+                 in plans], tick)
 
     # Phase 3: assemble oriented fits from the now-populated cache.
     for identity, stage, forward, key, *_ in plans:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import math
 from typing import Literal
 
 import numpy as np
+from numba import njit
 from scipy import ndimage
 from shapely.geometry import LineString, Polygon, box
 from shapely.ops import polygonize, unary_union
@@ -184,6 +186,94 @@ def component_sizes(mask: np.ndarray) -> list[int]:
     return sorted((int(v) for v in sizes), reverse=True)
 
 
+@njit(cache=True)
+def _walk_edge_chains(ia, ib, deg, indptr, csr_dst, csr_eidx):
+    """Deterministic edge-chain traversal over an integer-encoded pair graph.
+
+    Edges are provided in ascending ``(ia, ib)`` order so the smallest unused
+    edge is the earliest still-unused index.  Each chain seeds at that edge,
+    starts at its lower-degree endpoint (else its smaller node), and walks to the
+    smallest available neighbour until it returns to the start or reaches a
+    vertex whose full degree is not two.  Nodes are compact ids whose order
+    matches the encoded grid-point order, so every minimum reproduces the
+    tuple-order minimum of the reference traversal.
+    """
+    m = ia.shape[0]
+    out_nodes = np.empty(2 * m + 8, dtype=np.int64)
+    chain_starts = np.empty(m + 8, dtype=np.int64)
+    unused = np.ones(m, dtype=np.bool_)
+    n_out = 0
+    n_chains = 0
+    ptr = 0
+    while ptr < m:
+        if not unused[ptr]:
+            ptr += 1
+            continue
+        seed_a = ia[ptr]
+        seed_b = ib[ptr]
+        if deg[seed_a] != 2:
+            start = seed_a
+        elif deg[seed_b] != 2:
+            start = seed_b
+        else:
+            start = seed_a
+        chain_starts[n_chains] = n_out
+        n_chains += 1
+        out_nodes[n_out] = start
+        n_out += 1
+        current = start
+        while True:
+            best = -1
+            best_edge = -1
+            for j in range(indptr[current], indptr[current + 1]):
+                edge = csr_eidx[j]
+                if unused[edge]:
+                    neighbour = csr_dst[j]
+                    if best_edge == -1 or neighbour < best:
+                        best = neighbour
+                        best_edge = edge
+            if best_edge == -1:
+                break
+            unused[best_edge] = False
+            out_nodes[n_out] = best
+            n_out += 1
+            current = best
+            if current == start or deg[current] != 2:
+                break
+    return out_nodes[:n_out], chain_starts[:n_chains]
+
+
+def _pair_edge_chains(edge_lo: np.ndarray, edge_hi: np.ndarray
+                      ) -> tuple[np.ndarray, np.ndarray]:
+    """Chains for one colour pair; inputs sorted ascending by ``(lo, hi)``.
+
+    Returns the encoded grid-point keys visited in traversal order and the start
+    offset of each chain within that flat sequence.
+    """
+    nodes = np.unique(np.concatenate((edge_lo, edge_hi)))
+    ia = np.searchsorted(nodes, edge_lo).astype(np.int64)
+    ib = np.searchsorted(nodes, edge_hi).astype(np.int64)
+    vertices = nodes.shape[0]
+    deg = (np.bincount(ia, minlength=vertices)
+           + np.bincount(ib, minlength=vertices)).astype(np.int64)
+    edge_count = ia.shape[0]
+    src = np.concatenate((ia, ib))
+    dst = np.concatenate((ib, ia)).astype(np.int64)
+    eidx = np.concatenate((np.arange(edge_count, dtype=np.int64),
+                           np.arange(edge_count, dtype=np.int64)))
+    order = np.argsort(src, kind="stable")
+    src_sorted = src[order]
+    counts = np.bincount(src_sorted, minlength=vertices)
+    indptr = np.empty(vertices + 1, dtype=np.int64)
+    indptr[0] = 0
+    np.cumsum(counts, out=indptr[1:])
+    csr_dst = dst[order]
+    csr_eidx = eidx[order]
+    out_nodes, chain_starts = _walk_edge_chains(
+        ia, ib, deg, indptr, csr_dst, csr_eidx)
+    return nodes[out_nodes], chain_starts
+
+
 def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                              palette_costs: np.ndarray,
                              protected_features: np.ndarray | None = None,
@@ -197,9 +287,8 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     """
     height, width = labels.shape
     outside = -1
-    segments: dict[tuple[int, int], set[tuple[tuple[int, int], tuple[int, int]]]] = {}
-    vertex_adjustments: dict[tuple[int, int], dict[str, list[float]]] = {}
-    protected_grid_edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    height_stride = height + 2
+    edge_multiplier = height_stride * (width + 2) + 1
 
     if palette_costs.ndim != 3 or palette_costs.shape[:2] != labels.shape:
         raise ValueError("palette costs must have shape (height, width, colours)")
@@ -208,102 +297,198 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     if protected_features is not None and protected_features.shape != labels.shape:
         raise ValueError("protected-feature evidence must match label dimensions")
 
-    def add(pair: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> None:
-        if a > b:
-            a, b = b, a
-        segments.setdefault(pair, set()).add((a, b))
+    def _eid(a: tuple[int, int], b: tuple[int, int]) -> int:
+        key_a = a[0] * height_stride + a[1]
+        key_b = b[0] * height_stride + b[1]
+        if key_a > key_b:
+            key_a, key_b = key_b, key_a
+        return key_a * edge_multiplier + key_b
 
-    def adjust(points: tuple[tuple[int, int], tuple[int, int]], axis: str,
-               first: tuple[int, int], second: tuple[int, int],
-               pair: tuple[int, int]) -> None:
-        a, b = pair
-        first_difference = float(palette_costs[first][a] - palette_costs[first][b])
-        second_difference = float(palette_costs[second][a] - palette_costs[second][b])
+    def _offsets(first_difference: np.ndarray, second_difference: np.ndarray
+                 ) -> np.ndarray:
+        """Sub-pixel crossing offset per edge, matched to the scalar reference.
+
+        The differences are formed in the palette-cost dtype and widened, the
+        crossing is the intercept of the two colour-cost differences clamped to
+        the interior of the edge, and the offset recentres it on the midpoint.
+        """
+        first_difference = first_difference.astype(np.float64)
+        second_difference = second_difference.astype(np.float64)
         denominator = first_difference - second_difference
-        crossing = 0.5 if abs(denominator) < 1e-12 else first_difference / denominator
-        crossing = min(0.95, max(0.05, crossing))
-        offset = crossing - 0.5
-        for point in points:
-            vertex_adjustments.setdefault(point, {"x": [], "y": []})[axis].append(offset)
+        near_zero = np.abs(denominator) < 1e-12
+        safe = np.where(near_zero, 1.0, denominator)
+        crossing = np.where(near_zero, 0.5, first_difference / safe)
+        # A NaN crossing (non-finite costs) clamps to the lower bound, as the
+        # scalar ``min(0.95, max(0.05, crossing))`` form does.
+        crossing = np.where(np.isnan(crossing), 0.05,
+                            np.minimum(0.95, np.maximum(0.05, crossing)))
+        return crossing - 0.5
 
-    ys, xs = np.nonzero(labels[:, :-1] != labels[:, 1:])
-    for y, x in zip(ys.tolist(), xs.tolist()):
-        pair = tuple(sorted((int(labels[y, x]), int(labels[y, x + 1]))))
-        edge = ((x + 1, y), (x + 1, y + 1))
-        add(pair, *edge)
-        edge_is_protected = (protected_features is not None and
-                             (protected_features[y, x] or protected_features[y, x + 1]))
-        if edge_is_protected:
-            protected_grid_edges.add(tuple(sorted(edge)))
-        adjust(edge, "x", (y, x), (y, x + 1), pair)
-    ys, xs = np.nonzero(labels[:-1, :] != labels[1:, :])
-    for y, x in zip(ys.tolist(), xs.tolist()):
-        pair = tuple(sorted((int(labels[y, x]), int(labels[y + 1, x]))))
-        edge = ((x, y + 1), (x + 1, y + 1))
-        add(pair, *edge)
-        edge_is_protected = (protected_features is not None and
-                             (protected_features[y, x] or protected_features[y + 1, x]))
-        if edge_is_protected:
-            protected_grid_edges.add(tuple(sorted(edge)))
-        adjust(edge, "y", (y, x), (y + 1, x), pair)
-    for x in range(width):
-        add(tuple(sorted((outside, int(labels[0, x])))), (x, 0), (x + 1, 0))
-        add(tuple(sorted((outside, int(labels[-1, x])))), (x, height), (x + 1, height))
-    for y in range(height):
-        add(tuple(sorted((outside, int(labels[y, 0])))), (0, y), (0, y + 1))
-        add(tuple(sorted((outside, int(labels[y, -1])))), (width, y), (width, y + 1))
+    key_lo: list[np.ndarray] = []
+    key_hi: list[np.ndarray] = []
+    pair_lo: list[np.ndarray] = []
+    pair_hi: list[np.ndarray] = []
+    x_offset_keys: list[np.ndarray] = []
+    x_offset_values: list[np.ndarray] = []
+    y_offset_keys: list[np.ndarray] = []
+    y_offset_values: list[np.ndarray] = []
+    protected_ids: set[int] = set()
+
+    vertical_y, vertical_x = np.nonzero(labels[:, :-1] != labels[:, 1:])
+    vertical_y = vertical_y.astype(np.int64)
+    vertical_x = vertical_x.astype(np.int64)
+    if vertical_y.size:
+        left = labels[vertical_y, vertical_x].astype(np.int64)
+        right = labels[vertical_y, vertical_x + 1].astype(np.int64)
+        low = np.minimum(left, right)
+        high = np.maximum(left, right)
+        offset = _offsets(
+            palette_costs[vertical_y, vertical_x, low]
+            - palette_costs[vertical_y, vertical_x, high],
+            palette_costs[vertical_y, vertical_x + 1, low]
+            - palette_costs[vertical_y, vertical_x + 1, high])
+        top_key = (vertical_x + 1) * height_stride + vertical_y
+        bottom_key = (vertical_x + 1) * height_stride + (vertical_y + 1)
+        key_lo.append(top_key)
+        key_hi.append(bottom_key)
+        pair_lo.append(low)
+        pair_hi.append(high)
+        x_offset_keys.append(np.concatenate((top_key, bottom_key)))
+        x_offset_values.append(np.concatenate((offset, offset)))
+        if protected_features is not None:
+            mask = (protected_features[vertical_y, vertical_x]
+                    | protected_features[vertical_y, vertical_x + 1])
+            protected_ids.update(
+                (top_key[mask] * edge_multiplier + bottom_key[mask]).tolist())
+
+    horizontal_y, horizontal_x = np.nonzero(labels[:-1, :] != labels[1:, :])
+    horizontal_y = horizontal_y.astype(np.int64)
+    horizontal_x = horizontal_x.astype(np.int64)
+    if horizontal_y.size:
+        upper = labels[horizontal_y, horizontal_x].astype(np.int64)
+        lower = labels[horizontal_y + 1, horizontal_x].astype(np.int64)
+        low = np.minimum(upper, lower)
+        high = np.maximum(upper, lower)
+        offset = _offsets(
+            palette_costs[horizontal_y, horizontal_x, low]
+            - palette_costs[horizontal_y, horizontal_x, high],
+            palette_costs[horizontal_y + 1, horizontal_x, low]
+            - palette_costs[horizontal_y + 1, horizontal_x, high])
+        left_key = horizontal_x * height_stride + (horizontal_y + 1)
+        right_key = (horizontal_x + 1) * height_stride + (horizontal_y + 1)
+        key_lo.append(left_key)
+        key_hi.append(right_key)
+        pair_lo.append(low)
+        pair_hi.append(high)
+        y_offset_keys.append(np.concatenate((left_key, right_key)))
+        y_offset_values.append(np.concatenate((offset, offset)))
+        if protected_features is not None:
+            mask = (protected_features[horizontal_y, horizontal_x]
+                    | protected_features[horizontal_y + 1, horizontal_x])
+            protected_ids.update(
+                (left_key[mask] * edge_multiplier + right_key[mask]).tolist())
+
+    if height and width:
+        columns = np.arange(width, dtype=np.int64)
+        rows = np.arange(height, dtype=np.int64)
+        border_specs = (
+            (columns * height_stride, (columns + 1) * height_stride,
+             labels[0, :].astype(np.int64)),
+            (columns * height_stride + height, (columns + 1) * height_stride + height,
+             labels[-1, :].astype(np.int64)),
+            (rows, rows + 1, labels[:, 0].astype(np.int64)),
+            (width * height_stride + rows, width * height_stride + rows + 1,
+             labels[:, -1].astype(np.int64)),
+        )
+        for lo_key, hi_key, border_labels in border_specs:
+            key_lo.append(lo_key)
+            key_hi.append(hi_key)
+            pair_lo.append(np.full(border_labels.shape[0], outside, dtype=np.int64))
+            pair_hi.append(border_labels)
+
+    def _accumulate(keys: list[np.ndarray], values: list[np.ndarray]
+                    ) -> tuple[np.ndarray, np.ndarray]:
+        if not keys:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
+        flat_keys = np.concatenate(keys)
+        flat_values = np.concatenate(values)
+        unique_keys, inverse = np.unique(flat_keys, return_inverse=True)
+        totals = np.zeros(unique_keys.shape[0], dtype=np.float64)
+        np.add.at(totals, inverse, flat_values)
+        counts = np.bincount(inverse, minlength=unique_keys.shape[0])
+        return unique_keys, totals / counts
+
+    x_keys, x_means = _accumulate(x_offset_keys, x_offset_values)
+    y_keys, y_means = _accumulate(y_offset_keys, y_offset_values)
+    subpixel_count = int(np.union1d(x_keys, y_keys).shape[0])
+
+    if key_lo:
+        edge_key_lo = np.concatenate(key_lo)
+        edge_key_hi = np.concatenate(key_hi)
+        edge_pair_lo = np.concatenate(pair_lo)
+        edge_pair_hi = np.concatenate(pair_hi)
+        endpoint_keys = np.unique(np.concatenate((edge_key_lo, edge_key_hi)))
+    else:
+        edge_key_lo = np.empty(0, dtype=np.int64)
+        edge_key_hi = np.empty(0, dtype=np.int64)
+        edge_pair_lo = np.empty(0, dtype=np.int64)
+        edge_pair_hi = np.empty(0, dtype=np.int64)
+        endpoint_keys = np.empty(0, dtype=np.int64)
+
+    fitted_x = (endpoint_keys // height_stride).astype(np.float64)
+    fitted_y = (endpoint_keys % height_stride).astype(np.float64)
+    if x_keys.size:
+        fitted_x[np.searchsorted(endpoint_keys, x_keys)] += x_means
+    if y_keys.size:
+        fitted_y[np.searchsorted(endpoint_keys, y_keys)] += y_means
+    fitted_by_key = {int(key): (float(fx), float(fy)) for key, fx, fy
+                     in zip(endpoint_keys.tolist(), fitted_x.tolist(),
+                            fitted_y.tolist())}
 
     lines: list[LineString] = []
     tracked_chains: list[SharedBoundaryChain] = []
     chain_records: list[dict] = []
 
-    def edge_chains(edges: set[tuple[tuple[int, int], tuple[int, int]]]
-                    ) -> list[list[tuple[int, int]]]:
-        adjacency: dict[tuple[int, int], list[tuple[int, int]]] = {}
-        for a, b in edges:
-            adjacency.setdefault(a, []).append(b)
-            adjacency.setdefault(b, []).append(a)
-        unused = set(edges)
-        result: list[list[tuple[int, int]]] = []
-        while unused:
-            seed = min(unused)
-            endpoints = [point for point in seed if len(adjacency[point]) != 2]
-            start = min(endpoints) if endpoints else seed[0]
-            chain = [start]
-            current = start
-            while True:
-                candidates = [neighbour for neighbour in adjacency[current]
-                              if tuple(sorted((current, neighbour))) in unused]
-                if not candidates:
-                    break
-                neighbour = min(candidates)
-                unused.remove(tuple(sorted((current, neighbour))))
-                chain.append(neighbour)
-                current = neighbour
-                if current == start or len(adjacency[current]) != 2:
-                    break
-            result.append(chain)
-        return result
+    inventory_pairs: list[tuple[int, int]] = []
+    inventory_grid: list[list[GridPoint]] = []
+    inventory_fitted: list[list[Point]] = []
+    if edge_key_lo.size:
+        order = np.lexsort((edge_key_hi, edge_key_lo, edge_pair_hi, edge_pair_lo))
+        sorted_pair_lo = edge_pair_lo[order]
+        sorted_pair_hi = edge_pair_hi[order]
+        sorted_key_lo = edge_key_lo[order]
+        sorted_key_hi = edge_key_hi[order]
+        boundary = np.ones(sorted_pair_lo.shape[0], dtype=bool)
+        boundary[1:] = ((sorted_pair_lo[1:] != sorted_pair_lo[:-1])
+                        | (sorted_pair_hi[1:] != sorted_pair_hi[:-1]))
+        starts = np.nonzero(boundary)[0]
+        ends = np.append(starts[1:], sorted_pair_lo.shape[0])
+        for run_start, run_end in zip(starts.tolist(), ends.tolist()):
+            pair = (int(sorted_pair_lo[run_start]), int(sorted_pair_hi[run_start]))
+            keys, chain_starts = _pair_edge_chains(
+                sorted_key_lo[run_start:run_end], sorted_key_hi[run_start:run_end])
+            key_list = keys.tolist()
+            offsets = chain_starts.tolist()
+            offsets.append(len(key_list))
+            for index in range(len(offsets) - 1):
+                segment = key_list[offsets[index]:offsets[index + 1]]
+                inventory_pairs.append(pair)
+                inventory_grid.append(
+                    [(key // height_stride, key % height_stride) for key in segment])
+                inventory_fitted.append([fitted_by_key[key] for key in segment])
 
-    chain_inventory = [(pair, chain) for pair in sorted(segments)
-                       for chain in edge_chains(segments[pair])]
     incident_colours: dict[GridPoint, set[int]] = {}
-    for pair, chain in chain_inventory:
+    for pair, chain in zip(inventory_pairs, inventory_grid):
         for point in (chain[0], chain[-1]) if chain[0] != chain[-1] else ():
             incident_colours.setdefault(point, set()).update(pair)
-    def fitted_point(point: tuple[int, int]) -> tuple[float, float]:
-        values = vertex_adjustments.get(point, {"x": [], "y": []})
-        dx = float(np.mean(values["x"])) if values["x"] else 0.0
-        dy = float(np.mean(values["y"])) if values["y"] else 0.0
-        return float(point[0]) + dx, float(point[1]) + dy
 
-    for chain_count, (pair, chain) in enumerate(chain_inventory):
-        fitted_chain = [fitted_point(point) for point in chain]
+    for chain_count, (pair, chain, fitted_chain) in enumerate(
+            zip(inventory_pairs, inventory_grid, inventory_fitted)):
         chain, fitted_chain = _canonical_samples(chain, fitted_chain)
         line = LineString(fitted_chain)
         protected_edge_indices = tuple(
             index for index in range(len(chain) - 1)
-            if tuple(sorted((chain[index], chain[index + 1]))) in protected_grid_edges)
+            if _eid(chain[index], chain[index + 1]) in protected_ids)
         lines.append(line)
         identity_source = f"{pair[0]}:{pair[1]}|" + ";".join(
             f"{x},{y}" for x, y in chain)
@@ -351,18 +536,26 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         index = int(labels[y, x])
         if index in by_colour:
             by_colour[index].append(face)
-    geometry = {index: unary_union(parts) if parts else Polygon()
-                for index, parts in by_colour.items()}
-    covered = unary_union(list(geometry.values()))
-    canvas = box(0, 0, width, height)
-    included_faces = unary_union([face for face in faces if int(labels[
+    included_face_list = [face for face in faces if int(labels[
         min(height - 1, max(0, int(math.floor(face.representative_point().y)))),
-        min(width - 1, max(0, int(math.floor(face.representative_point().x))))]) in included])
-    diagnostics = {"boundary_chains": len(chain_inventory), "polygonized_faces": len(faces),
+        min(width - 1, max(0, int(math.floor(face.representative_point().x))))]) in included]
+    # The per-colour unions and the whole-partition union are independent GEOS
+    # work that releases the GIL, so they run on threads; the coverage union
+    # follows once every colour geometry exists.
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        included_future = executor.submit(unary_union, included_face_list)
+        colour_futures = {index: executor.submit(unary_union, parts)
+                          for index, parts in by_colour.items() if parts}
+        geometry = {index: colour_futures[index].result() if index in colour_futures
+                    else Polygon() for index in by_colour}
+        covered = unary_union(list(geometry.values()))
+        included_faces = included_future.result()
+    canvas = box(0, 0, width, height)
+    diagnostics = {"boundary_chains": len(inventory_pairs), "polygonized_faces": len(faces),
                    "uncovered_area": float(canvas.difference(covered).area),
                    "partition_gap_area": float(included_faces.difference(covered).area),
                    "overlap_area": float(sum(g.area for g in geometry.values()) - covered.area),
-                   "subpixel_adjusted_vertices": len(vertex_adjustments),
+                   "subpixel_adjusted_vertices": subpixel_count,
                    "dense_boundary_samples": sum(len(chain.source_points)
                                                    for chain in tracked_chains),
                    "protected_boundary_chains": sum(
