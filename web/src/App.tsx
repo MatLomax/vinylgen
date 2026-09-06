@@ -72,6 +72,7 @@ export function artifactToWorkspaceLayer(artifact: Artifact): WorkspaceLayer | n
 }
 
 const draftKey = (projectId: string) => `vinylgen.project-settings.${projectId}`
+const formatMegabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`
 
 type GenerationRecord = { short_prompt: string; width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
 
@@ -143,6 +144,7 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [revisions, setRevisions] = useState<Revision[]>([])
   const [error, setError] = useState('')
+  const [maxUploadBytes, setMaxUploadBytes] = useState(100 * 1024 * 1024)
   const [handoff, setHandoff] = useState<InkscapeHandoff | null>(null)
   const [handoffMessage, setHandoffMessage] = useState('')
   const [frame, setFrame] = useState('landscape')
@@ -234,6 +236,7 @@ export default function App() {
   const generation = generationFromRevision(sourceRevision)
 
   useEffect(() => { api.projects().then(setProjects).catch(e => setError(String(e))) }, [])
+  useEffect(() => { api.health().then(health => setMaxUploadBytes(health.max_upload_bytes)).catch(() => { /* keep the default cap */ }) }, [])
   useEffect(() => {
     const syncWorkflowOrientation = () => setDesktopWorkflow(window.innerWidth > 700)
     window.addEventListener('resize', syncWorkflowOrientation)
@@ -437,8 +440,10 @@ export default function App() {
     setError('')
     const formElement = event.currentTarget
     const form = new FormData(formElement)
-    const file = form.get('source') as File
+    const file = (formElement.elements.namedItem('source') as HTMLInputElement).files?.[0]
     if (!file?.size) return setError('Choose an image to import')
+    if (file.size > maxUploadBytes) return setError(
+      `Image is ${formatMegabytes(file.size)}, over the ${formatMegabytes(maxUploadBytes)} upload limit. Reduce its size and try again.`)
     try {
       const project = await api.importProject(String(form.get('name') || file.name.replace(/\.[^.]+$/, '')), file)
       setProjects(current => [project, ...current])
@@ -675,7 +680,7 @@ export default function App() {
         <h2>Upload source</h2><p className="section-intro">Start a new project from an existing raster image. The original file is preserved unchanged.</p>
         <form onSubmit={importImage}>
           <label>Name<input name="name" placeholder="Optional project name" /><small>Defaults to the uploaded filename.</small></label>
-          <label className="file">Source image<input name="source" type="file" accept="image/*" required /><small>Choose the raster that will become the immutable source revision.</small></label>
+          <label className="file">Source image<input name="source" type="file" accept="image/*" required /><small>Choose the raster that will become the immutable source revision. Up to {formatMegabytes(maxUploadBytes)}.</small></label>
           <button type="submit">Import image</button>
         </form>
         </section>

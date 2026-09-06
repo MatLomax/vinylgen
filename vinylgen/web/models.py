@@ -200,3 +200,4 @@ class EditorState(BaseModel):
 
 class Health(BaseModel):
     status: Literal["ok"] = "ok"
+    max_upload_bytes: int = 100 * 1024 * 1024

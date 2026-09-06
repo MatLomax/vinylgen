@@ -8,6 +8,7 @@ import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspace
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
   generate: vi.fn(), startPipeline: vi.fn(), inkscapeHandoff: vi.fn(), saveForInkscape: vi.fn(),
+  importProject: vi.fn(), health: vi.fn(),
   followJob: vi.fn(),
 }))
 
@@ -36,6 +37,8 @@ beforeEach(() => {
   mocks.editor.mockResolvedValue({ width: 0, height: 0, protected_pixels: 0, palette: [] })
   mocks.inkscapeHandoff.mockResolvedValue({ exports: [], shared_folder_enabled: false, guidance: '' })
   mocks.startPipeline.mockResolvedValue(queuedJob)
+  mocks.importProject.mockResolvedValue({ ...project, revisions: [revision] })
+  mocks.health.mockResolvedValue({ status: 'ok', max_upload_bytes: 100 * 1024 * 1024 })
   mocks.followJob.mockReturnValue(() => undefined)
 })
 afterEach(cleanup)
@@ -491,5 +494,34 @@ describe('artwork view toggle', () => {
     fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
     expect(screen.getByText(/Switch to the Edited image to select and edit areas\./)).toBeTruthy()
+  })
+})
+
+describe('upload size limit', () => {
+  it('rejects an image over the server limit with a clear message before uploading', async () => {
+    mocks.health.mockResolvedValue({ status: 'ok', max_upload_bytes: 4 })
+    render(createElement((await import('./App')).default))
+    // Wait until the fetched limit has replaced the default cap.
+    await screen.findByText(/Up to 0.0 MB\./)
+
+    const input = screen.getByLabelText(/Source image/) as HTMLInputElement
+    const oversize = new File(['larger-than-four-bytes'], 'big.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [oversize] } })
+    fireEvent.submit(input.closest('form')!)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('over the 0.0 MB upload limit')
+    expect(mocks.importProject).not.toHaveBeenCalled()
+  })
+
+  it('uploads an image within the limit', async () => {
+    render(createElement((await import('./App')).default))
+    const input = screen.getByLabelText(/Source image/) as HTMLInputElement
+    const file = new File(['small'], 'small.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.submit(input.closest('form')!)
+
+    await vi.waitFor(() => expect(mocks.importProject).toHaveBeenCalled())
+    expect(mocks.importProject.mock.calls[0][1]).toBe(file)
   })
 })

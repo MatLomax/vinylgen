@@ -1,5 +1,7 @@
 # location /
-client_max_body_size 25m;
+# Kept above VINYLGEN_MAX_UPLOAD_BYTES (100 MiB) so the app returns a clean 413
+# instead of nginx resetting the connection mid-upload.
+client_max_body_size 110m;
 proxy_set_header X-Gandalf-User $gandalf_user;
 proxy_read_timeout 900s;
 proxy_send_timeout 900s;

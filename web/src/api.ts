@@ -27,6 +27,7 @@ export type TraceSettings = {
 }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
 export type GenerationStarted = { project: Project; job: Job; expanded_prompt: string }
+export type Health = { status: 'ok'; max_upload_bytes: number }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 
 async function result<T>(response: Response): Promise<T> {
@@ -35,6 +36,7 @@ async function result<T>(response: Response): Promise<T> {
 }
 
 export const api = {
+  health: () => fetch('/api/health').then(result<Health>),
   projects: () => fetch('/api/projects').then(result<Project[]>),
   project: (projectId: string, signal?: AbortSignal) => fetch(`/api/projects/${projectId}`, { signal }).then(result<Project & { revisions: Revision[] }>),
   deleteProject: (projectId: string) => fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).then(async response => { if (!response.ok) throw new Error((await response.text()) || response.statusText) }),

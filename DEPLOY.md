@@ -13,7 +13,7 @@ identity header; direct localhost health checks remain read-only.
 
 Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop
 handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
-25 MiB, at most two jobs may be active, and completed job metadata is pruned
+100 MiB, at most two jobs may be active, and completed job metadata is pruned
 after 90 days when the service starts. Project revisions and content-addressed artifacts
 are retained until an explicit project-deletion workflow exists.
 On startup, any persisted `queued` or `running` jobs from the previous process

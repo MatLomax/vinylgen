@@ -9,7 +9,7 @@ from pathlib import Path
 class WebConfig:
     data_dir: Path
     inkscape_shared_dir: Path | None = None
-    max_upload_bytes: int = 25 * 1024 * 1024
+    max_upload_bytes: int = 100 * 1024 * 1024
     max_active_jobs: int = 2
     retention_days: int = 90
     require_proxy_identity: bool = False
@@ -21,7 +21,7 @@ class WebConfig:
         return cls(
             root.expanduser().resolve(),
             Path(shared).expanduser().resolve() if shared else None,
-            int(os.environ.get("VINYLGEN_MAX_UPLOAD_BYTES", 25 * 1024 * 1024)),
+            int(os.environ.get("VINYLGEN_MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
             int(os.environ.get("VINYLGEN_MAX_ACTIVE_JOBS", 2)),
             int(os.environ.get("VINYLGEN_RETENTION_DAYS", 90)),
             os.environ.get("VINYLGEN_REQUIRE_PROXY_IDENTITY", "0").lower()

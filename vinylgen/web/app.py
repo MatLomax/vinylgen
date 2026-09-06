@@ -74,7 +74,7 @@ def create_app(config: WebConfig | None = None,
 
     @app.get("/api/health", response_model=Health)
     async def health() -> Health:
-        return Health()
+        return Health(max_upload_bytes=config.max_upload_bytes)
 
     @app.get("/api/projects", response_model=list[Project])
     async def list_projects() -> list[dict]:

@@ -51,6 +51,31 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored[0].name, "source.png")
         self.assertEqual(stored[0].read_bytes(), b"not-really-a-png")
 
+    async def test_health_reports_the_configured_upload_limit(self) -> None:
+        # Use a non-default cap so this proves the value reflects config, not a constant.
+        configured = create_app(WebConfig(Path(self.temp.name), max_upload_bytes=7 * 1024 * 1024))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=configured), base_url="http://test"
+        ) as client:
+            health = (await client.get("/api/health")).json()
+            self.assertEqual(health["status"], "ok")
+            self.assertEqual(health["max_upload_bytes"], 7 * 1024 * 1024)
+        await configured.state.jobs.shutdown()
+
+    async def test_oversize_import_returns_clean_413_not_a_dropped_connection(self) -> None:
+        small = create_app(WebConfig(Path(self.temp.name), max_upload_bytes=8))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=small), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/projects/import",
+                data={"name": "Too Big"},
+                files={"source": ("source.png", b"this-body-is-larger-than-eight-bytes", "image/png")},
+            )
+            self.assertEqual(response.status_code, 413, response.text)
+            self.assertIn("limit", response.text.lower())
+        await small.state.jobs.shutdown()
+
     async def test_import_rolls_back_rows_and_cleans_staging_file_when_blob_move_fails(self) -> None:
         store = self.app.state.store
         with mock.patch("vinylgen.web.store.shutil.move", side_effect=OSError("disk full")):
