@@ -136,6 +136,27 @@ export function ancestorTraceIterations(revisions: Revision[], revisionId: strin
   return list
 }
 
+function formatElapsed(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+// The single on-canvas overlay for every long-running operation: a title, the
+// polite status message, a determinate or indeterminate bar, a visual-only
+// elapsed counter, and an optional Cancel action for jobs.
+function LoadingOverlay({ title, message, progress, elapsedSeconds, progressLabel, onCancel }: {
+  title: string; message: string; progress: number | null; elapsedSeconds: number; progressLabel: string; onCancel?: () => void
+}) {
+  return <section className="canvas-loading">
+    {progress === null && <span className="spinner" aria-hidden="true" />}
+    <h2>{title}</h2>
+    <div className={progress === null ? 'progress indeterminate' : 'progress'} role="progressbar" aria-label={progressLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress === null ? undefined : Math.round(progress * 100)} style={progress === null ? undefined : { '--progress': progress } as React.CSSProperties}><i /></div>
+    {progress !== null && <p className="progress-percent" aria-hidden="true">{Math.round(progress * 100)}%</p>}
+    <p role="status" aria-live="polite" aria-atomic="true">{message}</p>
+    <p className="elapsed" aria-hidden="true">{formatElapsed(elapsedSeconds)}</p>
+    {onCancel && <button className="secondary" onClick={onCancel}>Cancel job</button>}
+  </section>
+}
+
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selected, setSelected] = useState<string | null>(() => hashParameters().get('project'))
@@ -153,6 +174,12 @@ export default function App() {
   const [view, setView] = useState<ArtworkView>('source')
   const [preEditFlattened, setPreEditFlattened] = useState<Artifact | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  // null while bytes are still transferring is never used; during transfer this is
+  // the 0-1 fraction, and it flips to null once upload completes and the server is
+  // processing (indeterminate).
+  const [uploadFraction, setUploadFraction] = useState<number | null>(0)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [paletteSettings, setPaletteSettings] = useState<PaletteSettings>(DEFAULT_PALETTE_SETTINGS)
   const [traceSettings, setTraceSettings] = useState<TraceSettings>(DEFAULT_TRACE_SETTINGS)
   // Position within the settings history: 0 is the working form (the newest recorded
@@ -444,13 +471,22 @@ export default function App() {
     if (!file?.size) return setError('Choose an image to import')
     if (file.size > maxUploadBytes) return setError(
       `Image is ${formatMegabytes(file.size)}, over the ${formatMegabytes(maxUploadBytes)} upload limit. Reduce its size and try again.`)
+    setUploading(true)
+    setUploadFraction(0)
     try {
-      const project = await api.importProject(String(form.get('name') || file.name.replace(/\.[^.]+$/, '')), file)
+      // A completed transfer (fraction 1) means the bytes are sent and the server is
+      // now saving; drop to indeterminate so the overlay reads as processing.
+      const project = await api.importProject(String(form.get('name') || file.name.replace(/\.[^.]+$/, '')), file,
+        fraction => setUploadFraction(fraction >= 1 ? null : fraction))
       setProjects(current => [project, ...current])
+      // Hand straight to the project-load overlay in the same commit that clears
+      // uploading, so the canvas never flashes uncovered between the two.
+      setProjectLoading(true)
       setSelected(project.id)
       setRevision(project.revisions[0].id)
       formElement.reset()
     } catch (cause) { setError(String(cause)) }
+    finally { setUploading(false); setUploadFraction(0) }
   }
 
   async function generateImage(event: FormEvent<HTMLFormElement>) {
@@ -521,6 +557,17 @@ export default function App() {
   // Show a filled, determinate bar only once a running job reports real progress;
   // before that (queued, or the first tick still pending) the bar stays indeterminate.
   const jobProgress = job?.status === 'running' && job.progress > 0 ? job.progress : null
+  // A distinct identity per operation so the elapsed timer restarts at 0:00 whenever
+  // a different operation takes the overlay, driven off a client-side clock (the only
+  // mechanism that also covers upload, which has no job).
+  const overlayOperation = projectLoading ? 'loading' : busy ? `job:${job?.id ?? ''}` : uploading ? 'upload' : null
+  useEffect(() => {
+    if (!overlayOperation) { setElapsedSeconds(0); return }
+    const start = Date.now()
+    setElapsedSeconds(0)
+    const timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(timer)
+  }, [overlayOperation])
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
@@ -648,9 +695,9 @@ export default function App() {
     <p className="visually-hidden" aria-live="polite" aria-atomic="true">{WORKFLOW_STAGES.find(item => item.id === stage)?.label} stage</p>
     <section className="mobile-context" aria-label="Current work"><strong>{WORKFLOW_STAGES.find(item => item.id === stage)?.label}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></section>
     {error && <p className="error global-error" role="alert">{error}</p>}
-    {job && !busy && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
+    {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
-      <div className={`workflow-surface artwork-surface ${projectLoading || busy ? 'is-loading' : ''} ${['flatten', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
+      <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
         {stage === 'palette' || stage === 'edit' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           preferredLayerId={viewLayerId(view)}
@@ -660,7 +707,13 @@ export default function App() {
           onPaint={stage === 'edit' && editTool === 'pencil' && editSelectable ? paintPixel : undefined}
           overlay={stage === 'palette' && editSelectable ? palettePreview : stage === 'edit' && editSelectable ? overlayUrl : undefined}
         /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
-        {(projectLoading || busy) && <section className="canvas-loading">{jobProgress === null && <span className="spinner" aria-hidden="true"/>}<h2>{projectLoading ? 'Loading artwork' : 'Working'}</h2><div className={jobProgress === null ? 'progress indeterminate' : 'progress'} role="progressbar" aria-label="Job progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={jobProgress === null ? undefined : Math.round(jobProgress * 100)} style={jobProgress === null ? undefined : { '--progress': jobProgress } as React.CSSProperties}><i /></div>{jobProgress !== null && <p className="progress-percent" aria-hidden="true">{Math.round(jobProgress * 100)}%</p>}<p role="status" aria-live="polite" aria-atomic="true">{projectLoading ? 'Fetching the selected revision and its artifacts…' : `${jobMessage}. This can take a while; Vinylgen is still working.`}</p>{busy && <button className="secondary" onClick={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))}>Cancel job</button>}</section>}
+        {projectLoading
+          ? <LoadingOverlay title="Loading artwork" message="Fetching the selected revision and its artifacts…" progress={null} elapsedSeconds={elapsedSeconds} progressLabel="Loading progress" />
+          : busy
+            ? <LoadingOverlay title="Working" message={`${jobMessage}. This can take a while; Vinylgen is still working.`} progress={jobProgress} elapsedSeconds={elapsedSeconds} progressLabel="Job progress" onCancel={() => api.cancelJob(job!.id).then(setJob).catch(cause => setError(String(cause)))} />
+            : uploading
+              ? <LoadingOverlay title="Uploading" message={uploadFraction !== null ? `Uploading image… ${Math.round(uploadFraction * 100)}%` : 'Processing image…'} progress={uploadFraction} elapsedSeconds={elapsedSeconds} progressLabel="Upload progress" />
+              : null}
       </div>
       <aside>
         <section id="workflow-panel-create" role="tabpanel" aria-labelledby="workflow-tab-create" className={`side-section create-section workflow-surface ${stage === 'create' ? 'mobile-stage-active' : ''}`} data-stage="create">

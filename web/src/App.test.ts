@@ -394,6 +394,30 @@ describe('application status accessibility', () => {
     expect(document.querySelector('.spinner')).toBeNull()
   })
 
+  it('shows an advancing, screen-reader-hidden elapsed timer during a job', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.generate.mockResolvedValue({ project: { ...project, revisions: [revision] }, job: queuedJob, expanded_prompt: 'Expanded' })
+      render(createElement((await import('./App')).default))
+      fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
+      fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
+      // Flush the generate promise so the job (and its overlay) mount under fake timers.
+      await act(async () => { await Promise.resolve() })
+
+      const timer = document.querySelector('.canvas-loading .elapsed') as HTMLElement
+      expect(timer).not.toBeNull()
+      expect(timer.getAttribute('aria-hidden')).toBe('true')
+      expect(timer.textContent).toBe('0:00')
+
+      act(() => vi.advanceTimersByTime(2000))
+      expect(timer.textContent).toBe('0:02')
+      // The ticking timer must not introduce a second polite live region.
+      expect(screen.getAllByRole('status')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('announces cancellation and completion through the same atomic status', async () => {
     let update: ((job: Job) => void) | undefined
     mocks.followJob.mockImplementation((_id, onJob) => { update = onJob; return () => undefined })
@@ -523,5 +547,72 @@ describe('upload size limit', () => {
 
     await vi.waitFor(() => expect(mocks.importProject).toHaveBeenCalled())
     expect(mocks.importProject.mock.calls[0][1]).toBe(file)
+  })
+
+  it('shows the shared overlay with transfer progress then processing during upload', async () => {
+    let reportProgress: ((fraction: number) => void) | undefined
+    let finishImport: (() => void) | undefined
+    mocks.importProject.mockImplementation((_name: string, _file: File, onProgress?: (fraction: number) => void) => {
+      reportProgress = onProgress
+      return new Promise<Project & { revisions: Revision[] }>(resolve => {
+        finishImport = () => resolve({ ...project, revisions: [revision] })
+      })
+    })
+    render(createElement((await import('./App')).default))
+    const input = screen.getByLabelText(/Source image/) as HTMLInputElement
+    const file = new File(['artwork'], 'art.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.submit(input.closest('form')!)
+
+    // Determinate transfer in the shared overlay, alongside the elapsed timer.
+    await screen.findByText('Uploading image… 0%')
+    expect(mocks.importProject.mock.calls[0][1]).toBe(file)
+    expect(document.querySelector('.canvas-loading .elapsed')).not.toBeNull()
+
+    act(() => reportProgress?.(0.5))
+    expect(screen.getByText('Uploading image… 50%')).toBeTruthy()
+    expect(screen.getByRole('progressbar', { name: 'Upload progress' }).getAttribute('aria-valuenow')).toBe('50')
+    // Upload is not a job; its bar announces as transfer progress, not "Job progress".
+    expect(screen.queryByRole('progressbar', { name: 'Job progress' })).toBeNull()
+    // Exactly one polite region — the overlay message — through the whole upload.
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+
+    // Once the bytes are sent, the overlay switches to indeterminate processing.
+    act(() => reportProgress?.(1))
+    expect(screen.getByText('Processing image…')).toBeTruthy()
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull()
+    expect(document.querySelector('.spinner')).not.toBeNull()
+
+    await act(async () => { finishImport?.(); await new Promise(resolve => setTimeout(resolve)) })
+  })
+
+  it('keeps a single polite status when an upload starts after a completed job', async () => {
+    // A finished job leaves its result banner (role="status") on screen; starting an
+    // upload must not add a second polite region alongside the overlay's own status.
+    mocks.generate.mockResolvedValue({ project: { ...project, revisions: [revision] }, job: queuedJob, expanded_prompt: 'Expanded' })
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => {
+      onJob({ ...queuedJob, kind: 'generate', status: 'succeeded', progress: 1, message: 'Artwork ready', result_revision_id: revision.id })
+      return () => undefined
+    })
+    let reportProgress: ((fraction: number) => void) | undefined
+    mocks.importProject.mockImplementation((_name: string, _file: File, onProgress?: (fraction: number) => void) => {
+      reportProgress = onProgress
+      return new Promise<Project & { revisions: Revision[] }>(() => { /* stays pending on the upload overlay */ })
+    })
+    render(createElement((await import('./App')).default))
+    fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
+    fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
+    // The completed job's result banner is the only status before the upload.
+    await vi.waitFor(() => expect(screen.getByRole('status').textContent).toContain('Artwork ready'))
+
+    const input = screen.getByLabelText(/Source image/) as HTMLInputElement
+    const file = new File(['artwork'], 'art.png', { type: 'image/png' })
+    fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.submit(input.closest('form')!)
+    act(() => reportProgress?.(0.5))
+
+    await screen.findByText('Uploading image… 50%')
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('status').textContent).toContain('Uploading image…')
   })
 })

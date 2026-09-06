@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, followJob } from './api'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 
@@ -88,6 +88,57 @@ describe('abortable project artifact requests', () => {
     expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(21)
   })
 
+})
+
+describe('image import upload', () => {
+  class FakeXHR {
+    static instances: FakeXHR[] = []
+    upload: { onprogress?: (event: { lengthComputable: boolean; loaded: number; total: number }) => void } = {}
+    onload: (() => void) | null = null
+    onerror: (() => void) | null = null
+    status = 0
+    responseText = ''
+    statusText = ''
+    method = ''
+    url = ''
+    body: FormData | null = null
+    constructor() { FakeXHR.instances.push(this) }
+    open(method: string, url: string) { this.method = method; this.url = url }
+    send(body: FormData) { this.body = body }
+  }
+  beforeEach(() => { FakeXHR.instances = [] })
+
+  it('streams transfer progress and resolves the imported project over XHR', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXHR)
+    const fractions: number[] = []
+    const promise = api.importProject('Art', new File(['x'], 'art.png', { type: 'image/png' }), fraction => fractions.push(fraction))
+    const xhr = FakeXHR.instances[0]
+
+    expect(xhr.method).toBe('POST')
+    expect(xhr.url).toBe('/api/projects/import')
+    expect(xhr.body).toBeInstanceOf(FormData)
+    expect(xhr.body?.get('name')).toBe('Art')
+    expect(xhr.body?.get('source')).toBeInstanceOf(File)
+
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 10 })
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 10, total: 10 })
+    expect(fractions).toEqual([0.5, 1])
+
+    xhr.status = 201
+    xhr.responseText = JSON.stringify({ id: 'project-1', revisions: [] })
+    xhr.onload?.()
+    await expect(promise).resolves.toMatchObject({ id: 'project-1' })
+  })
+
+  it('rejects with the server message when the import is refused', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXHR)
+    const promise = api.importProject('Art', new File(['x'], 'art.png', { type: 'image/png' }))
+    const xhr = FakeXHR.instances[0]
+    xhr.status = 413
+    xhr.responseText = 'Image is over the upload limit'
+    xhr.onload?.()
+    await expect(promise).rejects.toThrow('Image is over the upload limit')
+  })
 })
 
 describe('resilient job event subscription', () => {

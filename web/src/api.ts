@@ -46,11 +46,25 @@ export const api = {
   applyEdits: (projectId: string, revisionId: string, operations: EditOperation[]) => fetch(`/api/projects/${projectId}/revisions/${revisionId}/edits`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations }),
   }).then(result<Revision>),
-  importProject: (name: string, file: File) => {
+  importProject: (name: string, file: File, onProgress?: (fraction: number) => void) => {
     const body = new FormData()
     body.append('name', name)
     body.append('source', file)
-    return fetch('/api/projects/import', { method: 'POST', body }).then(result<Project & { revisions: Revision[] }>)
+    // XHR (not fetch) so the request exposes upload transfer progress; error and
+    // success semantics mirror the shared result<T> helper.
+    return new Promise<Project & { revisions: Revision[] }>((resolve, reject) => {
+      const request = new XMLHttpRequest()
+      request.open('POST', '/api/projects/import')
+      request.upload.onprogress = event => { if (onProgress && event.lengthComputable) onProgress(event.loaded / event.total) }
+      request.onload = () => {
+        if (request.status >= 200 && request.status < 300) {
+          try { resolve(JSON.parse(request.responseText) as Project & { revisions: Revision[] }) }
+          catch { reject(new Error('Malformed import response')) }
+        } else reject(new Error(request.responseText || request.statusText))
+      }
+      request.onerror = () => reject(new Error(request.statusText || 'Upload failed'))
+      request.send(body)
+    })
   },
   generate: (prompt: string, projectName: string, settings: GenerationSettings) => fetch('/api/generations', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
