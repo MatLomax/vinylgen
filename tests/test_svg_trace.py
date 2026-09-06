@@ -17,7 +17,48 @@ from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import ring_path
 from vinylgen.svg_writer import SVG
 from vinylgen.preview import PREVIEW_MAX_SIDE, preview_plan
-from vinylgen.tracing import trace_subject
+from vinylgen.tracing import partition_watertight_fault, trace_subject
+
+
+class PartitionWatertightGateTests(unittest.TestCase):
+    def test_floating_point_noise_on_a_large_canvas_is_tolerated(self):
+        # The phoenix-4x-regen failure: a geometrically perfect partition on an
+        # 89-megapixel canvas whose overlap area is pure GEOS rounding noise.
+        # A fixed absolute epsilon false-failed it; a canvas-scaled tolerance
+        # must not.
+        canvas_area = float(7920 * 11264)
+        topology = {"partition_gap_area": 0.0,
+                    "overlap_area": 1.3709068298339844e-06,
+                    "polygonized_faces": 5168, "boundary_chains": 13668}
+        self.assertIsNone(partition_watertight_fault(topology, canvas_area))
+
+    def test_a_real_uncovered_gap_still_fails(self):
+        topology = {"partition_gap_area": 5.0, "overlap_area": 0.0,
+                    "polygonized_faces": 12, "boundary_chains": 20}
+        message = partition_watertight_fault(topology, 400.0)
+        self.assertIsNotNone(message)
+        self.assertIn("no colour layer", message)
+        self.assertIn("px²", message)
+        self.assertIn("1.250%", message)
+
+    def test_a_real_overlap_still_fails(self):
+        topology = {"partition_gap_area": 0.0, "overlap_area": 2.0,
+                    "polygonized_faces": 9, "boundary_chains": 15}
+        message = partition_watertight_fault(topology, 400.0)
+        self.assertIsNotNone(message)
+        self.assertIn("more than one colour layer", message)
+
+    def test_message_is_concise_and_omits_the_per_chain_inventory(self):
+        # The raw topology carries a per-chain record for every boundary chain;
+        # embedding it is what produced the unreadable frontend error. The gate
+        # message must name the scalar fault only.
+        topology = {"partition_gap_area": 3.0, "overlap_area": 0.0,
+                    "polygonized_faces": 9, "boundary_chains": 15,
+                    "chains": [{"id": i, "pair": (0, 1)} for i in range(13668)]}
+        message = partition_watertight_fault(topology, 400.0)
+        self.assertNotIn("chains", message)
+        self.assertNotIn("'pair'", message)
+        self.assertLess(len(message), 400)
 
 
 class SvgTraceTests(unittest.TestCase):

@@ -50,6 +50,47 @@ def _partition_polygons(geometry) -> list:
     return [geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms)
 
 
+# The partition gap and overlap areas are GEOS unary-union area arithmetic summed
+# over thousands of faces, so they carry floating-point rounding that grows with
+# the canvas size and face count. A genuine partition defect — a region left
+# uncovered by every layer, or claimed by two — is at least a whole pixel of
+# area, orders of magnitude above that noise. The watertightness gate therefore
+# tolerates noise scaled to the canvas area rather than a fixed absolute epsilon,
+# which a large source trips even when every face tiles the plane perfectly.
+_PARTITION_RELATIVE_TOLERANCE = 1e-9
+_PARTITION_ABSOLUTE_TOLERANCE = 1e-6
+
+
+def partition_watertight_fault(topology: dict, canvas_area: float) -> str | None:
+    """Describe why the shared-boundary partition is not watertight, or ``None``.
+
+    ``None`` means the uncovered (gap) and doubly-covered (overlap) areas are
+    both within floating-point noise for a canvas of this size. Otherwise the
+    returned message names each failing quantity in absolute px² and as a
+    fraction of the canvas, without embedding the per-chain inventory that makes
+    the raw topology dict unreadable when it surfaces to a user.
+    """
+    tolerance = max(_PARTITION_ABSOLUTE_TOLERANCE,
+                    canvas_area * _PARTITION_RELATIVE_TOLERANCE)
+    gap = float(topology["partition_gap_area"])
+    overlap = float(topology["overlap_area"])
+    faults: list[str] = []
+    if gap > tolerance:
+        faults.append(
+            f"{gap:.4g} px² of the traced region is covered by no colour layer "
+            f"({gap / canvas_area:.3%} of the canvas)")
+    if overlap > tolerance:
+        faults.append(
+            f"{overlap:.4g} px² is claimed by more than one colour layer "
+            f"({overlap / canvas_area:.3%} of the canvas)")
+    if not faults:
+        return None
+    return ("shared-boundary partition is not watertight: " + "; and ".join(faults)
+            + f". This exceeds the {tolerance:.4g} px² rounding tolerance for this "
+            f"{int(round(canvas_area))} px² canvas of "
+            f"{int(topology['polygonized_faces'])} faces.")
+
+
 
 def resolve_subjects(inputs: list[Path]) -> list[Path]:
     result: list[Path] = []
@@ -246,8 +287,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     partition, boundary_track, topology = shared_boundary_polygons(
         working, included, segmentation.palette_costs,
         protected_features=segmentation.protected_features)
-    if topology["partition_gap_area"] > 1e-7 or topology["overlap_area"] > 1e-7:
-        raise RuntimeError(f"shared-boundary partition failed: {topology}")
+    fault = partition_watertight_fault(topology, float(width * height))
+    if fault is not None:
+        raise RuntimeError(fault)
     fallback_image = subject_dir / "trace-fallbacks.png"
     semantic_render = scratch / f"{subject_dir.name}-semantic-validation.png"
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
