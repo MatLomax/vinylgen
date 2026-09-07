@@ -36,6 +36,8 @@ docs/cameo-5-alpha/
 
 # Web dependencies and build output
 /node_modules/
+/package.json
+/package-lock.json
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
