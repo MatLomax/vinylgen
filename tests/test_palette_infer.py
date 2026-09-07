@@ -238,9 +238,11 @@ class PaletteInferenceTests(unittest.TestCase):
             source = root / "fixture.png"
             Image.fromarray(pixels, "RGB").save(source)
             report = infer_palette(source, root / "smooth",
-                                   PaletteSettings(initial_colours=4, flatten_smooth_edges=True))
+                                   PaletteSettings(initial_colours=4, flatten_upscale=2,
+                                                   flatten_smooth_edges=True))
             infer_palette(source, root / "plain",
-                          PaletteSettings(initial_colours=4, flatten_smooth_edges=False))
+                          PaletteSettings(initial_colours=4, flatten_upscale=2,
+                                          flatten_smooth_edges=False))
             with Image.open(root / "smooth" / "fixture" / "flattened.png") as smoothed_image:
                 smoothed = np.asarray(smoothed_image.convert("RGB"))
             with Image.open(root / "plain" / "fixture" / "flattened.png") as plain_image:

@@ -97,7 +97,7 @@ class PaletteJobSettings(BaseModel):
     aa_smoothness: float = Field(default=2.5, ge=0)
     aa_resolution_passes: int = Field(default=5, ge=0)
     resolve_antialiasing: bool = True
-    flatten_upscale: int = Field(default=2, ge=1, le=4)
+    flatten_upscale: int = Field(default=1, ge=1, le=4)
     flatten_smooth_edges: bool = True
     protected_component_points: tuple[tuple[int, int], ...] = ()
     preserved_colour_points: tuple[tuple[int, int], ...] = ()

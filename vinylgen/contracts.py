@@ -31,7 +31,7 @@ class PaletteSettings:
     aa_smoothness: float = 2.5
     aa_resolution_passes: int = 5
     resolve_antialiasing: bool = True
-    flatten_upscale: int = 2
+    flatten_upscale: int = 1
     flatten_smooth_edges: bool = True
     protected_component_points: tuple[tuple[int, int], ...] = ()
     preserved_colour_points: tuple[tuple[int, int], ...] = ()
