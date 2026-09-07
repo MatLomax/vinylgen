@@ -1,26 +1,59 @@
 from __future__ import annotations
 
 import numpy as np
+from numba import njit, prange
 from PIL import Image, ImageFilter
+
+from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
+
+
+# sRGB-linear to CIE XYZ (D65) and the D65 reference white.  Held at module scope
+# so the fused Lab kernel receives them as arguments and its accumulation order
+# matches numpy's `x @ M` element-for-element.
+_LAB_M = np.array([
+    [0.4124564, 0.2126729, 0.0193339],
+    [0.3575761, 0.7151522, 0.1191920],
+    [0.1804375, 0.0721750, 0.9503041],
+])
+_LAB_WHITE = np.array([0.95047, 1.0, 1.08883])
+
+
+@njit(parallel=True, cache=True, fastmath=False)
+def _srgb_to_lab_kernel(rgb, matrix, white):
+    """Per-row sRGB->Lab, reproducing the numpy formulation bit-for-bit.
+
+    Each channel is linearised, projected to XYZ in the same summation order as
+    `x @ matrix` (`sum_k x[k] * matrix[k, j]`), normalised by the reference
+    white, and passed through the CIE cube-root companding.  Every arithmetic
+    step stays in double precision so the result matches the numpy path exactly.
+    """
+    n = rgb.shape[0]
+    out = np.empty((n, 3), dtype=np.float64)
+    epsilon = 216 / 24389
+    kappa = 24389 / 27
+    for i in prange(n):
+        lin0 = rgb[i, 0] / 255.0
+        lin1 = rgb[i, 1] / 255.0
+        lin2 = rgb[i, 2] / 255.0
+        lin0 = lin0 / 12.92 if lin0 <= 0.04045 else ((lin0 + 0.055) / 1.055) ** 2.4
+        lin1 = lin1 / 12.92 if lin1 <= 0.04045 else ((lin1 + 0.055) / 1.055) ** 2.4
+        lin2 = lin2 / 12.92 if lin2 <= 0.04045 else ((lin2 + 0.055) / 1.055) ** 2.4
+        x = (lin0 * matrix[0, 0] + lin1 * matrix[1, 0] + lin2 * matrix[2, 0]) / white[0]
+        y = (lin0 * matrix[0, 1] + lin1 * matrix[1, 1] + lin2 * matrix[2, 1]) / white[1]
+        z = (lin0 * matrix[0, 2] + lin1 * matrix[1, 2] + lin2 * matrix[2, 2]) / white[2]
+        fx = np.cbrt(x) if x > epsilon else (kappa * x + 16) / 116
+        fy = np.cbrt(y) if y > epsilon else (kappa * y + 16) / 116
+        fz = np.cbrt(z) if z > epsilon else (kappa * z + 16) / 116
+        out[i, 0] = 116 * fy - 16
+        out[i, 1] = 500 * (fx - fy)
+        out[i, 2] = 200 * (fy - fz)
+    return out
 
 
 def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    x = np.asarray(rgb, dtype=np.float64) / 255.0
-    x = np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
-    xyz = x @ np.array([
-        [0.4124564, 0.2126729, 0.0193339],
-        [0.3575761, 0.7151522, 0.1191920],
-        [0.1804375, 0.0721750, 0.9503041],
-    ])
-    xyz /= np.array([0.95047, 1.0, 1.08883])
-    epsilon = 216 / 24389
-    kappa = 24389 / 27
-    f = np.where(xyz > epsilon, np.cbrt(xyz), (kappa * xyz + 16) / 116)
-    return np.column_stack((
-        116 * f[:, 1] - 16,
-        500 * (f[:, 0] - f[:, 1]),
-        200 * (f[:, 1] - f[:, 2]),
-    ))
+    rgb = np.ascontiguousarray(np.asarray(rgb, dtype=np.float64))
+    with _KERNEL_LOCK:
+        return _srgb_to_lab_kernel(rgb, _LAB_M, _LAB_WHITE)
 
 
 def lab_to_srgb(lab: np.ndarray) -> np.ndarray:
@@ -162,6 +195,30 @@ def assignment_margin(
     return margins
 
 
+@njit(parallel=True, cache=True, fastmath=False)
+def _palette_costs_kernel(pixels, centres):
+    """Per-pixel Euclidean Lab distance to every centre.
+
+    The squared differences accumulate in double precision, exactly as
+    `np.linalg.norm(..., axis=2)` reduces the three Lab channels, and each result
+    is rounded to float32 on store so the array is bit-identical to the numpy
+    formulation.
+    """
+    n = pixels.shape[0]
+    k = centres.shape[0]
+    costs = np.empty((n, k), dtype=np.float32)
+    for i in prange(n):
+        p0 = pixels[i, 0]
+        p1 = pixels[i, 1]
+        p2 = pixels[i, 2]
+        for j in range(k):
+            d0 = p0 - centres[j, 0]
+            d1 = p1 - centres[j, 1]
+            d2 = p2 - centres[j, 2]
+            costs[i, j] = np.float32(np.sqrt(d0 * d0 + d1 * d1 + d2 * d2))
+    return costs
+
+
 def palette_costs(
     pixels: np.ndarray, centres: np.ndarray, chunk: int = 200_000
 ) -> np.ndarray:
@@ -170,11 +227,11 @@ def palette_costs(
     The result is float32 while it is being used.  The segmentation contract
     stores it as float16: that preserves substantially more useful boundary
     evidence than a single confidence number without making the handoff huge.
+
+    The ``chunk`` parameter is retained for call-site compatibility; the fused
+    parallel kernel materialises the whole array directly and does not chunk.
     """
-    costs = np.empty((len(pixels), len(centres)), dtype=np.float32)
-    for start in range(0, len(pixels), chunk):
-        part = pixels[start:start + chunk]
-        costs[start:start + chunk] = np.linalg.norm(
-            part[:, None, :] - centres[None, :, :], axis=2
-        )
-    return costs
+    pixels = np.ascontiguousarray(pixels, dtype=np.float64)
+    centres = np.ascontiguousarray(centres, dtype=np.float64)
+    with _KERNEL_LOCK:
+        return _palette_costs_kernel(pixels, centres)

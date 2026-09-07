@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
-import threading
 
 import numpy as np
 from numba import njit, prange
+
+from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
 
 
 # The eight normals sweep half a circle; the opposite sample is generated
@@ -31,12 +32,6 @@ def _offset_table() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 _DX, _DY, _RADIUS_OF = _offset_table()
-
-# One kernel call already saturates every core, so concurrent callers (the CLI
-# processes independent images on a thread pool) gain nothing from overlapping.
-# Serialising them keeps the call safe on numba's workqueue threading layer,
-# which rejects concurrent parallel entry when TBB or OpenMP is unavailable.
-_KERNEL_LOCK = threading.Lock()
 
 
 @njit(cache=True, fastmath=False, inline="always")

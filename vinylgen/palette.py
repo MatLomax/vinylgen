@@ -333,7 +333,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     subject_dir = output_dir / stem
     subject_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(path, subject_dir / "source.png")
-    Image.fromarray(flattened, "RGB").save(subject_dir / "flattened.png")
+    Image.fromarray(flattened, "RGB").save(subject_dir / "flattened.png", compress_level=1)
     segmentation_path = subject_dir / "segmentation.npz"
     segmentation = SegmentationBundle(
         labels=full_labels,
@@ -361,7 +361,9 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
             }
         )
     tick(0.96, "Building palette report")
-    create_report(Image.fromarray(flattened, "RGB"), palette).save(subject_dir / "report.png")
+    create_report(Image.fromarray(flattened, "RGB"), palette).save(
+        subject_dir / "report.png", compress_level=1
+    )
     report: dict[str, object] = {
         "source": str(path),
         "segmentation": str(segmentation_path),
