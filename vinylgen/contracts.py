@@ -96,13 +96,13 @@ class TraceSettings:
     solid_underlayers: bool = False
     remove_colour: str | None = None
     layer_order: list[str] | None = None
-    corner_threshold: float = 57.3
+    corner_threshold: float = 60.0
     curve_optimization: bool = True
-    curve_fit_tolerance: float = 0.8
+    curve_fit_tolerance: float = 1.5
     # Geometry classification is deliberately independent from curve fitting.
     # A raster staircase may be this far from its best-fit line and still be
     # represented by one exact SVG line.
-    straight_line_max_deviation: float = 0.8
+    straight_line_max_deviation: float = 1.6
     minimum_straight_length: float = 4.0
     max_deviation: float | None = None
     corner_analysis_span: float = 8.0

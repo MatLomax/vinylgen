@@ -81,7 +81,7 @@ class SvgTraceTests(unittest.TestCase):
         self.assertEqual(settings.min_detail_width, 0.0)
         self.assertEqual(settings.min_region_area, 0.0)
         self.assertEqual(settings.remove_below_width, 0.0)
-        self.assertEqual(settings.curve_fit_tolerance, 0.8)
+        self.assertEqual(settings.curve_fit_tolerance, 1.5)
         self.assertEqual(settings.corner_analysis_span, 8.0)
 
     def test_adjacent_undersized_regions_merge_without_swapping(self):

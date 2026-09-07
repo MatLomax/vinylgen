@@ -8,8 +8,8 @@ export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
 }
 export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
-  width_mm: null, height_mm: null, overlap: 0, solid_underlayers: false, remove_colour: null, layer_order: null, corner_threshold: 57.3, curve_optimization: true,
-  curve_fit_tolerance: .8, straight_line_max_deviation: .8, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8,
+  width_mm: null, height_mm: null, overlap: 0, solid_underlayers: false, remove_colour: null, layer_order: null, corner_threshold: 60, curve_optimization: true,
+  curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8,
   cleanup: false, cleanup_action: 'remove', min_detail_width: 0, min_region_area: 0, remove_below_width: 0,
   soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
 }

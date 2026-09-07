@@ -121,10 +121,10 @@ class TraceJobSettings(BaseModel):
     solid_underlayers: bool = False
     remove_colour: str | None = None
     layer_order: list[str] | None = None
-    corner_threshold: float = Field(default=57.3, ge=0, le=180)
+    corner_threshold: float = Field(default=60.0, ge=0, le=180)
     curve_optimization: bool = True
-    curve_fit_tolerance: float = Field(default=0.8, gt=0)
-    straight_line_max_deviation: float = Field(default=0.8, ge=0)
+    curve_fit_tolerance: float = Field(default=1.5, gt=0)
+    straight_line_max_deviation: float = Field(default=1.6, ge=0)
     minimum_straight_length: float = Field(default=4.0, ge=0)
     max_deviation: float | None = Field(default=None, gt=0)
     corner_analysis_span: float = Field(default=8.0, gt=0)
