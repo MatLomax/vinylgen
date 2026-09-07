@@ -6,7 +6,7 @@ import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
-import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, recolourPreviewPixels, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
+import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
@@ -208,6 +208,14 @@ export default function App() {
   const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
   const stageScroll = useRef<Partial<Record<WorkflowStage, number>>>({})
   const loadedProject = useRef<string | null>(null)
+  // Mirrors the live selection so a region edit resolving asynchronously can read
+  // areas clicked after it was kicked off.
+  const regionSelectionRef = useRef<Component[]>(regionSelection)
+  // A region edit bumps the revision, which reloads artifacts and would otherwise
+  // clear the selection. This hands the surviving selection to that reload so
+  // post-kickoff clicks are kept; `applied` guards the two-phase revision→artifacts
+  // reload from clobbering areas clicked between its two runs.
+  const preserveRegion = useRef<{ id: string; selection: Component[]; applied: boolean } | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
   const tracedPreview = artifacts.find(row => row.kind === 'traced-preview')
@@ -366,8 +374,15 @@ export default function App() {
       setCustomRatio([generation.width / divisor, generation.height / divisor])
     }
   }, [sourceRevision?.id])
+  useEffect(() => { regionSelectionRef.current = regionSelection }, [regionSelection])
   useEffect(() => {
-    setRegionSelection([]); setRegionError('')
+    // A region edit hands its surviving selection to `preserveRegion` for exactly the
+    // revision it produced; restore it once, keep it across the reload's second run, and
+    // clear the selection for any other revision change.
+    const decision = regionReloadDecision(preserveRegion.current, revision)
+    if (decision.action === 'apply') { setRegionSelection(decision.selection); preserveRegion.current = decision.handoff }
+    else if (decision.action === 'clear') { preserveRegion.current = null; setRegionSelection([]) }
+    setRegionError('')
     setPaintedCells(new Map()); setPencilError('')
     if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); return }
     const controller = new AbortController()
@@ -596,14 +611,19 @@ export default function App() {
 
   async function applyRegionColour(label: number) {
     if (!selected || !revision) return
-    const operations = regionSelection
+    const submitted = regionSelection
+    const operations = submitted
       .filter(component => component.label !== label)
       .map(component => ({ tool: 'reassign_region' as const, point: component.point, target_label: label }))
     if (operations.length === 0) return
     setRegionBusy(true); setRegionError('')
     try {
       const next = await api.applyEdits(selected, revision, operations)
-      setRegionSelection([])
+      // Deselect only the submitted batch; areas clicked after kickoff are new
+      // components and are handed to the revision reload so they stay selected. The
+      // reload effect clears the selection otherwise, so we route through it rather
+      // than setting selection here (which it would immediately overwrite).
+      preserveRegion.current = { id: next.id, selection: removeComponents(regionSelectionRef.current, submitted), applied: false }
       setRevision(next.id)
     } catch (cause) { setRegionError(String(cause)) }
     finally { setRegionBusy(false) }

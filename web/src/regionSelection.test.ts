@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   combinedMask, componentIndexAt, floodComponent, hexToRgb, labelForRgb, neighbourLabels,
-  overlayPixels, paintOverlayPixels, recolourPreviewPixels, selectionLabels, toggleComponent, type Pixels, type Rgb,
+  overlayPixels, paintOverlayPixels, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Pixels, type Rgb,
 } from './regionSelection'
 
 const A: Rgb = [10, 0, 0]
@@ -55,6 +55,43 @@ describe('regionSelection', () => {
     selection = toggleComponent(selection, pixels, 1, 1, palette) // click A again -> remove A
     expect(selection).toHaveLength(1)
     expect(selectionLabels(selection)).toEqual([1])
+  })
+
+  it('removes the submitted batch by identity, keeping areas re-clicked after kickoff', () => {
+    const pixels = makePixels()
+    // Batch submitted to a replace: the A block and the B block.
+    let selection = toggleComponent([], pixels, 0, 0, palette) // add A
+    selection = toggleComponent(selection, pixels, 2, 0, palette) // add B
+    const submitted = selection
+    // After kickoff the user re-clicks the same A block; a distinct component object.
+    const afterKickoff = toggleComponent(selection, pixels, 1, 1, palette) // A already present -> removes it...
+    const withNewA = toggleComponent(afterKickoff, pixels, 0, 0, palette) // ...re-add A as a fresh component
+    const remaining = removeComponents(withNewA, submitted)
+    // The originally-submitted A and B are gone; the freshly-clicked A survives.
+    expect(remaining).toHaveLength(1)
+    expect(selectionLabels(remaining)).toEqual([0])
+    expect(submitted.every(component => !remaining.includes(component))).toBe(true)
+  })
+
+  it('restores the surviving selection across the revision reload without clobbering later clicks', () => {
+    const pixels = makePixels()
+    const survivors = toggleComponent([], pixels, 0, 0, palette) // the post-kickoff selection
+    const handoff = { id: 'rev-2', selection: survivors, applied: false }
+
+    // Run 1: the revision id changes to the edit's revision -> restore the survivors.
+    const first = regionReloadDecision(handoff, 'rev-2')
+    expect(first.action).toBe('apply')
+    if (first.action !== 'apply') throw new Error('unreachable')
+    expect(first.selection).toBe(survivors)
+    expect(first.handoff.applied).toBe(true)
+
+    // Run 2: the reloaded flattened image settles (same revision) -> leave selection be,
+    // so areas clicked between the two runs are not wiped.
+    expect(regionReloadDecision(first.handoff, 'rev-2').action).toBe('keep')
+
+    // Any other revision (undo, project switch, no handoff) clears the selection.
+    expect(regionReloadDecision(first.handoff, 'rev-9').action).toBe('clear')
+    expect(regionReloadDecision(null, 'rev-2').action).toBe('clear')
   })
 
   it('reports only bordering, non-selected colours as neighbours', () => {

@@ -308,6 +308,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .region-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .region-editor-head h2 { margin: 0; }
 .region-selection-status { margin: 0; color: var(--text-muted); font-size: 13px; }
+.region-busy { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text-label); font-size: 13px; }
 .region-swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .region-swatch { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 10px; text-align: left; color: var(--text); background: var(--surface-item); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .region-swatch.is-neighbour { border-color: var(--accent); }
@@ -332,6 +333,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .canvas-loading button { min-width: 140px; margin-top: 16px; }
 .job-result { margin: 0; padding: 10px 18px; border-radius: 0; }
 .spinner { width: 58px; height: 58px; border: 5px solid var(--surface-control-strong); border-block-start-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.spinner-inline { flex: none; width: 16px; height: 16px; border-width: 2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .progress.indeterminate i { width: 35%; transform: translateX(-120%); animation: progress-scan 1.15s ease-in-out infinite; }
 @keyframes progress-scan { 50% { transform: translateX(190%); } 100% { transform: translateX(400%); } }

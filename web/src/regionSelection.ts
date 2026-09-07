@@ -83,6 +83,36 @@ export function toggleComponent(selection: Component[], pixels: Pixels, x: numbe
   return component ? [...selection, component] : selection
 }
 
+// Drop a specific batch of components from the selection by identity. Used after a
+// region replace lands to deselect exactly the areas that were submitted, while any
+// area clicked after kickoff — a distinct component object even for the same point —
+// stays selected for the next edit.
+export function removeComponents(selection: Component[], removed: Component[]): Component[] {
+  return selection.filter(component => !removed.includes(component))
+}
+
+// The surviving selection a region edit hands to the revision it produced, so the
+// reload keeps areas clicked after the edit was kicked off. `applied` records whether
+// the (two-run) revision→artifacts reload has already restored it.
+export type RegionReloadHandoff = { id: string; selection: Component[]; applied: boolean }
+
+// Decide what the region selection becomes when a revision loads. A region edit bumps
+// the revision, whose reload fires the selection effect twice — once when the revision
+// id changes and again when the reloaded flattened image settles. Restore the surviving
+// selection on the first matching run ('apply'), leave whatever is selected untouched on
+// the second ('keep' — the user may have clicked more between the runs), and clear the
+// selection for any other revision change ('clear').
+export function regionReloadDecision(handoff: RegionReloadHandoff | null, revision: string | null):
+  | { action: 'apply'; selection: Component[]; handoff: RegionReloadHandoff }
+  | { action: 'keep' }
+  | { action: 'clear' } {
+  if (handoff && handoff.id === revision) {
+    if (!handoff.applied) return { action: 'apply', selection: handoff.selection, handoff: { ...handoff, applied: true } }
+    return { action: 'keep' }
+  }
+  return { action: 'clear' }
+}
+
 export function combinedMask(selection: Component[], size: number): Uint8Array {
   const mask = new Uint8Array(size)
   for (const component of selection) {

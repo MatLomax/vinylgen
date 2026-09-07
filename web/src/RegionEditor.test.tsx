@@ -54,6 +54,13 @@ describe('RegionEditor', () => {
     expect(onUndo).toHaveBeenCalled()
   })
 
+  it('shows a replacing indicator while a replace is in flight', () => {
+    const { rerender } = render(<RegionEditor {...props({ selectionLabels: [0] })} />)
+    expect(screen.queryByText(/Replacing colour/)).toBeNull()
+    rerender(<RegionEditor {...props({ selectionLabels: [0], busy: true })} />)
+    expect(screen.getByText(/Replacing colour/)).toBeTruthy()
+  })
+
   it('clears the selection', () => {
     const onClear = vi.fn()
     render(<RegionEditor {...props({ selectionLabels: [0, 1], onClear })} />)

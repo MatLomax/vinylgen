@@ -24,6 +24,8 @@ export function RegionEditor({ palette, selectionLabels, neighbourLabels, onPick
     </div>
     <p className="section-intro">Click an area on the flattened artwork to select it; click it again to deselect. Choosing a swatch reassigns every selected area — a colour that already touches the selection dissolves it in, any other colour recolours it. Each change is a recoverable revision.</p>
 
+    {busy && <p className="region-busy" role="status" aria-live="polite"><span className="spinner spinner-inline" aria-hidden="true" />Replacing colour… you can keep selecting areas.</p>}
+
     {disabled && disabledHint && <p className="region-selection-status" role="status" aria-live="polite">{disabledHint}</p>}
     {!disabled && <p className="region-selection-status" role="status" aria-live="polite">{count === 0 ? 'No areas selected yet.' : `${count} area${count === 1 ? '' : 's'} selected.`}</p>}
 
