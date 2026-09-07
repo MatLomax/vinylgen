@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import math
-import os
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Iterable, Literal
 
 import numpy as np
+from numba import njit
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
 
 from vinylgen.contracts import TraceSettings
 from vinylgen.palette import Progress, _noop
-
-# A per-chain fit is independent, so pass 1 (which fits every chain from a cold
-# cache) fans out across processes. Threads would not help: the work is Python
-# bytecode over tiny arrays plus a per-window SVD, all under the GIL. Recovery
-# passes re-fit only a handful of chains, so they stay serial below the threshold.
-_PARALLEL_FIT_THRESHOLD = 200
-_PARALLEL_FIT_MIN_SAMPLES = 20_000
-
-
-def _fit_worker_count() -> int:
-    return max(1, (os.cpu_count() or 2) - 1)
 
 Point = tuple[float, float]
 Primitive = tuple
@@ -111,16 +99,43 @@ class RingFit:
     metrics: FitMetrics
 
 
-def _distance_to_line(points: np.ndarray) -> tuple[float, int]:
-    vector = points[-1] - points[0]
-    length = math.sqrt(vector[0] * vector[0] + vector[1] * vector[1])
+@njit(cache=True, nogil=True)
+def _distance_to_line_nb(points: np.ndarray, start: int, end: int):
+    """Max perpendicular distance of samples ``start..end`` from their chord.
+
+    Returns ``(max_distance, local_index)`` where ``local_index`` is the offset
+    from ``start`` of the farthest sample. Ties keep the first sample, matching
+    ``np.argmax``. Callable from the compiled fitter and from Python.
+    """
+    n = end - start + 1
+    vx = points[end, 0] - points[start, 0]
+    vy = points[end, 1] - points[start, 1]
+    length = math.sqrt(vx * vx + vy * vy)
+    best = -1.0
+    best_index = 0
     if length < 1e-12:
-        distances = np.linalg.norm(points - points[0], axis=1)
+        for i in range(n):
+            dx = points[start + i, 0] - points[start, 0]
+            dy = points[start + i, 1] - points[start, 1]
+            distance = math.sqrt(dx * dx + dy * dy)
+            if distance > best:
+                best = distance
+                best_index = i
     else:
-        d = points - points[0]
-        distances = np.abs(vector[0] * d[:, 1] - vector[1] * d[:, 0]) / length
-    index = int(np.argmax(distances))
-    return float(distances[index]), index
+        for i in range(n):
+            dx = points[start + i, 0] - points[start, 0]
+            dy = points[start + i, 1] - points[start, 1]
+            distance = abs(vx * dy - vy * dx) / length
+            if distance > best:
+                best = distance
+                best_index = i
+    return best, best_index
+
+
+def _distance_to_line(points: np.ndarray) -> tuple[float, int]:
+    array = np.ascontiguousarray(points, dtype=np.float64)
+    distance, index = _distance_to_line_nb(array, 0, len(array) - 1)
+    return float(distance), int(index)
 
 
 @dataclass(frozen=True)
@@ -132,13 +147,31 @@ class _LineEvidence:
 
 
 def _robust_line(points: np.ndarray) -> _LineEvidence:
-    """Total-least-squares line evidence, insensitive to axis stair steps."""
+    """Total-least-squares line evidence, insensitive to axis stair steps.
+
+    The principal direction is the eigenvector of the larger eigenvalue of the
+    centred 2x2 covariance ``[[a, b], [b, c]]``, obtained in closed form:
+    ``lambda1 = (a + c) / 2 + sqrt(((a - c) / 2)^2 + b^2)``. This equals the
+    direction ``svd`` returns up to sign and to ~1e-12, and unlike ``svd`` it is
+    reproducible in the Numba corner kernel below.
+    """
     origin = points.mean(axis=0)
     centred = points - origin
     if len(points) < 2 or not np.any(centred):
         return _LineEvidence(origin, np.array((1.0, 0.0)), 0.0, 0.0)
-    _, _, axes = np.linalg.svd(centred, full_matrices=False)
-    direction = axes[0]
+    a = float(centred[:, 0] @ centred[:, 0])
+    b = float(centred[:, 0] @ centred[:, 1])
+    c = float(centred[:, 1] @ centred[:, 1])
+    half_diff = (a - c) * 0.5
+    root = math.sqrt(half_diff * half_diff + b * b)
+    if b == 0.0:
+        # Axis-aligned covariance: the principal axis is x when a >= c else y.
+        direction = np.array((1.0, 0.0)) if a >= c else np.array((0.0, 1.0))
+    else:
+        # lambda1 - c = half_diff + root, strictly positive when b != 0, so this
+        # eigenvector is always well-defined here.
+        eigen_x = half_diff + root
+        direction = np.array((eigen_x, b)) / math.hypot(eigen_x, b)
     if np.dot(direction, points[-1] - points[0]) < 0:
         direction = -direction
     projections = centred @ direction
@@ -147,31 +180,163 @@ def _robust_line(points: np.ndarray) -> _LineEvidence:
                          float(projections.max() - projections.min()))
 
 
-def _line_intersection(first: _LineEvidence, second: _LineEvidence) -> np.ndarray | None:
-    cross = float(first.direction[0] * second.direction[1]
-                  - first.direction[1] * second.direction[0])
-    if abs(cross) < 1e-6:
-        return None
-    delta = second.origin - first.origin
-    distance = float((delta[0] * second.direction[1]
-                      - delta[1] * second.direction[0]) / cross)
-    return first.origin + distance * first.direction
+@njit(cache=True)
+def _side_line(points: np.ndarray, index: int, step: int, span: float):
+    """Closed-form line evidence for one arc-length side window of a corner.
 
-
-def _side_window(points: np.ndarray, index: int, step: int, span: float) -> np.ndarray:
-    """Samples on one side of a prospective corner by physical arc length."""
-    selected = [points[index]]
+    Walks from ``index`` in the ``step`` direction accumulating physical arc
+    length up to ``span``, then computes the same origin, principal direction,
+    maximum perpendicular error, and projection length as ``_robust_line``.
+    Returns ``(dir_x, dir_y, maximum_error, length, origin_x, origin_y)``.
+    """
+    n = points.shape[0]
+    walk = np.empty(n, dtype=np.int64)
+    walk[0] = index
+    count = 1
     travelled = 0.0
     cursor = index
-    while 0 <= cursor + step < len(points) and travelled < span:
+    while 0 <= cursor + step < n and travelled < span:
         following = cursor + step
-        delta = points[following] - points[cursor]
-        travelled += math.sqrt(delta[0] * delta[0] + delta[1] * delta[1])
-        selected.append(points[following])
+        dx = points[following, 0] - points[cursor, 0]
+        dy = points[following, 1] - points[cursor, 1]
+        travelled += math.sqrt(dx * dx + dy * dy)
+        walk[count] = following
+        count += 1
         cursor = following
+    origin_x = points[index, 0]
+    origin_y = points[index, 1]
+    if count < 2:
+        return 1.0, 0.0, 0.0, 0.0, origin_x, origin_y
+    sum_x = 0.0
+    sum_y = 0.0
+    for i in range(count):
+        p = walk[i]
+        sum_x += points[p, 0]
+        sum_y += points[p, 1]
+    origin_x = sum_x / count
+    origin_y = sum_y / count
+    a = 0.0
+    b = 0.0
+    c = 0.0
+    any_nonzero = False
+    for i in range(count):
+        p = walk[i]
+        cx = points[p, 0] - origin_x
+        cy = points[p, 1] - origin_y
+        if cx != 0.0 or cy != 0.0:
+            any_nonzero = True
+        a += cx * cx
+        b += cx * cy
+        c += cy * cy
+    if not any_nonzero:
+        return 1.0, 0.0, 0.0, 0.0, origin_x, origin_y
+    half_diff = (a - c) * 0.5
+    root = math.sqrt(half_diff * half_diff + b * b)
+    if b == 0.0:
+        if a >= c:
+            dir_x = 1.0
+            dir_y = 0.0
+        else:
+            dir_x = 0.0
+            dir_y = 1.0
+    else:
+        eigen_x = half_diff + root
+        norm = math.sqrt(eigen_x * eigen_x + b * b)
+        dir_x = eigen_x / norm
+        dir_y = b / norm
+    # Sign convention on the (possibly reversed) window: a backward walk yields a
+    # window whose first sample is the far point and last sample is ``index``.
     if step < 0:
-        selected.reverse()
-    return np.asarray(selected)
+        sign_x = points[walk[0], 0] - points[walk[count - 1], 0]
+        sign_y = points[walk[0], 1] - points[walk[count - 1], 1]
+    else:
+        sign_x = points[walk[count - 1], 0] - points[walk[0], 0]
+        sign_y = points[walk[count - 1], 1] - points[walk[0], 1]
+    if dir_x * sign_x + dir_y * sign_y < 0.0:
+        dir_x = -dir_x
+        dir_y = -dir_y
+    proj_min = math.inf
+    proj_max = -math.inf
+    error_max = 0.0
+    for i in range(count):
+        p = walk[i]
+        cx = points[p, 0] - origin_x
+        cy = points[p, 1] - origin_y
+        proj = cx * dir_x + cy * dir_y
+        if proj < proj_min:
+            proj_min = proj
+        if proj > proj_max:
+            proj_max = proj
+        error = abs(dir_x * cy - dir_y * cx)
+        if error > error_max:
+            error_max = error
+    return dir_x, dir_y, error_max, proj_max - proj_min, origin_x, origin_y
+
+
+@njit(cache=True)
+def _corner_candidates(points: np.ndarray, deviation: float, minimum: float,
+                       span: float, threshold: float, maximum_move: float):
+    """Per-index corner evidence for the two-scale sustained-run test.
+
+    For every interior sample both sides must show an independent sustained
+    straight run at ``span`` and again at ``span * 1.75``, the turn must reach
+    ``threshold`` at each scale, the two span-scale lines must intersect, and
+    that intersection must lie within ``maximum_move`` of the sample. Emits
+    ``(valid, turn, ix, iy)`` per index; the span-scale turn and intersection
+    feed the Python non-max suppression.
+    """
+    n = points.shape[0]
+    valid = np.zeros(n, dtype=np.bool_)
+    turns = np.zeros(n, dtype=np.float64)
+    ix = np.zeros(n, dtype=np.float64)
+    iy = np.zeros(n, dtype=np.float64)
+    for index in range(1, n - 1):
+        ok = True
+        span_turn = 0.0
+        b_dx = b_dy = b_ox = b_oy = 0.0
+        a_dx = a_dy = a_ox = a_oy = 0.0
+        for scale_step in range(2):
+            scale = span if scale_step == 0 else span * 1.75
+            bdx, bdy, berr, blen, box, boy = _side_line(points, index, -1, scale)
+            if blen < minimum or berr > deviation:
+                ok = False
+                break
+            adx, ady, aerr, alen, aox, aoy = _side_line(points, index, 1, scale)
+            if alen < minimum or aerr > deviation:
+                ok = False
+                break
+            dot = bdx * adx + bdy * ady
+            if dot > 1.0:
+                dot = 1.0
+            elif dot < -1.0:
+                dot = -1.0
+            turn = math.acos(dot)
+            if turn < threshold:
+                ok = False
+                break
+            if scale_step == 0:
+                span_turn = turn
+                b_dx, b_dy, b_ox, b_oy = bdx, bdy, box, boy
+                a_dx, a_dy, a_ox, a_oy = adx, ady, aox, aoy
+        if not ok:
+            continue
+        cross = b_dx * a_dy - b_dy * a_dx
+        if abs(cross) < 1e-6:
+            continue
+        delta_x = a_ox - b_ox
+        delta_y = a_oy - b_oy
+        distance = (delta_x * a_dy - delta_y * a_dx) / cross
+        cx = b_ox + distance * b_dx
+        cy = b_oy + distance * b_dy
+        move_x = cx - points[index, 0]
+        move_y = cy - points[index, 1]
+        if math.sqrt(move_x * move_x + move_y * move_y) > maximum_move:
+            continue
+        valid[index] = True
+        turns[index] = span_turn
+        ix[index] = cx
+        iy[index] = cy
+    return valid, turns, ix, iy
 
 
 def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int, Point]:
@@ -179,7 +344,8 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
 
     Individual horizontal/vertical turns in a diagonal pixel staircase fail
     the sustained-run tests; a building corner has stable line evidence on
-    both sides and survives the larger-scale confirmation.
+    both sides and survives the larger-scale confirmation. The per-index
+    evidence runs in a Numba kernel; the non-max suppression stays here.
     """
     if len(points) < 5:
         return {}
@@ -187,39 +353,14 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
     minimum = max(1e-4, float(settings.minimum_straight_length))
     span = max(minimum, float(settings.corner_analysis_span))
     threshold = math.radians(float(settings.corner_threshold))
-    candidates: list[tuple[float, int, Point]] = []
-    for index in range(1, len(points) - 1):
-        evidence = []
-        valid = True
-        for scale in (span, span * 1.75):
-            # Each side must independently show a sustained straight run; the
-            # far side is only measured once the near side has passed.
-            before = _robust_line(_side_window(points, index, -1, scale))
-            if before.length < minimum or before.maximum_error > deviation:
-                valid = False
-                break
-            after = _robust_line(_side_window(points, index, 1, scale))
-            if after.length < minimum or after.maximum_error > deviation:
-                valid = False
-                break
-            turn = math.acos(float(np.clip(np.dot(before.direction, after.direction), -1, 1)))
-            if turn < threshold:
-                valid = False
-                break
-            evidence.append((turn, before, after))
-        if not valid:
-            continue
-        turn, before, after = evidence[0]
-        intersection = _line_intersection(before, after)
-        if intersection is None:
-            continue
-        maximum_move = (float(settings.max_deviation)
-                        if settings.max_deviation is not None else deviation * 2.0)
-        dx = intersection[0] - points[index][0]
-        dy = intersection[1] - points[index][1]
-        if math.sqrt(dx * dx + dy * dy) > maximum_move:
-            continue
-        candidates.append((turn, index, tuple(map(float, intersection))))
+    maximum_move = (float(settings.max_deviation)
+                    if settings.max_deviation is not None else deviation * 2.0)
+    array = np.ascontiguousarray(points, dtype=np.float64)
+    valid, turns, ix, iy = _corner_candidates(
+        array, deviation, minimum, span, threshold, maximum_move)
+    candidates: list[tuple[float, int, Point]] = [
+        (float(turns[index]), index, (float(ix[index]), float(iy[index])))
+        for index in range(1, len(points) - 1) if valid[index]]
 
     # One physical corner creates several neighbouring candidate samples. Keep
     # the strongest and suppress candidates within half the analysis span.
@@ -230,66 +371,259 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
     return chosen
 
 
+@njit(cache=True, nogil=True)
+def _parameters_nb(points: np.ndarray, start: int, end: int, out: np.ndarray) -> None:
+    """Fill ``out[0:n]`` with the cumulative-chord parameterisation of ``start..end``.
+
+    Matches ``np.cumsum`` of the per-segment Euclidean lengths normalised by the
+    total; an all-coincident run stays at zero, mirroring the numpy version's
+    ``if cumulative[-1]`` guard.
+    """
+    n = end - start + 1
+    out[0] = 0.0
+    total = 0.0
+    for i in range(1, n):
+        dx = points[start + i, 0] - points[start + i - 1, 0]
+        dy = points[start + i, 1] - points[start + i - 1, 1]
+        total += math.sqrt(dx * dx + dy * dy)
+        out[i] = total
+    if total != 0.0:
+        for i in range(n):
+            out[i] /= total
+
+
+@njit(cache=True, nogil=True)
+def _cubic_solve_nb(points: np.ndarray, start: int, end: int, tolerance: float,
+                    t: np.ndarray, fitted: np.ndarray):
+    """Closed-form cubic Bezier controls for samples ``start..end``.
+
+    The two interior controls solve the least-squares fit of the fixed-endpoint
+    Bezier basis. For three samples the underdetermined system is replaced by the
+    exact quadratic-through-the-sample degree-elevated to a cubic. For four or
+    more samples the ``A^T A x = A^T rhs`` 2x2 symmetric normal equations are
+    solved per coordinate via the determinant, the closed form of the numpy
+    ``lstsq``. Controls are clipped to the padded sample box and ``fitted[0:n]``
+    is filled with the curve at the chord parameters. Returns
+    ``(c1x, c1y, c2x, c2y)``.
+    """
+    n = end - start + 1
+    _parameters_nb(points, start, end, t)
+    p0x = points[start, 0]
+    p0y = points[start, 1]
+    p3x = points[end, 0]
+    p3y = points[end, 1]
+    if n == 3:
+        middle_t = t[1]
+        omt = 1.0 - middle_t
+        denominator = 2.0 * omt * middle_t
+        if denominator < 1e-12:
+            denominator = 1e-12
+        qx = (points[start + 1, 0] - omt * omt * p0x - middle_t * middle_t * p3x) / denominator
+        qy = (points[start + 1, 1] - omt * omt * p0y - middle_t * middle_t * p3y) / denominator
+        c1x = p0x + (2.0 / 3.0) * (qx - p0x)
+        c1y = p0y + (2.0 / 3.0) * (qy - p0y)
+        c2x = p3x + (2.0 / 3.0) * (qx - p3x)
+        c2y = p3y + (2.0 / 3.0) * (qy - p3y)
+    else:
+        m00 = 0.0
+        m01 = 0.0
+        m11 = 0.0
+        r0x = 0.0
+        r0y = 0.0
+        r1x = 0.0
+        r1y = 0.0
+        for i in range(n):
+            ti = t[i]
+            omt = 1.0 - ti
+            b0 = omt * omt * omt
+            b1 = 3.0 * omt * omt * ti
+            b2 = 3.0 * omt * ti * ti
+            b3 = ti * ti * ti
+            rhsx = points[start + i, 0] - b0 * p0x - b3 * p3x
+            rhsy = points[start + i, 1] - b0 * p0y - b3 * p3y
+            m00 += b1 * b1
+            m01 += b1 * b2
+            m11 += b2 * b2
+            r0x += b1 * rhsx
+            r0y += b1 * rhsy
+            r1x += b2 * rhsx
+            r1y += b2 * rhsy
+        det = m00 * m11 - m01 * m01
+        if abs(det) < 1e-30:
+            # Rank-deficient basis (coincident interior parameters): the numpy
+            # lstsq minimum-norm answer is unreachable in closed form, so fall
+            # back to the endpoints. The fit then fails tolerance and splits.
+            c1x = p0x
+            c1y = p0y
+            c2x = p3x
+            c2y = p3y
+        else:
+            c1x = (r0x * m11 - r1x * m01) / det
+            c2x = (m00 * r1x - m01 * r0x) / det
+            c1y = (r0y * m11 - r1y * m01) / det
+            c2y = (m00 * r1y - m01 * r0y) / det
+    minx = p0x
+    maxx = p0x
+    miny = p0y
+    maxy = p0y
+    for i in range(n):
+        x = points[start + i, 0]
+        y = points[start + i, 1]
+        if x < minx:
+            minx = x
+        if x > maxx:
+            maxx = x
+        if y < miny:
+            miny = y
+        if y > maxy:
+            maxy = y
+    ptp_x = maxx - minx
+    ptp_y = maxy - miny
+    span = ptp_x if ptp_x > ptp_y else ptp_y
+    inner = span * 0.25
+    if inner > 2.0:
+        inner = 2.0
+    padding = tolerance if tolerance > inner else inner
+    lowx = minx - padding
+    upx = maxx + padding
+    lowy = miny - padding
+    upy = maxy + padding
+    if c1x < lowx:
+        c1x = lowx
+    elif c1x > upx:
+        c1x = upx
+    if c2x < lowx:
+        c2x = lowx
+    elif c2x > upx:
+        c2x = upx
+    if c1y < lowy:
+        c1y = lowy
+    elif c1y > upy:
+        c1y = upy
+    if c2y < lowy:
+        c2y = lowy
+    elif c2y > upy:
+        c2y = upy
+    for i in range(n):
+        ti = t[i]
+        omt = 1.0 - ti
+        b0 = omt * omt * omt
+        b1 = 3.0 * omt * omt * ti
+        b2 = 3.0 * omt * ti * ti
+        b3 = ti * ti * ti
+        fitted[i, 0] = b0 * p0x + b1 * c1x + b2 * c2x + b3 * p3x
+        fitted[i, 1] = b0 * p0y + b1 * c1y + b2 * c2y + b3 * p3y
+    return c1x, c1y, c2x, c2y
+
+
 def _parameters(points: np.ndarray) -> np.ndarray:
-    lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    cumulative = np.r_[0.0, np.cumsum(lengths)]
-    return cumulative / cumulative[-1] if cumulative[-1] else cumulative
+    array = np.ascontiguousarray(points, dtype=np.float64)
+    out = np.empty(len(array), dtype=np.float64)
+    _parameters_nb(array, 0, len(array) - 1, out)
+    return out
 
 
 def _cubic(points: np.ndarray, tolerance: float):
-    t = _parameters(points)
-    if len(points) == 3:
-        # Two cubic controls are underdetermined by one interior sample.  Fit
-        # the unique quadratic through that sample at its chord parameter and
-        # degree-elevate it to a cubic.  This is exact, stable, and prevents a
-        # shallow three-sample turn being recursively split into pixel lines.
-        middle_t = float(t[1])
-        denominator = 2.0 * (1.0 - middle_t) * middle_t
-        quadratic_control = (
-            points[1]
-            - (1.0 - middle_t) ** 2 * points[0]
-            - middle_t**2 * points[-1]
-        ) / max(denominator, 1e-12)
-        c1 = points[0] + (2.0 / 3.0) * (quadratic_control - points[0])
-        c2 = points[-1] + (2.0 / 3.0) * (quadratic_control - points[-1])
-    else:
-        omt = 1 - t
-        b0, b1, b2, b3 = omt**3, 3 * omt**2 * t, 3 * omt * t**2, t**3
-        rhs = points - b0[:, None] * points[0] - b3[:, None] * points[-1]
-        c1, c2 = np.linalg.lstsq(
-            np.column_stack((b1, b2)), rhs, rcond=None
-        )[0]
-    span = float(np.ptp(points, axis=0).max())
-    padding = max(tolerance, min(2.0, span * .25))
-    lower, upper = points.min(axis=0)-padding, points.max(axis=0)+padding
-    c1, c2 = np.clip(c1, lower, upper), np.clip(c2, lower, upper)
-    omt = 1 - t
-    b0, b1, b2, b3 = omt**3, 3 * omt**2 * t, 3 * omt * t**2, t**3
-    fitted = (
-        b0[:, None] * points[0]
-        + b1[:, None] * c1
-        + b2[:, None] * c2
-        + b3[:, None] * points[-1]
-    )
-    return c1, c2, fitted
+    array = np.ascontiguousarray(points, dtype=np.float64)
+    n = len(array)
+    t = np.empty(n, dtype=np.float64)
+    fitted = np.empty((n, 2), dtype=np.float64)
+    c1x, c1y, c2x, c2y = _cubic_solve_nb(array, 0, n - 1, tolerance, t, fitted)
+    return np.array((c1x, c1y)), np.array((c2x, c2y)), fitted
+
+
+@njit(cache=True, nogil=True)
+def _fit_nb(points: np.ndarray, tolerance: float):
+    """Recursive line/cubic fit of a chain, returned as a primitive record array.
+
+    Emits an ``(m, 7)`` array: column 0 is the kind flag (0 = line, 1 = cubic);
+    columns 1-4 are the two cubic control points; columns 5-6 the segment
+    endpoint (a line uses only the endpoint). An explicit stack replaces the
+    numpy recursion; pushing the right sub-range before the left makes the left
+    resolve first, so records land in the exact left-to-right order the recursive
+    ``_fit(points[:split+1]) + _fit(points[split:])`` produced. The split rule is
+    unchanged: a line when the chord error is within tolerance, else a cubic when
+    its max error is within tolerance, else split at the argmax cubic error with
+    the chord-split then midpoint fallbacks.
+    """
+    n = points.shape[0]
+    records = np.empty((n, 7), dtype=np.float64)
+    count = 0
+    # A split turns one range into two, so the live-range stack never exceeds n.
+    stack = np.empty((n + 1, 2), dtype=np.int64)
+    top = 0
+    stack[0, 0] = 0
+    stack[0, 1] = n - 1
+    top = 1
+    t = np.empty(n, dtype=np.float64)
+    fitted = np.empty((n, 2), dtype=np.float64)
+    while top > 0:
+        top -= 1
+        start = stack[top, 0]
+        end = stack[top, 1]
+        m = end - start + 1
+        if m <= 2:
+            records[count, 0] = 0.0
+            records[count, 5] = points[end, 0]
+            records[count, 6] = points[end, 1]
+            count += 1
+            continue
+        line_error, line_split = _distance_to_line_nb(points, start, end)
+        if line_error <= tolerance:
+            records[count, 0] = 0.0
+            records[count, 5] = points[end, 0]
+            records[count, 6] = points[end, 1]
+            count += 1
+            continue
+        c1x, c1y, c2x, c2y = _cubic_solve_nb(
+            points, start, end, tolerance, t[:m], fitted[:m])
+        max_error = -1.0
+        split = 0
+        for i in range(m):
+            dx = fitted[i, 0] - points[start + i, 0]
+            dy = fitted[i, 1] - points[start + i, 1]
+            error = math.sqrt(dx * dx + dy * dy)
+            if error > max_error:
+                max_error = error
+                split = i
+        if max_error <= tolerance:
+            records[count, 0] = 1.0
+            records[count, 1] = c1x
+            records[count, 2] = c1y
+            records[count, 3] = c2x
+            records[count, 4] = c2y
+            records[count, 5] = points[end, 0]
+            records[count, 6] = points[end, 1]
+            count += 1
+            continue
+        if not (0 < split < m - 1):
+            split = line_split
+        if not (0 < split < m - 1):
+            split = m // 2
+        # Push right then left so the left range resolves first: left-to-right.
+        stack[top, 0] = start + split
+        stack[top, 1] = end
+        top += 1
+        stack[top, 0] = start
+        stack[top, 1] = start + split
+        top += 1
+    return records[:count]
 
 
 def _fit(points: np.ndarray, tolerance: float) -> list[Primitive]:
-    if len(points) <= 2:
-        return [("L", tuple(points[-1]))]
-    line_error, line_split = _distance_to_line(points)
-    if line_error <= tolerance:
-        return [("L", tuple(points[-1]))]
-    c1, c2, fitted = _cubic(points, tolerance)
-    errors = np.linalg.norm(fitted - points, axis=1)
-    split = int(np.argmax(errors))
-    if float(errors[split]) <= tolerance:
-        return [("C", tuple(c1), tuple(c2), tuple(points[-1]))]
-    if not 0 < split < len(points)-1:
-        split = line_split
-    if not 0 < split < len(points)-1:
-        split = len(points)//2
-    return _fit(points[:split+1], tolerance) + _fit(points[split:], tolerance)
+    array = np.ascontiguousarray(points, dtype=np.float64)
+    if len(array) <= 2:
+        return [("L", (float(array[-1, 0]), float(array[-1, 1])))]
+    records = _fit_nb(array, tolerance)
+    primitives: list[Primitive] = []
+    for row in records:
+        if row[0] == 0.0:
+            primitives.append(("L", (float(row[5]), float(row[6]))))
+        else:
+            primitives.append(("C", (float(row[1]), float(row[2])),
+                               (float(row[3]), float(row[4])),
+                               (float(row[5]), float(row[6]))))
+    return primitives
 
 
 def _fit_classified(points: np.ndarray, settings: TraceSettings,
@@ -317,7 +651,7 @@ def _fit_classified(points: np.ndarray, settings: TraceSettings,
 
 def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
                        settings: TraceSettings) -> ChainFit:
-    """Fit one canonical chain. Pure and picklable, so it runs in a worker process."""
+    """Fit one canonical chain from its samples, anchors, and constraints."""
     anchor_points = {anchor.point for anchor in anchors}
     split_points = anchor_points | set(constraint_key)
     array = np.asarray(canonical, dtype=float)
@@ -355,19 +689,18 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
         lines, cubics, used, len(canonical), len(primitives)), tuple(diagnostics))
 
 
-def _compute_chain_fit_star(args: tuple) -> ChainFit:
-    """Positional adapter so ProcessPoolExecutor.map can drive _compute_chain_fit."""
-    return _compute_chain_fit(*args)
-
-
 def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
                       tick: Progress = _noop) -> None:
-    """Fit every plan whose key is absent from the fitter cache.
+    """Fit every plan whose key is absent from the fitter cache, serially.
 
     Each plan is ``(key, canonical, anchors, constraint_key, settings)`` as
-    produced by ``SharedChainFitter.prepare``. Distinct keys are fitted once;
-    a large batch, by chain count or by total sample count, fans out across
-    worker processes, and every fit lands in the cache under its key.
+    produced by ``SharedChainFitter.prepare``. Distinct keys are fitted once and
+    land in the cache under their key. The per-chain fit is now compiled (corner
+    analysis, the cubic solve, and the recursive fitter are all Numba kernels), so
+    even the cold first pass over the whole image is a fraction of a second; the
+    former process pool's fork/pickle/shutdown cost exceeded that, and threads
+    thrash on the GIL the corner kernel still holds, so a serial loop is both the
+    fastest measured option here and trivially deterministic.
     """
     unique_pending: dict[tuple, tuple] = {}
     for key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
@@ -376,25 +709,11 @@ def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
                 key, (canonical, anchor_tuple, constraint_key, chain_settings))
     if not unique_pending:
         return
-    keys = list(unique_pending)
-    args = [unique_pending[key] for key in keys]
-    samples = sum(len(argument[0]) for argument in args)
-    workers = min(len(args), _fit_worker_count())
-    if workers > 1 and (len(args) >= _PARALLEL_FIT_THRESHOLD
-                        or samples >= _PARALLEL_FIT_MIN_SAMPLES):
-        chunk = max(1, len(args) // (workers * 8))
-        done = 0
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            for key, computed in zip(
-                    keys, executor.map(_compute_chain_fit_star, args, chunksize=chunk)):
-                fitter._cache[key] = computed
-                done += 1
-                if done % 100 == 0 or done == len(args):
-                    tick(done / len(args),
-                         f"Fitting boundary curves ({done} of {len(args)})")
-    else:
-        for key, argument in zip(keys, args):
-            fitter._cache[key] = _compute_chain_fit(*argument)
+    total = len(unique_pending)
+    for done, (key, argument) in enumerate(unique_pending.items(), 1):
+        fitter._cache[key] = _compute_chain_fit(*argument)
+        if done % 100 == 0 or done == total:
+            tick(done / total, f"Fitting boundary curves ({done} of {total})")
 
 
 class SharedChainFitter:
@@ -761,8 +1080,9 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
         plans.append((chain.identity, stage, forward, key,
                       canonical, anchor_tuple, constraint_key, chain_settings))
 
-    # Phase 2: compute the cache misses. Distinct keys are fitted once; when many
-    # chains need fitting (the cold first pass) the work fans out across processes.
+    # Phase 2: compute the cache misses. Distinct keys are fitted once by the
+    # compiled per-chain fitter; the cold first pass over the whole image is
+    # sub-second, so this is a serial loop.
     _fit_cache_misses(
         fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
                  for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
