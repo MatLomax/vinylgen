@@ -303,6 +303,31 @@ class RemoveSmallRegionsByteIdentity(unittest.TestCase):
                     maximum_passes=maximum_passes,
                 )
 
+    def test_deep_cascades_and_refolds_match_reference(self):
+        """Seeds that drive >=3-pass cascades must stay byte-identical to the oracle.
+
+        A three-or-more-pass cascade is where the single-labelling union-find does
+        its real work: a speck folds into a colour, the folded pixels stay a
+        sub-threshold island, and that island folds again on a later round against
+        an incrementally updated stability field. A shallow two-pass cascade never
+        reaches this re-fold path, so this sweep guards it explicitly and fails if
+        the corpus of seeds never actually produces a depth-three cascade."""
+        rng = np.random.default_rng(424242)
+        deepest = 0
+        deep_cases = 0
+        for _ in range(600):
+            n = int(rng.integers(8, 22))
+            colours = int(rng.integers(3, 7))
+            minimum_pixels = int(rng.integers(3, 7))
+            label_map = rng.integers(0, colours, size=(n, n)).astype(np.int32)
+            centres = rng.normal(size=(colours, 3)) * 35.0
+            audit = _assert_identical(self, label_map, centres, minimum_pixels)
+            deepest = max(deepest, int(audit["passes"]))
+            if audit["passes"] >= 3:
+                deep_cases += 1
+        self.assertGreaterEqual(deepest, 3, "sweep never produced a >=3-pass cascade")
+        self.assertGreater(deep_cases, 0)
+
     def test_non_contiguous_label_dtype(self):
         """A non-C-contiguous, differently-typed label map must behave the same."""
         rng = np.random.default_rng(8)

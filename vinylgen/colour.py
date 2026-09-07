@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from numba import njit, prange
-from PIL import Image, ImageFilter
+from PIL import Image
 
 from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
 
@@ -161,14 +161,70 @@ def colour_names(palette_rgb: np.ndarray) -> list[str]:
     return result
 
 
+@njit(parallel=True, cache=True, fastmath=False)
+def _median_filter_kernel(image, radius):
+    """Per-channel box median over a ``(2r+1)`` window, matching PIL bit-for-bit.
+
+    Reproduces ``ImageFilter.MedianFilter(2*radius+1)``: each output pixel is the
+    rank-``(w*w)//2`` value of its ``(2r+1)x(2r+1)`` neighbourhood after
+    clamped-edge (replicate) extension, taken independently per channel. The
+    window is always odd, so that rank is the exact middle element and the
+    selection is over integers with no float rounding — byte-identical to PIL,
+    whose rank filter extends borders by edge replication and takes the same rank.
+    Rows run in parallel with no shared writable state, so the result is
+    deterministic across thread counts.
+    """
+    height, width, channels = image.shape
+    size = 2 * radius + 1
+    window = size * size
+    rank = window // 2
+    out = np.empty((height, width, channels), dtype=image.dtype)
+    for y in prange(height):
+        buffer = np.empty(window, dtype=image.dtype)
+        for x in range(width):
+            for c in range(channels):
+                filled = 0
+                for dy in range(-radius, radius + 1):
+                    yy = y + dy
+                    if yy < 0:
+                        yy = 0
+                    elif yy > height - 1:
+                        yy = height - 1
+                    for dx in range(-radius, radius + 1):
+                        xx = x + dx
+                        if xx < 0:
+                            xx = 0
+                        elif xx > width - 1:
+                            xx = width - 1
+                        value = image[yy, xx, c]
+                        pos = filled
+                        while pos > 0 and buffer[pos - 1] > value:
+                            buffer[pos] = buffer[pos - 1]
+                            pos -= 1
+                        buffer[pos] = value
+                        filled += 1
+                out[y, x, c] = buffer[rank]
+    return out
+
+
 def despeckle(image: Image.Image, radius: int) -> Image.Image:
     """Remove dither and pixel noise from a source before palette inference by
     replacing each channel with the median of its surrounding neighbourhood. A
     radius of zero returns the image untouched, so the default leaves the source
-    exactly as supplied."""
+    exactly as supplied. The fused parallel median reproduces
+    ``ImageFilter.MedianFilter`` byte-for-byte, including its clamped-edge borders."""
     if radius <= 0:
         return image
-    return image.filter(ImageFilter.MedianFilter(2 * radius + 1))
+    array = np.asarray(image)
+    single_band = array.ndim == 2
+    if single_band:
+        array = array[:, :, None]
+    array = np.ascontiguousarray(array)
+    with _KERNEL_LOCK:
+        filtered = _median_filter_kernel(array, radius)
+    if single_band:
+        filtered = filtered[:, :, 0]
+    return Image.fromarray(filtered, image.mode)
 
 
 def analysis_image(image: Image.Image, maximum: int) -> Image.Image:

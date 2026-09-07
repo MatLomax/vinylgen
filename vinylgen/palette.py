@@ -234,10 +234,18 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
     # An independent assignment of the despeckled copy. The dither pass below
     # reassigns a pixel only where this proposal and the neighbourhood majority
     # agree, so speckle is removed by consensus while lone true detail survives.
-    # When despeckling is off this equals the baseline, so the pass is a no-op.
-    despeckled_labels = palette_costs(
-        srgb_to_lab(np.asarray(source).reshape(-1, 3)), centres
-    ).reshape((*full_rgb.shape[:2], len(centres))).argmin(axis=2).astype(np.int32)
+    if settings.dither_radius <= 0:
+        # despeckle returns the source untouched under the same guard, so the
+        # despeckled image is byte-identical to the source: its Lab is exactly
+        # full_lab_flat and its nearest-palette assignment is the initial argmin
+        # just computed. Reuse that argmin rather than recomputing the full-frame
+        # Lab and costs. The dither collapse is itself a no-op at this radius, so
+        # this field is consumed only as that no-op's ignored input.
+        despeckled_labels = full_labels
+    else:
+        despeckled_labels = palette_costs(
+            srgb_to_lab(np.asarray(source).reshape(-1, 3)), centres
+        ).reshape((*full_rgb.shape[:2], len(centres))).argmin(axis=2).astype(np.int32)
     tick(0.35, "Protecting connected details")
     explicit_protection, protected_components = protect_components_at_points(
         full_labels, settings.protected_component_points

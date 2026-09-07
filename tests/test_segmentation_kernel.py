@@ -7,10 +7,89 @@ from scipy import ndimage
 # Import ONLY the segmentation module (which pulls vinylgen.ridge). This test
 # never touches vinylgen.palette or vinylgen.colour, and never runs the pipeline.
 from vinylgen.segmentation import (
-    _resolve_boundary_pass,
+    _resolve_boundary_pass_compact,
+    _spatial_stats_one,
+    _two_smallest_margin,
     collapse_dither_speckle,
     resolve_ambiguous_boundaries,
+    spatial_stats,
 )
+
+
+def _reference_spatial_stats(label_map, count):
+    """Verbatim pre-parallel serial spatial_stats formulation."""
+    stats = []
+    structure = np.ones((3, 3), dtype=np.uint8)
+    for index in range(count):
+        mask = label_map == index
+        occupied = int(mask.sum())
+        if not occupied:
+            stats.append({"regions": 0, "largest_region_share": 0.0})
+            continue
+        labelled, regions = ndimage.label(mask, structure=structure)
+        sizes = np.bincount(labelled.ravel())[1:]
+        largest = int(sizes.max()) if len(sizes) else 0
+        stats.append({"regions": int(regions), "largest_region_share": largest / occupied})
+    return stats
+
+
+class SpatialStatsParallelEquivalenceTest(unittest.TestCase):
+    """The bounded thread pool must return, in ascending colour order, exactly the
+    list the serial per-colour ``ndimage.label`` scan produced."""
+
+    def test_small_map_serial_path_matches_reference(self):
+        rng = np.random.default_rng(11)
+        for count in (1, 2, 5, 9):
+            labels = rng.integers(0, count, size=(60, 80)).astype(np.int32)
+            with self.subTest(count=count):
+                self.assertEqual(spatial_stats(labels, count),
+                                 _reference_spatial_stats(labels, count))
+
+    def test_large_map_parallel_path_matches_reference(self):
+        # Exceeds the parallel size gate so the thread pool is actually exercised.
+        rng = np.random.default_rng(22)
+        for count in (2, 6, 10):
+            labels = rng.integers(0, count, size=(1100, 1100)).astype(np.int32)
+            with self.subTest(count=count):
+                self.assertEqual(spatial_stats(labels, count),
+                                 _reference_spatial_stats(labels, count))
+
+    def test_absent_and_structured_colours(self):
+        # A colour index with zero pixels and a single solid region must report
+        # correctly regardless of path.
+        labels = np.zeros((1200, 1200), dtype=np.int32)
+        labels[100:200, 100:200] = 3  # colour 3 present, colours 1,2 absent
+        labels[900:905, 900:905] = 1
+        for count in (4, 5):
+            with self.subTest(count=count):
+                self.assertEqual(spatial_stats(labels, count),
+                                 _reference_spatial_stats(labels, count))
+
+    def test_one_colour_worker_helper(self):
+        rng = np.random.default_rng(33)
+        labels = rng.integers(0, 4, size=(40, 40)).astype(np.int32)
+        structure = np.ones((3, 3), dtype=np.uint8)
+        for index in range(4):
+            self.assertEqual(_spatial_stats_one(labels, index, structure),
+                             _reference_spatial_stats(labels, 4)[index])
+
+
+def _compact_resolve_pass(result, costs, ambiguous, smoothness):
+    """Drive the compacted parity-list kernel with the whole-frame ``ambiguous``
+    mask so it can be compared against the pre-port whole-frame reference."""
+    ys, xs = np.nonzero(ambiguous)
+    ys = ys.astype(np.int64)
+    xs = xs.astype(np.int64)
+    red = ((ys + xs) & 1) == 0
+    return int(_resolve_boundary_pass_compact(
+        result,
+        np.ascontiguousarray(costs),
+        np.ascontiguousarray(ys[red]),
+        np.ascontiguousarray(xs[red]),
+        np.ascontiguousarray(ys[~red]),
+        np.ascontiguousarray(xs[~red]),
+        smoothness,
+    ))
 
 
 # --------------------------------------------------------------------------- #
@@ -115,10 +194,7 @@ class ResolveBoundaryKernelBitExactnessTest(unittest.TestCase):
             labels, costs, ambiguous, smoothness
         )
         result = np.ascontiguousarray(labels.copy())
-        count = int(_resolve_boundary_pass(
-            result, np.ascontiguousarray(costs),
-            np.ascontiguousarray(ambiguous), smoothness,
-        ))
+        count = _compact_resolve_pass(result, costs, ambiguous, smoothness)
         self.assertEqual(result.dtype, labels.dtype)
         self.assertEqual(result.shape, labels.shape)
         self.assertEqual(count, expected_count)
@@ -182,6 +258,41 @@ class ResolveBoundaryKernelBitExactnessTest(unittest.TestCase):
         for (result, audit), (want, want_audit) in zip(results, expected):
             self.assertTrue(np.array_equal(result, want))
             self.assertEqual(audit, want_audit)
+
+
+class TwoSmallestMarginKernelBitExactnessTest(unittest.TestCase):
+    """The parallel margin kernel must byte-match ``np.partition(costs, 1)``."""
+
+    def _assert_margin_identical(self, costs):
+        ordered = np.partition(costs, 1, axis=2)
+        expected = ordered[..., 1] - ordered[..., 0]
+        result = _two_smallest_margin(np.ascontiguousarray(costs))
+        self.assertEqual(result.dtype, expected.dtype)
+        self.assertEqual(result.shape, expected.shape)
+        self.assertEqual(result.tobytes(), expected.tobytes())
+
+    def test_random_cost_cubes(self):
+        rng = np.random.default_rng(4242)
+        for i, (height, width) in enumerate(
+            [(3, 4), (1, 1), (1, 40), (40, 1), (33, 61), (64, 64)]
+        ):
+            for palette in (2, 3, 5, 8):
+                with self.subTest(size=(height, width), palette=palette):
+                    costs = rng.uniform(
+                        0.0, 40.0, size=(height, width, palette)
+                    ).astype(np.float32)
+                    self._assert_margin_identical(costs)
+
+    def test_ties_and_equal_costs(self):
+        rng = np.random.default_rng(99)
+        for palette in (2, 3, 4, 6):
+            # Heavy quantisation forces exact ties among the smallest costs.
+            costs = np.round(
+                rng.uniform(0.0, 5.0, size=(20, 25, palette))
+            ).astype(np.float32)
+            self._assert_margin_identical(costs)
+        # All-equal cube: the margin is exactly zero everywhere.
+        self._assert_margin_identical(np.full((8, 9, 4), 3.5, dtype=np.float32))
 
 
 class DitherCollapseKernelBitExactnessTest(unittest.TestCase):

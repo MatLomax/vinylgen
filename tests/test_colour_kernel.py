@@ -6,7 +6,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from vinylgen.colour import nearest_palette_labels, palette_costs, srgb_to_lab
+from PIL import ImageFilter
+
+from vinylgen.colour import despeckle, nearest_palette_labels, palette_costs, srgb_to_lab
 
 
 def _reference_srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
@@ -143,6 +145,82 @@ class PaletteCostsKernelBitExactnessTest(unittest.TestCase):
         expected = [_reference_palette_costs(p, c) for p, c in cases]
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda case: palette_costs(*case), cases))
+        for result, want in zip(results, expected):
+            self.assertTrue(np.array_equal(result, want))
+
+
+class DespeckleMedianBitExactnessTest(unittest.TestCase):
+    """The fused median in ``despeckle`` must match ``ImageFilter.MedianFilter``
+    byte-for-byte, borders included, over every radius the settings can use."""
+
+    def _pil(self, rgb: np.ndarray, radius: int) -> np.ndarray:
+        return np.asarray(
+            Image.fromarray(rgb, "RGB").filter(ImageFilter.MedianFilter(2 * radius + 1))
+        )
+
+    def _assert_identical(self, rgb: np.ndarray, radius: int) -> None:
+        want = self._pil(rgb, radius)
+        got = np.asarray(despeckle(Image.fromarray(rgb, "RGB"), radius))
+        self.assertEqual(got.dtype, np.uint8)
+        self.assertEqual(got.shape, rgb.shape)
+        self.assertTrue(np.array_equal(got, want))
+        # Every border pixel (the clamped-edge region) must also agree.
+        self.assertTrue(np.array_equal(got[0], want[0]))
+        self.assertTrue(np.array_equal(got[-1], want[-1]))
+        self.assertTrue(np.array_equal(got[:, 0], want[:, 0]))
+        self.assertTrue(np.array_equal(got[:, -1], want[:, -1]))
+
+    def test_random_uint8_images_all_radii(self) -> None:
+        rng = np.random.default_rng(20240609)
+        for trial in range(60):
+            height = int(rng.integers(1, 40))
+            width = int(rng.integers(1, 40))
+            rgb = rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
+            for radius in (1, 2, 3):
+                with self.subTest(trial=trial, shape=(height, width), radius=radius):
+                    self._assert_identical(rgb, radius)
+
+    def test_structured_edges_and_constants(self) -> None:
+        # Sharp edges, constant fields and gradients stress the tie-breaking and
+        # border clamping without any randomness.
+        images = []
+        block = np.zeros((12, 12, 3), dtype=np.uint8)
+        block[:, 6:] = 255
+        images.append(block)
+        images.append(np.full((9, 9, 3), 128, dtype=np.uint8))
+        ramp = np.tile(np.arange(15, dtype=np.uint8)[None, :, None], (10, 1, 3))
+        images.append(np.ascontiguousarray(ramp))
+        checker = (np.indices((16, 16)).sum(axis=0) % 2 * 255).astype(np.uint8)
+        images.append(np.stack([checker] * 3, axis=-1))
+        for i, rgb in enumerate(images):
+            for radius in (1, 2, 3):
+                with self.subTest(image=i, radius=radius):
+                    self._assert_identical(rgb, radius)
+
+    def test_tiny_and_degenerate_shapes(self) -> None:
+        rng = np.random.default_rng(55)
+        for shape in ((1, 1), (1, 5), (5, 1), (2, 2), (3, 2), (2, 7)):
+            rgb = rng.integers(0, 256, size=(*shape, 3), dtype=np.uint8)
+            for radius in (1, 2, 3):
+                with self.subTest(shape=shape, radius=radius):
+                    self._assert_identical(rgb, radius)
+
+    def test_radius_zero_passthrough(self) -> None:
+        rng = np.random.default_rng(9)
+        rgb = rng.integers(0, 256, size=(6, 6, 3), dtype=np.uint8)
+        image = Image.fromarray(rgb, "RGB")
+        self.assertIs(despeckle(image, 0), image)
+
+    def test_concurrent_callers_match_pil(self) -> None:
+        rng = np.random.default_rng(303)
+        images = [rng.integers(0, 256, size=(20 + 3 * i, 24 + i, 3), dtype=np.uint8)
+                  for i in range(6)]
+        expected = [self._pil(rgb, 1) for rgb in images]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(
+                lambda rgb: np.asarray(despeckle(Image.fromarray(rgb, "RGB"), 1)),
+                images,
+            ))
         for result, want in zip(results, expected):
             self.assertTrue(np.array_equal(result, want))
 
