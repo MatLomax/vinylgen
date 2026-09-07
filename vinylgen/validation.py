@@ -295,6 +295,8 @@ def validate_postfit_protected_features(
     minimum_width_ratio: float = 0.5,
     minimum_component_pixel_recall: float = 0.6,
     invariant_cache: dict | None = None,
+    changed_region: np.ndarray | None = None,
+    previous_components: list[dict] | None = None,
 ) -> dict[str, object]:
     """Validate protected geometry after fitting without demanding pixel identity.
 
@@ -302,6 +304,15 @@ def validate_postfit_protected_features(
     configured deviation corridor.  A translated or smoothed curve can pass,
     while disappearance, fragmentation, or collapse below viable area/width
     cannot be hidden by good aggregate recall elsewhere in the image.
+
+    On the label-aware path every component's row is a pure function of the
+    candidate labels inside that component's halo-padded window plus the cached
+    reference invariants; the candidate mask itself is uniform there. A caller
+    revalidating one subject across recovery passes may therefore pass the
+    ``previous_components`` rows and a ``changed_region`` mask of where the
+    candidate labels changed since those rows: any component whose window sees
+    no change is spliced verbatim, giving a result byte-identical to a full
+    recomputation while recomputing only the region a re-fit actually touched.
     """
     reference = np.asarray(protected_features, dtype=bool)
     candidate = np.asarray(candidate_features, dtype=bool)
@@ -354,8 +365,30 @@ def validate_postfit_protected_features(
                 else np.full(reference.shape, np.inf))
         return lazy_candidate_distance[0]
 
+    # Splice unchanged rows from the previous pass. This is byte-safe only when a
+    # row is a pure function of the candidate labels inside its own halo-padded
+    # window, which needs three things: the label-aware path (so the whole-image
+    # candidate-distance branch is unreachable), and a candidate mask that is
+    # uniform (so ``changed_region`` computed from the labels alone captures every
+    # per-pass difference). A uniform mask is checked here rather than trusted, so
+    # a caller that ever passes splice inputs with a non-uniform candidate simply
+    # falls back to a full, correct recomputation instead of splicing wrongly. A
+    # component whose expanded window contains no changed pixel then has identical
+    # window labels and therefore an identical row.
+    records = invariants["components"]
+    splice = (candidate_labels is not None and changed_region is not None
+              and previous_components is not None
+              and len(previous_components) == len(records)
+              and bool(candidate.all()))
+
     rows: list[dict[str, object]] = []
-    for record in invariants["components"]:
+    for position, record in enumerate(records):
+        if splice:
+            previous_row = previous_components[position]
+            if (previous_row["component"] == record["index"]
+                    and not changed_region[record["expanded"]].any()):
+                rows.append(previous_row)
+                continue
         index = record["index"]
         y_bounds = record["y_bounds"]
         x_bounds = record["x_bounds"]
@@ -462,6 +495,7 @@ def validate_semantic_preservation(
     minimum_feature_contrast: float = 0.055,
     minimum_feature_span: float = 6.0,
     invariant_cache: dict | None = None,
+    defer_vector_dark_metrics: bool = False,
 ) -> dict[str, object]:
     """Audit source feature recall independently of upstream protection flags.
 
@@ -474,6 +508,16 @@ def validate_semantic_preservation(
     across the recovery loop's repeated passes may supply ``invariant_cache`` (a
     plain dict) so that source-side work is computed once and reused; only the
     ``vector_*`` results are recomputed per pass.
+
+    The label-aware dark-support metrics (``vector`` and
+    ``protected_features['vector']``) rest on a whole-image distance transform of
+    the rendered vector and feed only the reported audit, never the recovery
+    loop's re-fit decision (which reads ``vector_postfit`` alone). A caller
+    driving that loop may set ``defer_vector_dark_metrics`` on the intermediate
+    passes to skip them, then leave it unset on a final pass over the settled
+    vector to compute them once. The final full result is byte-identical to
+    computing them every pass; only discarded intermediate work is saved. The
+    flag is ignored on the label-free path, where those metrics are the gate.
     """
     cache = invariant_cache if invariant_cache is not None else {}
     source = np.asarray(source_rgb)
@@ -506,18 +550,25 @@ def validate_semantic_preservation(
             source_features, segmentation_features, maximum_deviation,
             candidate_distances=cache["segmentation_distances"])
     segmentation = cache["segmentation"]
+    # The dark-support metrics are the protected gate only when palette identity
+    # is unavailable; with vector labels present they inform the audit alone, so
+    # a recovery driver may defer them off the intermediate passes.
+    defer_vector = defer_vector_dark_metrics and vector_labels is not None
     vector = None
+    vector_features = None
+    vector_distances = None
     if vector_rgb is not None:
         rendered = np.asarray(vector_rgb)
         if rendered.shape != source.shape:
             raise ValueError("source and vector RGB dimensions differ")
-        vector_features = (
-            _dark_feature_support(_luminance(rendered), 4)
-            >= minimum_feature_contrast * 0.75
-        )
-        vector_distances = _candidate_distances(vector_features)
-        vector = _feature_metrics(source_features, vector_features, maximum_deviation,
-                                  candidate_distances=vector_distances)
+        if not defer_vector:
+            vector_features = (
+                _dark_feature_support(_luminance(rendered), 4)
+                >= minimum_feature_contrast * 0.75
+            )
+            vector_distances = _candidate_distances(vector_features)
+            vector = _feature_metrics(source_features, vector_features, maximum_deviation,
+                                      candidate_distances=vector_distances)
     protected = None
     if protected_features is not None:
         protected_mask = np.asarray(protected_features, dtype=bool)
@@ -541,18 +592,39 @@ def validate_semantic_preservation(
         protected = dict(cache["protected_base"])
         protected["postfit"] = cache["protected_postfit"]
         if vector_rgb is not None:
-            protected["vector"] = _feature_metrics(
-                protected_mask, vector_features, maximum_deviation,
-                candidate_distances=vector_distances)
+            if not defer_vector:
+                protected["vector"] = _feature_metrics(
+                    protected_mask, vector_features, maximum_deviation,
+                    candidate_distances=vector_distances)
             vector_postfit_features = (
                 np.ones(protected_mask.shape, dtype=bool)
                 if vector_labels is not None else vector_features)
+            # On the label-aware path the postfit candidate mask is uniform, so
+            # the only per-pass input is vector_labels: a component's row changes
+            # only where those labels changed since the previous pass. Hand the
+            # previous rows and that change region down so unchanged components
+            # are spliced instead of re-fit. The spliced result is byte-identical
+            # to a full recomputation, so the reported audit is unaffected.
+            changed_region = None
+            previous_components = None
+            previous_labels = cache.get("vector_postfit_labels")
+            previous_result = cache.get("vector_postfit_result")
+            if (vector_labels is not None and previous_labels is not None
+                    and previous_result is not None
+                    and previous_labels.shape == vector_labels.shape):
+                changed_region = previous_labels != vector_labels
+                previous_components = previous_result["components"]
             protected["vector_postfit"] = validate_postfit_protected_features(
                 protected_mask, vector_postfit_features,
                 reference_labels=segmentation_labels,
                 candidate_labels=vector_labels,
                 maximum_deviation=maximum_deviation,
-                invariant_cache=cache)
+                invariant_cache=cache,
+                changed_region=changed_region,
+                previous_components=previous_components)
+            if vector_labels is not None:
+                cache["vector_postfit_labels"] = vector_labels
+                cache["vector_postfit_result"] = protected["vector_postfit"]
     stages = [segmentation, *([vector] if vector is not None else [])]
     if protected is not None:
         stages.append(protected["postfit"])

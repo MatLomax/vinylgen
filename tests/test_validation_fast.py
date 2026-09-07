@@ -245,6 +245,67 @@ class PostfitProtectedFeaturesTest(unittest.TestCase):
         self.assertTrue(any(isinstance(key, tuple) and key[0] == "postfit_invariants"
                             for key in cache))
 
+    def test_spliced_pass_matches_full_recompute(self) -> None:
+        # Mirror the recovery loop: a uniform (all-ones) candidate whose only
+        # per-pass input is the label field, changing inside one component's
+        # window while the other's window is untouched. The spliced second pass
+        # must be bit-identical to a full recomputation, the untouched row must
+        # be reused verbatim (object identity proves the fast path fired, not
+        # vacuously), and the changed row must be recomputed.
+        protected, _, ref_labels, _ = _protected_fixture()
+        ones = np.ones_like(protected)
+        labels_a = ref_labels.copy()
+        first = fast.validate_postfit_protected_features(
+            protected, ones, reference_labels=ref_labels,
+            candidate_labels=labels_a, maximum_deviation=2.0)
+        # Perturb the labels only inside the first protected component's window
+        # (rows 10:20); the second component (rows 30:40) is left untouched.
+        labels_b = labels_a.copy()
+        labels_b[10:20, 8:34] = 7
+        changed = labels_a != labels_b
+        spliced = fast.validate_postfit_protected_features(
+            protected, ones, reference_labels=ref_labels,
+            candidate_labels=labels_b, maximum_deviation=2.0,
+            changed_region=changed, previous_components=first["components"])
+        expected = reference.validate_postfit_protected_features(
+            protected, ones, reference_labels=ref_labels,
+            candidate_labels=labels_b, maximum_deviation=2.0)
+        _assert_deep_bit_equal(self, expected, spliced, "spliced")
+        untouched = [i for i, row in enumerate(spliced["components"])
+                     if row["source_bounds_px"][1] >= 25]
+        touched = [i for i in range(len(spliced["components"])) if i not in untouched]
+        self.assertTrue(untouched and touched, "fixture must have both cases")
+        for i in untouched:
+            self.assertIs(spliced["components"][i], first["components"][i],
+                          "untouched component row must be spliced verbatim")
+        for i in touched:
+            self.assertIsNot(spliced["components"][i], first["components"][i],
+                             "changed component row must be recomputed")
+
+    def test_splice_falls_back_to_full_when_candidate_not_uniform(self) -> None:
+        # Splicing is byte-safe only when the candidate mask is uniform, so a
+        # label-only changed_region captures every per-pass difference. If a
+        # caller supplies splice inputs with a non-uniform candidate, the fast
+        # path must fall back to a full recomputation (bit-identical to the
+        # oracle) rather than trust the stale rows.
+        protected, candidate, ref_labels, cand_labels = _protected_fixture()
+        first = fast.validate_postfit_protected_features(
+            protected, candidate, reference_labels=ref_labels,
+            candidate_labels=cand_labels, maximum_deviation=2.0)
+        moved = np.zeros_like(candidate)
+        moved[11:19, 20:44] = True  # candidate shifted, labels unchanged region-wise
+        moved_labels = np.zeros_like(cand_labels)
+        moved_labels[moved] = 3
+        changed = cand_labels != moved_labels
+        spliced_inputs = fast.validate_postfit_protected_features(
+            protected, moved, reference_labels=ref_labels,
+            candidate_labels=moved_labels, maximum_deviation=2.0,
+            changed_region=changed, previous_components=first["components"])
+        expected = reference.validate_postfit_protected_features(
+            protected, moved, reference_labels=ref_labels,
+            candidate_labels=moved_labels, maximum_deviation=2.0)
+        _assert_deep_bit_equal(self, expected, spliced_inputs, "non-uniform-fallback")
+
     def test_cache_reused_across_different_candidates(self) -> None:
         # The invariants depend only on the protected mask and its labels, so a
         # second call with a different candidate but the same reference reuses
@@ -324,6 +385,68 @@ class SemanticPreservationTest(unittest.TestCase):
                 protected_features=protected, segmentation_labels=seg_labels,
                 vector_labels=vec_labels, invariant_cache=cache)
             _assert_deep_bit_equal(self, expected, actual, f"pass-{pass_index}")
+
+    def test_changed_pass_with_shared_cache_matches_reference(self) -> None:
+        # The recovery loop re-fits only part of the vector between passes, so
+        # the shared cache must splice the postfit rows whose window is unchanged
+        # and recompute the rest. Pass two erases part of one protected stroke;
+        # the fast cached result must still be bit-identical to a full oracle
+        # recomputation of the pass-two inputs.
+        (source, segmentation, vector, protected,
+         seg_labels, vec_labels) = _semantic_fixture()
+        cache: dict = {}
+        fast.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector,
+            protected_features=protected, segmentation_labels=seg_labels,
+            vector_labels=vec_labels, invariant_cache=cache)
+        vector_two = vector.copy()
+        vec_labels_two = vec_labels.copy()
+        vector_two[34:36, 40:78] = 235  # erase part of the horizontal stroke
+        vec_labels_two[34:36, 40:78] = 0
+        expected = reference.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector_two,
+            protected_features=protected, segmentation_labels=seg_labels,
+            vector_labels=vec_labels_two)
+        actual = fast.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector_two,
+            protected_features=protected, segmentation_labels=seg_labels,
+            vector_labels=vec_labels_two, invariant_cache=cache)
+        _assert_deep_bit_equal(self, expected, actual, "changed-pass")
+
+    def test_deferred_dark_metrics_then_full_matches_reference(self) -> None:
+        # The recovery driver defers the whole-image dark-support metrics on the
+        # intermediate passes and computes them once over the settled vector. A
+        # deferred pass omits vector / protected['vector'] (and their global
+        # distance transform); the following full pass, reusing the cache, must
+        # be bit-identical to computing the metrics on every pass.
+        (source, segmentation, vector, protected,
+         seg_labels, vec_labels) = _semantic_fixture()
+        expected = reference.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector, protected_features=protected,
+            segmentation_labels=seg_labels, vector_labels=vec_labels)
+        cache: dict = {}
+        deferred = fast.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector, protected_features=protected,
+            segmentation_labels=seg_labels, vector_labels=vec_labels,
+            invariant_cache=cache, defer_vector_dark_metrics=True)
+        self.assertIsNone(deferred["vector"])
+        self.assertNotIn("vector", deferred["protected_features"])
+        self.assertIn("vector_postfit", deferred["protected_features"])
+        final = fast.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector, protected_features=protected,
+            segmentation_labels=seg_labels, vector_labels=vec_labels,
+            invariant_cache=cache)
+        _assert_deep_bit_equal(self, expected, final, "deferred-then-full")
+
+    def test_defer_ignored_on_label_free_path(self) -> None:
+        # Without labels the dark-support metrics are the gate, so the flag must
+        # be ignored rather than dropping them.
+        source, segmentation, vector, _, _, _ = _semantic_fixture()
+        expected = reference.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector)
+        actual = fast.validate_semantic_preservation(
+            source, segmentation, vector_rgb=vector, defer_vector_dark_metrics=True)
+        _assert_deep_bit_equal(self, expected, actual, "label-free-defer")
 
     def test_no_protection_matches_reference(self) -> None:
         source, segmentation, vector, _, _, _ = _semantic_fixture()

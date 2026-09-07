@@ -428,11 +428,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                 vector_labels[changed] = sub_d.argmin(axis=1).astype(np.int16)
         prev_vector_rgb = vector_rgb
         prev_vector_labels = vector_labels
+        # Only vector_postfit drives the re-fit decision below; the whole-image
+        # dark-support metrics feed the final audit alone, so defer them here and
+        # compute them once after the loop over the settled vector.
         validations["semantic"] = validate_semantic_preservation(
             original, source, vector_rgb=vector_rgb,
             protected_features=segmentation.protected_features,
             segmentation_labels=segmentation.labels, vector_labels=vector_labels,
-            maximum_deviation=tolerance, invariant_cache=semantic_cache)
+            maximum_deviation=tolerance, invariant_cache=semantic_cache,
+            defer_vector_dark_metrics=True)
         report(1.0, "Validated")
         return variant_stats, validations, vector_rgb, fit_audit
 
@@ -503,6 +507,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         # state that the reporting below counts.
         variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
             recovery, _attempt_report(4))
+    # Every pass above deferred the whole-image dark-support metrics; compute
+    # them once now over the settled vector. vector_postfit re-runs fully spliced
+    # (the labels are unchanged since the last pass), so the reported audit is
+    # byte-identical to computing these metrics on every pass.
+    validations["semantic"] = validate_semantic_preservation(
+        original, source, vector_rgb=vector_rgb,
+        protected_features=segmentation.protected_features,
+        segmentation_labels=segmentation.labels, vector_labels=prev_vector_labels,
+        maximum_deviation=tolerance, invariant_cache=semantic_cache)
     write_trace_html(subject_dir, width, height)
     topology["shared_curve_fit"] = shared_fit_audit
     dense_fallbacks = [identity for identity, state in recovery.items()
