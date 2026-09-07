@@ -20,7 +20,7 @@ from scipy import ndimage
 from shapely.geometry import box
 from shapely.ops import unary_union
 
-from vinylgen.colour import colour_names
+from vinylgen.colour import colour_names, nearest_palette_labels
 from vinylgen.contracts import SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import (
@@ -401,15 +401,11 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             semantic_render.unlink(missing_ok=True)
         if prev_vector_rgb is None:
             # First render: seed the labels with the per-pixel nearest-palette
-            # argmin over the whole image, in row bands so the (rows, columns,
-            # colours, channels) distance tensor never exists for the whole image.
-            vector_labels = np.empty((height, width), dtype=np.int16)
-            band = max(1, (1 << 24) // max(1, width * len(palette_rgb) * 3))
-            for start in range(0, height, band):
-                rows = vector_rgb[start:start + band].astype(np.int32)
-                distances = np.sum((rows[:, :, None, :] - palette_rgb[None, None, :, :]) ** 2,
-                                   axis=3, dtype=np.int64)
-                vector_labels[start:start + band] = distances.argmin(axis=2).astype(np.int16)
+            # argmin over the whole image. A guarded Numba kernel computes the
+            # same first-minimum argmin of squared RGB distance bit-for-bit
+            # without ever materialising the (rows, columns, colours, channels)
+            # distance tensor.
+            vector_labels = nearest_palette_labels(vector_rgb, palette_rgb)
         else:
             # Later passes: only the re-fitted region of the render differs, so
             # recompute labels solely where the RGB changed and reuse last pass's

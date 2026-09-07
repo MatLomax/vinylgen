@@ -1,3 +1,4 @@
+import json
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from vinylgen.colour import palette_costs, srgb_to_lab
+from vinylgen.colour import nearest_palette_labels, palette_costs, srgb_to_lab
 
 
 def _reference_srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
@@ -142,6 +143,77 @@ class PaletteCostsKernelBitExactnessTest(unittest.TestCase):
         expected = [_reference_palette_costs(p, c) for p, c in cases]
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda case: palette_costs(*case), cases))
+        for result, want in zip(results, expected):
+            self.assertTrue(np.array_equal(result, want))
+
+
+def _reference_nearest_palette_labels(image: np.ndarray, palette_rgb: np.ndarray) -> np.ndarray:
+    """Verbatim pre-port banded numpy nearest-palette argmin.
+
+    Fixes the exact int16 label field the Numba kernel must reproduce
+    bit-for-bit, banded and int32/int64-typed exactly as the trace stage's
+    first-pass label seed was.
+    """
+    palette = np.asarray(palette_rgb, dtype=np.int32)
+    height, width = image.shape[:2]
+    labels = np.empty((height, width), dtype=np.int16)
+    band = max(1, (1 << 24) // max(1, width * len(palette) * 3))
+    for start in range(0, height, band):
+        rows = image[start:start + band].astype(np.int32)
+        distances = np.sum((rows[:, :, None, :] - palette[None, None, :, :]) ** 2,
+                           axis=3, dtype=np.int64)
+        labels[start:start + band] = distances.argmin(axis=2).astype(np.int16)
+    return labels
+
+
+class NearestPaletteLabelsKernelBitExactnessTest(unittest.TestCase):
+    def _assert_identical(self, image: np.ndarray, palette: np.ndarray) -> None:
+        expected = _reference_nearest_palette_labels(image, palette)
+        result = nearest_palette_labels(image, palette)
+        self.assertEqual(result.dtype, np.int16)
+        self.assertEqual(result.shape, image.shape[:2])
+        self.assertTrue(np.array_equal(result, expected))
+
+    def test_random_images_and_palette_sizes(self) -> None:
+        rng = np.random.default_rng(20240609)
+        for shape in ((1, 1), (3, 7), (64, 40), (200, 137)):
+            for k in (1, 2, 4, 7, 15):
+                with self.subTest(shape=shape, k=k):
+                    image = rng.integers(0, 256, size=(*shape, 3)).astype(np.uint8)
+                    palette = rng.integers(0, 256, size=(k, 3)).astype(np.int32)
+                    self._assert_identical(image, palette)
+
+    def test_first_minimum_tie_break_matches_argmin(self) -> None:
+        # Duplicate and equidistant palette entries must resolve to the lowest
+        # index, exactly as numpy argmin does; a strict `<` in the kernel keeps it.
+        palette = np.array([[10, 20, 30], [10, 20, 30], [40, 40, 40],
+                            [0, 0, 0], [40, 40, 40]], dtype=np.int32)
+        image = np.array([[[10, 20, 30], [40, 40, 40]],
+                          [[20, 30, 40], [0, 0, 0]]], dtype=np.uint8)
+        self._assert_identical(image, palette)
+
+    def test_crosses_reference_band_boundary(self) -> None:
+        # A tall image forces the numpy reference to span several bands while the
+        # kernel materialises the whole label field; both must agree.
+        rng = np.random.default_rng(11)
+        image = rng.integers(0, 256, size=(4096, 2048, 3)).astype(np.uint8)
+        palette = rng.integers(0, 256, size=(7, 3)).astype(np.int32)
+        self._assert_identical(image, palette)
+
+    def test_real_flattened_image(self) -> None:
+        image = np.asarray(Image.open("outputs/desert-rocket/flattened.png").convert("RGB"))
+        report = json.loads(Path("outputs/desert-rocket/palette.json").read_text())
+        palette = np.asarray([row["rgb"] for row in report["palette"]], dtype=np.int32)
+        self._assert_identical(image, palette)
+
+    def test_concurrent_thread_pool_callers_match_reference(self) -> None:
+        rng = np.random.default_rng(404)
+        cases = [(rng.integers(0, 256, size=(300 + 40 * i, 220 + i, 3)).astype(np.uint8),
+                  rng.integers(0, 256, size=(4 + i, 3)).astype(np.int32)) for i in range(6)]
+        expected = [_reference_nearest_palette_labels(image, palette)
+                    for image, palette in cases]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(lambda case: nearest_palette_labels(*case), cases))
         for result, want in zip(results, expected):
             self.assertTrue(np.array_equal(result, want))
 

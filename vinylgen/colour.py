@@ -56,6 +56,51 @@ def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
         return _srgb_to_lab_kernel(rgb, _LAB_M, _LAB_WHITE)
 
 
+@njit(parallel=True, cache=True, fastmath=False)
+def _nearest_palette_labels_kernel(image, palette):
+    """Index of the palette colour with the smallest squared RGB distance.
+
+    Reproduces ``argmin`` of ``sum((image - palette) ** 2)`` bit-for-bit: each
+    channel difference and its square accumulate in int64, and a strict ``<``
+    keeps the first palette index on an exact tie, matching numpy's
+    first-minimum ``argmin``.
+    """
+    height, width, _ = image.shape
+    count = palette.shape[0]
+    out = np.empty((height, width), dtype=np.int16)
+    for y in prange(height):
+        for x in range(width):
+            r = np.int64(image[y, x, 0])
+            g = np.int64(image[y, x, 1])
+            b = np.int64(image[y, x, 2])
+            best = np.int64(0)
+            best_index = 0
+            for index in range(count):
+                dr = r - np.int64(palette[index, 0])
+                dg = g - np.int64(palette[index, 1])
+                db = b - np.int64(palette[index, 2])
+                distance = dr * dr + dg * dg + db * db
+                if index == 0 or distance < best:
+                    best = distance
+                    best_index = index
+            out[y, x] = best_index
+    return out
+
+
+def nearest_palette_labels(image: np.ndarray, palette_rgb: np.ndarray) -> np.ndarray:
+    """Label every pixel with its nearest palette colour by squared RGB distance.
+
+    ``image`` is an ``(H, W, 3)`` RGB raster and ``palette_rgb`` an ``(N, 3)``
+    palette. The result is bit-identical to a banded
+    ``np.sum((rows[:, :, None, :] - palette[None, None]) ** 2, axis=3,
+    dtype=np.int64).argmin(axis=2)`` cast to int16.
+    """
+    image = np.ascontiguousarray(np.asarray(image), dtype=np.uint8)
+    palette = np.ascontiguousarray(np.asarray(palette_rgb), dtype=np.int64)
+    with _KERNEL_LOCK:
+        return _nearest_palette_labels_kernel(image, palette)
+
+
 def lab_to_srgb(lab: np.ndarray) -> np.ndarray:
     fy = (lab[:, 0] + 16) / 116
     fx = fy + lab[:, 1] / 500
