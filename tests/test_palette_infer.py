@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -288,6 +289,80 @@ class PaletteInferenceTests(unittest.TestCase):
         self.assertEqual(first["inferred_colour_count"], second["inferred_colour_count"])
         self.assertEqual(first["palette"], second["palette"])
         self.assertEqual(first["merges"], second["merges"])
+
+    def test_thin_feature_removal_erases_seam_but_keeps_compact_blob(self):
+        # A long, thin, high-contrast seam and a compact equal-order-of-magnitude
+        # blob of a different colour on a background. Area cleanup cannot separate
+        # them (the seam's area dwarfs the min_region_pixels threshold), so only the
+        # width-based thin-feature pass can remove the seam while the blob survives
+        # pixel-for-pixel. Line protection is disabled here because it would
+        # (correctly) shield the seam; the point is the thin-feature pass in isolation.
+        background = (12, 28, 48)   # dark navy
+        seam_rgb = (225, 40, 30)    # saturated red
+        blob_rgb = (40, 200, 70)    # saturated green
+        pixels = np.empty((300, 300, 3), dtype=np.uint8)
+        pixels[:] = background
+        pixels[20:25, 10:290] = seam_rgb   # 5 px x 280 px horizontal seam = 1400 px
+        pixels[200:245, 200:245] = blob_rgb  # 45 px x 45 px compact blob = 2025 px
+
+        base = dict(initial_colours=6, min_region_pixels=24, min_colour_share=0.01,
+                    dither_radius=0, protect_intentional_lines=False,
+                    resolve_antialiasing=False, flatten_upscale=1)
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as temporary:
+            root = Path(temporary)
+            source = root / "fixture.png"
+            Image.fromarray(pixels, "RGB").save(source)
+
+            kept = infer_palette(source, root / "kept",
+                                 PaletteSettings(min_feature_width=0, **base))
+            removed = infer_palette(source, root / "removed",
+                                    PaletteSettings(min_feature_width=8, **base))
+
+            with Image.open(root / "kept" / "fixture" / "flattened.png") as image:
+                kept_flat = np.asarray(image.convert("RGB"))
+            with Image.open(root / "removed" / "fixture" / "flattened.png") as image:
+                removed_flat = np.asarray(image.convert("RGB"))
+            palette = json.loads(
+                (root / "removed" / "fixture" / "palette.json").read_text())["palette"]
+            kept_report = json.loads(
+                (root / "kept" / "fixture" / "palette.json").read_text())
+
+        seam = (slice(20, 25), slice(10, 290))
+        blob = (slice(200, 245), slice(200, 245))
+        background_colour = tuple(int(v) for v in kept_flat[0, 0])
+
+        # Default run: the pass is skipped and the seam is intact (proving the pass
+        # is what removes it, and that default is off).
+        self.assertEqual(kept_report["thin_feature_cleanup"], {"skipped": True})
+        kept_seam = kept_flat[seam].reshape(-1, 3)
+        seam_present = np.sum(np.any(kept_seam != background_colour, axis=1))
+        self.assertGreaterEqual(seam_present / len(kept_seam), 0.9)
+
+        # Removal run: the seam is folded into the background, the compact blob
+        # substantially survives, and no colour outside the palette appears.
+        removed_seam = removed_flat[seam].reshape(-1, 3)
+        seam_gone = np.sum(np.all(removed_seam == background_colour, axis=1))
+        self.assertGreaterEqual(seam_gone / len(removed_seam), 0.99)
+
+        blob_colour = tuple(int(v) for v in removed_flat[222, 222])
+        self.assertNotEqual(blob_colour, background_colour)
+        # The compact blob is a surviving component, so the pass must leave it
+        # byte-identical to the default run — not merely mostly intact. This is the
+        # guarantee a morphological opening would violate by shaving convex corners.
+        self.assertTrue(np.array_equal(kept_flat[blob], removed_flat[blob]))
+        removed_blob = removed_flat[blob].reshape(-1, 3)
+        blob_kept = np.sum(np.all(removed_blob == blob_colour, axis=1))
+        self.assertEqual(blob_kept, len(removed_blob))
+
+        palette_colours = {tuple(row["rgb"]) for row in palette}
+        output_colours = {tuple(int(v) for v in pixel)
+                          for pixel in removed_flat.reshape(-1, 3)}
+        self.assertTrue(output_colours.issubset(palette_colours))
+
+        cleanup = removed["thin_feature_cleanup"]
+        self.assertNotIn("skipped", cleanup)
+        self.assertGreater(cleanup["removed_pixels"], 0)
 
     def test_line_protection_toggle_skips_stroke_detection(self):
         # A thin dark line on a light field is exactly what stroke detection protects.

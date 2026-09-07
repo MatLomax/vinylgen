@@ -84,7 +84,7 @@ describe('abortable project artifact requests', () => {
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
       kind: 'trace', project_id: 'project-1', revision_id: 'revision-1', trace: DEFAULT_TRACE_SETTINGS,
     })
-    expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(28)
+    expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(29)
     expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(21)
   })
 

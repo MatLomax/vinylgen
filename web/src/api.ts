@@ -9,7 +9,7 @@ export type PaletteSettings = {
   initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number; dither_radius: number
   similar_delta_e: number; small_share: number; small_delta_e: number; fold_small_colours: boolean
   fragmented_share: number; fragmented_largest_region: number; fragmented_delta_e: number; merge_fragmented_colours: boolean
-  min_output_colours: number; min_region_pixels: number; min_colour_share: number
+  min_output_colours: number; min_region_pixels: number; min_feature_width: number; min_colour_share: number
   intentional_line_min_contrast: number; intentional_line_min_length: number; protect_intentional_lines: boolean
   aa_ambiguity_margin: number; aa_smoothness: number; aa_resolution_passes: number; resolve_antialiasing: boolean; flatten_upscale: number; flatten_smooth_edges: boolean
   protected_component_points: [number, number][]; preserved_colour_points: [number, number][]

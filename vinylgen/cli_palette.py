@@ -38,6 +38,13 @@ def parse_args() -> argparse.Namespace:
         default=PaletteSettings.min_region_pixels,
         help="replace connected regions smaller than this many pixels; 0 disables cleanup",
     )
+    parser.add_argument(
+        "--min-feature-width",
+        type=int,
+        default=PaletteSettings.min_feature_width,
+        help="remove features thinner than this width regardless of their length, "
+             "unlike the area-based --min-region-pixels; 0 disables it",
+    )
     parser.add_argument("--intentional-line-min-contrast", type=float,
                         default=PaletteSettings.intentional_line_min_contrast)
     parser.add_argument("--intentional-line-min-length", type=int,
@@ -186,6 +193,7 @@ def main() -> None:
         fold_small_colours=args.fold_small_colours,
         merge_fragmented_colours=args.merge_fragmented_colours,
         min_region_pixels=args.min_region_pixels,
+        min_feature_width=args.min_feature_width,
         min_colour_share=args.min_colour_share,
         dither_radius=args.dither_radius,
         intentional_line_min_contrast=args.intentional_line_min_contrast,

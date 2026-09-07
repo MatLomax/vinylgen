@@ -89,6 +89,7 @@ class PaletteJobSettings(BaseModel):
     merge_fragmented_colours: bool = True
     min_output_colours: int = Field(default=2, ge=2)
     min_region_pixels: int = Field(default=24, ge=0)
+    min_feature_width: int = Field(default=0, ge=0)
     min_colour_share: float = Field(default=0.01, ge=0, le=1)
     intentional_line_min_contrast: float = Field(default=12.0, ge=0)
     intentional_line_min_length: int = Field(default=8, ge=1)

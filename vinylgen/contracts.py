@@ -23,6 +23,7 @@ class PaletteSettings:
     merge_fragmented_colours: bool = True
     min_output_colours: int = 2
     min_region_pixels: int = 24
+    min_feature_width: int = 0
     min_colour_share: float = 0.01
     intentional_line_min_contrast: float = 12.0
     intentional_line_min_length: int = 8

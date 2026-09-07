@@ -35,6 +35,7 @@ from vinylgen.segmentation import (
     detect_intentional_strokes,
     protect_components_at_points,
     remove_small_regions,
+    remove_thin_features,
     resolve_ambiguous_boundaries,
     spatial_stats,
 )
@@ -284,6 +285,14 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         full_labels, centres, settings.min_region_pixels,
         protected_features=protected_features,
     )
+    if settings.min_feature_width > 0:
+        tick(0.80, "Removing thin features")
+        full_labels, thin_cleanup = remove_thin_features(
+            full_labels, centres, settings.min_feature_width,
+            protected_features=protected_features,
+        )
+    else:
+        thin_cleanup = {"skipped": True}
     preserved_colours: set[int] = set()
     preserved_colour_points: list[dict[str, int]] = []
     height, width = full_labels.shape
@@ -386,6 +395,7 @@ def infer_palette(path: Path, output_dir: Path, settings: PaletteSettings,
         "merges": merges,
         "dither_speckle_cleanup": dither_cleanup,
         "small_region_cleanup": cleanup,
+        "thin_feature_cleanup": thin_cleanup,
         "intentional_feature_detection": feature_detection,
         "aa_boundary_resolution": aa_resolution,
         "explicitly_protected_components": protected_components,

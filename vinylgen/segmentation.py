@@ -702,6 +702,193 @@ def remove_small_regions(
     }
 
 
+def remove_thin_features(
+    label_map: np.ndarray,
+    centres: np.ndarray,
+    minimum_width: int,
+    protected_features: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Fold whole thin components that area-based cleanup cannot reach.
+
+    A connected region is thin when it fully disappears under an erosion of radius
+    ``r = minimum_width // 2`` with the 4-connected cross: every pixel then lies
+    within ``r`` of the region's boundary, so the region is at most ``2 * r`` pixels
+    across everywhere regardless of its length. Such regions — anti-aliased seams
+    between colour blocks are the motivating case — are removed *in whole*, and
+    every region that keeps an eroded core is left pixel-for-pixel untouched. This
+    is deliberately component-level rather than a morphological opening: an opening
+    would also erode the convex corners of surviving bodies and, symmetrically, fold
+    background corners into the foreground, both shrinking and growing compact
+    regions; testing whole components for survival keeps them intact and never grows
+    a shape.
+
+    Detection is per palette colour: the colour mask is eroded ``r`` times, then
+    each 4-connected component that retains no eroded pixel is marked for removal.
+    Distinct same-colour components are never 4-adjacent, so eroding the whole
+    colour mask is equivalent to eroding each component alone. A component holding
+    any ``protected_features`` pixel is kept entirely — the same "touches
+    protection, never folds" contract as ``remove_small_regions`` (automatic and
+    explicit protections share the one mask).
+
+    Removed pixels are folded into a touching surviving palette colour: the working
+    field marks them ``-1`` and, in rounds, every ``-1`` pixel with at least one
+    surviving 4-neighbour takes, among those neighbours' colours, the one nearest
+    in Lab to the pixel's *original* colour (pairwise ``centres`` distances), ties
+    broken toward the lowest colour index (matching ``np.argmin`` over ascending
+    colours, exactly as ``remove_small_regions`` folds). A fold only ever assigns a
+    colour already present, so the output palette is a subset of the input's. A
+    removed pixel enclosed by — or in an all-thin field of — its own colour
+    re-acquires that colour once neighbours fill (distance zero wins), and a pixel
+    that never gains a surviving neighbour keeps its original colour; both are left
+    unchanged and excluded from the change audit. Each round is decided against a
+    snapshot of the field and applied at once, so the outcome is independent of
+    within-round visitation order, vectorisation, or thread count.
+
+    Determinism: pure numpy/scipy, snapshot-per-round fill, lowest-index tie-break.
+    ``minimum_width <= 1`` (hence ``r < 1``) is a no-op returning a copy of the
+    input and a zeroed audit dict.
+    """
+    r = minimum_width // 2
+    zeroed_audit: dict[str, object] = {
+        "minimum_width": minimum_width,
+        "radius": r,
+        "passes": 0,
+        "removed_regions": 0,
+        "removed_pixels": 0,
+        "replacements": [],
+    }
+    if minimum_width <= 1 or r < 1:
+        return label_map.copy(), zeroed_audit
+
+    # Edge-sharing connectivity matches cutter geometry: a corner-only touch does
+    # not thicken a feature into a surviving body, so the erosion, the component
+    # labelling, and the fold neighbourhood all use the 4-connected cross.
+    cross = ndimage.generate_binary_structure(2, 1)
+    colour_count = len(centres)
+    protected_mask = (
+        None if protected_features is None
+        else np.asarray(protected_features, dtype=bool)
+    )
+
+    removed = np.zeros(label_map.shape, dtype=bool)
+    # Each vanishing component gets a globally-unique id so the audit can report
+    # exactly the components that end up recolouring a pixel (see the count below).
+    component_id = np.zeros(label_map.shape, dtype=np.int64)
+    next_id = 0
+    for colour in range(colour_count):
+        mask = label_map == colour
+        if not mask.any():
+            continue
+        labelled, count = ndimage.label(mask, structure=cross)
+        if count == 0:
+            continue
+        eroded = ndimage.binary_erosion(mask, structure=cross, iterations=r)
+        # A component survives iff it keeps at least one eroded core pixel; every
+        # component whose label never appears in the eroded set is thin all over.
+        has_core = np.zeros(count + 1, dtype=bool)
+        has_core[labelled[eroded]] = True
+        vanish = ~has_core
+        vanish[0] = False  # label 0 is this colour's background, never a component
+        if protected_mask is not None:
+            protected_here = protected_mask & mask
+            if protected_here.any():
+                # A component touching protection is kept whole, never folded.
+                vanish[labelled[protected_here]] = False
+        vanish_labels = np.flatnonzero(vanish)
+        if vanish_labels.size == 0:
+            continue
+        global_id = np.zeros(count + 1, dtype=np.int64)
+        global_id[vanish_labels] = np.arange(1, vanish_labels.size + 1) + next_id
+        next_id += int(vanish_labels.size)
+        ids_here = global_id[labelled]
+        here = ids_here > 0
+        component_id[here] = ids_here[here]
+        removed |= here
+
+    if not removed.any():
+        return label_map.copy(), zeroed_audit
+
+    # Pairwise palette-centre distances; ``centre_dist[s, c]`` is the Lab distance
+    # from a removed pixel's original colour ``s`` to a neighbour colour ``c``.
+    centre_dist = np.linalg.norm(centres[:, None, :] - centres[None, :, :], axis=2)
+
+    orig = label_map
+    result = label_map.astype(np.int64, copy=True)
+    result[removed] = -1
+    colour_sentinel = colour_count  # sorts after every real colour index
+
+    passes = 0
+    # Every round fills at least one pixel or stops, so the removed-pixel count
+    # plus one bounds the rounds; a progress-free round breaks out immediately.
+    for _ in range(int(removed.sum()) + 1):
+        best_dist = np.full(label_map.shape, np.inf)
+        best_col = np.full(label_map.shape, colour_sentinel, dtype=np.int64)
+        # The four edge neighbours read from this round's snapshot; out-of-frame
+        # neighbours are marked -1 and excluded, so borders are handled correctly.
+        up = np.full(label_map.shape, -1, dtype=np.int64)
+        up[1:, :] = result[:-1, :]
+        down = np.full(label_map.shape, -1, dtype=np.int64)
+        down[:-1, :] = result[1:, :]
+        left = np.full(label_map.shape, -1, dtype=np.int64)
+        left[:, 1:] = result[:, :-1]
+        right = np.full(label_map.shape, -1, dtype=np.int64)
+        right[:, :-1] = result[:, 1:]
+        for neighbour in (up, down, left, right):
+            valid = neighbour >= 0
+            neighbour_index = np.where(valid, neighbour, 0)
+            distance = np.where(valid, centre_dist[orig, neighbour_index], np.inf)
+            candidate_col = np.where(valid, neighbour, colour_sentinel)
+            # Lexicographic (distance, colour): equal distances prefer the lower
+            # colour index, so the tie-break never depends on shift order.
+            better = (distance < best_dist) | (
+                (distance == best_dist) & (candidate_col < best_col)
+            )
+            best_dist = np.where(better, distance, best_dist)
+            best_col = np.where(better, candidate_col, best_col)
+        fillable = (result == -1) & np.isfinite(best_dist)
+        if not fillable.any():
+            break
+        result[fillable] = best_col[fillable]
+        passes += 1
+
+    # A pixel with no surviving neighbour keeps its original colour, never -1.
+    stuck = result == -1
+    if stuck.any():
+        result[stuck] = orig[stuck]
+
+    # The audit counts only pixels whose colour actually changed: a removed pixel
+    # fully enclosed by (or in an all-thin field of) its own colour re-acquires that
+    # colour once neighbours fill and is not a real removal. removed_regions is the
+    # number of vanishing components that recoloured at least one pixel, and
+    # removed_pixels the pixels those folds actually changed.
+    changed = removed & (result != orig)
+    removed_pixels = int(changed.sum())
+    removed_regions = int(np.unique(component_id[changed]).size)
+    # Aggregate the changes keyed by (from, to); ``np.unique`` yields the keys
+    # already sorted ascending by (src, dst).
+    sources = orig[changed].astype(np.int64)
+    destinations = result[changed]
+    keys = sources * colour_count + destinations
+    unique_keys, counts = np.unique(keys, return_counts=True)
+    replacement_rows = [
+        {
+            "from_index": int(key // colour_count),
+            "to_index": int(key % colour_count),
+            "pixels": int(count),
+        }
+        for key, count in zip(unique_keys.tolist(), counts.tolist())
+    ]
+
+    return result.astype(label_map.dtype), {
+        "minimum_width": minimum_width,
+        "radius": r,
+        "passes": passes,
+        "removed_regions": removed_regions,
+        "removed_pixels": removed_pixels,
+        "replacements": replacement_rows,
+    }
+
+
 def protect_components_at_points(
     label_map: np.ndarray,
     points: tuple[tuple[int, int], ...],
