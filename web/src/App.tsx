@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, Layers3, Palette, Pencil, Sparkles, Upload, WandSparkles } from 'lucide-react'
+import { Download, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
 import { api, followJob, type Artifact, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { ArtworkPreview } from './ArtworkPreview'
@@ -237,6 +237,10 @@ export default function App() {
   const availableViews = viewOptions.filter(option => option.available).map(option => option.id)
   const editSelectable = view === editableView
   const editableLabel = hasEdit ? 'Edited' : 'Flattened'
+  const artworkStageActive = ['flatten', 'trace', 'palette', 'edit'].includes(stage) || Boolean(selectionMode)
+  const viewToggle = () => availableViews.length > 1
+    ? <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>
+    : null
   // The baseline is the settings that produced the shown image (recorded on the
   // nearest ancestor revision), falling back to defaults before the step has run.
   // Fields diverging from it are flagged as pending edits.
@@ -685,7 +689,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{availableViews.length > 1 && <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{selected && <button type="button" className="delete-project" onClick={deleteSelectedProject}>Delete project</button>}</header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{viewToggle()}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{selected && <button type="button" className="delete-project" aria-label="Delete project" onClick={deleteSelectedProject}><Trash2 aria-hidden="true" /><span className="delete-label">Delete project</span></button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
@@ -693,7 +697,7 @@ export default function App() {
       </nav>
     </div>
     <p className="visually-hidden" aria-live="polite" aria-atomic="true">{WORKFLOW_STAGES.find(item => item.id === stage)?.label} stage</p>
-    <section className="mobile-context" aria-label="Current work"><strong>{WORKFLOW_STAGES.find(item => item.id === stage)?.label}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></section>
+    <section className="mobile-context" aria-label="Current work"><div className="mobile-context-head"><strong>{WORKFLOW_STAGES.find(item => item.id === stage)?.label}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></div>{artworkStageActive && availableViews.length > 1 && <div className="mobile-view-switch">{viewToggle()}</div>}</section>
     {error && <p className="error global-error" role="alert">{error}</p>}
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
