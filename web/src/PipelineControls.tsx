@@ -30,7 +30,13 @@ function Field({ label, help, dirty, disabled, children }: { label: string; help
 function NumberField({ label, help, value, onChange, min = 0, max, step = 'any', optional = false, dirty, disabled }: {
   label: string; help: string; value: number | null; onChange: (value: number | null) => void; min?: number; max?: number; step?: number | 'any'; optional?: boolean; dirty?: boolean; disabled?: boolean
 }) {
-  return <Field label={label} help={help} dirty={dirty} disabled={disabled}><input type="number" min={min} max={max} step={step} value={value ?? ''} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} onChange={event => { const raw = event.target.value; if (raw === '') { if (optional) onChange(null); return } onChange(Number(raw)) }} /></Field>
+  // While the field has focus, show the raw text so an empty or partial entry (every digit
+  // backspaced, a trailing dot) survives instead of snapping back to the last committed number.
+  // Unfocused, the field mirrors the committed value, so external changes (stepping iterations,
+  // reset) and a required field cleared then left empty both resolve back to the real value.
+  const [text, setText] = useState('')
+  const [focused, setFocused] = useState(false)
+  return <Field label={label} help={help} dirty={dirty} disabled={disabled}><input type="number" min={min} max={max} step={step} value={focused ? text : (value ?? '')} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} onFocus={() => { setFocused(true); setText(value === null ? '' : String(value)) }} onChange={event => { const raw = event.target.value; setText(raw); if (raw === '') { if (optional) onChange(null); return } const parsed = Number(raw); if (!Number.isNaN(parsed)) onChange(parsed) }} onBlur={() => setFocused(false)} /></Field>
 }
 // A feature sub-group whose master checkbox skips its whole stage when off, greying
 // out the dependent fields. Mirrors the trace stage's cutter-cleanup gating.

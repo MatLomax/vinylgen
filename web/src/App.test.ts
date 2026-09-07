@@ -205,6 +205,34 @@ describe('pipeline setting provenance', () => {
     expect(within(panel).getByText('Iteration 2 of 2')).toBeTruthy()
   })
 
+  it('lets a focused number field be cleared to empty and reverts a required field left empty on blur', async () => {
+    const older = { ...revision, id: 'palette-a', kind: 'palette', settings: { palette: { initial_colours: 20 } } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [older] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+
+    const panel = screen.getByRole('tabpanel', { name: 'Flatten' })
+    const field = await within(panel).findByLabelText(/Initial candidates/) as HTMLInputElement
+    await vi.waitFor(() => expect(field.value).toBe('20'))
+    // A focused field accepts an empty value, so every digit can be backspaced.
+    fireEvent.focus(field)
+    fireEvent.change(field, { target: { value: '' } })
+    expect(field.value).toBe('')
+    fireEvent.change(field, { target: { value: '7' } })
+    expect(field.value).toBe('7')
+    fireEvent.blur(field)
+    expect(field.value).toBe('7')
+    // A required field left empty snaps back to its committed value on blur.
+    fireEvent.focus(field)
+    fireEvent.change(field, { target: { value: '' } })
+    expect(field.value).toBe('')
+    fireEvent.blur(field)
+    expect(field.value).toBe('7')
+  })
+
   it('activates the shared canvas while a preservation point is being selected', async () => {
     mocks.projects.mockResolvedValue([project])
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source')])
