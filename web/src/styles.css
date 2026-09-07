@@ -348,7 +348,7 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
   .workspace { grid-row: 2; grid-template-columns: minmax(0, 1fr) minmax(390px, 440px); }
   .workspace aside { padding: 0; }
   aside > .side-section { padding: 28px 24px 46px; }
-  .workflow-surface.artwork-surface { display: block; }
+  .workflow-surface.artwork-surface { display: block; position: relative; }
   .artwork-preview, .artwork-surface > .image-workspace { height: 100%; }
 }
 
