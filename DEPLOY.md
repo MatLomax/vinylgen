@@ -16,9 +16,14 @@ handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
 100 MiB, at most two jobs may be active, and completed job metadata is pruned
 after 90 days when the service starts. Project revisions and content-addressed artifacts
 are retained until an explicit project-deletion workflow exists.
-On startup, any persisted `queued` or `running` jobs from the previous process
-are marked failed with an interruption reason and completion timestamp. This
-releases their capacity slots; interrupted provider work is not resumed.
+On startup, a persisted `queued` or `running` job is marked failed with an
+interruption reason and completion timestamp only when the process that owned it
+is no longer alive. Each job records its owning process (`<pid>:<starttime>`), so
+a genuine restart reclaims its own orphaned jobs while a second process opened
+against the same database (a dev server, migration, or REPL) leaves the running
+server's in-flight jobs untouched. This releases interrupted slots; provider work
+is not resumed. `just deploy` refuses to restart while a job is active so a
+deployment cannot interrupt one; pass `force=true` to override.
 
 Artwork generation launches one owned `codex exec --ephemeral --json` process
 tree per request. The `vinylgen.service` user must have Codex installed on its

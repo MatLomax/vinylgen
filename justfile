@@ -24,7 +24,7 @@ test-frontend:
 
 # Local development servers; run these in separate terminals.
 dev-api:
-    VINYLGEN_DATA_DIR=.vinylgen-data \
+    VINYLGEN_DATA_DIR=.vinylgen-data-dev \
         .venv/bin/uvicorn vinylgen.web.app:app \
         --host 127.0.0.1 --port 8275 --reload
 
@@ -71,8 +71,17 @@ logs lines="100":
 restart:
     systemctl --user restart vinylgen
 
-# Build, test, restart, and check both routes.
-deploy: test build
+# Build, test, restart, and check both routes. Refuses to restart while a job is
+# active, because the restart would interrupt it and surface a spurious "Worker
+# process stopped before completion"; pass force=true to override.
+deploy force="false": test build
+    active="$(curl -fsS --max-time 5 http://127.0.0.1:8275/api/health 2>/dev/null \
+        | sed -n 's/.*"active_jobs":\([0-9][0-9]*\).*/\1/p' || true)"; \
+    if [[ "{{force}}" != "true" && -n "$active" && "$active" != "0" ]]; then \
+        echo "Refusing to restart: $active job(s) still active; a restart would interrupt them." >&2; \
+        echo "Wait for them to finish, or run 'just deploy force=true' to override." >&2; \
+        exit 1; \
+    fi
     systemctl --user restart vinylgen
     just health
     just health-public

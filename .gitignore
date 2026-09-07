@@ -25,6 +25,7 @@ Thumbs.db
 # Project-local runtime and disposable data
 .tmp/
 .vinylgen-data/
+.vinylgen-data-dev/
 .worklog/
 
 # Generated pipeline artifacts (keep curated references with git add -f)

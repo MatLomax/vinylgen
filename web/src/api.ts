@@ -27,7 +27,7 @@ export type TraceSettings = {
 }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
 export type GenerationStarted = { project: Project; job: Job; expanded_prompt: string }
-export type Health = { status: 'ok'; max_upload_bytes: number }
+export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 
 async function result<T>(response: Response): Promise<T> {

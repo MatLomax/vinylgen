@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -9,7 +10,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 from .config import WebConfig
 
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     revision_id TEXT REFERENCES revisions(id), kind TEXT NOT NULL,
     status TEXT NOT NULL, progress REAL NOT NULL, message TEXT, error TEXT,
     created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
-    result_revision_id TEXT REFERENCES revisions(id)
+    result_revision_id TEXT REFERENCES revisions(id), owner_token TEXT
 );
 CREATE INDEX IF NOT EXISTS revisions_project ON revisions(project_id, created_at);
 CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_at);
@@ -60,6 +61,60 @@ def _now() -> str:
 
 def _id() -> str:
     return uuid.uuid4().hex
+
+
+def _proc_starttime(pid: int) -> str:
+    """The process's start time in clock ticks, field 22 of ``/proc/<pid>/stat``.
+
+    Pairing it with the PID yields an identity that survives PID reuse: a recycled
+    PID belonging to a different process reports a different start time.
+    """
+    with open(f"/proc/{pid}/stat", "r") as handle:
+        data = handle.read()
+    # The comm field (2) is parenthesised and may contain spaces, so parse after
+    # its closing paren; starttime is field 22, i.e. index 19 of the remainder.
+    return data[data.rfind(")") + 2:].split()[19]
+
+
+# Distinguishes this process from any other when procfs is unavailable and a start
+# time cannot be read; regenerated per process, so a reused PID never collides.
+_INSTANCE_NONCE = uuid.uuid4().hex
+
+
+def _process_token(pid: int | None = None) -> str:
+    """Identity of the owning process as ``<pid>:<starttime>``.
+
+    On Linux the start time (from procfs) makes the token survive PID reuse and lets
+    the reaper prove liveness. On a platform without procfs the start time is
+    unavailable, so the token falls back to ``<pid>:<per-process nonce>`` — still
+    unique per process (a reused PID cannot forge a live owner's token), though
+    liveness then cannot be proven and the reaper degrades to reaping on any second
+    construction, as it did before ownership scoping.
+    """
+    pid = os.getpid() if pid is None else pid
+    try:
+        return f"{pid}:{_proc_starttime(pid)}"
+    except (OSError, IndexError):
+        return f"{pid}:{_INSTANCE_NONCE}"
+
+
+def _process_alive(token: str | None) -> bool:
+    """True only when the token's originating process is still running.
+
+    Distinguishes a job orphaned by a genuine restart (its process is gone) from a
+    job that belongs to another live process reading the same database.
+    """
+    if not token:
+        return False
+    pid_text, _, starttime = token.partition(":")
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return False
+    try:
+        return _proc_starttime(pid) == starttime
+    except (OSError, IndexError):
+        return False
 
 
 def _slug(value: str) -> str:
@@ -86,8 +141,14 @@ def blob_relpath(slug: str, stage: str, created_at: str, filename: str) -> Path:
 
 
 class Store:
-    def __init__(self, config: WebConfig):
+    def __init__(self, config: WebConfig, *, owner_token: str | None = None,
+                 owner_alive: Callable[[str | None], bool] | None = None):
         self.config = config
+        # Identity stamped onto every job this process creates, and the predicate the
+        # reaper uses to tell a genuinely orphaned job from one another live process is
+        # still working. Both are injectable so tests can simulate a dead prior owner.
+        self.owner_token = owner_token or _process_token()
+        self._owner_alive = owner_alive or _process_alive
         config.data_dir.mkdir(parents=True, exist_ok=True)
         config.files_dir.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
@@ -95,12 +156,26 @@ class Store:
             job_columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             if "result_revision_id" not in job_columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN result_revision_id TEXT REFERENCES revisions(id)")
+            if "owner_token" not in job_columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN owner_token TEXT")
             now = _now()
-            db.execute(
-                "UPDATE jobs SET status='failed', message=?, error=?, finished_at=? "
-                "WHERE status IN ('queued', 'running')",
-                ("Interrupted by process restart", "Worker process stopped before completion", now),
-            )
+            # Fail only jobs whose owning process has died. A restart leaves this
+            # process's token unmatched by any live process, so its orphans are reaped;
+            # a second Store opened against the same database by a dev server, migration
+            # script, or REPL leaves the live server's in-flight jobs untouched.
+            orphaned = [
+                row["id"]
+                for row in db.execute(
+                    "SELECT id, owner_token FROM jobs WHERE status IN ('queued', 'running')")
+                if row["owner_token"] != self.owner_token and not self._owner_alive(row["owner_token"])
+            ]
+            if orphaned:
+                db.executemany(
+                    "UPDATE jobs SET status='failed', message=?, error=?, finished_at=? WHERE id=?",
+                    [("Interrupted by process restart",
+                      "Worker process stopped before completion", now, job_id)
+                     for job_id in orphaned],
+                )
             if config.retention_days > 0:
                 cutoff = (datetime.now(UTC) - timedelta(days=config.retention_days)).isoformat()
                 db.execute(
@@ -354,8 +429,8 @@ class Store:
         job_id, now = _id(), _now()
         with self.connection() as db:
             db.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, ?, NULL, NULL, NULL)",
-                (job_id, project_id, revision_id, kind, "Queued", now),
+                "INSERT INTO jobs VALUES (?, ?, ?, ?, 'queued', 0, ?, NULL, ?, NULL, NULL, NULL, ?)",
+                (job_id, project_id, revision_id, kind, "Queued", now, self.owner_token),
             )
         return self.get_job(job_id)
 

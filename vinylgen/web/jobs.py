@@ -79,9 +79,10 @@ class JobManager:
             if cancellation.is_set():
                 raise asyncio.CancelledError
             await self._update(job_id, status="succeeded", progress=1, message="Complete",
-                               result_revision_id=result_id, finished_at=_now())
+                               result_revision_id=result_id, error=None, finished_at=_now())
         except asyncio.CancelledError:
-            await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
+            await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                               finished_at=_now())
         except Exception as exc:
             await self._update(job_id, status="failed", error=str(exc), message="Failed", finished_at=_now())
         finally:
@@ -124,9 +125,10 @@ class JobManager:
             if cancellation.is_set():
                 raise asyncio.CancelledError
             await self._update(job_id, status="succeeded", progress=1, message="Complete",
-                               result_revision_id=result_revision_id, finished_at=_now())
+                               result_revision_id=result_revision_id, error=None, finished_at=_now())
         except asyncio.CancelledError:
-            await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
+            await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                               finished_at=_now())
         except Exception as exc:
             await self._update(job_id, status="failed", error=str(exc), message="Failed",
                                finished_at=_now())
@@ -140,9 +142,11 @@ class JobManager:
             for step in range(1, steps + 1):
                 await asyncio.sleep(delay_ms / 1000)
                 await self._update(job_id, progress=step / steps, message=f"Step {step} of {steps}")
-            await self._update(job_id, status="succeeded", progress=1, message="Complete", finished_at=_now())
+            await self._update(job_id, status="succeeded", progress=1, message="Complete",
+                               error=None, finished_at=_now())
         except asyncio.CancelledError:
-            await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
+            await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                               finished_at=_now())
         except Exception as exc:  # pragma: no cover - defensive boundary
             await self._update(job_id, status="failed", error=str(exc), finished_at=_now())
         finally:
@@ -176,9 +180,11 @@ class JobManager:
                 pass
             current = self.store.get_job(job_id)
             if current["status"] in {"queued", "running"}:
-                await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
+                await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                                   finished_at=_now())
         else:
-            await self._update(job_id, status="cancelled", message="Cancelled", finished_at=_now())
+            await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                               finished_at=_now())
         return self.store.get_job(job_id)
 
     async def _update(self, job_id: str, **changes: Any) -> None:

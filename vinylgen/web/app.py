@@ -74,7 +74,8 @@ def create_app(config: WebConfig | None = None,
 
     @app.get("/api/health", response_model=Health)
     async def health() -> Health:
-        return Health(max_upload_bytes=config.max_upload_bytes)
+        return Health(max_upload_bytes=config.max_upload_bytes,
+                      active_jobs=store.active_job_count())
 
     @app.get("/api/projects", response_model=list[Project])
     async def list_projects() -> list[dict]:
@@ -337,4 +338,16 @@ def create_app(config: WebConfig | None = None,
     return app
 
 
-app = create_app()
+def __getattr__(name: str) -> FastAPI:
+    """Build the ASGI ``app`` only when the server actually accesses it.
+
+    Importing this module to reach ``create_app`` (as the test suite does) must not
+    construct a ``Store``, because ``create_app`` with no config resolves the data
+    directory from the environment and would open the deployed database as a side
+    effect of a mere import.
+    """
+    if name == "app":
+        application = create_app()
+        globals()["app"] = application
+        return application
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

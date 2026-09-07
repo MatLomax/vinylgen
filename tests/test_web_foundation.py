@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import httpx
 
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
+from vinylgen.web.store import Store, _process_token
 
 
 class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
@@ -256,24 +258,51 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(cancelled.json()["status"], "cancelled")
 
-    async def test_store_startup_reconciles_jobs_interrupted_by_restart(self) -> None:
-        store = self.app.state.store
-        queued = store.create_job(kind="demo", project_id=None, revision_id=None)
-        running = store.create_job(kind="demo", project_id=None, revision_id=None)
-        store.update_job(running["id"], status="running", started_at="2026-01-01T00:00:00+00:00")
-        self.assertEqual(store.active_job_count(), 2)
+    async def test_startup_reaps_jobs_whose_owning_process_has_died(self) -> None:
+        # A job stamped with a process that no longer exists is genuinely orphaned by
+        # a restart and must be failed so its capacity slot is released.
+        config = WebConfig(Path(self.temp.name))
+        dead = Store(config, owner_token="0:0")
+        queued = dead.create_job(kind="demo", project_id=None, revision_id=None)
+        running = dead.create_job(kind="demo", project_id=None, revision_id=None)
+        dead.update_job(running["id"], status="running", started_at="2026-01-01T00:00:00+00:00")
 
-        restarted = create_app(WebConfig(Path(self.temp.name)))
-        try:
-            self.assertEqual(restarted.state.store.active_job_count(), 0)
-            for job_id in (queued["id"], running["id"]):
-                job = restarted.state.store.get_job(job_id)
-                self.assertEqual(job["status"], "failed")
-                self.assertEqual(job["message"], "Interrupted by process restart")
-                self.assertEqual(job["error"], "Worker process stopped before completion")
-                self.assertIsNotNone(job["finished_at"])
-        finally:
-            await restarted.state.jobs.shutdown()
+        restarted = Store(config)
+        self.assertEqual(restarted.active_job_count(), 0)
+        for job_id in (queued["id"], running["id"]):
+            job = restarted.get_job(job_id)
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(job["message"], "Interrupted by process restart")
+            self.assertEqual(job["error"], "Worker process stopped before completion")
+            self.assertIsNotNone(job["finished_at"])
+
+    async def test_startup_leaves_jobs_owned_by_a_live_process_untouched(self) -> None:
+        # A second Store opened against the same database by a dev server, migration,
+        # or REPL must not fail the running server's in-flight jobs.
+        config = WebConfig(Path(self.temp.name))
+        server = Store(config, owner_token=_process_token())  # this process, alive
+        running = server.create_job(kind="demo", project_id=None, revision_id=None)
+        server.update_job(running["id"], status="running", started_at="2026-01-01T00:00:00+00:00")
+
+        phantom = Store(config, owner_token="0:0")
+        self.assertEqual(phantom.active_job_count(), 1)
+        self.assertEqual(phantom.get_job(running["id"])["status"], "running")
+
+    async def test_successful_job_clears_a_previously_recorded_error(self) -> None:
+        # A stale error left on a job (by a reaper or a transient) must not survive the
+        # job actually completing, or the UI shows a failure that did not happen.
+        store = self.app.state.store
+        job = (await self.client.post(
+            "/api/jobs", json={"steps": 5, "step_delay_ms": 40})).json()
+        store.update_job(job["id"], error="Worker process stopped before completion")
+        current = store.get_job(job["id"])
+        for _ in range(200):
+            current = store.get_job(job["id"])
+            if current["status"] in {"succeeded", "failed", "cancelled"}:
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(current["status"], "succeeded")
+        self.assertIsNone(current["error"])
 
 
 if __name__ == "__main__":
