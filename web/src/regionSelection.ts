@@ -6,12 +6,10 @@ export type PaletteEntry = { index: number; rgb: Rgb }
 // overlay/neighbour pass touches only the affected pixels.
 export type Bounds = { x: number; y: number; width: number; height: number }
 export type Component = { point: [number, number]; rgb: Rgb; label: number; bounds: Bounds; mask: Uint8Array }
-// A patch of overlay pixels confined to `bounds`; the canvas layer draws just this
-// rectangle rather than re-touching the whole image.
+// A patch of overlay pixels confined to `bounds` in image-pixel coordinates; the
+// screen-space canvas layer blits just this rectangle, scaled by the current zoom.
 export type OverlayRegion = { bounds: Bounds; data: Uint8ClampedArray }
-// A ready-to-blit overlay frame: the pixel patch, where it sits, and the full image
-// size the destination canvas is sized to.
-export type OverlayFrame = { data: Uint8ClampedArray; bounds: Bounds; imageWidth: number; imageHeight: number }
+export type OverlayFrame = OverlayRegion
 
 function colourAt(pixels: Pixels, x: number, y: number): Rgb {
   const offset = (y * pixels.width + x) * 4

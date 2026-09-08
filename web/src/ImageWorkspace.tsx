@@ -9,6 +9,7 @@ type CompareMode = 'single' | 'split' | 'blink'
 export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
+  const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
   const pointers = useRef(new Map<number, Point>())
   const pointerStarts = useRef(new Map<number, Point>())
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
@@ -169,23 +170,51 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   }, [paintMode])
 
   useEffect(() => {
-    // Blit the overlay patch onto a canvas sized to the image, drawing only the changed
-    // bounding box. Replacing the previous data-URL <img> removes a full-image PNG encode
-    // per interaction. jsdom has no 2d context, so this is a no-op under test.
+    // Cache the overlay's bounding-box pixels on a small offscreen canvas so the
+    // draw pass can blit it without rebuilding on every pan/zoom frame.
+    if (!overlay) { overlayPatch.current = null; return }
+    const { bounds, data } = overlay
+    const patch = document.createElement('canvas')
+    patch.width = bounds.width; patch.height = bounds.height
+    const context = patch.getContext('2d')
+    if (!context) { overlayPatch.current = null; return }
+    const image = context.createImageData(bounds.width, bounds.height)
+    image.data.set(data)
+    context.putImageData(image, 0, 0)
+    overlayPatch.current = { canvas: patch, bounds }
+  }, [overlay])
+
+  useEffect(() => {
+    // Draw the overlay in screen space: a viewport-sized, device-resolution canvas
+    // that is NOT itself CSS-transformed. We apply the pan/zoom via the 2d context and
+    // upscale the patch with nearest-neighbour ourselves. Firefox (and WebKit) blur and
+    // sub-pixel-shift a CSS-`transform: scale`d <canvas> backing store — ignoring
+    // image-rendering: pixelated — so drawing an image-sized canvas inside the
+    // transformed stage misaligned the overlay from the base image at zoom. Rendering at
+    // device pixels here keeps it crisp and pixel-aligned across browsers, and avoids the
+    // max-canvas-size limit a gigapixel backing store would hit. jsdom has no 2d context,
+    // so this is a no-op under test.
     const canvas = overlayCanvas.current
-    if (!canvas || !overlay) return
-    if (canvas.width !== overlay.imageWidth || canvas.height !== overlay.imageHeight) {
-      canvas.width = overlay.imageWidth
-      canvas.height = overlay.imageHeight
+    if (!canvas) return
+    const dpr = window.devicePixelRatio || 1
+    const backingWidth = Math.max(1, Math.round(canvas.clientWidth * dpr))
+    const backingHeight = Math.max(1, Math.round(canvas.clientHeight * dpr))
+    if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+      canvas.width = backingWidth; canvas.height = backingHeight
     }
     const context = canvas.getContext('2d')
     if (!context) return
+    context.setTransform(1, 0, 0, 1, 0, 0)
     context.clearRect(0, 0, canvas.width, canvas.height)
-    const { bounds, data } = overlay
-    const patch = context.createImageData(bounds.width, bounds.height)
-    patch.data.set(data)
-    context.putImageData(patch, bounds.x, bounds.y)
-  }, [overlay])
+    const patch = overlayPatch.current
+    if (!patch) return
+    // Map image pixels to device pixels exactly as the base image is placed: an image
+    // pixel (ix, iy) lands at viewport CSS (transform.x + ix·scale, transform.y + iy·scale).
+    context.setTransform(dpr * transform.scale, 0, 0, dpr * transform.scale,
+                         dpr * transform.x, dpr * transform.y)
+    context.imageSmoothingEnabled = false
+    context.drawImage(patch.canvas, patch.bounds.x, patch.bounds.y)
+  }, [overlay, transform])
 
   useEffect(() => {
     const element = viewport.current
@@ -384,8 +413,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
-        {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       </div>
+      {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       {mode === 'split' && compatibleAfter && <div
         className="split-divider"
         role="slider"

@@ -427,11 +427,11 @@ export default function App() {
     // Build the active tool's overlay as a bounding-box patch and hand it to the canvas
     // layer, which blits just that rectangle — no full-image PNG encode per interaction.
     if (!flattenedPixels) { setOverlayFrame(undefined); return }
-    const { width, height } = flattenedPixels
+    const { width } = flattenedPixels
     const region = editTool === 'pencil'
       ? paintOverlayPixels(paintedCells, editorPalette, width)
       : overlayPixels(regionSelection)
-    setOverlayFrame(region ? { ...region, imageWidth: width, imageHeight: height } : undefined)
+    setOverlayFrame(region ?? undefined)
   }, [editTool, regionSelection, paintedCells, flattenedPixels, editorPalette])
   useEffect(() => {
     // Live palette recolour: repaint the flattened raster in the browser so dragging
@@ -444,7 +444,7 @@ export default function App() {
     const handle = requestAnimationFrame(() => {
       // The whole-colour preview covers the entire raster, so the patch is the full image.
       const data = recolourPreviewPixels(flattenedPixels, from, to)
-      setPalettePreviewFrame({ data, bounds: { x: 0, y: 0, width, height }, imageWidth: width, imageHeight: height })
+      setPalettePreviewFrame({ data, bounds: { x: 0, y: 0, width, height } })
     })
     return () => cancelAnimationFrame(handle)
   }, [paletteDraft, flattenedPixels, editorPalette])
