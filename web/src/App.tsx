@@ -6,7 +6,7 @@ import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
-import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type Pixels } from './regionSelection'
+import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
@@ -195,9 +195,9 @@ export default function App() {
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
   const [flattenedPixels, setFlattenedPixels] = useState<Pixels | null>(null)
   const [editorPalette, setEditorPalette] = useState<PaletteColour[]>([])
-  const [overlayUrl, setOverlayUrl] = useState<string | undefined>(undefined)
+  const [overlayFrame, setOverlayFrame] = useState<OverlayFrame | undefined>(undefined)
   const [paletteDraft, setPaletteDraft] = useState<{ index: number; hex: string } | null>(null)
-  const [palettePreview, setPalettePreview] = useState<string | undefined>(undefined)
+  const [palettePreviewFrame, setPalettePreviewFrame] = useState<OverlayFrame | undefined>(undefined)
   const [regionBusy, setRegionBusy] = useState(false)
   const [regionError, setRegionError] = useState('')
   const [editTool, setEditTool] = useState<'areas' | 'pencil'>('areas')
@@ -216,6 +216,11 @@ export default function App() {
   // post-kickoff clicks are kept; `applied` guards the two-phase revision→artifacts
   // reload from clobbering areas clicked between its two runs.
   const preserveRegion = useRef<{ id: string; selection: Component[]; applied: boolean } | null>(null)
+  // The exact pixels an area/pencil edit produces, computed client-side from the same
+  // components the server reassigns. When the resulting revision loads, the decode
+  // effect adopts this buffer instead of re-fetching and re-decoding the full flattened
+  // PNG, since the two are identical (both are four-connected exact-palette regions).
+  const patchedFlattened = useRef<{ revision: string; pixels: Pixels } | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
   const tracedPreview = artifacts.find(row => row.kind === 'traced-preview')
@@ -302,7 +307,9 @@ export default function App() {
     // within the same project keeps its artwork (and its zoom/pan) until the new
     // artifacts arrive.
     const switchingProject = loadedProject.current !== selected
-    if (switchingProject) { setProjectLoading(true); setArtifacts([]) }
+    // Drop any adopted-buffer left from the previous project so its ~hundreds of MB do
+    // not linger; a revision id never collides across projects, so this is purely tidying.
+    if (switchingProject) { setProjectLoading(true); setArtifacts([]); patchedFlattened.current = null }
     api.project(selected, controller.signal).then(async project => {
       setRevisions(project.revisions)
       const latest = revision && project.revisions.some(row => row.id === revision)
@@ -388,6 +395,13 @@ export default function App() {
     const controller = new AbortController()
     api.editor(revision, controller.signal).then(state => setEditorPalette(state.palette))
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
+    // An area/pencil edit already knows exactly which pixels changed, so adopt the
+    // pre-computed buffer for the revision it produced rather than decoding a fresh
+    // 89-megapixel PNG. Kept (not cleared) so the second reload run reuses it too.
+    if (patchedFlattened.current?.revision === revision) {
+      setFlattenedPixels(patchedFlattened.current.pixels)
+      return () => controller.abort()
+    }
     const image = new Image()
     image.onload = () => {
       const canvas = document.createElement('canvas')
@@ -410,40 +424,29 @@ export default function App() {
     setPencilLabel(current => current !== null && current < editorPalette.length ? current : editorPalette[0].index)
   }, [editorPalette])
   useEffect(() => {
-    if (!flattenedPixels) { setOverlayUrl(undefined); return }
+    // Build the active tool's overlay as a bounding-box patch and hand it to the canvas
+    // layer, which blits just that rectangle — no full-image PNG encode per interaction.
+    if (!flattenedPixels) { setOverlayFrame(undefined); return }
     const { width, height } = flattenedPixels
-    const pixels = editTool === 'pencil'
-      ? (paintedCells.size ? paintOverlayPixels(paintedCells, editorPalette, width, height) : null)
-      : (regionSelection.length ? overlayPixels(regionSelection, width, height) : null)
-    if (!pixels) { setOverlayUrl(undefined); return }
-    const canvas = document.createElement('canvas')
-    canvas.width = width; canvas.height = height
-    const context = canvas.getContext('2d')
-    if (!context) { setOverlayUrl(undefined); return }
-    const image = context.createImageData(width, height)
-    image.data.set(pixels)
-    context.putImageData(image, 0, 0)
-    setOverlayUrl(canvas.toDataURL())
+    const region = editTool === 'pencil'
+      ? paintOverlayPixels(paintedCells, editorPalette, width)
+      : overlayPixels(regionSelection)
+    setOverlayFrame(region ? { ...region, imageWidth: width, imageHeight: height } : undefined)
   }, [editTool, regionSelection, paintedCells, flattenedPixels, editorPalette])
   useEffect(() => {
     // Live palette recolour: repaint the flattened raster in the browser so dragging
     // the colour picker updates the canvas instantly, before anything is committed.
     // rAF coalesces the picker's rapid onChange stream to one encode per frame.
     const from = paletteDraft && editorPalette.find(colour => colour.index === paletteDraft.index)?.rgb
-    if (!paletteDraft || !flattenedPixels || !from) { setPalettePreview(undefined); return }
+    if (!paletteDraft || !flattenedPixels || !from) { setPalettePreviewFrame(undefined); return }
     const { width, height } = flattenedPixels
     const to = hexToRgb(paletteDraft.hex)
-    const frame = requestAnimationFrame(() => {
-      const canvas = document.createElement('canvas')
-      canvas.width = width; canvas.height = height
-      const context = canvas.getContext('2d')
-      if (!context) return
-      const image = context.createImageData(width, height)
-      image.data.set(recolourPreviewPixels(flattenedPixels, from, to))
-      context.putImageData(image, 0, 0)
-      setPalettePreview(canvas.toDataURL())
+    const handle = requestAnimationFrame(() => {
+      // The whole-colour preview covers the entire raster, so the patch is the full image.
+      const data = recolourPreviewPixels(flattenedPixels, from, to)
+      setPalettePreviewFrame({ data, bounds: { x: 0, y: 0, width, height }, imageWidth: width, imageHeight: height })
     })
-    return () => cancelAnimationFrame(frame)
+    return () => cancelAnimationFrame(handle)
   }, [paletteDraft, flattenedPixels, editorPalette])
 
   useEffect(() => {
@@ -618,7 +621,16 @@ export default function App() {
     if (operations.length === 0) return
     setRegionBusy(true); setRegionError('')
     try {
+      const reassigned = submitted.filter(component => component.label !== label)
       const next = await api.applyEdits(selected, revision, operations)
+      // Adopt the exact recoloured raster instead of re-decoding the flattened PNG — but
+      // only when every palette colour is a distinct RGB. With a duplicate RGB an
+      // RGB-flooded component can straddle two labels, whereas the server reassigns just
+      // the clicked label's region, so the client-painted blob would diverge; fall back
+      // to re-decoding the authoritative PNG in that case.
+      const rgb = editorPalette.find(colour => colour.index === label)?.rgb
+      if (rgb && flattenedPixels && !paletteHasDuplicateRgb(editorPalette)) patchedFlattened.current = {
+        revision: next.id, pixels: pixelsWithComponents(flattenedPixels, reassigned, rgb) }
       // Deselect only the submitted batch; areas clicked after kickoff are new
       // components and are handed to the revision reload so they stay selected. The
       // reload effect clears the selection otherwise, so we route through it rather
@@ -659,6 +671,9 @@ export default function App() {
     setPencilBusy(true); setPencilError('')
     try {
       const next = await api.applyEdits(selected, revision, operations)
+      // Adopt the exact painted raster instead of re-decoding the flattened PNG.
+      patchedFlattened.current = {
+        revision: next.id, pixels: pixelsWithPaintedCells(flattenedPixels, paintedCells, editorPalette) }
       setPaintedCells(new Map())
       setRevision(next.id)
     } catch (cause) { setPencilError(String(cause)) }
@@ -729,7 +744,7 @@ export default function App() {
           onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
           paintMode={stage === 'edit' && editTool === 'pencil' && editSelectable}
           onPaint={stage === 'edit' && editTool === 'pencil' && editSelectable ? paintPixel : undefined}
-          overlay={stage === 'palette' && editSelectable ? palettePreview : stage === 'edit' && editSelectable ? overlayUrl : undefined}
+          overlay={stage === 'palette' && editSelectable ? palettePreviewFrame : stage === 'edit' && editSelectable ? overlayFrame : undefined}
         /> : <ArtworkPreview layers={displayLayers} preferredLayerId={viewLayerId(view)} />}
         {projectLoading
           ? <LoadingOverlay title="Loading artwork" message="Fetching the selected revision and its artifacts…" progress={null} elapsedSeconds={elapsedSeconds} progressLabel="Loading progress" />

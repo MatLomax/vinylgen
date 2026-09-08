@@ -61,7 +61,12 @@ class SegmentationBundle:
         )
 
     @classmethod
-    def load(cls, path: Path) -> "SegmentationBundle":
+    def load(cls, path: Path, *, with_costs: bool = True) -> "SegmentationBundle":
+        # ``with_costs=False`` skips the per-pixel/per-palette cost volume, which is by
+        # far the largest member. ``np.load`` is lazy per array, so never touching
+        # ``palette_costs`` means it is never decompressed — the editor uses this for
+        # label edits that leave the cost field unchanged. ``palette_costs`` is then an
+        # empty placeholder and cost-shape validation must be skipped.
         with np.load(path, allow_pickle=False) as data:
             version = int(data["contract_version"])
             if version != 3:
@@ -71,10 +76,11 @@ class SegmentationBundle:
                 protected_features=data["protected_features"].astype(bool),
                 explicit_protected_features=data["explicit_protected_features"].astype(bool),
                 palette_rgb=data["palette_rgb"].astype(np.uint8),
-                palette_costs=data["palette_costs"].astype(np.float32),
+                palette_costs=(data["palette_costs"].astype(np.float32) if with_costs
+                               else np.empty((0,), dtype=np.float32)),
             )
 
-    def validate(self) -> None:
+    def validate(self, *, check_costs: bool = True) -> None:
         if self.labels.shape != self.protected_features.shape:
             raise ValueError("segmentation labels and protected-feature dimensions differ")
         if self.labels.shape != self.explicit_protected_features.shape:
@@ -83,7 +89,7 @@ class SegmentationBundle:
             raise ValueError("invalid segmentation bundle dimensions")
         if self.labels.size and (self.labels.min() < 0 or self.labels.max() >= len(self.palette_rgb)):
             raise ValueError("segmentation contains a label outside its palette")
-        if self.palette_costs.shape != (
+        if check_costs and self.palette_costs.shape != (
             *self.labels.shape, len(self.palette_rgb)
         ):
             raise ValueError("segmentation palette-cost dimensions differ")

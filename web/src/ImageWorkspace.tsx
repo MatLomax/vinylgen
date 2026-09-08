@@ -1,12 +1,14 @@
 import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
+import type { OverlayFrame } from './regionSelection'
 
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: string; editorMode?: boolean; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
+  const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const pointers = useRef(new Map<number, Point>())
   const pointerStarts = useRef(new Map<number, Point>())
   const gesture = useRef<{ distance: number; centre: Point; transform: ViewTransform } | null>(null)
@@ -165,6 +167,25 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       setSpacePan(false)
     }
   }, [paintMode])
+
+  useEffect(() => {
+    // Blit the overlay patch onto a canvas sized to the image, drawing only the changed
+    // bounding box. Replacing the previous data-URL <img> removes a full-image PNG encode
+    // per interaction. jsdom has no 2d context, so this is a no-op under test.
+    const canvas = overlayCanvas.current
+    if (!canvas || !overlay) return
+    if (canvas.width !== overlay.imageWidth || canvas.height !== overlay.imageHeight) {
+      canvas.width = overlay.imageWidth
+      canvas.height = overlay.imageHeight
+    }
+    const context = canvas.getContext('2d')
+    if (!context) return
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    const { bounds, data } = overlay
+    const patch = context.createImageData(bounds.width, bounds.height)
+    patch.data.set(data)
+    context.putImageData(patch, bounds.x, bounds.y)
+  }, [overlay])
 
   useEffect(() => {
     const element = viewport.current
@@ -363,7 +384,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
-        {overlay && <img className="editor-overlay" src={overlay} alt="" aria-hidden="true" draggable={false} />}
+        {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       </div>
       {mode === 'split' && compatibleAfter && <div
         className="split-divider"

@@ -133,6 +133,29 @@ class WebEditorTest(unittest.IsolatedAsyncioTestCase):
         parent_state = (await self.client.get(f"/api/revisions/{parent}/editor")).json()
         self.assertEqual(parent_state["palette"][1]["rgb"], [225, 90, 45])
 
+    async def test_label_edits_carry_the_cost_volume_over_unchanged(self) -> None:
+        # A reassign and a paint change only labels, so the edited revision must inherit
+        # the parent's per-palette cost field byte-for-byte — the fast serialisation path
+        # copies the compressed member rather than re-encoding it, and must not corrupt it.
+        project, parent = await self.flattened_project()
+        parent_artifacts = (await self.client.get(f"/api/revisions/{parent}/artifacts")).json()
+        parent_seg = next(row for row in parent_artifacts if row["kind"] == "segmentation")
+        with np.load(io.BytesIO((await self.client.get(parent_seg["download_url"])).content)) as data:
+            parent_costs = data["palette_costs"]
+
+        for operation in ({"tool": "reassign_region", "point": [4, 4], "target_label": 0},
+                          {"tool": "paint_pixels", "target_label": 0, "pixels": [[5, 5]]}):
+            response = await self.client.post(
+                f"/api/projects/{project['id']}/revisions/{parent}/edits",
+                json={"operations": [operation]})
+            self.assertEqual(response.status_code, 201, response.text)
+            artifacts = (await self.client.get(
+                f"/api/revisions/{response.json()['id']}/artifacts")).json()
+            segmentation = next(row for row in artifacts if row["kind"] == "segmentation")
+            with np.load(io.BytesIO((await self.client.get(segmentation["download_url"])).content)) as data:
+                np.testing.assert_array_equal(data["palette_costs"], parent_costs)
+                self.assertEqual(data["palette_costs"].shape, (*data["labels"].shape, 2))
+
     async def test_recolour_requires_a_valid_rgb(self) -> None:
         project, parent = await self.flattened_project()
         missing = await self.client.post(
