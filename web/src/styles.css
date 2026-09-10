@@ -244,6 +244,16 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .inspector-shell .image-workspace { width: 100%; height: 100dvh; grid-template-rows: 58px minmax(0, 1fr); }
 .inspector-shell .viewport-toolbar .inspector-close { display: block; min-height: 42px; background: var(--surface-control-strong); color: var(--text); }
 
+.upscale-modal-shell { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(12, 14, 13, .84); overflow-y: auto; }
+.upscale-modal { display: grid; gap: 18px; width: min(520px, 100%); max-height: calc(100dvh - 40px); padding: 24px; overflow-y: auto; background: var(--surface-panel); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-float); }
+.upscale-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.upscale-modal-head h2 { margin: 0; }
+.upscale-modal .section-intro { margin: 0; }
+.upscale-modal .settings-grid { padding-bottom: 0; }
+.icon-button { display: grid; width: 40px; height: 40px; padding: 0; place-items: center; border-radius: 50%; }
+.icon-button svg { width: 18px; height: 18px; }
+.upscale-modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
 @media (min-width: 701px) {
   .workspace.workflow-edit { display: grid; }
 }
@@ -285,6 +295,9 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .field-dirty { display: inline-block; width: 6px; height: 6px; margin-left: 7px; border-radius: 50%; background: var(--warning); vertical-align: middle; }
 .setting-field > small, .check-field small { color: var(--text-muted); font-size: 11px; font-weight: 450; line-height: 1.45; }
 .setting-field input, .setting-field select { min-height: 44px; }
+.slider-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 44px; }
+.slider-control input[type='range'] { width: 100%; min-height: 44px; padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
+.slider-control output { min-width: 3.5ch; color: var(--text-strong); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: end; }
 .detail-group { display: grid; gap: 13px; }
 .setting-field.is-disabled > span, .setting-field.is-disabled > small { opacity: .5; }
 .setting-field input:disabled { opacity: .45; cursor: default; }

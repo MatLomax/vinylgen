@@ -10,6 +10,8 @@ from typing import Any, AsyncIterator
 from .store import Store
 from .pipeline import PipelineRunner
 from .generation import CodexImageProvider, GenerationRunner, ImageProvider
+from .models import UpscaleSettings
+from .upscale import TiledRegenProvider, UpscaleProvider, UpscaleRunner
 
 
 def _now() -> str:
@@ -44,10 +46,12 @@ class GenerationCancellation:
 
 
 class JobManager:
-    def __init__(self, store: Store, generation_providers: dict[str, ImageProvider] | None = None):
+    def __init__(self, store: Store, generation_providers: dict[str, ImageProvider] | None = None,
+                 upscale_provider: UpscaleProvider | None = None):
         self.store = store
         self.pipeline = PipelineRunner(store)
         self.generation = GenerationRunner(store, generation_providers or {"codex": CodexImageProvider()})
+        self.upscale = UpscaleRunner(store, upscale_provider or TiledRegenProvider())
         self._worker_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vinylgen-worker")
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._pipeline_cancellations: dict[str, threading.Event | GenerationCancellation] = {}
@@ -85,6 +89,46 @@ class JobManager:
                                finished_at=_now())
         except Exception as exc:
             await self._update(job_id, status="failed", error=str(exc), message="Failed", finished_at=_now())
+        finally:
+            self._tasks.pop(job_id, None)
+            self._pipeline_cancellations.pop(job_id, None)
+
+    def start_upscale(self, job_id: str, *, parent_revision_id: str,
+                      settings: UpscaleSettings) -> None:
+        self._pipeline_cancellations[job_id] = GenerationCancellation()
+        self._tasks[job_id] = asyncio.create_task(
+            self._run_upscale(job_id, parent_revision_id, settings),
+            name=f"vinylgen-upscale-{job_id}")
+
+    async def _run_upscale(self, job_id: str, parent_revision_id: str,
+                           settings: UpscaleSettings) -> None:
+        loop = asyncio.get_running_loop()
+        cancellation = self._pipeline_cancellations[job_id]
+
+        def progress(value: float, message: str) -> None:
+            if cancellation.is_set():
+                raise asyncio.CancelledError
+            asyncio.run_coroutine_threadsafe(
+                self._update(job_id, progress=value, message=message), loop).result()
+
+        try:
+            await self._update(job_id, status="running", started_at=_now(),
+                               message="Preparing tiled upscale")
+            result_id = await loop.run_in_executor(
+                self._worker_executor,
+                lambda: self.upscale.run(
+                    parent_revision_id, settings, progress, cancellation.is_set,
+                    cancellation.commit))
+            if cancellation.is_set():
+                raise asyncio.CancelledError
+            await self._update(job_id, status="succeeded", progress=1, message="Complete",
+                               result_revision_id=result_id, error=None, finished_at=_now())
+        except asyncio.CancelledError:
+            await self._update(job_id, status="cancelled", message="Cancelled", error=None,
+                               finished_at=_now())
+        except Exception as exc:
+            await self._update(job_id, status="failed", error=str(exc), message="Failed",
+                               finished_at=_now())
         finally:
             self._tasks.pop(job_id, None)
             self._pipeline_cancellations.pop(job_id, None)

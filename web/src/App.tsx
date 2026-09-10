@@ -6,6 +6,7 @@ import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
+import { UpscalePanel } from './UpscalePanel'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
@@ -206,6 +207,7 @@ export default function App() {
   const [pencilBusy, setPencilBusy] = useState(false)
   const [pencilError, setPencilError] = useState('')
   const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
+  const [upscaleOpen, setUpscaleOpen] = useState(false)
   const stageScroll = useRef<Partial<Record<WorkflowStage, number>>>({})
   const loadedProject = useRef<string | null>(null)
   // Mirrors the live selection so a region edit resolving asynchronously can read
@@ -781,6 +783,7 @@ export default function App() {
         <div className="job">
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
           <button disabled={!revision || busy} onClick={() => runPipeline('palette')}>Flatten image</button>
+          {sourceRevision && <button type="button" className="secondary" disabled={busy} onClick={() => setUpscaleOpen(true)}>Upscale source…</button>}
         </div>
         <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette}
           selectionMode={selectionMode} setSelectionMode={setSelectionMode}
@@ -817,5 +820,6 @@ export default function App() {
       {!handoff && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}
       {selected && revision && handoff && <section className="inkscape-handoff"><h2>Export or finish in Inkscape</h2><p>{handoff.guidance}</p><div className="handoff-actions">{handoff.exports.map(item => <span key={item.id}><a className="button-link" href={item.download_url}>Download {item.filename}</a>{handoff.shared_folder_enabled && <button className="secondary" onClick={() => api.saveForInkscape(revision, item.id).then(saved => setHandoffMessage(`Saved ${saved.filename} to the shared folder.`)).catch(cause => setError(String(cause)))}>Save {item.media_type === 'image/png' ? 'PNG' : 'SVG'} to shared folder</button>}</span>)}</div><form onSubmit={reimportSvg}><label className="file">Edited SVG<input name="svg" type="file" accept="image/svg+xml,.svg" required /></label><button type="submit">Validate and reimport</button></form>{handoffMessage && <p className="success" role="status" aria-live="polite">{handoffMessage}</p>}</section>}
     </section>
+    {selected && sourceRevision && <UpscalePanel open={upscaleOpen} projectId={selected} revisionId={sourceRevision.id} onClose={() => setUpscaleOpen(false)} onStarted={started => { setJob(started); setUpscaleOpen(false) }} />}
   </main>
 }

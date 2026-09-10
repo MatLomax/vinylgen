@@ -27,6 +27,15 @@ export type TraceSettings = {
 }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
 export type GenerationStarted = { project: Project; job: Job; expanded_prompt: string }
+export type SelectOption = { value: string; label: string }
+// Pre-flatten generative tiled-detail upscale (see docs/upscale-stage.md section 5); distinct
+// from the deterministic post-flatten `flatten_upscale` factor in PaletteSettings.
+export type UpscaleSettings = {
+  upscaler: string; upscale_factor: number; checkpoint: string; denoise: number
+  controlnet: boolean; controlnet_strength: number; sample_size: number; tile_size: number; seed: number | null
+}
+export type UpscaleOptions = { upscalers: SelectOption[]; checkpoints: SelectOption[]; controlnets: SelectOption[]; defaults: UpscaleSettings; sample_size_max: number }
+export type UpscaleStarted = { project: Project; job: Job }
 export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 
@@ -89,6 +98,10 @@ export const api = {
     body: JSON.stringify({ kind, project_id: projectId, revision_id: revisionId, ...settings }),
   }).then(result<Job>),
   cancelJob: (jobId: string) => fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' }).then(result<Job>),
+  upscaleOptions: (signal?: AbortSignal) => fetch('/api/upscale/options', { signal }).then(result<UpscaleOptions>),
+  upscale: (projectId: string, revisionId: string, settings: UpscaleSettings) => fetch(`/api/projects/${projectId}/revisions/${revisionId}/upscale`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }),
+  }).then(result<UpscaleStarted>),
 }
 
 export function followJob(jobId: string, onJob: (job: Job) => void, onError: (error: Event) => void) {

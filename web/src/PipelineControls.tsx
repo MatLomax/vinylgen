@@ -24,10 +24,10 @@ function DirtyDot({ dirty }: { dirty?: boolean }) {
   return dirty ? <i className="field-dirty" role="img" aria-label="Pending change, not yet applied" title="Pending change — not yet applied" /> : null
 }
 
-function Field({ label, help, dirty, disabled, children }: { label: string; help: string; dirty?: boolean; disabled?: boolean; children: React.ReactNode }) {
+export function Field({ label, help, dirty, disabled, children }: { label: string; help: string; dirty?: boolean; disabled?: boolean; children: React.ReactNode }) {
   return <label className={`setting-field${disabled ? ' is-disabled' : ''}`}><span>{label}<DirtyDot dirty={dirty} /></span>{children}<small>{help}</small></label>
 }
-function NumberField({ label, help, value, onChange, min = 0, max, step = 'any', optional = false, dirty, disabled }: {
+export function NumberField({ label, help, value, onChange, min = 0, max, step = 'any', optional = false, dirty, disabled }: {
   label: string; help: string; value: number | null; onChange: (value: number | null) => void; min?: number; max?: number; step?: number | 'any'; optional?: boolean; dirty?: boolean; disabled?: boolean
 }) {
   // While the field has focus, show the raw text so an empty or partial entry (every digit
@@ -37,6 +37,17 @@ function NumberField({ label, help, value, onChange, min = 0, max, step = 'any',
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
   return <Field label={label} help={help} dirty={dirty} disabled={disabled}><input type="number" min={min} max={max} step={step} value={focused ? text : (value ?? '')} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} onFocus={() => { setFocused(true); setText(value === null ? '' : String(value)) }} onChange={event => { const raw = event.target.value; setText(raw); if (raw === '') { if (optional) onChange(null); return } const parsed = Number(raw); if (!Number.isNaN(parsed)) onChange(parsed) }} onBlur={() => setFocused(false)} /></Field>
+}
+// A continuous-range counterpart to NumberField, for settings better dragged than typed.
+export function Slider({ label, help, value, onChange, min, max, step, format, dirty, disabled }: {
+  label: string; help: string; value: number; onChange: (value: number) => void; min: number; max: number; step: number; format?: (value: number) => string; dirty?: boolean; disabled?: boolean
+}) {
+  return <Field label={label} help={help} dirty={dirty} disabled={disabled}>
+    <div className="slider-control">
+      <input type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={event => onChange(Number(event.target.value))} />
+      <output>{format ? format(value) : value}</output>
+    </div>
+  </Field>
 }
 // A feature sub-group whose master checkbox skips its whole stage when off, greying
 // out the dependent fields. Mirrors the trace stage's cutter-cleanup gating.

@@ -6,12 +6,14 @@ import asyncio
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 
 from .config import WebConfig
+from .comfy_client import ComfyClient, ComfyUnavailable
 from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
@@ -19,17 +21,58 @@ from .editor import apply_edits, editor_state
 from .models import (ApplyLabelEdits, Artifact, CreateProject, CreateRevision, EditorState,
                      GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
-                     StartGeneration, StartJob)
+                     StartGeneration, StartJob, StartUpscale, UpscaleSettings)
 from .store import Store
+from .upscale import (DEFAULT_CONTROLNET_MODEL, SAMPLE_SIZE_MAX, UPSCALER_LANCZOS,
+                     UPSCALER_NONE, TiledRegenProvider, UpscaleProvider)
+
+
+def _comfy_options(client: ComfyClient) -> dict[str, list[str]]:
+    """The installed upscale models, checkpoints and controlnets ComfyUI reports.
+
+    A single ``/object_info`` enumeration shared by the options endpoint and the
+    up-front upscale validation, so both read the same live source of truth.
+    """
+    return {
+        "upscalers": client.object_info_options("UpscaleModelLoader", "model_name"),
+        "checkpoints": client.object_info_options("CheckpointLoaderSimple", "ckpt_name"),
+        "controlnets": client.object_info_options("ControlNetLoader", "control_net_name"),
+    }
+
+
+def _validate_upscale_settings(settings: UpscaleSettings,
+                               options: dict[str, list[str]]) -> str | None:
+    """The reason ``settings`` name a model ComfyUI does not have, or ``None``.
+
+    ``upscaler`` must be ``none``, ``lanczos`` or a listed upscale model;
+    ``checkpoint`` must be a listed checkpoint; and when ``controlnet`` is on the
+    fixed tile-ControlNet model the graph wires must be a listed ControlNet.
+    """
+    if (settings.upscaler not in (UPSCALER_NONE, UPSCALER_LANCZOS)
+            and settings.upscaler not in options["upscalers"]):
+        return (f"Unknown upscaler {settings.upscaler!r}; choose "
+                f"{UPSCALER_NONE!r}, {UPSCALER_LANCZOS!r}, or an installed "
+                "ComfyUI upscale model")
+    if settings.checkpoint not in options["checkpoints"]:
+        return (f"Unknown checkpoint {settings.checkpoint!r}; choose an installed "
+                "ComfyUI checkpoint")
+    if settings.controlnet and DEFAULT_CONTROLNET_MODEL not in options["controlnets"]:
+        return (f"Tile ControlNet model {DEFAULT_CONTROLNET_MODEL!r} is not "
+                "installed in ComfyUI; install it or turn ControlNet off")
+    return None
 
 
 def create_app(config: WebConfig | None = None,
-               generation_providers: dict[str, ImageProvider] | None = None) -> FastAPI:
+               generation_providers: dict[str, ImageProvider] | None = None,
+               *,
+               upscale_provider: UpscaleProvider | None = None,
+               comfy_client_factory: Callable[[], ComfyClient] | None = None) -> FastAPI:
     config = config or WebConfig.from_env()
     store = Store(config)
     providers = generation_providers if generation_providers is not None else {
         "codex": CodexImageProvider()}
-    jobs = JobManager(store, providers)
+    jobs = JobManager(store, providers, upscale_provider or TiledRegenProvider())
+    comfy_client_factory = comfy_client_factory or (lambda: ComfyClient())
     inkscape = InkscapeHandoff(store)
     admission_lock = asyncio.Lock()
 
@@ -109,6 +152,59 @@ def create_app(config: WebConfig | None = None,
                               settings=settings)
         return {"project": project, "job": job,
                 "expanded_prompt": expand_prompt(payload.prompt, settings)}
+
+    @app.post("/api/projects/{project_id}/revisions/{revision_id}/upscale", status_code=202)
+    async def start_upscale(project_id: str, revision_id: str, payload: StartUpscale) -> dict:
+        try:
+            revision = store.get_revision(revision_id)
+        except KeyError as exc:
+            raise missing(exc) from exc
+        if revision["project_id"] != project_id:
+            raise HTTPException(404, f"Resource not found: {revision_id}")
+        project = store.get_project(revision["project_id"])
+
+        # Reject settings that name a model ComfyUI does not have before a job is
+        # queued (spec section 8); an unreachable ComfyUI is a 503 as elsewhere.
+        client = comfy_client_factory()
+        try:
+            options = _comfy_options(client)
+        except ComfyUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        finally:
+            client.close()
+        invalid = _validate_upscale_settings(payload.settings, options)
+        if invalid is not None:
+            raise HTTPException(422, invalid)
+
+        async with admission_lock:
+            if store.active_job_count() >= config.max_active_jobs:
+                raise HTTPException(429, "Too many active jobs; try again after one finishes")
+            job = store.create_job(kind="upscale", project_id=project["id"],
+                                   revision_id=revision_id)
+        jobs.start_upscale(job["id"], parent_revision_id=revision_id, settings=payload.settings)
+        return {"project": project, "job": job}
+
+    @app.get("/api/upscale/options")
+    async def upscale_options() -> dict:
+        def option(value: str) -> dict:
+            return {"value": value, "label": value}
+
+        client = comfy_client_factory()
+        try:
+            options = _comfy_options(client)
+        except ComfyUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+        finally:
+            client.close()
+        return {
+            "upscalers": [{"value": "none", "label": "None"},
+                          {"value": "lanczos", "label": "Lanczos"},
+                          *(option(name) for name in options["upscalers"])],
+            "checkpoints": [option(name) for name in options["checkpoints"]],
+            "controlnets": [option(name) for name in options["controlnets"]],
+            "defaults": UpscaleSettings().model_dump(),
+            "sample_size_max": SAMPLE_SIZE_MAX,
+        }
 
     @app.get("/api/projects/{project_id}", response_model=ProjectDetail)
     async def get_project(project_id: str) -> dict:

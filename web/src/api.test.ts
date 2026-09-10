@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, followJob } from './api'
+import { api, followJob, type UpscaleSettings } from './api'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -88,6 +88,36 @@ describe('abortable project artifact requests', () => {
     expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(21)
   })
 
+})
+
+describe('pre-flatten generative upscale', () => {
+  const SETTINGS: UpscaleSettings = {
+    upscaler: '4xNomos8kSCHAT-S.pth', upscale_factor: 2, checkpoint: 'blue_pencil-XL-v7.0.0.safetensors',
+    denoise: 0.7, controlnet: true, controlnet_strength: 0.4, sample_size: 1024, tile_size: 512, seed: null,
+  }
+
+  it('fetches enumerated upscale options with an abort signal', async () => {
+    const controller = new AbortController()
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      upscalers: [], checkpoints: [], controlnets: [], defaults: SETTINGS, sample_size_max: 1024,
+    })))
+    vi.stubGlobal('fetch', fetch)
+
+    await api.upscaleOptions(controller.signal)
+
+    expect(fetch).toHaveBeenCalledWith('/api/upscale/options', { signal: controller.signal })
+  })
+
+  it('starts an upscale job against the source revision with the complete typed settings', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ project: {}, job: { id: 'job-1' } })))
+    vi.stubGlobal('fetch', fetch)
+
+    await api.upscale('project-1', 'revision-1', SETTINGS)
+
+    expect(fetch).toHaveBeenCalledWith('/api/projects/project-1/revisions/revision-1/upscale', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: SETTINGS }),
+    })
+  })
 })
 
 describe('image import upload', () => {

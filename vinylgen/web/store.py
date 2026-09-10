@@ -340,6 +340,45 @@ class Store:
             incoming.unlink(missing_ok=True)
         return revision_id
 
+    def create_upscaled_source(self, parent_revision_id: str, *, message: str,
+                               settings: dict[str, Any], checkpoint: str, seed: int,
+                               source: BinaryIO) -> str:
+        """Persist a tiled-regen upscale as a new, parent-linked immutable revision.
+
+        Mirrors ``create_generated_source``'s atomic blob/revision write, but links to
+        ``parent_revision_id`` instead of starting a new root and marks every downstream
+        stage stale, since the tiled regen redraws the source pixels. The checkpoint and
+        seed are folded into the persisted settings alongside the rest of the effective
+        upscale configuration, so the exact ComfyUI run is reconstructable from the
+        revision alone.
+        """
+        parent = self.get_revision(parent_revision_id)
+        project = self.get_project(parent["project_id"])
+        revision_id, artifact_id, now = _id(), _id(), _now()
+        effective_settings = {
+            **settings, "checkpoint": checkpoint, "seed": seed,
+            "stale_concerns": ["palette", "trace", "validation", "export"],
+        }
+        sha256, size, incoming = self._stage_incoming(artifact_id, source)
+        storage_path = str(blob_relpath(project["slug"], "upscaled-source", now, "source.png"))
+        try:
+            with self.connection() as db:
+                db.execute(
+                    "INSERT INTO revisions VALUES (?, ?, ?, 'upscaled-source', ?, ?, ?)",
+                    (revision_id, project["id"], parent_revision_id, message,
+                     json.dumps(effective_settings, sort_keys=True, separators=(",", ":")), now),
+                )
+                db.execute(
+                    "INSERT INTO artifacts VALUES (?, ?, 'source', 'source.png', "
+                    "'image/png', ?, ?, ?, ?)",
+                    (artifact_id, revision_id, size, sha256, storage_path, now),
+                )
+                db.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project["id"]))
+                self._finalize(incoming, storage_path)
+        finally:
+            incoming.unlink(missing_ok=True)
+        return revision_id
+
     def get_revision(self, revision_id: str) -> dict[str, Any]:
         row = self._one("SELECT * FROM revisions WHERE id=?", (revision_id,))
         if row is None:

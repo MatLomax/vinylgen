@@ -136,6 +136,7 @@ Read only the references relevant to the current task.
 | [Validation and testing](docs/validation-and-testing.md) | Adding checks, changing connectivity/cleanup, benchmarking, or judging cutter readiness |
 | [SVG tracing specification](docs/svg-tracing-spec.md) | Implementing or changing tracing, SVG geometry, vector cleanup, layer ordering, or trace outputs |
 | [Roadmap and risks](docs/roadmap-and-risks.md) | Planning SVG tracing, physical vinyl handling, generative editing, or the application UI |
+| [Tiled-upscale stage](docs/upscale-stage.md) | Planning or implementing the generative pre-flatten tiled-upscale stage or its ComfyUI integration |
 
 ## Current corpus baseline
 
@@ -156,6 +157,11 @@ default. All nine subjects have been regenerated with colour-area-preserving
 local boundary fallback and current capped-size `traced.png` previews. Conditional
 `trace-fallbacks.png` artifacts identify tightened boundaries. Visual inspection
 and physical cutter testing remain necessary before claiming cutter readiness.
+
+A generative pre-flatten tiled-upscale stage drives the local ComfyUI directly
+so the manual export/upscale/reimport round trip is gone: on a source revision
+the user runs an optional tiled regen that commits an `upscaled-source` child.
+See [docs/upscale-stage.md](docs/upscale-stage.md).
 
 ## Silhouette Studio DXF import scaling (verified 2026-09-01)
 

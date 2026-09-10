@@ -113,6 +113,14 @@ settings retain effective palette and trace defaults and list stale downstream
 concerns; this makes retracing and export provenance explicit without mutating
 an earlier result.
 
+An `upscaled-source` revision is the output of the manual, optional tiled
+generative upscale. It is a parent-linked child of a source revision whose sole
+artifact is a fresh full-frame `source.png` (the ComfyUI tiled-regen redraw of
+the parent's source), and it marks palette, trace, validation, and export stale
+so the deterministic pipeline reruns on the higher-detail image. Its settings
+record the effective upscale configuration, the resolved checkpoint, and the
+seed for auditability; the parent source revision is left untouched.
+
 An `inkscape-edit` revision preserves an arbitrary reimport as the neutral
 `inkscape-svg` artifact and adds its freshly rendered `inkscape-preview` plus
 `inkscape-audit`. It does not relabel one SVG payload as both the semantically

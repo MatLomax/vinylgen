@@ -39,6 +39,37 @@ class SlugLayoutTest(unittest.TestCase):
         self.assertEqual(first["slug"], "sky-whale")
         self.assertEqual(second["slug"], "sky-whale-2")
 
+    def test_upscaled_source_is_a_parent_linked_stale_marking_revision(self) -> None:
+        project = self.store.create_project("Desert Rocket")
+        source = self.store.create_revision(
+            project["id"], parent_revision_id=None, kind="generated-source",
+            message="Generated", settings={})
+        content = b"upscaled-source-bytes"
+
+        revision_id = self.store.create_upscaled_source(
+            source["id"], message="Tiled regen upscale",
+            settings={"upscaler": "4xNomos8kSCHAT-S.pth", "upscale_factor": 2.0},
+            checkpoint="blue_pencil-XL-v7.0.0.safetensors", seed=12345,
+            source=BytesIO(content))
+
+        revision = self.store.get_revision(revision_id)
+        self.assertEqual(revision["parent_revision_id"], source["id"])
+        self.assertEqual(revision["kind"], "upscaled-source")
+        self.assertEqual(revision["settings"]["upscaler"], "4xNomos8kSCHAT-S.pth")
+        self.assertEqual(revision["settings"]["upscale_factor"], 2.0)
+        self.assertEqual(revision["settings"]["checkpoint"], "blue_pencil-XL-v7.0.0.safetensors")
+        self.assertEqual(revision["settings"]["seed"], 12345)
+        self.assertEqual(revision["settings"]["stale_concerns"],
+                         ["palette", "trace", "validation", "export"])
+
+        [artifact] = self.store.list_artifacts(revision_id)
+        self.assertEqual(artifact["kind"], "source")
+        self.assertEqual(artifact["filename"], "source.png")
+        self.assertRegex(artifact["storage_path"],
+                         rf"^files/desert-rocket/{TS}-upscaled-source/source\.png$")
+        stored = self.config.data_dir / artifact["storage_path"]
+        self.assertEqual(stored.read_bytes(), content)
+
     def test_added_artifacts_share_their_revisions_folder(self) -> None:
         project = self.store.create_project("Griffin Castle")
         revision = self.store.create_revision(

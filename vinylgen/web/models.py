@@ -158,6 +158,22 @@ class GenerationSettings(BaseModel):
     rejected_motifs: list[str] = Field(default_factory=list, max_length=20)
 
 
+class UpscaleSettings(BaseModel):
+    upscaler: str = "4xNomos8kSCHAT-S.pth"
+    upscale_factor: float = Field(default=2.0, ge=1.0, le=4.0)
+    checkpoint: str = "blue_pencil-XL-v7.0.0.safetensors"
+    denoise: float = Field(default=0.7, ge=0.0, le=1.0)
+    controlnet: bool = True
+    controlnet_strength: float = Field(default=0.4, ge=0.0, le=2.0)
+    sample_size: int = Field(default=1024, ge=512, le=1024)
+    tile_size: int = 512
+    seed: int | None = None
+
+
+class StartUpscale(BaseModel):
+    settings: UpscaleSettings = Field(default_factory=UpscaleSettings)
+
+
 class StartGeneration(BaseModel):
     prompt: str = Field(min_length=1, max_length=1000)
     project_name: str | None = Field(default=None, max_length=120)

@@ -52,6 +52,22 @@ reference list, and one full-frame `source.png` normalized to the requested
 dimensions. Provider output remains probabilistic; only persistence and output
 dimensions are deterministic.
 
+Tiled generative upscale is a second provider-backed branch between source
+generation and deterministic processing, owned by `vinylgen.web.upscale`. It is
+manual and optional: on a source revision the user runs it explicitly, and it
+drives the local ComfyUI directly over HTTP (`vinylgen.web.comfy_client`,
+`COMFYUI_URL`) to run an upscale model followed by a tile-by-tile diffusion
+redraw under a tile ControlNet, adding real detail the low-resolution generation
+lacks. Because it runs a sampler it is generative, so it commits a new immutable,
+parent-linked `upscaled-source` revision (never mutating its parent) whose
+`source.png` is the redrawn canvas and which marks palette, trace, validation,
+and export stale. It is distinct from the palette stage's `flatten_upscale`,
+which is post-flatten, deterministic, and palette-preserving for trace precision;
+the two compose. Sampling resolution is capped for the deployment's VRAM, invalid
+model selections are rejected before the job is queued, and an unreachable
+ComfyUI fails only this branch, leaving generation and the deterministic pipeline
+untouched.
+
 The personal deployment's provider is `CodexImageProvider`. It launches the
 installed Codex client in a new empty `.tmp/` job directory with `exec`, JSONL
 events, and `--ephemeral` for every request. Codex alone owns its ChatGPT login;
