@@ -140,6 +140,17 @@ export function ancestorTraceIterations(revisions: Revision[], revisionId: strin
   return list
 }
 
+// Every trace writes both SVG variants; the overlap file only differs from the
+// edge-to-edge one when that run asked for solid underlayers or a positive overlap.
+export function tracedSvgKind(trace: Partial<TraceSettings> | undefined): 'traced-overlap' | 'traced-edge' {
+  return trace?.solid_underlayers || (trace?.overlap ?? 0) > 0 ? 'traced-overlap' : 'traced-edge'
+}
+
+export function tracedSvgName(trace: Partial<TraceSettings> | undefined): string {
+  return trace?.solid_underlayers ? 'Traced SVG · solid underlayers'
+    : (trace?.overlap ?? 0) > 0 ? `Traced SVG · ${trace!.overlap} ${trace!.width_mm || trace!.height_mm ? 'mm' : 'px'} overlap` : 'Traced SVG · edge to edge'
+}
+
 function formatElapsed(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
@@ -233,7 +244,9 @@ export default function App() {
   const patchedFlattened = useRef<{ revision: string; pixels: Pixels } | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
-  const tracedSvg = artifacts.find(row => row.kind === 'traced-overlap')
+  // The settings that produced the shown image, recorded on its nearest ancestor.
+  const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
+  const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(pipelineBaseline.trace))
   const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
     let node = revisions.find(row => row.id === revision)
     const seen = new Set<string>()
@@ -267,7 +280,6 @@ export default function App() {
   // The baseline is the settings that produced the shown image (recorded on the
   // nearest ancestor revision), falling back to defaults before the step has run.
   // Fields diverging from it are flagged as pending edits.
-  const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
   const baselinePalette = useMemo<PaletteSettings>(() => ({ ...DEFAULT_PALETTE_SETTINGS, ...pipelineBaseline.palette }), [pipelineBaseline])
   const baselineTrace = useMemo<TraceSettings>(() => ({ ...DEFAULT_TRACE_SETTINGS, ...pipelineBaseline.trace }), [pipelineBaseline])
   const paletteIterations = useMemo(() => ancestorPaletteIterations(revisions, current?.id || null), [revisions, current?.id])
@@ -613,6 +625,7 @@ export default function App() {
   }, [overlayOperation])
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
     .map(layer => TRACED_SVG_KINDS.has(artifacts.find(row => row.id === layer.id)?.kind ?? '') && flattened ? { ...layer, sizeFrom: flattened.id } : layer)
+    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(pipelineBaseline.trace) } : layer)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
     url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',

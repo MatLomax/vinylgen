@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
-import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash } from './App'
+import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -16,7 +16,7 @@ vi.mock('./api', async importOriginal => {
   const original = await importOriginal<typeof import('./api')>()
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
-type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; layers?: { id: string; sizeFrom?: string }[] }
+type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; layers?: { id: string; name: string; sizeFrom?: string }[] }
 const workspaceProps = vi.hoisted(() => ({ current: null as CapturedWorkspace | null }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: CapturedWorkspace) => { workspaceProps.current = props; return null } }))
 const editorProps = vi.hoisted(() => ({ current: null as { onCommit: (id: string) => void } | null }))
@@ -78,6 +78,22 @@ describe('artifact to workspace layer integration', () => {
   it('excludes non-visual audit and inspection artifacts', () => {
     expect(artifactToWorkspaceLayer(artifact('trace-audit', 'application/json'))).toBeNull()
     expect(artifactToWorkspaceLayer(artifact('trace-inspection', 'text/html'))).toBeNull()
+  })
+})
+
+describe('traced SVG variant', () => {
+  it('shows the overlap file only when the run asked for overlap or solid underlayers', () => {
+    expect(tracedSvgKind(undefined)).toBe('traced-edge')
+    expect(tracedSvgKind({ overlap: 0, solid_underlayers: false })).toBe('traced-edge')
+    expect(tracedSvgKind({ overlap: 1.5, solid_underlayers: false })).toBe('traced-overlap')
+    expect(tracedSvgKind({ overlap: 0, solid_underlayers: true })).toBe('traced-overlap')
+  })
+
+  it('names the variant with the overlap in the units the run used', () => {
+    expect(tracedSvgName({ overlap: 0, solid_underlayers: false })).toBe('Traced SVG · edge to edge')
+    expect(tracedSvgName({ overlap: 0, solid_underlayers: true })).toBe('Traced SVG · solid underlayers')
+    expect(tracedSvgName({ overlap: 2, solid_underlayers: false, width_mm: 300 })).toBe('Traced SVG · 2 mm overlap')
+    expect(tracedSvgName({ overlap: 2, solid_underlayers: false, width_mm: null, height_mm: null })).toBe('Traced SVG · 2 px overlap')
   })
 })
 
@@ -651,7 +667,7 @@ describe('upload size limit', () => {
 
 describe('landing on the newly produced artwork', () => {
   const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette' }
-  const traceRevision: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace' }
+  const traceRevision: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', settings: { trace: { overlap: 0, solid_underlayers: false } } }
   const editRevision: Revision = { ...revision, id: 'edit-1', parent_revision_id: 'palette-1', kind: 'label-edit' }
   const pressedView = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name }).getAttribute('aria-pressed')
 
@@ -682,12 +698,13 @@ describe('landing on the newly produced artwork', () => {
 
   it('traces on the shared canvas and shows the traced SVG once a trace run succeeds', async () => {
     const finish = followWithUpdates()
-    const svg = artifact('traced-overlap', 'image/svg+xml')
+    const svg = artifact('traced-edge', 'image/svg+xml')
+    const overlapSvg = artifact('traced-overlap', 'image/svg+xml')
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
       .mockResolvedValue({ ...project, revisions: [traceRevision, paletteRevision, revision] })
     mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'trace-1'
-      ? [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), svg, artifact('traced-preview')]
+      ? [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), overlapSvg, svg, artifact('traced-preview')]
       : [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')])
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
     render(createElement((await import('./App')).default))
@@ -704,8 +721,10 @@ describe('landing on the newly produced artwork', () => {
     await finish({ ...queuedJob, kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' })
 
     await vi.waitFor(() => expect(pressedView('Traced')).toBe('true'))
-    // The Traced view renders the vector layers themselves, not the PNG preview.
+    // The Traced view renders the variant the run produced (edge to edge with no overlap
+    // or solid underlayers), not the PNG preview.
     expect(workspaceProps.current?.preferredLayerId).toBe(svg.id)
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === svg.id)?.name).toBe('Traced SVG · edge to edge')
     // Traced SVGs register on the flattened pixel grid; rasters keep their own size.
     expect(workspaceProps.current?.layers?.find(layer => layer.id === svg.id)?.sizeFrom).toBe('flattened-id')
     expect(workspaceProps.current?.layers?.find(layer => layer.id === 'source-id')?.sizeFrom).toBeUndefined()
@@ -713,7 +732,7 @@ describe('landing on the newly produced artwork', () => {
 
   it('keeps the Palette canvas on the editable image when a trace finishes there', async () => {
     const finish = followWithUpdates()
-    const svg = artifact('traced-overlap', 'image/svg+xml')
+    const svg = artifact('traced-edge', 'image/svg+xml')
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
       .mockResolvedValue({ ...project, revisions: [traceRevision, paletteRevision, revision] })
@@ -733,6 +752,20 @@ describe('landing on the newly produced artwork', () => {
     await vi.waitFor(() => expect(pressedView('Traced')).toBe('false'))
     expect(pressedView('Flattened')).toBe('true')
     expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id')
+  })
+
+  it('shows the overlap SVG for a run with solid underlayers', async () => {
+    const solidRevision: Revision = { ...traceRevision, settings: { trace: { overlap: 0, solid_underlayers: true } } }
+    const edge = artifact('traced-edge', 'image/svg+xml'), overlap = artifact('traced-overlap', 'image/svg+xml')
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [solidRevision, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), edge, overlap])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-1`)
+    render(createElement((await import('./App')).default))
+    await screen.findAllByRole('group', { name: 'Artwork view' })
+    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Traced' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe(overlap.id))
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === overlap.id)?.name).toBe('Traced SVG · solid underlayers')
   })
 
   it('shows the edited image once a palette edit commits', async () => {
