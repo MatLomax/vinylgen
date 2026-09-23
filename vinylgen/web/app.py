@@ -23,6 +23,7 @@ from .models import (ApplyLabelEdits, Artifact, CreateProject, CreateRevision, E
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob, StartUpscale, UpscaleSettings)
 from .store import Store
+from .trace_preview import TracePreviewService, trace_preview_router
 from .upscale import (DEFAULT_CONTROLNET_MODEL, SAMPLE_SIZE_MAX, UPSCALER_LANCZOS,
                      UPSCALER_NONE, TiledRegenProvider, UpscaleProvider)
 
@@ -74,16 +75,23 @@ def create_app(config: WebConfig | None = None,
     jobs = JobManager(store, providers, upscale_provider or TiledRegenProvider())
     comfy_client_factory = comfy_client_factory or (lambda: ComfyClient())
     inkscape = InkscapeHandoff(store)
+    trace_previews = TracePreviewService(store)
     admission_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Compile the tracer's kernels on the preview thread so the first live
+        # preview is warm; startup and health do not wait for it.
+        trace_previews.warm_up()
         yield
+        trace_previews.shutdown()
         await jobs.shutdown()
 
     app = FastAPI(title="Vinylgen", version="0.1.0", lifespan=lifespan)
     app.state.store = store
     app.state.jobs = jobs
+    app.state.trace_previews = trace_previews
+    app.include_router(trace_preview_router(trace_previews))
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

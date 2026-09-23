@@ -43,6 +43,9 @@ from vinylgen.validation import (
 # not adjacency under the authoritative four-connectivity model.
 _UNDERLAYER_ADJACENCY_EPS = 1e-9
 
+# The maximum contour deviation (px of the traced image) when none is configured.
+DEFAULT_MAX_DEVIATION_PX = 2.0
+
 
 def _partition_polygons(geometry) -> list:
     if geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
@@ -182,6 +185,66 @@ def apply_order_override(inferred: list[int], requested: list[str] | None,
     return [*specified, *missing], specified
 
 
+def underlayer_geometry(partition: dict[int, object], order: list[int], *,
+                        solid_underlayers: bool, overlap_px: float,
+                        canvas) -> dict[int, tuple[object, bool]]:
+    """The overlap-variant geometry of each layer, derived from the fixed partition.
+
+    A solid underlayer backs only the higher shapes this colour actually touches:
+    extending it beneath non-adjacent colours would stack identical shapes with no
+    physical purpose, so each higher partition contributes only the components
+    sharing a boundary of positive length with this colour's region. Without solid
+    underlayers, every layer but the top one grows by the overlap buffer, clipped to
+    ``canvas``. Each value is ``(geometry, stacked)``; the mapping is empty when the
+    overlap variant equals the edge variant. These are independent GEOS operations
+    that release the GIL, so they run on threads.
+    """
+    def _solid_geometry(position: int) -> tuple[object, bool]:
+        base = partition[order[position]]
+        stacked = [base]
+        for higher in range(position + 1, len(order)):
+            for shape in _partition_polygons(partition[order[higher]]):
+                if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
+                    stacked.append(shape)
+        solid = len(stacked) > 1
+        return (unary_union(stacked) if solid else base), solid
+
+    def _buffered_geometry(position: int) -> tuple[object, bool]:
+        return partition[order[position]].buffer(overlap_px, join_style=1).intersection(canvas), True
+
+    if not (solid_underlayers or overlap_px > 0):
+        return {}
+    builder = _solid_geometry if solid_underlayers else _buffered_geometry
+    positions = [position for position in range(len(order))
+                 if solid_underlayers or position < len(order) - 1]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {order[position]: executor.submit(builder, position)
+                   for position in positions}
+        return {index: future.result() for index, future in futures.items()}
+
+
+def overlap_layer_components(position: int, order: list[int], edge_components: list[dict],
+                             layer_geometry: dict[int, tuple[object, bool]], boundary_track,
+                             chain_fits: dict, settings: TraceSettings, overlap_px: float,
+                             fitter: SharedChainFitter) -> tuple[list[dict], str]:
+    """The overlap-variant components of the layer at ``position`` and how they were built."""
+    index = order[position]
+    if settings.solid_underlayers:
+        overlap_geometry, solid = layer_geometry[index]
+        # Reassemble the solid outline from the same once-fitted chains, dissolving
+        # only the interfaces it swallows. Re-fitting the union instead (as an
+        # independent curve pass) is what opened gaps between adjacent underlayers.
+        if solid:
+            return (region_components(boundary_track, chain_fits, overlap_geometry),
+                    "solid stacked underlayer")
+        return edge_components, "canonical shared-chain fit"
+    if overlap_px > 0 and position < len(order) - 1:
+        overlap_geometry, _ = layer_geometry[index]
+        return (geometry_components(overlap_geometry, settings, fitter=fitter),
+                "shared partition plus lower-layer overlap buffer")
+    return edge_components, "canonical shared-chain fit"
+
+
 def write_trace_html(subject_dir: Path, width: int, height: int) -> None:
     """Write a self-contained overlay viewer with inline PNG and SVG data."""
     svg = (subject_dir / "traced-overlap.svg").read_text()
@@ -221,6 +284,36 @@ document.querySelector('#opacity').addEventListener('input', event => {{
 </html>
 """
     (subject_dir / "trace.html").write_text(document)
+
+
+# Transparent inspection overlays share the traced pixel grid and carry only their
+# marks, so a viewer can stack them over the SVG without hiding it.
+MISSED_DETAIL_RGBA = (220, 35, 35, 255)
+TIGHTENED_BOUNDARY_RGBA = (0, 200, 255, 255)
+TIGHTENED_BOUNDARY_HALO_RGBA = (12, 14, 13, 190)
+
+
+def missed_detail_overlay(missing: np.ndarray) -> Image.Image:
+    """An RGBA image the size of ``missing``: opaque red on each missed source pixel, clear elsewhere."""
+    overlay = np.zeros((*missing.shape, 4), dtype=np.uint8)
+    overlay[missing] = MISSED_DETAIL_RGBA
+    return Image.fromarray(overlay, "RGBA")
+
+
+def tightened_boundary_overlay(chains: list[list[tuple[float, float]]], width: int,
+                               height: int) -> Image.Image:
+    """An RGBA ``width`` x ``height`` image marking each tightened boundary chain.
+
+    Every chain is a cyan stroke over a dark halo, so it reads against any vinyl
+    colour beneath it; pixels off the marks stay fully transparent.
+    """
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for points in chains:
+        draw.line(points, fill=TIGHTENED_BOUNDARY_HALO_RGBA, width=4, joint="curve")
+    for points in chains:
+        draw.line(points, fill=TIGHTENED_BOUNDARY_RGBA, width=2, joint="curve")
+    return overlay
 
 
 
@@ -298,7 +391,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # the traced image; only overlap and the cutter-cleanup thresholds are
     # physical and converted through units_per_pixel.
     if settings.max_deviation is None:
-        settings.max_deviation = 2.0
+        settings.max_deviation = DEFAULT_MAX_DEVIATION_PX
     overlap_px = settings.overlap / units_per_pixel
     tracing_settings = TraceSettings(**asdict(settings))
     warnings = list(order_warnings)
@@ -313,6 +406,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     if fault is not None:
         raise RuntimeError(fault)
     fallback_image = subject_dir / "trace-fallbacks.png"
+    fallback_overlay = subject_dir / "trace-fallbacks-overlay.png"
     semantic_render = scratch / f"{subject_dir.name}-semantic-validation.png"
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
     palette_rgb = segmentation.palette_rgb.astype(np.int32)
@@ -321,36 +415,10 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # measured once per colour rather than on every recovery pass.
     raster_component_sizes = {index: component_sizes(working == index) for index in order}
     # The overlap-variant geometry of each layer derives from the fixed partition
-    # alone, so it is built once here. A solid underlayer backs only the higher
-    # shapes this colour actually touches: extending it beneath non-adjacent
-    # colours would stack identical shapes with no physical purpose, so each
-    # higher partition contributes only the components sharing a boundary of
-    # positive length with this colour's region. Without solid underlayers, a
-    # lower layer grows by the overlap buffer, clipped to the canvas. These are
-    # independent GEOS operations that release the GIL, so they run on threads.
-    layer_geometry: dict[int, tuple[object, bool]] = {}
-
-    def _solid_geometry(position: int) -> tuple[object, bool]:
-        base = partition[order[position]]
-        stacked = [base]
-        for higher in range(position + 1, len(order)):
-            for shape in _partition_polygons(partition[order[higher]]):
-                if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
-                    stacked.append(shape)
-        solid = len(stacked) > 1
-        return (unary_union(stacked) if solid else base), solid
-
-    def _buffered_geometry(position: int) -> tuple[object, bool]:
-        return partition[order[position]].buffer(overlap_px, join_style=1).intersection(canvas), True
-
-    if settings.solid_underlayers or overlap_px > 0:
-        builder = _solid_geometry if settings.solid_underlayers else _buffered_geometry
-        positions = [position for position in range(len(order))
-                     if settings.solid_underlayers or position < len(order) - 1]
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {order[position]: executor.submit(builder, position)
-                       for position in positions}
-            layer_geometry = {index: future.result() for index, future in futures.items()}
+    # alone, so it is built once here.
+    layer_geometry = underlayer_geometry(
+        partition, order, solid_underlayers=settings.solid_underlayers,
+        overlap_px=overlap_px, canvas=canvas)
 
     # One fitter persists across every recovery pass. Its cache key encodes the
     # per-chain settings recovery varies, so an unchanged chain returns from cache
@@ -383,23 +451,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             edge_stats["construction"] = "canonical shared-chain fit"
             edge_stats["source_colour_components"] = len(raster_component_sizes[index])
             variant_stats["edge"].append(edge_stats)
-            if settings.solid_underlayers:
-                overlap_geometry, solid = layer_geometry[index]
-                # Reassemble the solid outline from the same once-fitted chains, dissolving
-                # only the interfaces it swallows. Re-fitting the union instead (as an
-                # independent curve pass) is what opened gaps between adjacent underlayers.
-                overlap_components = (region_components(boundary_track, chain_fits, overlap_geometry)
-                                     if solid else edge_components)
-                construction = ("solid stacked underlayer" if solid
-                                else "canonical shared-chain fit")
-            elif overlap_px > 0 and position < len(order) - 1:
-                overlap_geometry, _ = layer_geometry[index]
-                overlap_components = geometry_components(overlap_geometry, tracing_settings,
-                                                         fitter=shared_fitter)
-                construction = "shared partition plus lower-layer overlap buffer"
-            else:
-                overlap_components = edge_components
-                construction = "canonical shared-chain fit"
+            overlap_components, construction = overlap_layer_components(
+                position, order, edge_components, layer_geometry, boundary_track,
+                chain_fits, tracing_settings, overlap_px, shared_fitter)
             overlap_stats = add_layer(roots["overlap"], palette[index], overlap_components, "",
                                       subject_dir.name, "overlap", 0.0)
             overlap_stats["construction"] = construction
@@ -553,12 +607,17 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             colour = tuple(palette[colours[0]]["rgb"]) if colours else (0, 0, 0)
             draw.line(chain.points, fill=colour, width=2, joint="curve")
         faded.save(fallback_image)
+        tightened_boundary_overlay(
+            [by_identity[identity].points for identity in dense_fallbacks],
+            width, height).save(fallback_overlay)
         warnings.append(
             f"{len(dense_fallbacks)} shared boundaries required a reported dense fallback; "
             f"see {fallback_image.name}")
     else:
         fallback_image.unlink(missing_ok=True)
+        fallback_overlay.unlink(missing_ok=True)
     semantic_inspection = subject_dir / "trace-semantic-warnings.png"
+    semantic_overlay = subject_dir / "trace-missed-details-overlay.png"
     if not validations["semantic"]["passed"]:
         missing = semantic_warning_mask(
             original, vector_rgb, maximum_deviation=tolerance,
@@ -568,11 +627,13 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         overlay = np.asarray(faded).copy()
         overlay[missing] = (220, 35, 35)
         Image.fromarray(overlay).save(semantic_inspection)
+        missed_detail_overlay(missing).save(semantic_overlay)
         warnings.append(
             f"semantic feature audit found {int(missing.sum())} source pixels beyond "
             f"the {tolerance:g}px deviation limit; see {semantic_inspection.name}")
     else:
         semantic_inspection.unlink(missing_ok=True)
+        semantic_overlay.unlink(missing_ok=True)
     for variant, layers in variant_stats.items():
         if sum(layer["nodes"] for layer in layers) > settings.soft_document_nodes:
             warnings.append(f"traced-{variant}.svg exceeds the soft document-node limit")

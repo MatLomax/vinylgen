@@ -17,7 +17,7 @@ vi.mock('./api', async importOriginal => {
   const original = await importOriginal<typeof import('./api')>()
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
-type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; layers?: { id: string; name: string; sizeFrom?: string }[] }
+type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; loading?: boolean; layers?: { id: string; name: string; role?: string; sizeFrom?: string }[] }
 const workspaceProps = vi.hoisted(() => ({ current: null as CapturedWorkspace | null }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: CapturedWorkspace) => { workspaceProps.current = props; return null } }))
 const editorProps = vi.hoisted(() => ({ current: null as { onCommit: (id: string) => void } | null }))
@@ -61,10 +61,17 @@ function artifact(kind: string, mediaType = 'image/png'): Artifact {
 }
 
 describe('artifact to workspace layer integration', () => {
+  it.each([
+    ['trace-missed-details-overlay', 'Missed source details (red)'],
+    ['trace-fallbacks-overlay', 'Tightened boundaries'],
+  ])('maps the transparent %s to a labelled toggleable overlay', (kind, label) => {
+    expect(artifactToWorkspaceLayer(artifact(kind))).toMatchObject({ role: 'overlay', name: label })
+  })
+
   it.each(['trace-fallbacks', 'trace-semantic-warnings'])(
-    'maps the %s inspection raster to a toggleable overlay',
+    'never offers the opaque %s audit image as a layer',
     kind => {
-      expect(artifactToWorkspaceLayer(artifact(kind))?.role).toBe('overlay')
+      expect(artifactToWorkspaceLayer(artifact(kind))).toBeNull()
     },
   )
 
@@ -244,8 +251,22 @@ describe('pipeline setting provenance', () => {
     expect(inheritedPipelineSettings(revisions, 'trace')).toEqual({
       palette: { initial_colours: 9 }, trace: { overlap: 3 }, cleanup: { width_mm: 250, cleanup: false },
     })
-    // Both recorded cleanups are steps of the Cleanup form, newest first.
-    expect(ancestorCleanupIterations(revisions, 'trace').map(item => [item.width_mm, item.cleanup])).toEqual([[250, false], [400, true]])
+    // Only the real cleanup run is a step of the Cleanup form; the legacy trace run's
+    // embedded values are its baseline (asserted above), never a countable iteration.
+    expect(ancestorCleanupIterations(revisions, 'trace').map(item => [item.width_mm, item.cleanup])).toEqual([[250, false]])
+  })
+
+  it('counts only real cleanup revisions as Cleanup iterations, never a pre-cleanup-stage trace run', () => {
+    const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: {} } }
+    const legacy = { ...revision, id: 'legacy', parent_revision_id: 'palette', kind: 'trace', settings: { trace: { overlap: 1, width_mm: 400, cleanup: true } } }
+    expect(ancestorCleanupIterations([legacy, palette], 'legacy')).toEqual([])
+  })
+
+  it('counts each real cleanup revision along the ancestry as a Cleanup iteration, newest first', () => {
+    const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: {} } }
+    const older = { ...revision, id: 'c1', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 200 } } }
+    const newer = { ...revision, id: 'c2', parent_revision_id: 'c1', kind: 'cleanup', settings: { cleanup: { width_mm: 300 } } }
+    expect(ancestorCleanupIterations([newer, older, palette], 'c2').map(item => item.width_mm)).toEqual([300, 200])
   })
 
   it('finds the active cleanup until a flatten or edit marks it stale', () => {
@@ -980,6 +1001,56 @@ describe('stepping through trace runs', () => {
     expect(storedDraft()).toBeUndefined()
   })
 
+  it('flags the canvas as loading while a stepped run\'s artifacts are fetched, keeping the shown layers', async () => {
+    const pending: Record<string, (rows: Artifact[]) => void> = {}
+    await openAtNewestRun()
+    mocks.effectiveArtifacts.mockImplementation((id: string) => new Promise<Artifact[]>(resolve => { pending[id] = resolve }))
+    await vi.waitFor(() => expect(workspaceProps.current?.loading).toBe(false))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await vi.waitFor(() => expect(pending['trace-1']).toBeDefined())
+    expect(workspaceProps.current?.loading).toBe(true)
+    // The newest run's layers stay on the canvas under the spinner.
+    expect(workspaceProps.current?.layers?.some(layer => layer.id === 'trace-2-edge')).toBe(true)
+    await act(async () => pending['trace-1']([artifact('source'), artifact('flattened'), ...svgs('trace-1')]))
+    await vi.waitFor(() => expect(workspaceProps.current?.loading).toBe(false))
+    expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-overlap')
+  })
+
+  it('offers the transparent audit overlays as labelled toggles and never the opaque audit images', async () => {
+    const audits = [
+      { ...artifact('trace-fallbacks'), id: 'opaque-fallbacks' },
+      { ...artifact('trace-semantic-warnings'), id: 'opaque-semantic' },
+      { ...artifact('trace-fallbacks-overlay'), id: 'fallbacks-overlay' },
+      { ...artifact('trace-missed-details-overlay'), id: 'missed-overlay' },
+    ]
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), ...svgs('trace-2'), ...audits])
+    mocks.inkscapeHandoff.mockResolvedValue({ exports: [], shared_folder_enabled: false, guidance: '' })
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Trace canvas'))
+    await vi.waitFor(() => expect(workspaceProps.current?.layers?.some(layer => layer.id === 'missed-overlay')).toBe(true))
+    const offered = (layers: CapturedWorkspace['layers']) => (layers ?? []).filter(layer => layer.role === 'overlay').map(layer => layer.name).sort()
+    const ids = () => (workspaceProps.current?.layers ?? []).map(layer => layer.id)
+    expect(offered(workspaceProps.current?.layers)).toEqual(['Missed source details (red)', 'Tightened boundaries'])
+    expect(ids()).not.toContain('opaque-fallbacks')
+    expect(ids()).not.toContain('opaque-semantic')
+
+    // Export's canvas and its inspector build on the same layers.
+    workspaceProps.current = null
+    fireEvent.click(screen.getByRole('tab', { name: 'Export' }))
+    const exportImages = [...document.querySelectorAll('.artwork-preview img')].map(node => node.getAttribute('src'))
+    expect(exportImages).not.toContain('/artifacts/trace-fallbacks')
+    expect(exportImages).not.toContain('/artifacts/trace-semantic-warnings')
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect image' }))
+    await vi.waitFor(() => expect(workspaceProps.current).not.toBeNull())
+    expect(ids()).not.toContain('opaque-fallbacks')
+    expect(ids()).not.toContain('opaque-semantic')
+    expect(offered((workspaceProps.current as CapturedWorkspace | null)?.layers)).toEqual(['Missed source details (red)', 'Tightened boundaries'])
+  })
+
 })
 
 describe('cleanup stage', () => {
@@ -1007,6 +1078,16 @@ describe('cleanup stage', () => {
     const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label'))
     expect(tabs.slice(tabs.indexOf('Edit'), tabs.indexOf('Edit') + 3)).toEqual(['Edit', 'Cleanup', 'Trace'])
     expect(screen.getByRole('tab', { name: 'Cleanup' }).querySelector('svg.lucide-eraser')).toBeTruthy()
+  })
+
+  it('renders the shared canvas for the Cleanup stage, offering the cleaned and pre-cleanup rasters', async () => {
+    serve([cleanupRevision, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=cleanup-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.editorMode).toBe(true))
+    expect(workspaceProps.current?.canvasLabel).toBe('Cleanup canvas')
+    await vi.waitFor(() => expect(workspaceProps.current?.layers?.some(layer => layer.id === 'flattened-cleaned')).toBe(true))
+    expect(workspaceProps.current?.layers?.some(layer => layer.id === 'flattened-id')).toBe(true)
   })
 
   it('runs cleanup with the form settings, spends its draft, and lands on the Cleaned view', async () => {
@@ -1190,7 +1271,9 @@ describe('cleanup stage', () => {
     expect((within(cleanupPanel).getByRole('checkbox', { name: /Enable cutter cleanup/ }) as HTMLInputElement).checked).toBe(true)
     // Recorded values, not pending edits.
     expect(width.closest('label')?.querySelector('.field-dirty')).toBeNull()
-    expect(within(cleanupPanel).getByText('Iteration 1 of 1')).toBeTruthy()
+    // The legacy trace run only supplies the form's baseline; it is not a Cleanup
+    // iteration, and no cleanup has ever actually run.
+    expect(within(cleanupPanel).getByText('No past runs')).toBeTruthy()
     // The run's own overlap stays on Trace, and a new trace sends none of the moved fields.
     const tracePanel = screen.getByRole('tabpanel', { name: 'Trace' })
     expect((within(tracePanel).getByLabelText(/Layer overlap/) as HTMLInputElement).value).toBe('2')
@@ -1284,5 +1367,492 @@ describe('legacy curve optimisation settings', () => {
   it('states the traced image size from the editor state', async () => {
     const panel = await openTrace([currentRun])
     expect(await within(panel).findByText('Traced image: 4344 × 1448 px')).toBeTruthy()
+  })
+})
+
+describe('the before-cleanup raster across trace runs', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {} } }
+  const cleanupRevision: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02', settings: { cleanup: { width_mm: 300 }, stale_concerns: ['trace', 'validation', 'export'] } }
+  const run1: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'cleanup-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 0 } } }
+  const run2: Revision = { ...revision, id: 'trace-2', parent_revision_id: 'trace-1', kind: 'trace', created_at: '2026-01-04', settings: { trace: { overlap: 0 } } }
+  const cleaned = { ...artifact('flattened'), id: 'flattened-cleaned', revision_id: 'cleanup-1', download_url: '/artifacts/flattened-cleaned' }
+  const uncleaned = { ...artifact('flattened'), revision_id: 'palette-1' }
+  const pressedView = () => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Flattened' }).getAttribute('aria-pressed')
+
+  it('keeps the Flattened view on the uncleaned raster, fetched once, while moving between runs below the same cleanup', async () => {
+    // Every preferred layer the canvas is ever handed, not just the settled one.
+    const preferred: (string | undefined)[] = []
+    let captured: CapturedWorkspace | null = null
+    const shown = () => captured as CapturedWorkspace | null
+    Object.defineProperty(workspaceProps, 'current', { configurable: true, get: () => captured, set: value => { captured = value; if (value) preferred.push(value.preferredLayerId) } })
+    try {
+      const pendingRuns: Record<string, () => void> = {}
+      mocks.projects.mockResolvedValue([project])
+      mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, cleanupRevision, paletteRevision, revision] })
+      mocks.effectiveArtifacts.mockImplementation(async (id: string, _signal?: AbortSignal, options?: { beforeCleanup?: boolean }) => {
+        if (options?.beforeCleanup) return [artifact('source'), uncleaned]
+        const rows = [artifact('source'), cleaned, artifact('segmentation', 'application/octet-stream'),
+          { ...artifact('traced-edge', 'image/svg+xml'), id: `${id}-edge`, revision_id: id }]
+        if (id === 'trace-1') await new Promise<void>(resolve => { pendingRuns[id] = resolve })
+        return rows
+      })
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
+      render(createElement((await import('./App')).default))
+      const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+      await within(panel).findByText('Iteration 2 of 2')
+      await screen.findAllByRole('group', { name: 'Artwork view' })
+      fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Flattened' }))
+      await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flattened-id'))
+      await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+      const lookups = () => mocks.effectiveArtifacts.mock.calls.filter(call => call[2]?.beforeCleanup).length
+      expect(lookups()).toBe(1)
+      preferred.length = 0
+
+      // Navigating to the older run (stepping would also switch to the Traced view).
+      act(() => {
+        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-1`)
+        window.dispatchEvent(new HashChangeEvent('hashchange'))
+      })
+      await vi.waitFor(() => expect(pendingRuns['trace-1']).toBeDefined())
+      expect(shown()?.loading).toBe(true)
+      await act(async () => pendingRuns['trace-1']())
+      await within(panel).findByText('Iteration 1 of 2')
+      await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+      // The same cleanup's raster needs no second lookup, and the Flattened view never
+      // showed (or fetched) the cleaned raster in between.
+      expect(lookups()).toBe(1)
+      expect(preferred.length).toBeGreaterThan(0)
+      expect(pressedView()).toBe('true')
+      expect(preferred).toEqual(preferred.map(() => 'flattened-id'))
+      expect(shown()?.layers?.some(layer => layer.id === 'flattened-id')).toBe(true)
+    } finally {
+      Object.defineProperty(workspaceProps, 'current', { configurable: true, writable: true, value: null })
+    }
+  })
+})
+
+describe('shown artwork stays consistent across cleanups', () => {
+  const stale = ['cleanup', 'trace', 'validation', 'export']
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {}, stale_concerns: stale } }
+  const cleanup1: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02', settings: { cleanup: { width_mm: 300 }, stale_concerns: ['trace', 'validation', 'export'] } }
+  const trace1: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'cleanup-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 0 } } }
+  // A re-flatten after the first cleanup, then a second cleanup of that new raster.
+  const palette2: Revision = { ...revision, id: 'palette-2', parent_revision_id: 'cleanup-1', kind: 'palette', created_at: '2026-01-04', settings: { palette: {}, stale_concerns: stale } }
+  const cleanup2: Revision = { ...revision, id: 'cleanup-2', parent_revision_id: 'palette-2', kind: 'cleanup', created_at: '2026-01-05', settings: { cleanup: { width_mm: 300 }, stale_concerns: ['trace', 'validation', 'export'] } }
+  // An area edit of the first cleanup's input, then a cleanup of the edited raster.
+  const edit1: Revision = { ...revision, id: 'edit-1', parent_revision_id: 'cleanup-1', kind: 'label-edit', created_at: '2026-01-06', settings: { stale_concerns: stale } }
+  const cleanup3: Revision = { ...revision, id: 'cleanup-3', parent_revision_id: 'edit-1', kind: 'cleanup', created_at: '2026-01-07', settings: { cleanup: { width_mm: 300 }, stale_concerns: ['trace', 'validation', 'export'] } }
+  const raster = (id: string, owner: string) => ({ ...artifact('flattened'), id, revision_id: owner, download_url: `/artifacts/${id}` })
+  const segmentation = () => artifact('segmentation', 'application/octet-stream')
+  const main: Record<string, Artifact[]> = {
+    'cleanup-1': [artifact('source'), raster('clean-1', 'cleanup-1'), segmentation()],
+    'trace-1': [artifact('source'), raster('clean-1', 'cleanup-1'), segmentation()],
+    'palette-2': [artifact('source'), raster('flat-Q', 'palette-2'), segmentation()],
+    'cleanup-2': [artifact('source'), raster('clean-2', 'cleanup-2'), segmentation()],
+    'edit-1': [artifact('source'), raster('flat-E', 'edit-1'), segmentation()],
+    'cleanup-3': [artifact('source'), raster('clean-3', 'cleanup-3'), segmentation()],
+  }
+  const before: Record<string, Artifact[]> = {
+    'cleanup-1': [artifact('source'), raster('flat-P', 'palette-1')],
+    'cleanup-2': [artifact('source'), raster('flat-Q', 'palette-2')],
+    'cleanup-3': [artifact('source'), raster('flat-E', 'edit-1')],
+  }
+  // A revision's own artifacts: the flatten's original raster.
+  const own: Record<string, Artifact[]> = { 'palette-1': [artifact('source'), raster('flat-P', 'palette-1')] }
+  // Requests to hold (`main:<id>`, `before:<id>` or `own:<id>`) until released, or to
+  // fail. Like fetch, a request rejects once its signal aborts, except `late` ones,
+  // whose response was already on its way.
+  let hold: Set<string>, fail: Set<string>, late: Set<string>, release: Record<string, () => void>
+  async function respond<T>(key: string, signal: AbortSignal | undefined, value: () => T): Promise<T> {
+    const aborted = () => new DOMException('The operation was aborted.', 'AbortError')
+    if (hold.has(key)) await new Promise<void>((resolve, reject) => {
+      release[key] = resolve
+      if (!late.has(key)) signal?.addEventListener('abort', () => reject(aborted()), { once: true })
+    })
+    if (signal?.aborted && !late.has(key)) throw aborted()
+    if (fail.has(key)) { fail.delete(key); throw new Error('lookup failed') }
+    return value()
+  }
+  const sizes: Record<string, [number, number]> = {
+    'cleanup-1': [600, 400], 'trace-1': [600, 400], 'cleanup-2': [610, 410], 'palette-2': [640, 430], 'edit-1': [630, 430], 'cleanup-3': [620, 420],
+  }
+  const tracedSizeOf = () => (captured as { livePreview?: { tracedSize?: unknown } } | null)?.livePreview?.tracedSize
+  const livePreview = () => (captured as { livePreview?: unknown } | null)?.livePreview
+  const pressed = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).queryByRole('button', { name })?.getAttribute('aria-pressed') ?? null
+  let history: { preferred?: string; layers: string[] }[], captured: CapturedWorkspace | null
+  const shown = () => captured as CapturedWorkspace | null
+
+  beforeEach(() => {
+    hold = new Set(); fail = new Set(); late = new Set(); release = {}; history = []; captured = null
+    Object.defineProperty(workspaceProps, 'current', { configurable: true, get: () => captured, set: value => {
+      captured = value
+      if (value) history.push({ preferred: value.preferredLayerId, layers: (value.layers ?? []).map((layer: { id: string }) => layer.id) })
+    } })
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [cleanup3, edit1, cleanup2, palette2, trace1, cleanup1, paletteRevision, revision] })
+    // Each revision's own traced grid, so the size shown names the revision it came from.
+    mocks.editor.mockImplementation((id: string, signal?: AbortSignal) =>
+      respond(`editor:${id}`, signal, () => ({ width: sizes[id][0], height: sizes[id][1], protected_pixels: 0, palette: [] })))
+    mocks.effectiveArtifacts.mockImplementation((id: string, signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
+      respond(`${options?.beforeCleanup ? 'before' : 'main'}:${id}`, signal, () => (options?.beforeCleanup ? before : main)[id]))
+    mocks.artifacts.mockImplementation((id: string, signal?: AbortSignal) => respond(`own:${id}`, signal, () => own[id] ?? []))
+  })
+  afterEach(() => { Object.defineProperty(workspaceProps, 'current', { configurable: true, writable: true, value: null }) })
+
+  async function openAt(revisionId: string, view?: string) {
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=${revisionId}`)
+    render(createElement((await import('./App')).default))
+    await screen.findAllByRole('group', { name: 'Artwork view' })
+    if (view) {
+      await vi.waitFor(() => expect(pressed(view)).not.toBeNull())
+      fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: view }))
+      await vi.waitFor(() => expect(pressed(view)).toBe('true'))
+    }
+  }
+  function navigate(revisionId: string) {
+    act(() => {
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=${revisionId}`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+  }
+
+  it('keeps the previous artwork, view and no editable raster until a jump to another cleanup has loaded', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-1'))
+    await vi.waitFor(() => expect(mocks.editor).toHaveBeenCalledWith('cleanup-1', expect.anything()))
+    await screen.findByText('Traced image: 600 × 400 px')
+    hold.add('main:cleanup-2')
+    history = []
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['main:cleanup-2']).toBeDefined())
+    // Mid-load: the old artwork as it was, still on the Cleaned view, and nothing to edit.
+    expect(shown()?.loading).toBe(true)
+    expect(pressed('Cleaned')).toBe('true')
+    expect(history.every(entry => entry.preferred === 'clean-1' && entry.layers.includes('flat-P'))).toBe(true)
+    expect(mocks.editor).not.toHaveBeenCalledWith('cleanup-2', expect.anything())
+    // The traced grid (and so the live preview) is unknown until the jump's artifacts load.
+    expect(screen.queryByText(/Traced image:/)).toBeNull()
+    expect(livePreview()).toBeUndefined()
+    await act(async () => release['main:cleanup-2']())
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
+    await screen.findByText('Traced image: 610 × 410 px')
+    expect(tracedSizeOf()).toEqual({ width: 610, height: 410 })
+    expect(pressed('Cleaned')).toBe('true')
+    await vi.waitFor(() => expect(mocks.editor).toHaveBeenCalledWith('cleanup-2', expect.anything()))
+  })
+
+  it('never pairs a new cleanup with an older cleanup\'s before-cleanup raster', async () => {
+    await openAt('cleanup-1', 'Flattened')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-P'))
+    hold.add('before:cleanup-2')
+    history = []
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['before:cleanup-2']).toBeDefined())
+    expect(shown()?.loading).toBe(true)
+    await act(async () => release['before:cleanup-2']())
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-Q'))
+    expect(pressed('Flattened')).toBe('true')
+    // Until the new cleanup's own raster arrived, the canvas kept the old artwork whole.
+    for (const entry of history) {
+      if (entry.layers.includes('clean-2')) expect(entry.preferred).toBe('flat-Q')
+      else expect(entry.preferred).toBe('flat-P')
+      expect(entry.layers.includes('clean-2') && entry.layers.includes('flat-P')).toBe(false)
+    }
+  })
+
+  it('reports a failed before-cleanup lookup, never shows the cleaned raster as Flattened, and retries', async () => {
+    fail.add('before:cleanup-1')
+    await openAt('cleanup-1', 'Cleaned')
+    expect((await screen.findByRole('alert')).textContent).toContain('before the cleanup')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-1'))
+    // The Flattened view has nothing true to show, so it is not offered; nothing is editable.
+    expect(pressed('Flattened')).toBeNull()
+    expect(pressed('Cleaned')).toBe('true')
+    // The traced grid is the cleaned raster's, so the live preview keeps working.
+    await screen.findByText('Traced image: 600 × 400 px')
+    expect(livePreview()).toBeDefined()
+    // The next revision change below the same cleanup looks it up again; its success
+    // clears the error it had reported.
+    navigate('trace-1')
+    await vi.waitFor(() => expect(pressed('Flattened')).toBe('false'))
+    expect(mocks.effectiveArtifacts.mock.calls.filter(call => call[0] === 'cleanup-1' && call[2]?.beforeCleanup)).toHaveLength(2)
+    await vi.waitFor(() => expect(mocks.editor).toHaveBeenCalledWith('trace-1', expect.anything()))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('commits an edited cleanup with its own pre-edit original and before-cleanup raster, never an older one', async () => {
+    await openAt('cleanup-1', 'Flattened')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-P'))
+    hold.add('before:cleanup-3'); hold.add('own:palette-1')
+    history = []
+    navigate('cleanup-3')
+    // The pre-edit original loads alongside the artifacts, before-cleanup after them.
+    await vi.waitFor(() => expect(release['own:palette-1']).toBeDefined())
+    expect(shown()?.loading).toBe(true)
+    await act(async () => release['own:palette-1']())
+    await vi.waitFor(() => expect(release['before:cleanup-3']).toBeDefined())
+    // Nothing of the new cleanup is shown while either of its rasters is outstanding.
+    expect(history.every(entry => !entry.layers.includes('clean-3') && entry.preferred === 'flat-P')).toBe(true)
+    await act(async () => release['before:cleanup-3']())
+    await vi.waitFor(() => expect(shown()?.layers?.some(layer => layer.id === 'clean-3')).toBe(true))
+    // Flattened is the pre-edit original; Edited is the edited raster the cleanup started from.
+    expect(pressed('Flattened')).toBe('true')
+    expect(shown()?.preferredLayerId).toBe('flat-P')
+    expect(shown()?.layers?.find(layer => layer.id === 'flat-P')?.name).toContain('flattened (original)')
+    for (const entry of history.filter(entry => entry.layers.includes('clean-3'))) {
+      expect(entry.layers).toEqual(expect.arrayContaining(['flat-P', 'flat-E']))
+      expect(entry.preferred).toBe('flat-P')
+    }
+    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Edited' }))
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-E'))
+    // The palette's original is reused, not looked up again, for the same flatten.
+    navigate('cleanup-1'); navigate('cleanup-3')
+    await vi.waitFor(() => expect(shown()?.layers?.some(layer => layer.id === 'clean-3')).toBe(true))
+    expect(mocks.artifacts.mock.calls.filter(call => call[0] === 'palette-1')).toHaveLength(1)
+  })
+
+  it('reports a failed pre-edit lookup, never shows another raster as Flattened, and retries', async () => {
+    fail.add('own:palette-1')
+    await openAt('edit-1', 'Edited')
+    expect((await screen.findByRole('alert')).textContent).toContain('before the edits')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-E'))
+    // The edited raster is not passed off as the Flattened original.
+    expect(pressed('Flattened')).toBeNull()
+    expect(history.some(entry => entry.preferred === undefined && entry.layers.includes('flat-E'))).toBe(false)
+    // The next revision change with the same flatten looks it up again.
+    navigate('cleanup-3')
+    await vi.waitFor(() => expect(pressed('Flattened')).toBe('false'))
+    expect(mocks.artifacts.mock.calls.filter(call => call[0] === 'palette-1')).toHaveLength(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Flattened' }))
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-P'))
+  })
+
+  it('clears only the error its own lookup reported', async () => {
+    fail.add('before:cleanup-1')
+    await openAt('cleanup-1', 'Cleaned')
+    await screen.findByRole('alert')
+    // While the retry is in flight, an unrelated failure replaces the message.
+    hold.add('before:cleanup-1')
+    navigate('trace-1')
+    await vi.waitFor(() => expect(release['before:cleanup-1']).toBeDefined())
+    mocks.deleteProject.mockRejectedValueOnce(new Error('delete refused'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete project' }))
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('delete refused'))
+    // The lookup's success leaves that other error alone.
+    await act(async () => release['before:cleanup-1']())
+    await vi.waitFor(() => expect(pressed('Flattened')).toBe('false'))
+    expect(screen.getByRole('alert').textContent).toContain('delete refused')
+  })
+
+  it('never commits a load that a later navigation superseded, even one settling just before its commit', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-1'))
+    // A held artifacts request is aborted by the next navigation.
+    hold.add('main:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['main:cleanup-2']).toBeDefined())
+    navigate('trace-1')
+    await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+    await act(async () => release['main:cleanup-2']())
+    // A pre-edit lookup whose response arrives after its load was superseded.
+    hold.add('own:palette-1'); late.add('own:palette-1')
+    navigate('edit-1')
+    await vi.waitFor(() => expect(release['own:palette-1']).toBeDefined())
+    navigate('cleanup-1')
+    await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+    history = []
+    await act(async () => release['own:palette-1']())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(window.location.hash).toContain('revision=cleanup-1')
+    expect(shown()?.layers?.some(layer => layer.id === 'clean-1')).toBe(true)
+    expect(shown()?.layers?.some(layer => layer.id === 'flat-E' || layer.id === 'clean-2')).toBe(false)
+    expect(history.every(entry => entry.layers.includes('clean-1'))).toBe(true)
+  })
+
+  it('clears a lookup\'s error when the next revision has nothing to look up, and never reports a superseded one', async () => {
+    fail.add('before:cleanup-1')
+    await openAt('cleanup-1', 'Cleaned')
+    expect((await screen.findByRole('alert')).textContent).toContain('before the cleanup')
+    // No cleanup behind the re-flatten: nothing to look up, and the old reason is gone.
+    navigate('palette-2')
+    await screen.findByText('Traced image: 640 × 430 px')
+    expect(screen.queryByRole('alert')).toBeNull()
+    // A pre-edit lookup fails, but its load is superseded before it commits.
+    fail.add('own:palette-1'); hold.add('main:cleanup-3')
+    navigate('cleanup-3')
+    await vi.waitFor(() => expect(release['main:cleanup-3']).toBeDefined())
+    await vi.waitFor(() => expect(mocks.artifacts.mock.calls.some(call => call[0] === 'palette-1')).toBe(true))
+    // Its failure is only reported if its load commits, so nothing shows yet.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    navigate('cleanup-1')
+    await screen.findByText('Traced image: 600 × 400 px')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('reports only a failed artifacts request, cancelling the pre-edit lookup running beside it', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await screen.findByText('Traced image: 600 × 400 px')
+    hold.add('own:palette-1'); fail.add('main:edit-1')
+    navigate('edit-1')
+    expect((await screen.findByRole('alert')).textContent).toContain('lookup failed')
+    const lookup = mocks.artifacts.mock.calls.find(call => call[0] === 'palette-1')
+    expect((lookup?.[1] as AbortSignal | undefined)?.aborted).toBe(true)
+    await act(async () => release['own:palette-1']?.())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.getByRole('alert').textContent).toContain('lookup failed')
+    expect(screen.getByRole('alert').textContent).not.toContain('before the edits')
+  })
+})
+
+describe('editor pixels right after an area or pencil edit', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {} } }
+  const edited: Revision = { ...revision, id: 'edit-9', parent_revision_id: 'palette-1', kind: 'label-edit', created_at: '2026-01-02', settings: {} }
+  const colour = (index: number, name: string, hex: string, rgb: [number, number, number]) => ({ index, name, hex, rgb, share_percent: 50 })
+  // Each revision's own editor state: the edit renames its colours, so the swatches
+  // show which revision's palette is in use.
+  const editorStates: Record<string, { width: number; height: number; protected_pixels: number; palette: ReturnType<typeof colour>[] }> = {
+    'palette-1': { width: 2, height: 1, protected_pixels: 0, palette: [colour(0, 'Navy', '#0F233C', [15, 35, 60]), colour(1, 'Orange', '#E15F2D', [225, 95, 45])] },
+    'edit-9': { width: 2, height: 1, protected_pixels: 0, palette: [colour(0, 'Midnight', '#0F233C', [15, 35, 60]), colour(1, 'Ember', '#E15F2D', [225, 95, 45])] },
+  }
+  const NAVY = [15, 35, 60, 255], ORANGE = [225, 95, 45, 255]
+  // Each 2 × 1 flattened PNG decodes to its own pixels: the flatten's navy|orange, the
+  // area edit's orange|orange.
+  const decoded: Record<string, number[]> = { '/artifacts/flat-palette-1': [...NAVY, ...ORANGE], '/artifacts/flat-edit-9': [...ORANGE, ...ORANGE] }
+  let decodedUrls: string[], releaseEdited: (() => void) | undefined
+  class DecodedImage {
+    onload: (() => void) | null = null
+    naturalWidth = 2
+    naturalHeight = 1
+    url = ''
+    set src(value: string) { this.url = value; decodedUrls.push(value); queueMicrotask(() => this.onload?.()) }
+  }
+  const workspace = () => workspaceProps.current as (CapturedWorkspace & { overlay?: { bounds: { width: number } }; onPaint?: (x: number, y: number) => void }) | null
+  const panel = () => screen.getByRole('tabpanel', { name: 'Edit' })
+  const swatch = (name: string) => panel().querySelector<HTMLButtonElement>(`button[aria-label*="${name}"]`)
+
+  async function openEditor() {
+    decodedUrls = []; releaseEdited = undefined
+    vi.stubGlobal('Image', DecodedImage)
+    let drawn: DecodedImage | null = null
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: (image: DecodedImage) => { drawn = image },
+      getImageData: () => ({ data: new Uint8ClampedArray(decoded[drawn!.url]) }),
+    } as unknown as CanvasRenderingContext2D)
+    const { api } = await import('./api')
+    const applyEdits = vi.spyOn(api, 'applyEdits').mockResolvedValue(edited)
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [edited, paletteRevision, revision] })
+    mocks.editor.mockImplementation(async (id: string, signal?: AbortSignal) => {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+      return editorStates[id]
+    })
+    // The edited revision's artifacts are held until the test releases them, once.
+    let heldOnce = false
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => {
+      if (id === 'edit-9' && !heldOnce) { heldOnce = true; await new Promise<void>(resolve => { releaseEdited = resolve }) }
+      return [artifact('source'), { ...artifact('flattened'), id: `flat-${id}`, revision_id: id, download_url: `/artifacts/flat-${id}` }]
+    })
+    mocks.artifacts.mockResolvedValue([{ ...artifact('flattened'), id: 'flat-palette-1', revision_id: 'palette-1', download_url: '/artifacts/flat-palette-1' }])
+    window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(swatch('Orange')).not.toBeNull())
+    await vi.waitFor(() => expect(decodedUrls).toContain('/artifacts/flat-palette-1'))
+    return applyEdits
+  }
+  // Select the area at (x, y) and report the selection overlay's width: 2 when that
+  // pixel's colour fills the whole raster, 1 when it is a single pixel.
+  function selectedWidth(x: number, y: number) {
+    act(() => workspace()!.onSelectPoint!([x, y]))
+    const width = workspace()?.overlay?.bounds.width
+    act(() => workspace()!.onSelectPoint!([x, y]))
+    return width
+  }
+  function navigate(revisionId: string) {
+    act(() => {
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=${revisionId}`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('adopts the area edit\'s own pixels at once, with that revision\'s palette, while its artifacts load', async () => {
+    const applyEdits = await openEditor()
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    await vi.waitFor(() => expect(selectedWidth(0, 0)).toBe(1))
+    act(() => workspace()!.onSelectPoint!([0, 0]))
+    await vi.waitFor(() => expect(swatch('Orange')!.disabled).toBe(false))
+    fireEvent.click(swatch('Orange')!)
+    await vi.waitFor(() => expect(releaseEdited).toBeDefined())
+    expect(applyEdits).toHaveBeenCalledWith(project.id, 'palette-1', [{ tool: 'reassign_region', point: [0, 0], target_label: 1 }])
+    // Mid-load: the edited revision's palette, and its pixels (orange|orange, not the
+    // base navy|orange) already adopted without decoding anything.
+    await vi.waitFor(() => expect(swatch('Ember')).not.toBeNull())
+    expect(swatch('Orange')).toBeNull()
+    expect(selectedWidth(1, 0)).toBe(2)
+    expect(decodedUrls).not.toContain('/artifacts/flat-edit-9')
+    await act(async () => releaseEdited!())
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-edit-9')).toBe(true))
+    expect(selectedWidth(1, 0)).toBe(2)
+    expect(decodedUrls).not.toContain('/artifacts/flat-edit-9')
+  })
+
+  it('adopts a pencil edit\'s own pixels at once', async () => {
+    const applyEdits = await openEditor()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Pencil' }))
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    act(() => workspace()!.onPaint!(1, 0))
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Apply pencil edits' }))
+    await vi.waitFor(() => expect(releaseEdited).toBeDefined())
+    expect(applyEdits).toHaveBeenCalledWith(project.id, 'palette-1', [{ tool: 'paint_pixels', target_label: 0, pixels: [[1, 0]] }])
+    // The painted pixel is navy now, so navy fills the raster.
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Select areas' }))
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    expect(selectedWidth(0, 0)).toBe(2)
+    expect(decodedUrls).not.toContain('/artifacts/flat-edit-9')
+    await act(async () => releaseEdited!())
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-edit-9')).toBe(true))
+    expect(selectedWidth(0, 0)).toBe(2)
+    expect(decodedUrls).not.toContain('/artifacts/flat-edit-9')
+  })
+
+  it('requests each revision\'s editor state once across an area edit, as its artifacts land', async () => {
+    await openEditor()
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    await vi.waitFor(() => expect(selectedWidth(0, 0)).toBe(1))
+    act(() => workspace()!.onSelectPoint!([0, 0]))
+    await vi.waitFor(() => expect(swatch('Orange')!.disabled).toBe(false))
+    fireEvent.click(swatch('Orange')!)
+    await vi.waitFor(() => expect(releaseEdited).toBeDefined())
+    await act(async () => releaseEdited!())
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-edit-9')).toBe(true))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    const calls = (id: string) => mocks.editor.mock.calls.filter(call => call[0] === id).length
+    expect(calls('palette-1')).toBe(1)
+    expect(calls('edit-9')).toBe(1)
+  })
+
+  it('releases the adopted buffer once the revision loads, decoding it afresh after navigating away and back', async () => {
+    await openEditor()
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    await vi.waitFor(() => expect(selectedWidth(0, 0)).toBe(1))
+    act(() => workspace()!.onSelectPoint!([0, 0]))
+    await vi.waitFor(() => expect(swatch('Orange')!.disabled).toBe(false))
+    fireEvent.click(swatch('Orange')!)
+    await vi.waitFor(() => expect(releaseEdited).toBeDefined())
+    await act(async () => releaseEdited!())
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-edit-9')).toBe(true))
+    navigate('palette-1')
+    await vi.waitFor(() => expect(swatch('Orange')).not.toBeNull())
+    await vi.waitFor(() => expect(selectedWidth(1, 0)).toBe(1))
+    navigate('edit-9')
+    // Back on the edit: its own PNG decoded (the adopted buffer is gone), with its pixels.
+    await vi.waitFor(() => expect(decodedUrls).toContain('/artifacts/flat-edit-9'))
+    await vi.waitFor(() => expect(swatch('Ember')).not.toBeNull())
+    await vi.waitFor(() => expect(selectedWidth(1, 0)).toBe(2))
   })
 })

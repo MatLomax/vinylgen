@@ -68,4 +68,5 @@ features, and shared-partition topology. It also rasterizes the final SVG at
 source dimensions and independently audits coherent dark source features in
 both the flattened raster and vector render. Deviations are warnings: when any
 occur, `trace-semantic-warnings.png` shows the whole original image lightly and
-marks only the unmatched pixels. Structural SVG failures remain hard failures.
+marks only the unmatched pixels, and `trace-missed-details-overlay.png` holds
+the same marks alone on a transparent background for stacking over the SVG. Structural SVG failures remain hard failures.

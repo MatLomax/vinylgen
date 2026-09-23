@@ -50,6 +50,7 @@ STALE_ARTIFACT_KINDS = {
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
+        "trace-fallbacks-overlay", "trace-missed-details-overlay",
     },
     "validation": {"validation"},
     "export": {"export"},
@@ -449,7 +450,9 @@ class Store:
         from every older revision are excluded. A cleanup replaces any earlier cleanup,
         so the raster artifacts of a ``cleanup`` revision are skipped once a newer
         cleanup has been passed; with ``before_cleanup`` they are skipped from the
-        start, which resolves the raster that cleanup starts from.
+        start, which resolves the raster that cleanup starts from. A ``trace`` run
+        writes its complete output set, so it supersedes every trace artifact of an
+        older run, including optional audits that run did not repeat.
         """
         result: dict[str, dict[str, Any]] = {}
         current: str | None = revision_id
@@ -474,6 +477,8 @@ class Store:
                 for kind in STALE_ARTIFACT_KINDS.get(concern, ()))
             if revision["kind"] == "cleanup":
                 cleanup_superseded = True
+            if revision["kind"] == "trace":
+                stale_kinds.update(STALE_ARTIFACT_KINDS["trace"])
             current = revision["parent_revision_id"]
         return result
 

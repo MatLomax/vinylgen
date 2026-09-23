@@ -192,6 +192,40 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(effective), {"source"})
         self.assertEqual(effective["source"]["revision_id"], edited["id"])
 
+    async def test_a_trace_run_never_inherits_an_earlier_runs_optional_trace_outputs(self) -> None:
+        # A run without fallbacks or missed details writes no audit overlays; the
+        # previous run's must not surface over its SVG.
+        store = self.app.state.store
+        project = store.create_project("Reruns")
+        earlier = store.create_revision(
+            project["id"], parent_revision_id=None, kind="trace", message=None,
+            settings={"stale_concerns": ["export"]},
+        )
+        for kind in ("flattened", "traced-overlap", "trace-fallbacks", "trace-fallbacks-overlay",
+                     "trace-semantic-warnings", "trace-missed-details-overlay"):
+            store.add_artifact(
+                earlier["id"], kind=kind, filename=f"{kind}.bin",
+                media_type="application/octet-stream", source=io.BytesIO(kind.encode()),
+            )
+        later = store.create_revision(
+            project["id"], parent_revision_id=earlier["id"], kind="trace", message=None,
+            settings={"stale_concerns": ["export"]},
+        )
+        store.add_artifact(
+            later["id"], kind="traced-overlap", filename="traced-overlap.svg",
+            media_type="image/svg+xml", source=io.BytesIO(b"<svg/>"),
+        )
+        validated = store.create_revision(
+            project["id"], parent_revision_id=later["id"], kind="validate", message=None,
+            settings={"stale_concerns": ["export"]},
+        )
+
+        for revision in (later, validated):
+            effective = store.effective_artifacts(revision["id"])
+            self.assertEqual(set(effective), {"flattened", "traced-overlap"})
+            self.assertEqual(effective["traced-overlap"]["revision_id"], later["id"])
+        self.assertIn("trace-fallbacks-overlay", store.effective_artifacts(earlier["id"]))
+
     async def test_delete_project_removes_rows_and_blobs(self) -> None:
         store = self.app.state.store
         project = store.import_project(

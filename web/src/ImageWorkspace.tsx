@@ -1,15 +1,21 @@
 import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
-import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
+import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
+import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
 // grid its viewBox (and every registered raster) uses.
-export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay'; sizeFrom?: string }
+// `kind` names what a layer is independently of its artifact id, so an inspection toggle
+// keyed by it stays on when a new run's layer of the same kind replaces the old one.
+export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay'; sizeFrom?: string; kind?: string }
+const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
+// The absolute URL an <img> resolves a layer's (possibly relative) URL to.
+const absoluteUrl = (url: string) => new URL(url, document.baseURI).href
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, loading = false, livePreview, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; loading?: boolean; livePreview?: LivePreviewOptions; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -47,24 +53,36 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     if (adopted && naturalDimensions[layer.id]) dimensions[layer.id] = adopted
   }
   const [enabledInspections, setEnabledInspections] = useState<Record<string, boolean>>({})
+  // The absolute URL whose Before <img> request has settled (loaded or failed); any other
+  // shown URL is still loading.
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null)
 
   const visible = layers.filter(layer => layer.role === 'image')
-  const before = visible.find(layer => layer.id === beforeId) ?? visible[0]
+  // When the chosen Before layer disappears (a new revision's layers arrive before the
+  // effects below re-point it), fall back to the preferred layer in this same render so
+  // no other layer is ever shown or fetched in between.
+  const before = visible.find(layer => layer.id === beforeId)
+    ?? visible.find(layer => layer.id === preferredLayerId) ?? visible[0]
+  const imageLoading = Boolean(before) && loadedUrl !== absoluteUrl(before!.url)
+  const busy = loading || imageLoading
+  // Filled after mount so a live region that mounts already busy still announces it.
+  const [announcement, setAnnouncement] = useState('')
+  useEffect(() => { setAnnouncement(busy ? 'Loading image…' : '') }, [busy])
   const after = visible.find(layer => layer.id === afterId)
   const inspections = layers.filter(layer => layer.role === 'mask' || layer.role === 'overlay')
   const beforeSize = before ? dimensions[before.id] : undefined
   const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
   const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
   const comparisonAvailable = comparableImages.length > 0
-  const compatibleInspections = inspections.filter(layer => enabledInspections[layer.id] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
-  const incompatibleInspections = inspections.filter(layer => enabledInspections[layer.id] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
+  const compatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
+  const incompatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
-    const pair = defaultComparePair(ids, ids.includes(beforeId) ? beforeId : undefined, dimensions)
+    const pair = defaultComparePair(ids, ids.includes(beforeId) ? beforeId : preferredLayerId, dimensions)
     if (pair.beforeId !== beforeId) setBeforeId(pair.beforeId)
     if ((!ids.includes(afterId) || afterId === pair.beforeId) && pair.afterId !== afterId) setAfterId(pair.afterId)
-  }, [layers, beforeId, afterId, naturalDimensions])
+  }, [layers, beforeId, afterId, naturalDimensions, preferredLayerId])
 
   useEffect(() => {
     // Only force the single-view fallback once availability is genuinely known to
@@ -245,6 +263,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, factor))
   }
 
+  // Record which URL the Before <img> settled on (the one it actually holds), and take
+  // its natural size only when that is the shown layer's own image.
+  function beforeSettled(event: React.SyntheticEvent<HTMLImageElement>, loaded: boolean) {
+    const settled = event.currentTarget.currentSrc || event.currentTarget.src
+    setLoadedUrl(settled)
+    if (loaded && before && settled === absoluteUrl(before.url)) imageLoaded(before.id, event)
+  }
+
   function imageLoaded(layerId: string, event: React.SyntheticEvent<HTMLImageElement>) {
     const image = event.currentTarget
     if (image.naturalWidth) setDimensions(value => value[layerId]?.width === image.naturalWidth && value[layerId]?.height === image.naturalHeight
@@ -387,6 +413,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   const showAfter = mode === 'split' || (mode === 'blink' && blinkAfter)
   const transformStyle = { width: size.width, height: size.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }
+  // The Trace canvas's live preview of the zoomed-in area (inert without `livePreview`).
+  const tracePreview = useTracePreview(livePreview, transform, { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }, size)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
 
   const controls = <>
@@ -411,7 +439,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     </section>}
     {!editorMode && inspections.length > 0 && <section className="control-section inspection-controls">
       <h3>Masks &amp; inspection layers</h3>
-      {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[layer.id])} onChange={event => setEnabledInspections(value => ({ ...value, [layer.id]: event.target.checked }))} />{layer.name}</label>)}
+      {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
       {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
     </section>}
   </>
@@ -419,12 +447,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
+    <p className="visually-hidden" aria-live="polite">{announcement}</p>
     <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
-    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
+    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
-        {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
+        {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => beforeSettled(event, true)} onError={event => beforeSettled(event, false)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
+        {tracePreview.stageLayer}
       </div>
       {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       {mode === 'split' && compatibleAfter && <div
@@ -446,9 +476,11 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       ><span className="split-line" aria-hidden="true" /></div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
       {editorMode && inspectionToggles && inspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
-        {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[layer.id])} onChange={event => setEnabledInspections(value => ({ ...value, [layer.id]: event.target.checked }))} />{layer.name}</label>)}
+        {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
         {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
       </div>}
+      {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
+      {tracePreview.controls}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>

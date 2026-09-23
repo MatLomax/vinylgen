@@ -414,5 +414,90 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(report["validation"]["edge"]["layer_count"], 1)
 
 
+class InspectionOverlayTests(unittest.TestCase):
+    """The transparent audit overlays: only their marks are visible, on the traced grid."""
+
+    WIDTH, HEIGHT = 40, 32
+
+    def fixture(self, root: Path) -> Path:
+        # A dark source line the flattened raster lost (a semantic miss) and a
+        # one-pixel explicitly protected spike that a coarse fit tightens.
+        subject = root / "fixture"
+        subject.mkdir()
+        pixels = np.zeros((self.HEIGHT, self.WIDTH, 3), dtype=np.uint8)
+        pixels[:] = (15, 35, 60)
+        pixels[5:27, 8:32] = (225, 95, 45)
+        pixels[11:20, 15:24] = (15, 35, 60)
+        pixels[2:5, 35:38] = (225, 95, 45)
+        pixels[27:31, 20:21] = (225, 95, 45)
+        Image.fromarray(pixels, "RGB").save(subject / "flattened.png")
+        source = pixels.copy()
+        source[22:24, 9:31] = (5, 5, 5)
+        Image.fromarray(source, "RGB").save(subject / "source.png")
+        palette = {"dimensions": [self.WIDTH, self.HEIGHT], "palette": [
+            {"index": 0, "hex": "#0F233C", "rgb": [15, 35, 60], "share_percent": 60},
+            {"index": 1, "hex": "#E15F2D", "rgb": [225, 95, 45], "share_percent": 40}]}
+        (subject / "palette.json").write_text(json.dumps(palette))
+        labels = np.where(np.all(pixels == (225, 95, 45), axis=2), 1, 0).astype(np.int16)
+        costs = np.full((*labels.shape, 2), 50.0, dtype=np.float32)
+        np.put_along_axis(costs, labels[..., None], 0.0, axis=2)
+        protected = np.zeros(labels.shape, dtype=bool)
+        protected[27:31, 20:21] = True
+        SegmentationBundle(
+            labels=labels, protected_features=protected, explicit_protected_features=protected,
+            palette_rgb=np.array([[15, 35, 60], [225, 95, 45]], dtype=np.uint8),
+            palette_costs=costs,
+        ).save(subject / "segmentation.npz")
+        return subject
+
+    def rgba(self, path: Path) -> np.ndarray:
+        with Image.open(path) as image:
+            self.assertEqual(image.mode, "RGBA")
+            self.assertEqual(image.size, (self.WIDTH, self.HEIGHT))
+            return np.asarray(image)
+
+    def test_missed_details_overlay_marks_only_the_missed_pixels(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            report = trace_subject(subject, TraceSettings(max_deviation=2.0), {})
+            self.assertFalse(report["validation"]["semantic"]["passed"])
+            overlay = self.rgba(subject / "trace-missed-details-overlay.png")
+            with Image.open(subject / "trace-semantic-warnings.png") as opaque:
+                marked = np.all(np.asarray(opaque.convert("RGB")) == (220, 35, 35), axis=2)
+            visible = overlay[..., 3] > 0
+            self.assertTrue(visible.any())
+            np.testing.assert_array_equal(visible, marked)
+            self.assertTrue(np.all(overlay[visible] == tracing.MISSED_DETAIL_RGBA))
+            self.assertTrue(np.all(overlay[~visible] == 0))
+
+    def test_tightened_boundaries_overlay_marks_only_the_fallback_chains(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            report = trace_subject(subject, TraceSettings(max_deviation=50.0), {})
+            self.assertTrue(any("dense fallback" in warning for warning in report["warnings"]))
+            self.assertTrue((subject / "trace-fallbacks.png").exists())
+            overlay = self.rgba(subject / "trace-fallbacks-overlay.png")
+            visible = overlay[..., 3] > 0
+            self.assertTrue(visible.any())
+            self.assertFalse(visible.all())
+            self.assertTrue(np.all(overlay[~visible] == 0))
+            colours = {tuple(int(v) for v in pixel) for pixel in overlay[visible]}
+            self.assertIn(tracing.TIGHTENED_BOUNDARY_RGBA, colours)
+            self.assertLessEqual(colours, {tracing.TIGHTENED_BOUNDARY_RGBA,
+                                           tracing.TIGHTENED_BOUNDARY_HALO_RGBA})
+
+    def test_overlays_are_absent_without_warnings_and_removed_when_a_rerun_clears_them(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            trace_subject(subject, TraceSettings(max_deviation=50.0), {})
+            self.assertTrue((subject / "trace-fallbacks-overlay.png").exists())
+            self.assertTrue((subject / "trace-missed-details-overlay.png").exists())
+            report = trace_subject(subject, TraceSettings(max_deviation=6.0), {})
+            self.assertEqual(report["warnings"], [])
+            for name in ("trace-fallbacks.png", "trace-fallbacks-overlay.png",
+                         "trace-semantic-warnings.png", "trace-missed-details-overlay.png"):
+                self.assertFalse((subject / name).exists(), name)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -158,7 +158,8 @@ class CliCleanupParityTests(unittest.TestCase):
         unshared = lambda rows: [{k: v for k, v in row.items() if k != "share_percent"} for row in rows]
         self.assertEqual(unshared(staged_audit["colours"]["included"]), unshared(cli_audit["colours"]["included"]))
         self.assertEqual(staged_audit["colours"]["omitted"], cli_audit["colours"]["omitted"])
-        for image in ("trace-fallbacks.png", "trace-semantic-warnings.png"):
+        for image in ("trace-fallbacks.png", "trace-semantic-warnings.png",
+                      "trace-fallbacks-overlay.png", "trace-missed-details-overlay.png"):
             self.assertEqual((staged / image).exists(), (cli / image).exists(), image)
             if (cli / image).exists():
                 self.assertEqual((staged / image).read_bytes(), (cli / image).read_bytes(), image)

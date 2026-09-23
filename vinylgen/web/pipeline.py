@@ -128,6 +128,8 @@ TRACE_FILES = {
     "traced-preview": "traced.png", "trace-audit": "trace.json",
     "trace-fallbacks": "trace-fallbacks.png",
     "trace-semantic-warnings": "trace-semantic-warnings.png", "trace-inspection": "trace.html",
+    "trace-fallbacks-overlay": "trace-fallbacks-overlay.png",
+    "trace-missed-details-overlay": "trace-missed-details-overlay.png",
 }
 MEDIA_TYPES = {".png": "image/png", ".svg": "image/svg+xml", ".json": "application/json",
                ".npz": "application/octet-stream", ".html": "text/html", ".zip": "application/zip"}

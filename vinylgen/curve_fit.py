@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
 
 import numpy as np
 from numba import njit
@@ -691,7 +691,8 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
 
 
 def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
-                      tick: Progress = _noop) -> None:
+                      tick: Progress = _noop,
+                      checkpoint: Callable[[], None] | None = None) -> None:
     """Fit every plan whose key is absent from the fitter cache, serially.
 
     Each plan is ``(key, canonical, anchors, constraint_key, settings)`` as
@@ -701,7 +702,9 @@ def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
     even the cold first pass over the whole image is a fraction of a second; the
     former process pool's fork/pickle/shutdown cost exceeded that, and threads
     thrash on the GIL the corner kernel still holds, so a serial loop is both the
-    fastest measured option here and trivially deterministic.
+    fastest measured option here and trivially deterministic. ``checkpoint``, when
+    given, is called before each fit and may raise to abandon the loop; fits already
+    made stay cached.
     """
     unique_pending: dict[tuple, tuple] = {}
     for key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
@@ -712,6 +715,8 @@ def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
         return
     total = len(unique_pending)
     for done, (key, argument) in enumerate(unique_pending.items(), 1):
+        if checkpoint is not None:
+            checkpoint()
         fitter._cache[key] = _compute_chain_fit(*argument)
         if done % 100 == 0 or done == total:
             tick(done / total, f"Fitting boundary curves ({done} of {total})")
@@ -1027,12 +1032,14 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
                                recovery: dict[str, dict[str, object]] | None = None,
                                progress: Progress | None = None,
                                fitter: "SharedChainFitter | None" = None,
+                               checkpoint: Callable[[], None] | None = None,
                                ) -> tuple[dict[int, list[dict]], dict[str, "ChainFit"], dict[str, object]]:
     """Fit canonical interfaces once, then assemble exact reverse uses into paths.
 
     A caller may supply a persistent ``fitter`` so its cache survives across the
     recovery loop's repeated passes: a chain whose recovery state is unchanged
-    keys identically and returns from cache instead of re-fitting.
+    keys identically and returns from cache instead of re-fitting. ``checkpoint`` is
+    called before each chain fit and may raise to abandon the fit.
     """
     from vinylgen.boundary_graph import assemble_colour_rings
 
@@ -1092,7 +1099,7 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
     _fit_cache_misses(
         fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
                  for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
-                 in plans], tick)
+                 in plans], tick, checkpoint)
 
     # Phase 3: assemble oriented fits from the now-populated cache.
     for identity, stage, forward, key, *_ in plans:

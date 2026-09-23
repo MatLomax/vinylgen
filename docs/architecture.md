@@ -16,6 +16,7 @@ source raster
   -> svg_writer.py     Inkscape layers and SVG serialization
   -> validation.py     SVG structural validation
   -> tracing.py        vector-stage orchestration and audit
+     trace_window.py   the same vector stage on one window, for the live preview
 ```
 
 `reporting.py` owns palette inspection images. `cli_palette.py` and
@@ -119,6 +120,49 @@ trace, validation, and export are stale until retracing. The generated trace on
 the parent is untouched.
 The hosted service never claims that a phone or remote browser can launch a
 desktop Inkscape process.
+
+The Trace canvas has a live preview (`vinylgen/trace_window.py`, served by
+`vinylgen/web/trace_preview.py` at `POST /api/revisions/{id}/trace-preview`).
+With its "Live preview" switch on, the canvas traces whatever is zoomed into,
+with the trace form's current, unsaved settings, and draws the shapes over the
+image at that window, badged "Live preview". The window is the visible part of
+the image in traced-image px (the flattened grid, including any flatten
+upscale); it is previewed only while it covers at most 600 × 600 px, otherwise
+the canvas reads "Zoom in to preview". A pan, a zoom or any setting change
+re-previews once it has been still for 150 ms, and a newer change aborts the
+request in flight. The server resolves exactly what "Trace and validate" from
+that revision would trace: the effective (cleaned) segmentation, the active
+cleanup's removed colour and physical size (a stale cleanup blocks the preview
+as it blocks the trace), and the layer order inferred from the whole image. It
+traces the window plus a hidden 64 px margin through the real vector stage:
+`shared_boundary_polygons` on the crop, the canonical chain fitter with the
+normalized trace settings, the same overlap-buffer or solid-underlayer
+construction (`underlayer_geometry`, `overlap_layer_components`) and the SVG
+layer writer, returning the variant the form's settings select (overlap with
+solid underlayers or a positive overlap, otherwise edge to edge). Its SVG's
+`viewBox` is the window, so the margin is clipped from view. Previews run one
+at a time on a dedicated background thread, never on the event loop. A
+request whose client disconnected stops at its next checkpoint: one before the
+segmentation's cost field is decompressed, inside the boundary build (between
+phases and every few hundred chains), before each chain fit and before each
+layer; a request superseded while queued exits before doing any work. Memory is
+bounded: the thread holds at most one loaded segmentation (costs kept float16;
+the 11264 x 7920 phoenix subject's cost field alone is about 1.8 GB, with a load
+peak of about 2.3 GB), releases it before loading another revision's, and drops
+it with every derived cache after 10 minutes without a preview, so the web
+process gives the memory back. It also keeps the boundary graphs of the last 16
+windows, each with fit caches for its 4 most recent combinations of fitting
+settings, so a pan re-traces only the new window and a settings-only change
+re-fits cached boundaries. The Live preview switch is remembered in the browser
+across stage changes and reloads. The app's startup submits a warm-up trace to
+the preview thread, which compiles the Numba kernels without delaying startup or
+health. A preview
+differs from a full run in three documented ways: boundaries crossing the crop
+edge are split there, so their fit can differ near that edge (the margin keeps
+most of it out of view), and underlayer adjacency and overlap buffers see only
+the crop; validation and protected-feature recovery are skipped; and nothing is
+saved. "Trace and validate" still creates the revision. When the window's
+margin reaches every image edge, the preview is the full trace path for path.
 
 ## Stage invariants
 

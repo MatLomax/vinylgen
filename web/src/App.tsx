@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Download, Eraser, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
-import { api, followJob, type Artifact, type CleanupSettings, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
+import { api, followJob, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
@@ -15,10 +15,13 @@ import './styles.css'
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
 // Traced SVGs are drawn on the flattened pixel grid (their viewBox), whatever their physical size.
 const TRACED_SVG_KINDS = new Set(['traced-overlap', 'traced-edge'])
-const OVERLAY_ARTIFACT_KINDS = new Set([
-  'trace-fallbacks',
-  'trace-semantic-warnings',
-])
+// Transparent audit overlays drawn on the traced pixel grid, offered as labelled toggles.
+const OVERLAY_ARTIFACT_LABELS: Record<string, string> = {
+  'trace-missed-details-overlay': 'Missed source details (red)',
+  'trace-fallbacks-overlay': 'Tightened boundaries',
+}
+// Standalone audit images that paint the whole faded source: kept as files, never layers.
+const OPAQUE_AUDIT_KINDS = new Set(['trace-fallbacks', 'trace-semantic-warnings'])
 
 type Dimensions = [number, number]
 type WorkflowStage = 'create' | 'upload' | 'flatten' | 'cleanup' | 'trace' | 'palette' | 'edit' | 'export'
@@ -63,16 +66,18 @@ export function customRatioDimensions(width: number, height: number): Dimensions
 }
 
 export function artifactToWorkspaceLayer(artifact: Artifact): WorkspaceLayer | null {
-  if (!artifact.media_type.startsWith('image/')) return null
+  if (!artifact.media_type.startsWith('image/') || OPAQUE_AUDIT_KINDS.has(artifact.kind)) return null
+  const overlayLabel = OVERLAY_ARTIFACT_LABELS[artifact.kind]
   const role = MASK_ARTIFACT_KINDS.has(artifact.kind) ? 'mask'
-    : OVERLAY_ARTIFACT_KINDS.has(artifact.kind) ? 'overlay'
+    : overlayLabel ? 'overlay'
       : 'image'
   return {
     id: artifact.id,
-    name: `${artifact.kind} · ${artifact.filename}`,
+    name: overlayLabel ?? `${artifact.kind} · ${artifact.filename}`,
     url: artifact.download_url,
     mediaType: artifact.media_type,
     role,
+    kind: artifact.kind,
   }
 }
 
@@ -168,21 +173,37 @@ export function ancestorPaletteIterations(revisions: Revision[], revisionId: str
   }
   return list
 }
-// The cleanup settings recorded along the shown revision's ancestry, newest first and
-// merged over defaults: each cleanup run's, and each pre-cleanup-stage trace run's
-// embedded values, so the Cleanup form steps back through them like Flatten.
+// The cleanup settings recorded on each real `cleanup` revision along the shown
+// revision's ancestry, newest first and merged over defaults, so the Cleanup form
+// steps back through them like Flatten. A pre-cleanup-stage trace run's embedded
+// values fill the form's baseline (see inheritedPipelineSettings) but are not a run
+// of the Cleanup stage, so they are not counted as an iteration here.
 export function ancestorCleanupIterations(revisions: Revision[], revisionId: string | null): CleanupSettings[] {
   const list: CleanupSettings[] = []
   const seen = new Set<string>()
   let current = revisions.find(row => row.id === revisionId)
   while (current && !seen.has(current.id)) {
     seen.add(current.id)
-    const recorded = current.kind === 'cleanup' ? current.settings.cleanup as Partial<CleanupSettings> | undefined
-      : current.kind === 'trace' ? legacyCleanupSettings((current.settings.trace ?? {}) as Record<string, unknown>) : undefined
+    const recorded = current.kind === 'cleanup' ? current.settings.cleanup as Partial<CleanupSettings> | undefined : undefined
     if (recorded) list.push({ ...DEFAULT_CLEANUP_SETTINGS, ...recorded })
     current = revisions.find(row => row.id === current?.parent_revision_id)
   }
   return list
+}
+// Whether the ancestry of `revisionId` holds a flatten and an area/pencil edit, and its
+// nearest palette (flatten) revision, which wrote the original the edits started from.
+export function editAncestry(revisions: Revision[], revisionId: string | null): { hasFlatten: boolean; hasEdit: boolean; paletteAncestorId: string | null } {
+  let node = revisions.find(row => row.id === revisionId)
+  const seen = new Set<string>()
+  let flatten = false, edit = false, paletteId: string | null = null
+  while (node && !seen.has(node.id)) {
+    seen.add(node.id)
+    if (node.kind === 'palette') { flatten = true; if (!paletteId) paletteId = node.id }
+    if (node.kind === 'label-edit') edit = true
+    const parent = node.parent_revision_id
+    node = parent ? revisions.find(row => row.id === parent) : undefined
+  }
+  return { hasFlatten: flatten, hasEdit: edit, paletteAncestorId: paletteId }
 }
 // The trace runs made on the shown artwork, newest first, and the shown run's index.
 // A run is a `trace` revision; validate/export records only copy a run's settings, so
@@ -234,6 +255,15 @@ export function tracedSvgName(trace: Partial<TraceSettings> | undefined, physica
     : (trace?.overlap ?? 0) > 0 ? `Traced SVG · ${trace!.overlap} ${physical ? 'mm' : 'px'} overlap` : 'Traced SVG · edge to edge'
 }
 
+// Touch browsers offer no drag handle for a textarea, so it grows to fit its
+// text instead; it never shrinks, which keeps a manual resize.
+export function growToFit(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) return
+  const border = textarea.offsetHeight - textarea.clientHeight
+  const needed = textarea.scrollHeight + border
+  if (needed > textarea.offsetHeight) textarea.style.height = `${needed}px`
+}
+
 function formatElapsed(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
@@ -261,8 +291,49 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null)
   const [revision, setRevision] = useState<string | null>(() => hashParameters().get('revision'))
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  // The revision `artifacts` were resolved for. `revision` changes first and the
+  // artifacts follow, so everything describing the shown artwork derives from this.
+  const [artifactsRevision, setArtifactsRevision] = useState<string | null>(null)
   const [revisions, setRevisions] = useState<Revision[]>([])
   const [error, setError] = useState('')
+  // The error message each raster lookup last reported, so its own later success clears
+  // exactly that message and never an unrelated one.
+  const lookupErrors = useRef<{ cleanup?: string; edit?: string }>({})
+  // Editor-state requests shared by every effect that needs the same revision at once;
+  // each is cancelled when its last user aborts.
+  const editorRequests = useRef(new Map<string, { state: Promise<EditorState>; controller: AbortController; users: number }>())
+  function requestEditor(revisionId: string, signal: AbortSignal): Promise<EditorState> {
+    // An already-aborted caller never fires 'abort', so it must not count as a user.
+    if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+    const requests = editorRequests.current
+    let entry = requests.get(revisionId)
+    if (!entry) {
+      const controller = new AbortController()
+      const created = { state: api.editor(revisionId, controller.signal), controller, users: 0 }
+      created.state.catch(() => { if (requests.get(revisionId) === created) requests.delete(revisionId) })
+      requests.set(revisionId, created)
+      entry = created
+    }
+    const shared = entry
+    shared.users += 1
+    signal.addEventListener('abort', () => {
+      shared.users -= 1
+      // React runs a commit's effect cleanups before its setups, so wait a microtask:
+      // an effect re-subscribing in the same commit reuses the request (or its result).
+      queueMicrotask(() => {
+        if (shared.users > 0) return
+        shared.controller.abort()
+        if (requests.get(revisionId) === shared) requests.delete(revisionId)
+      })
+    }, { once: true })
+    return shared.state
+  }
+  function reportLookup(lookup: 'cleanup' | 'edit', message: string | null) {
+    const previous = lookupErrors.current[lookup]
+    lookupErrors.current[lookup] = message ?? undefined
+    if (message) setError(message)
+    else if (previous) setError(shown => shown === previous ? '' : shown)
+  }
   const [maxUploadBytes, setMaxUploadBytes] = useState(100 * 1024 * 1024)
   const [handoff, setHandoff] = useState<InkscapeHandoff | null>(null)
   const [handoffMessage, setHandoffMessage] = useState('')
@@ -275,10 +346,24 @@ export default function App() {
   const [pendingView, setPendingView] = useState<{ view: ArtworkView; revision: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [preEditFlattened, setPreEditFlattened] = useState<Artifact | null>(null)
-  // The raster the active cleanup started from, shown by the Flattened/Edited views.
-  const [preCleanupFlattened, setPreCleanupFlattened] = useState<Artifact | null>(null)
+  // The flattened original behind the shown artwork's edits (the Flattened view), with
+  // the palette revision that wrote it. Resolved inside the artifacts load and committed
+  // with them; reused while that palette revision is unchanged; a failed lookup is not
+  // kept, so the next revision change retries it.
+  const [preEdit, setPreEdit] = useState<{ paletteId: string; flattened: Artifact } | null>(null)
+  const preEditRef = useRef(preEdit)
+  preEditRef.current = preEdit
+  // The raster the shown artwork's cleanup started from (the Flattened/Edited views),
+  // with that cleanup's revision id. It is resolved inside the artifacts load and
+  // committed with them, so it always matches the shown artifacts; it depends only on
+  // the cleanup, so revisions below the same cleanup reuse it without a lookup. A
+  // failed lookup is not kept, so the next revision change retries it.
+  const [preCleanup, setPreCleanup] = useState<{ cleanupId: string; flattened: Artifact } | null>(null)
+  const preCleanupRef = useRef(preCleanup)
+  preCleanupRef.current = preCleanup
   const [projectLoading, setProjectLoading] = useState(false)
+  // A same-project revision change keeps the shown artwork while the new artifacts load.
+  const [revisionLoading, setRevisionLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   // null while bytes are still transferring is never used; during transfer this is
   // the 0-1 fraction, and it flips to null once upload completes and the server is
@@ -298,6 +383,10 @@ export default function App() {
   const [cleanupStep, setCleanupStep] = useState(0)
   const cleanupLive = useRef<CleanupSettings | null>(null)
   const traceDraftSpent = useRef<string | null>(null)
+  // A Create form mounted while another stage was showing measured nothing, so
+  // fit the subject again whenever Create becomes visible.
+  const subjectField = useRef<HTMLTextAreaElement | null>(null)
+  useEffect(() => { if (stage === 'create') growToFit(subjectField.current) }, [stage])
   // A re-run of a stale cleanup with its own settings leaves the Cleanup form's draft.
   const cleanupDraftSpent = useRef<string | null>(null)
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null)
@@ -349,22 +438,22 @@ export default function App() {
   const cleanupStale = cleanupLookup.stale
   // The Cleaned view exists only when the active cleanup changed pixels, i.e. it wrote
   // its own raster; a cleanup run with cleanup off keeps the uncleaned one.
-  const hasCleanup = Boolean(activeCleanup) && flattened?.revision_id === activeCleanup?.id
-  // The raster Palette and Edit decode and edit: the one from before the cleanup.
-  const editableFlattened = hasCleanup ? preCleanupFlattened : flattened
-  const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
-    let node = revisions.find(row => row.id === revision)
-    const seen = new Set<string>()
-    let flatten = false, edit = false, paletteId: string | null = null
-    while (node && !seen.has(node.id)) {
-      seen.add(node.id)
-      if (node.kind === 'palette') { flatten = true; if (!paletteId) paletteId = node.id }
-      if (node.kind === 'label-edit') edit = true
-      const parent = node.parent_revision_id
-      node = parent ? revisions.find(row => row.id === parent) : undefined
-    }
-    return { hasFlatten: flatten, hasEdit: edit, paletteAncestorId: paletteId }
-  }, [revision, revisions])
+  // Judged against the revision the artifacts belong to, never the newer `revision`
+  // whose artifacts are still loading.
+  const shownCleanupLookup = useMemo(() => nearestCleanup(revisions, artifactsRevision), [revisions, artifactsRevision])
+  const shownCleanup = shownCleanupLookup.stale ? null : shownCleanupLookup.revision
+  const hasCleanup = Boolean(shownCleanup) && flattened?.revision_id === shownCleanup?.id
+  const preCleanupFlattened = hasCleanup && preCleanup && preCleanup.cleanupId === shownCleanup?.id ? preCleanup.flattened : null
+  // The before-cleanup lookup failed: the Flattened/Edited views have nothing true to show.
+  const beforeCleanupMissing = hasCleanup && !preCleanupFlattened
+  // The raster Palette and Edit decode and edit: the one from before the cleanup. None
+  // while the shown artifacts belong to another revision, so no edit acts on them.
+  const artifactsCurrent = Boolean(revision) && artifactsRevision === revision
+  const editableFlattened = !artifactsCurrent ? null : hasCleanup ? preCleanupFlattened : flattened ?? null
+  const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => editAncestry(revisions, artifactsRevision), [artifactsRevision, revisions])
+  const preEditFlattened = hasEdit && preEdit && preEdit.paletteId === paletteAncestorId ? preEdit.flattened : null
+  // The pre-edit original is unavailable (its lookup failed): the Flattened view has nothing true to show.
+  const preEditMissing = hasEdit && !preEditFlattened
   const source = artifacts.find(row => row.kind === 'source')
   const flattenAvailable = hasFlatten || Boolean(flattened)
   // Palette and Edit always act on the raster from before any cleanup (the server's
@@ -373,8 +462,8 @@ export default function App() {
   const defaultView: ArtworkView = hasCleanup ? 'cleaned' : hasEdit ? 'edited' : flattenAvailable ? 'flattened' : 'source'
   const viewOptions: { id: ArtworkView; label: string; available: boolean }[] = [
     { id: 'source', label: 'Source', available: Boolean(source) },
-    { id: 'flattened', label: 'Flattened', available: flattenAvailable },
-    { id: 'edited', label: 'Edited', available: hasEdit },
+    { id: 'flattened', label: 'Flattened', available: flattenAvailable && (hasEdit ? !preEditMissing : !beforeCleanupMissing) },
+    { id: 'edited', label: 'Edited', available: hasEdit && !beforeCleanupMissing },
     { id: 'cleaned', label: 'Cleaned', available: hasCleanup },
     { id: 'traced', label: 'Traced', available: Boolean(tracedSvg) },
   ]
@@ -446,7 +535,7 @@ export default function App() {
     }
   }, () => setError('Lost the live job connection')) : undefined, [job?.id])
   useEffect(() => {
-    if (!selected) { setArtifacts([]); setRevision(null); setRevisions([]); loadedProject.current = null; return }
+    if (!selected) { setArtifacts([]); setArtifactsRevision(null); setPreCleanup(null); setRevision(null); setRevisions([]); setRevisionLoading(false); loadedProject.current = null; return }
     const controller = new AbortController()
     // Only blank the canvas when switching projects; an edit that swaps revisions
     // within the same project keeps its artwork (and its zoom/pan) until the new
@@ -454,17 +543,33 @@ export default function App() {
     const switchingProject = loadedProject.current !== selected
     // Drop any adopted-buffer left from the previous project so its ~hundreds of MB do
     // not linger; a revision id never collides across projects, so this is purely tidying.
-    if (switchingProject) { setProjectLoading(true); setArtifacts([]); patchedFlattened.current = null }
+    if (switchingProject) { setProjectLoading(true); setArtifacts([]); setArtifactsRevision(null); setPreCleanup(null); preCleanupRef.current = null; setPreEdit(null); preEditRef.current = null; patchedFlattened.current = null }
+    setRevisionLoading(!switchingProject)
     api.project(selected, controller.signal).then(async project => {
+      if (controller.signal.aborted) return
       setRevisions(project.revisions)
       const latest = revision && project.revisions.some(row => row.id === revision)
         ? revision : project.revisions[0]?.id
       setRevision(latest || null)
-      setArtifacts(latest ? await api.effectiveArtifacts(latest, controller.signal) : [])
+      // The pre-edit original depends only on the ancestry, so it loads alongside; a
+      // failed artifacts request cancels it, so only that failure is reported.
+      const sibling = new AbortController()
+      controller.signal.addEventListener('abort', () => sibling.abort(), { once: true })
+      const [rows, original] = await Promise.all([
+        latest ? api.effectiveArtifacts(latest, controller.signal).catch(cause => { sibling.abort(); throw cause }) : Promise.resolve([]),
+        latest ? preEditRaster(project.revisions, latest, sibling.signal) : Promise.resolve({ raster: null, error: null }),
+      ])
+      const before = latest ? await beforeCleanupRaster(project.revisions, latest, rows, controller.signal) : { raster: null, error: null }
+      // A newer load superseded this one while its last request was settling.
+      if (controller.signal.aborted) return
+      // One commit: the artifacts, whose revision they are, the rasters from before
+      // their cleanup and their edits, and those lookups' outcomes.
+      reportLookup('cleanup', before.error); reportLookup('edit', original.error)
+      setArtifacts(rows); setArtifactsRevision(latest || null); setPreCleanup(before.raster); setPreEdit(original.raster)
       loadedProject.current = selected
     }).catch(cause => {
       if (!controller.signal.aborted) setError(String(cause))
-    }).finally(() => { if (!controller.signal.aborted) setProjectLoading(false) })
+    }).finally(() => { if (!controller.signal.aborted) { setProjectLoading(false); setRevisionLoading(false) } })
     return () => controller.abort()
   }, [selected, revision])
   useEffect(() => {
@@ -546,17 +651,23 @@ export default function App() {
     else if (decision.action === 'clear') { preserveRegion.current = null; setRegionSelection([]) }
     setRegionError('')
     setPaintedCells(new Map()); setPencilError('')
-    if (!revision || !editableFlattened) { setFlattenedPixels(null); setEditorPalette([]); setTracedSize(null); return }
+    // An area/pencil edit already knows exactly which pixels its revision holds, so
+    // adopt that pre-computed buffer (at once, before the revision's artifacts arrive)
+    // rather than decoding a fresh 89-megapixel PNG. The reference is dropped on
+    // navigating away, and once the adopting run sees the artifacts current (the pixel
+    // state then owns the buffer), so it never pins a second one.
+    if (patchedFlattened.current && patchedFlattened.current.revision !== revision) patchedFlattened.current = null
+    const patched = revision && patchedFlattened.current?.revision === revision ? patchedFlattened.current : null
+    if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setEditorPalette([]); return }
     const controller = new AbortController()
-    api.editor(revision, controller.signal).then(state => { setEditorPalette(state.palette); setTracedSize({ width: state.width, height: state.height }) })
+    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setEditorPalette(state.palette) })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
-    // An area/pencil edit already knows exactly which pixels changed, so adopt the
-    // pre-computed buffer for the revision it produced rather than decoding a fresh
-    // 89-megapixel PNG. Kept (not cleared) so the second reload run reuses it too.
-    if (patchedFlattened.current?.revision === revision) {
-      setFlattenedPixels(patchedFlattened.current.pixels)
+    if (patched) {
+      setFlattenedPixels(patched.pixels)
+      if (editableFlattened) patchedFlattened.current = null
       return () => controller.abort()
     }
+    if (!editableFlattened) return () => controller.abort()
     const image = new Image()
     image.onload = () => {
       const canvas = document.createElement('canvas')
@@ -572,6 +683,16 @@ export default function App() {
     image.src = editableFlattened.download_url
     return () => { controller.abort(); image.onload = null }
   }, [revision, editableFlattened?.id])
+  useEffect(() => {
+    // The traced grid is the current revision's (cleaned) raster, whatever the editable
+    // raster; unknown while a jump's artifacts are still loading.
+    setTracedSize(null)
+    if (!revision || !artifactsCurrent || !flattened) return
+    const controller = new AbortController()
+    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setTracedSize({ width: state.width, height: state.height }) })
+      .catch(() => { /* the region/pencil editor reports editor-state failures */ })
+    return () => controller.abort()
+  }, [revision, artifactsCurrent, flattened?.id])
   useEffect(() => {
     // The Edit stage shows one overlay for whichever tool is active: the pencil's
     // staged (uncommitted) pixels in their target colours, or the selected areas.
@@ -620,24 +741,40 @@ export default function App() {
   useEffect(() => {
     if (selectionMode) setView('source')
   }, [selectionMode])
-  useEffect(() => {
-    setPreCleanupFlattened(null)
-    if (!hasCleanup || !current?.id) return
-    const controller = new AbortController()
-    api.effectiveArtifacts(current.id, controller.signal, { beforeCleanup: true })
-      .then(rows => { const before = rows.find(row => row.kind === 'flattened'); if (before) setPreCleanupFlattened(before) })
-      .catch(() => { /* leave null; the Flattened/Edited views fall back to the current flattened */ })
-    return () => controller.abort()
-  }, [hasCleanup, current?.id])
-  useEffect(() => {
-    setPreEditFlattened(null)
-    if (!hasEdit || !paletteAncestorId) return
-    const controller = new AbortController()
-    api.artifacts(paletteAncestorId, controller.signal)
-      .then(rows => { const original = rows.find(row => row.kind === 'flattened'); if (original) setPreEditFlattened(original) })
-      .catch(() => { /* leave null; the Flattened view falls back to the current flattened */ })
-    return () => controller.abort()
-  }, [hasEdit, paletteAncestorId])
+  // The raster the cleanup behind `revisionId` started from, when that cleanup wrote the
+  // shown raster; the cached one when it is the same cleanup. A failed lookup resolves
+  // to none, uncached, with the error the load reports when it commits (none clears it).
+  async function beforeCleanupRaster(rows: Revision[], revisionId: string, shown: Artifact[], signal: AbortSignal): Promise<{ raster: typeof preCleanup; error: string | null }> {
+    const lookup = nearestCleanup(rows, revisionId)
+    const cleanup = lookup.stale ? null : lookup.revision
+    if (!cleanup || shown.find(row => row.kind === 'flattened')?.revision_id !== cleanup.id) return { raster: null, error: null }
+    if (preCleanupRef.current?.cleanupId === cleanup.id) return { raster: preCleanupRef.current, error: null }
+    try {
+      const before = (await api.effectiveArtifacts(cleanup.id, signal, { beforeCleanup: true })).find(row => row.kind === 'flattened')
+      if (!before) throw new Error('no flattened raster precedes the cleanup')
+      return { raster: { cleanupId: cleanup.id, flattened: before }, error: null }
+    } catch (cause) {
+      if (signal.aborted) throw cause
+      return { raster: null, error: `Could not load the artwork from before the cleanup: ${String(cause)}` }
+    }
+  }
+  // The flattened original the edits behind `revisionId` started from: the raster its
+  // nearest palette revision wrote; the cached one for the same palette revision. A
+  // failed lookup resolves to none, uncached, with the error the load reports when it
+  // commits (none clears it).
+  async function preEditRaster(rows: Revision[], revisionId: string, signal: AbortSignal): Promise<{ raster: typeof preEdit; error: string | null }> {
+    const { hasEdit: edited, paletteAncestorId: paletteId } = editAncestry(rows, revisionId)
+    if (!edited || !paletteId) return { raster: null, error: null }
+    if (preEditRef.current?.paletteId === paletteId) return { raster: preEditRef.current, error: null }
+    try {
+      const original = (await api.artifacts(paletteId, signal)).find(row => row.kind === 'flattened')
+      if (!original) throw new Error('the flatten wrote no flattened raster')
+      return { raster: { paletteId, flattened: original }, error: null }
+    } catch (cause) {
+      if (signal.aborted) throw cause
+      return { raster: null, error: `Could not load the flattened artwork from before the edits: ${String(cause)}` }
+    }
+  }
 
   async function deleteProject(id: string) {
     setError('')
@@ -782,19 +919,20 @@ export default function App() {
   } : null
   // A cleanup run with cleanup off keeps its parent's raster, so the pre-cleanup layer is
   // only added when it is a different artifact.
-  const preCleanupLayer: WorkspaceLayer | null = hasCleanup && preCleanupFlattened && preCleanupFlattened.id !== flattened?.id
+  const preCleanupLayer: WorkspaceLayer | null = preCleanupFlattened && preCleanupFlattened.id !== flattened?.id
     && preCleanupFlattened.id !== preEditLayer?.id ? {
       id: preCleanupFlattened.id, name: `${hasEdit ? 'edited' : 'flattened'} (before cleanup) · ${preCleanupFlattened.filename}`,
       url: preCleanupFlattened.download_url, mediaType: preCleanupFlattened.media_type, role: 'image',
     } : null
   const displayLayers = [...workspaceLayers, ...(preEditLayer ? [preEditLayer] : []), ...(preCleanupLayer ? [preCleanupLayer] : [])]
-  const beforeCleanupId = hasCleanup ? (preCleanupFlattened?.id ?? flattened?.id) : flattened?.id
+  // Never the cleaned raster: without its before-cleanup raster the views are unavailable.
+  const beforeCleanupId = hasCleanup ? preCleanupFlattened?.id : flattened?.id
   const viewLayerId = (target: ArtworkView): string | undefined =>
     target === 'source' ? source?.id
       : target === 'traced' ? tracedSvg?.id
         : target === 'cleaned' ? flattened?.id
           : target === 'edited' ? beforeCleanupId
-            : hasEdit ? (preEditLayer?.id ?? flattened?.id) : beforeCleanupId
+            : hasEdit ? preEditLayer?.id : beforeCleanupId
   // The size the next trace uses, from the active cleanup, completed from the raster.
   const traceSize = physicalSize(activeCleanup?.settings.cleanup as Partial<CleanupSettings> | undefined, tracedSize)
 
@@ -933,10 +1071,12 @@ export default function App() {
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
       <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
-        {stage === 'palette' || stage === 'edit' || stage === 'trace' || selectionMode ? <ImageWorkspace
+        {stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
-          canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : 'Palette canvas'}
+          canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionToggles={stage === 'trace' && !selectionMode}
+          livePreview={stage === 'trace' && !selectionMode && revision && tracedSize ? { revisionId: revision, settings: traceSettings, tracedSize } : undefined}
+          loading={revisionLoading}
           preferredLayerId={viewLayerId(view)}
           selectionLabel={stage === 'edit' ? (editTool === 'pencil' ? 'Flattened artwork pencil' : 'Flattened artwork area selector') : selectionMode ? 'Source image preservation-point selector' : undefined}
           onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
@@ -956,7 +1096,7 @@ export default function App() {
         <section id="workflow-panel-create" role="tabpanel" aria-labelledby="workflow-tab-create" className={`side-section create-section workflow-surface ${stage === 'create' ? 'mobile-stage-active' : ''}`} data-stage="create">
         <h2>Create artwork</h2>
         <form className="generation-form" key={sourceRevision?.id ?? 'new-source'} onSubmit={generateImage}>
-          <label>Short subject<textarea name="prompt" placeholder="e.g. sky whale city" defaultValue={generation?.short_prompt ?? ''} required /></label>
+          <label>Short subject<textarea name="prompt" placeholder="e.g. sky whale city" defaultValue={generation?.short_prompt ?? ''} ref={element => { subjectField.current = element; growToFit(element) }} onFocus={event => growToFit(event.currentTarget)} onInput={event => growToFit(event.currentTarget)} required /></label>
           <label>Project name<input name="project_name" placeholder="Defaults to subject" /></label>
           <label>Frame<select name="ratio" value={frame} onChange={event => setFrame(event.target.value)}><option value="landscape">Landscape 3:2</option><option value="portrait">Portrait 2:3</option><option value="square">Square 1:1</option><option value="custom">Custom ratio</option></select><small>Sets the generated canvas shape and maximum output dimensions.</small></label>
           {frame === 'custom' && <div className="custom-ratio"><div className="form-pair"><label>Ratio width<input name="ratio_width" type="number" min="1" step="1" value={customRatio[0]} onChange={event => setCustomRatio(current => [Number(event.target.value), current[1]])} aria-describedby="custom-ratio-guidance" aria-invalid={!customDimensions} required /></label><label>Ratio height<input name="ratio_height" type="number" min="1" step="1" value={customRatio[1]} onChange={event => setCustomRatio(current => [current[0], Number(event.target.value)])} aria-describedby="custom-ratio-guidance" aria-invalid={!customDimensions} required /></label></div><p id="custom-ratio-guidance" role="status" aria-live="polite">{customDimensions ? `Maximum output: ${customDimensions.join(' × ')} px` : 'Use a whole-number ratio between 1:6 and 6:1.'}</p></div>}

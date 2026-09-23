@@ -232,7 +232,9 @@ fit, reconsider its line/curve classification, add one non-corner fit
 constraint, and finally emit the dense boundary only when every modelled form
 still fails validation. Every attempt and final fallback is recorded. Both
 adjacent colours reuse the same recovered chain. `trace-fallbacks.png` is
-emitted only for final dense fallbacks.
+emitted only for final dense fallbacks, together with its transparent RGBA
+twin `trace-fallbacks-overlay.png` (the tightened chains only, on the traced
+pixel grid; see [files and outputs](files-and-outputs.md)).
 
 Straight classification has its own maximum residual and minimum sustained-run
 length; it is independent of Bézier tolerance. Corner classification uses a
@@ -290,6 +292,32 @@ roughly 47 seconds and corpus subjects (about 1.5 megapixels) in 8 to 12
 seconds; the Inkscape preview render is under a second of that. Inkscape 1.2.2 does not render very large previews
 deterministically, so byte identity of `traced.png` is only asserted at
 capped sizes.
+
+## Live window preview
+
+`vinylgen/trace_window.py` traces one window of the segmentation for the web
+Trace canvas's live preview (see [architecture](architecture.md)). It crops the
+labels, palette costs and protected evidence to the window plus a 64 px margin
+and runs the unmodified vector stage on the crop: the shared-boundary graph,
+the canonical chain fit, the overlap/solid-underlayer layer construction and
+the SVG layer writer, with settings normalized as a trace run normalizes them
+(an unset maximum deviation is 2 px). Layer order is inferred once from the
+whole image. The result is only a preview:
+
+- Boundaries crossing the crop edge end there, so their fit near that edge can
+  differ from a full run's; the margin keeps most of that outside the visible
+  window. Underlayer adjacency and the overlap buffer likewise see only the crop.
+- Validation and protected-feature recovery are skipped, so explicitly protected
+  details are not tightened as a full run would, and no audit is written.
+- Nothing is saved; a trace run still creates the revision and its artifacts.
+
+With the crop covering the whole image the preview reproduces the full trace
+exactly. On the development machine a warm 600 × 600 window of the densest area
+of the 5980 × 4208 `sourceup` subject or of an 11264 × 7920 source traces in
+about 0.25 s (boundaries about 0.2 s, fit and SVG about 0.05 s; solid underlayers
+add about 0.25 s), and a settings-only change re-fits cached boundaries in about
+0.05 s. Loading a segmentation the first time costs about 0.8 s and 3.2 s
+respectively.
 
 ## Configuration
 

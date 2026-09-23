@@ -20,6 +20,10 @@ vinylgen/
 │       ├── traced-edge.svg
 │       ├── traced.png
 │       ├── trace-fallbacks.png  # only when local fallbacks occur
+│       ├── trace-fallbacks-overlay.png  # transparent twin of trace-fallbacks.png
+│       ├── trace-semantic-warnings.png  # only when the semantic audit fails
+│       ├── trace-missed-details-overlay.png  # transparent twin of trace-semantic-warnings.png
+│       ├── trace.html
 │       └── trace.json
 ├── tests/
 ├── docs/
@@ -99,7 +103,19 @@ and expands lower layers when overlap is configured above zero. `traced.png` is
 the current preview rendered from `traced-overlap.svg` and must be
 regenerated whenever either SVG changes. It targets 768 DPI, but its longer
 side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
-when local curve-fit fallback occurs. `trace.json` records effective
+when local curve-fit fallback occurs, and `trace-semantic-warnings.png` only
+when the semantic feature audit fails; both paint their marks over the source
+faded toward white, as standalone audit images. Each has a transparent RGBA
+twin written under exactly the same condition and removed with it:
+`trace-fallbacks-overlay.png` draws every tightened (dense-fallback) boundary
+as a cyan stroke over a dark halo, and `trace-missed-details-overlay.png` marks
+every missed source pixel in opaque red. Every other pixel of both is fully
+transparent, and both are the size of the traced pixel grid (`flattened.png`,
+the SVG viewBox), so they register exactly over the traced SVG. The web app
+offers only these transparent twins, as the Trace canvas toggles "Tightened
+boundaries" and "Missed source details (red)"; it never shows the opaque
+images as layers. Runs traced before the twins existed have none and show no
+toggle. `trace.json` records effective
 configuration, backend versions, colour names/order, component/node/hole
 counts, render comparisons, warnings, and structural validation. Its
 `settings` block holds the trace settings and `cleanup_settings` the size,
@@ -140,7 +156,10 @@ chain. Stale concerns accumulate along the walk: once any revision on the path
 marks a concern stale, artifacts of that concern's kinds from older revisions
 are excluded. A cleanup replaces any earlier cleanup, so an older `cleanup`
 revision's raster artifacts (`flattened`, `segmentation`, `palette`, `report`)
-are skipped once a newer cleanup has been passed. `GET
+are skipped once a newer cleanup has been passed. A `trace` run likewise
+writes its complete output set, so it hides every trace-kind artifact of an
+older run, including optional audits (fallbacks, semantic warnings and their
+overlays) it did not repeat. `GET
 /api/revisions/{id}/effective-artifacts?before_cleanup=true` skips every
 cleanup revision's raster, resolving the raster the cleanup stage starts from.
 Revision settings retain the effective settings of their stage and list stale

@@ -118,6 +118,18 @@ class WebPipelineTest(PipelineApiHarness):
         self.assertIn("initial_colours", settings_by_kind["trace"]["palette"])
         self.assertIn("curve_fit_tolerance", settings_by_kind["trace"]["trace"])
 
+    def test_transparent_audit_overlays_are_trace_outputs(self) -> None:
+        # A trace commits every TRACE_FILES entry it wrote; the trace concern's stale
+        # kinds hide them once an upstream change outdates the run.
+        from vinylgen.web.pipeline import MEDIA_TYPES, TRACE_FILES
+        from vinylgen.web.store import STALE_ARTIFACT_KINDS
+        overlays = {"trace-fallbacks-overlay": "trace-fallbacks-overlay.png",
+                    "trace-missed-details-overlay": "trace-missed-details-overlay.png"}
+        for kind, filename in overlays.items():
+            self.assertEqual(TRACE_FILES[kind], filename)
+            self.assertIn(kind, STALE_ARTIFACT_KINDS["trace"])
+            self.assertEqual(MEDIA_TYPES[Path(filename).suffix], "image/png")
+
     async def test_dither_radius_survives_the_api_into_the_flatten_revision(self) -> None:
         # A regression guard: the palette request model must carry dither_radius,
         # otherwise pydantic drops the client's value and the flatten silently

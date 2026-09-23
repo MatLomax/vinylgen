@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import math
-from typing import Literal
+from typing import Callable, Literal
 
 import numpy as np
 from numba import njit
@@ -277,6 +277,7 @@ def _pair_edge_chains(edge_lo: np.ndarray, edge_hi: np.ndarray
 def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                              palette_costs: np.ndarray,
                              protected_features: np.ndarray | None = None,
+                             checkpoint: Callable[[], None] | None = None,
                              ) -> tuple[dict[int, object], SharedBoundaryTrack, dict]:
     """Build the exact dense evidence for a shared-boundary planar partition.
 
@@ -284,7 +285,12 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     to preserve canonical, sub-pixel-adjusted samples, colour ownership,
     topological anchors, and protected-feature evidence.  Line/curve
     classification and fitting belong to the vector fitting stage.
+
+    ``checkpoint``, when given, is called between phases and every few hundred
+    chains; it may raise to abandon the build (the live preview cancels a
+    superseded window this way). It never affects the result.
     """
+    check = checkpoint or (lambda: None)
     height, width = labels.shape
     outside = -1
     height_stride = height + 2
@@ -418,6 +424,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         counts = np.bincount(inverse, minlength=unique_keys.shape[0])
         return unique_keys, totals / counts
 
+    check()
     x_keys, x_means = _accumulate(x_offset_keys, x_offset_values)
     y_keys, y_means = _accumulate(y_offset_keys, y_offset_values)
     subpixel_count = int(np.union1d(x_keys, y_keys).shape[0])
@@ -464,6 +471,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         starts = np.nonzero(boundary)[0]
         ends = np.append(starts[1:], sorted_pair_lo.shape[0])
         for run_start, run_end in zip(starts.tolist(), ends.tolist()):
+            check()
             pair = (int(sorted_pair_lo[run_start]), int(sorted_pair_hi[run_start]))
             keys, chain_starts = _pair_edge_chains(
                 sorted_key_lo[run_start:run_end], sorted_key_hi[run_start:run_end])
@@ -484,6 +492,8 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
 
     for chain_count, (pair, chain, fitted_chain) in enumerate(
             zip(inventory_pairs, inventory_grid, inventory_fitted)):
+        if chain_count % 256 == 0:
+            check()
         chain, fitted_chain = _canonical_samples(chain, fitted_chain)
         line = LineString(fitted_chain)
         protected_edge_indices = tuple(
@@ -527,7 +537,9 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                               "source_samples": len(fitted_chain),
                               "protected_source_edges": len(protected_edge_indices)})
 
+    check()
     faces = list(polygonize(unary_union(lines)))
+    check()
     by_colour: dict[int, list[Polygon]] = {index: [] for index in included}
     for face in faces:
         point = face.representative_point()

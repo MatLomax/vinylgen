@@ -337,4 +337,132 @@ describe('traced vector layers on the editor canvas', () => {
     render(<ImageWorkspace layers={traced} editorMode />)
     expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
   })
+
+  it('shows the preferred layer, never the first, the moment the shown layer disappears', () => {
+    // A trace step swaps every artifact id at once; the new overlap SVG is listed first
+    // but the run's variant is the edge SVG. No render may show or fetch the overlap.
+    const run = (id: string): WorkspaceLayer[] => [
+      { id: `${id}-overlap`, name: `traced-overlap · ${id}`, url: `/${id}-overlap.svg`, mediaType: 'image/svg+xml', role: 'image' },
+      { id: `${id}-edge`, name: `Traced SVG · ${id}`, url: `/${id}-edge.svg`, mediaType: 'image/svg+xml', role: 'image' },
+    ]
+    const { container, rerender } = render(<ImageWorkspace layers={run('a')} preferredLayerId="a-edge" editorMode canvasLabel="Trace canvas" />)
+    expect(container.querySelector('.image-stage img')?.getAttribute('src')).toBe('/a-edge.svg')
+    // Every src the shown <img> is given, including any intermediate render that the
+    // effects would correct before the test could look at the settled DOM.
+    const assigned: string[] = []
+    const setAttribute = Element.prototype.setAttribute
+    const spy = vi.spyOn(Element.prototype, 'setAttribute').mockImplementation(function (this: Element, name: string, value: string) {
+      if (name === 'src' && this.parentElement?.classList.contains('image-stage')) assigned.push(value)
+      return setAttribute.call(this, name, value)
+    })
+    rerender(<ImageWorkspace layers={run('b')} preferredLayerId="b-edge" editorMode canvasLabel="Trace canvas" />)
+    spy.mockRestore()
+    expect(assigned).toEqual(['/b-edge.svg'])
+    expect(container.querySelector('.image-stage img')?.getAttribute('src')).toBe('/b-edge.svg')
+    expect(container.querySelector('.viewport-toolbar span')?.textContent).toBe('Traced SVG · b')
+  })
+
+  it('shows a non-blocking spinner while artifacts load and until the shown image has loaded', () => {
+    const { container, rerender } = render(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" />)
+    const busy = () => container.querySelector('.canvas-busy')
+    expect(busy()?.textContent).toBe('Loading image…')
+    loadUrl(container, '/traced.svg', 4535, 1512)
+    expect(busy()).toBeNull()
+    // A same-project revision fetch keeps the previous image visible under the spinner.
+    rerender(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" loading />)
+    expect(busy()).not.toBeNull()
+    expect(screen.getByAltText('Traced')).toBeTruthy()
+    expect(container.querySelector('.viewport')?.getAttribute('aria-busy')).toBe('true')
+    // The artifacts arrived; the newly shown image is still loading.
+    const next = traced.map(layer => layer.id === 'svg' ? { ...layer, id: 'svg2', url: '/traced-2.svg' } : layer)
+    rerender(<ImageWorkspace layers={next} preferredLayerId="svg2" editorMode canvasLabel="Trace canvas" />)
+    expect(busy()).not.toBeNull()
+    loadUrl(container, '/traced-2.svg', 4535, 1512)
+    expect(busy()).toBeNull()
+    expect(container.querySelector('.viewport')?.getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('ends the spinner only when the shown URL itself settles, loaded or failed', () => {
+    const withSvg = (url: string) => traced.map(layer => layer.id === 'svg' ? { ...layer, id: url, url } : layer)
+    const { container, rerender } = render(<ImageWorkspace layers={withSvg('/traced.svg')} preferredLayerId="/traced.svg" editorMode canvasLabel="Trace canvas" />)
+    const busy = () => container.querySelector('.canvas-busy')
+    const shown = () => container.querySelector('.image-stage img') as HTMLImageElement
+    const settle = (event: 'load' | 'error', currentSrc?: string) => {
+      Object.defineProperty(shown(), 'currentSrc', { configurable: true, value: currentSrc === undefined ? '' : new URL(currentSrc, document.baseURI).href })
+      if (event === 'load') fireEvent.load(shown()); else fireEvent.error(shown())
+    }
+    settle('load')
+    expect(busy()).toBeNull()
+    rerender(<ImageWorkspace layers={withSvg('/traced-2.svg')} preferredLayerId="/traced-2.svg" editorMode canvasLabel="Trace canvas" />)
+    expect(busy()).not.toBeNull()
+    // A load still reporting the previous image does not end the new one's spinner.
+    settle('load', '/traced.svg')
+    expect(busy()).not.toBeNull()
+    settle('load', '/traced-2.svg')
+    expect(busy()).toBeNull()
+    // A failed request settles too, so the spinner never sticks.
+    rerender(<ImageWorkspace layers={withSvg('/traced-3.svg')} preferredLayerId="/traced-3.svg" editorMode canvasLabel="Trace canvas" />)
+    expect(busy()).not.toBeNull()
+    settle('error', '/traced-3.svg')
+    expect(busy()).toBeNull()
+    // An error still reporting another image leaves the spinner up.
+    rerender(<ImageWorkspace layers={withSvg('/traced-4.svg')} preferredLayerId="/traced-4.svg" editorMode canvasLabel="Trace canvas" />)
+    settle('error', '/traced-3.svg')
+    expect(busy()).not.toBeNull()
+    settle('error')
+    expect(busy()).toBeNull()
+  })
+
+  it('never registers the previous image\'s size under the newly shown layer', () => {
+    const run = (id: string, url: string): WorkspaceLayer[] => [{ id, name: id, url, mediaType: 'image/png', role: 'image' }]
+    const { container, rerender } = render(<ImageWorkspace layers={run('a', '/a.png')} preferredLayerId="a" editorMode />)
+    const stage = () => container.querySelector('.image-stage') as HTMLElement
+    const shown = () => container.querySelector('.image-stage img') as HTMLImageElement
+    const loadShown = (currentSrc: string, width: number, height: number) => {
+      Object.defineProperties(shown(), {
+        currentSrc: { configurable: true, value: new URL(currentSrc, document.baseURI).href },
+        naturalWidth: { configurable: true, value: width }, naturalHeight: { configurable: true, value: height },
+      })
+      fireEvent.load(shown())
+    }
+    loadShown('/a.png', 300, 200)
+    expect(stage().style.width).toBe('300px')
+    rerender(<ImageWorkspace layers={run('b', '/b.png')} preferredLayerId="b" editorMode />)
+    // A late load of the previous image (its own size) must not size the new layer.
+    loadShown('/a.png', 300, 200)
+    loadShown('/a.png', 999, 999)
+    expect(stage().style.width).not.toBe('999px')
+    loadShown('/b.png', 640, 480)
+    expect(stage().style.width).toBe('640px')
+  })
+
+  it('announces loading through a polite live region without adding a status role', () => {
+    const { container } = render(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" loading />)
+    const live = container.querySelector('[aria-live="polite"]')
+    expect(live?.textContent).toBe('Loading image…')
+    // Outside the busy (and possibly inert) viewport, so assistive tech announces it.
+    expect(live?.closest('[aria-busy], [inert]')).toBeNull()
+    expect(container.querySelector('.canvas-busy')?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('keeps an inspection toggle on when a new run replaces the overlay of the same kind', () => {
+    const run = (id: string): WorkspaceLayer[] => [
+      { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
+      { id: `${id}-svg`, name: 'Traced', url: `/${id}.svg`, mediaType: 'image/svg+xml', role: 'image', sizeFrom: 'flat' },
+      { id: `${id}-marks`, name: 'Tightened boundaries', url: `/${id}-marks.png`, mediaType: 'image/png', role: 'overlay', kind: 'trace-fallbacks-overlay' },
+    ]
+    const { container, rerender } = render(<ImageWorkspace layers={run('a')} preferredLayerId="a-svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    loadUrl(container, '/flat.png', 300, 100)
+    loadUrl(container, '/a.svg', 300, 100)
+    loadUrl(container, '/a-marks.png', 300, 100)
+    const toggle = () => within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Tightened boundaries') as HTMLInputElement
+    fireEvent.click(toggle())
+    expect(toggle().checked).toBe(true)
+    rerender(<ImageWorkspace layers={run('b')} preferredLayerId="b-svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    loadUrl(container, '/b.svg', 300, 100)
+    loadUrl(container, '/b-marks.png', 300, 100)
+    expect(toggle().checked).toBe(true)
+    expect((screen.getByAltText('Tightened boundaries') as HTMLImageElement).getAttribute('src')).toBe('/b-marks.png')
+  })
 })

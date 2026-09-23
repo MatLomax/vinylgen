@@ -85,7 +85,8 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .image-stage img, .compare-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
 .image-stage img { display: block; object-fit: fill; pointer-events: none; }
 .compare-layer img { width: 100%; height: 100%; }
-.inspection-overlay { opacity: .8; mix-blend-mode: multiply; }
+/* Audit overlays are transparent except for their marks, so they stack normally over the art. */
+.inspection-overlay { opacity: 1; mix-blend-mode: normal; }
 .inspection-overlay.mask { opacity: .55; mix-blend-mode: screen; }
 .layer-probes { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
 .layer-probes img { width: auto; height: auto; }
@@ -236,6 +237,11 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .artwork-preview img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; }
 .inspect-trigger { position: absolute; inset-block-start: 14px; inset-inline-end: 14px; display: grid; width: 44px; height: 44px; padding: 0; place-items: center; border-radius: 50%; background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); }
 .inspect-trigger svg { width: 20px; height: 20px; }
+.canvas-busy { position: absolute; z-index: 6; inset-block-end: 14px; inset-inline-end: 14px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); color: var(--text-label); font-size: 13px; pointer-events: none; }
+.canvas-busy svg { flex: none; width: 16px; height: 16px; color: var(--accent); animation: spin .8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .canvas-busy svg { animation: none; }
+}
 .canvas-tools { position: absolute; z-index: 6; inset-block-start: 14px; inset-inline-end: 14px; display: grid; gap: 8px; }
 .canvas-tool { display: grid; width: 44px; height: 44px; padding: 0; place-items: center; border-radius: 50%; background: rgba(12, 14, 13, .92); color: var(--text-strong); box-shadow: var(--shadow-float); }
 .canvas-tool svg { width: 20px; height: 20px; }
@@ -716,4 +722,18 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
   .workflow-nav button small { display: none; }
   .side-section label, .setting-field > span { font-size: 13px; }
   .setting-field > small, .check-field small, .generation-form label > small { font-size: 13px; }
+}
+/* Live trace preview on the Trace canvas: the switch, its badge and states sit top-left;
+   the previewed shapes sit inside the transformed image stage at their window. */
+.image-stage img.trace-preview-shapes { inset: auto; }
+.trace-preview-controls { position: absolute; z-index: 6; inset-block-start: 14px; inset-inline-start: 14px; display: grid; gap: 6px; justify-items: start; max-width: min(320px, calc(100% - 90px)); pointer-events: none; }
+.trace-preview-announcer { display: grid; gap: 6px; justify-items: start; }
+.trace-preview-switch { pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); color: var(--text-label); font-size: 13px; cursor: pointer; }
+.trace-preview-switch input { flex: 0 0 auto; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
+.trace-preview-badge, .trace-preview-status { display: flex; align-items: center; gap: 6px; margin: 0; padding: 5px 10px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); color: var(--text-label); font-size: 12px; line-height: 1.4; pointer-events: none; }
+.trace-preview-badge { border: 1px solid var(--accent); color: var(--accent); font-weight: 700; letter-spacing: .02em; }
+.trace-preview-badge svg { flex: none; width: 14px; height: 14px; animation: spin .8s linear infinite; }
+.trace-preview-status.error { color: var(--error); overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  .trace-preview-badge svg { animation: none; }
 }
