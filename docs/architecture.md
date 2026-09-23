@@ -9,7 +9,8 @@ source raster
   -> palette.py        palette inference orchestration
   -> segmentation.py   AA rejection and intentional thin-feature protection
   -> contracts.py      versioned segmentation.npz handoff
-  -> cutter_cleanup.py optional physical feature removal/widening
+  -> cutter_cleanup.py cleanup stage: physical size, removed colour, optional
+                       physical feature removal/widening of the labels
   -> boundary_graph.py dense confidence-adjusted shared sub-pixel evidence
   -> curve_fit.py      straight sections, corners, and cubic Bezier emission
   -> svg_writer.py     Inkscape layers and SVG serialization
@@ -23,11 +24,38 @@ source raster
 
 The web application calls the same Python orchestration functions through
 typed background jobs in `vinylgen/web/pipeline.py`; it never constructs shell
-commands for palette inference or tracing. Successful stages create immutable,
-parent-linked revisions. Their settings record the complete effective palette
-and trace configuration plus concern-level downstream staleness. Artifact
-lookup walks revision ancestry, so a trace revision reuses its parent's source
-and segmentation without copying blobs.
+commands for palette inference, cleanup or tracing. Successful stages create
+immutable, parent-linked revisions. Their settings record the complete
+effective configuration of their stage plus concern-level downstream staleness.
+Artifact lookup walks revision ancestry, so a trace revision reuses its
+parent's source and segmentation without copying blobs.
+
+The web workflow is Flatten, Palette, Edit, Cleanup, Trace. Cleanup
+(`vinylgen/web/cleanup.py`) owns the physical output size, the removed colour
+and the cutter cleanup. A `cleanup` revision records them under
+`settings.cleanup`. A cleanup always starts from the raster before any
+earlier cleanup, so re-running it with cleanup off, another size or other
+thresholds replaces that cleanup rather than stacking on it. The user's
+explicit protection wins: explicitly protected detail is never removed or
+consumed. When the run changed pixels the revision also holds the cleaned
+`flattened.png`, a `segmentation.npz` whose labels are cleaned and whose
+automatic protection is cleared where labels changed (palette costs, explicit
+protection and palette carried unchanged), refreshed palette shares and a
+re-rendered `report.png`. A run that changed nothing records only the size,
+removed colour and its raster's palette shares, and its effective raster is
+the uncleaned one. The trace job never
+cleans: it traces the segmentation it inherits and reads the size and removed
+colour from the nearest `cleanup` ancestor. When a revision in between marks
+cleanup stale (a flatten, a label edit or a source upscale), the trace is
+blocked until Cleanup is run again; with no cleanup ancestor at all it traces
+in pixels and cuts every colour. Trace revisions recorded before the cleanup
+stage embed those values in `settings.trace`; they are left as recorded, the
+web form shows them in Cleanup, and a new trace from one has no cleanup
+ancestor. The trace CLI keeps its size, removed-colour and cleanup flags and
+applies the same `cutter_cleanup.apply_cleanup` in memory before tracing,
+leaving the subject's files unchanged. Like the web trace, it infers layer
+order and validates against the cleaned labels and the raster derived from
+them, which is what was traced.
 
 The palette and region editors are deterministic branches between palette
 inference and tracing. They use the shared artwork canvas and intentionally
@@ -35,7 +63,9 @@ offer no fill, lasso, protection-painting, or manual RGB tools. Whole-colour
 merges, name metadata, point-selected four-way connected region reassignment,
 and a per-pixel pencil that repaints individual pixels to an existing palette
 colour create new parent-linked revisions; `segmentation.labels` remains
-authoritative and `flattened.png` is derived mechanically. Because connectivity
+authoritative and `flattened.png` is derived mechanically. Editors always act on
+the raster from before any cleanup: the Cleaned image is shown but never
+edited, and an edit after a cleanup marks that cleanup stale. Because connectivity
 is recomputed from the label grid, a pencil stroke that severs a region splits
 it into separate components with no extra bookkeeping. Undo and redo navigate
 revision ancestry.
@@ -60,8 +90,8 @@ drives the local ComfyUI directly over HTTP (`vinylgen.web.comfy_client`,
 redraw under a tile ControlNet, adding real detail the low-resolution generation
 lacks. Because it runs a sampler it is generative, so it commits a new immutable,
 parent-linked `upscaled-source` revision (never mutating its parent) whose
-`source.png` is the redrawn canvas and which marks palette, trace, validation,
-and export stale. It is distinct from the palette stage's `flatten_upscale`,
+`source.png` is the redrawn canvas and which marks palette, cleanup, trace,
+validation, and export stale. It is distinct from the palette stage's `flatten_upscale`,
 which is post-flatten, deterministic, and palette-preserving for trace precision;
 the two compose. Sampling resolution is capped for the deployment's VRAM, invalid
 model selections are rejected before the job is queued, and an unreachable
@@ -97,8 +127,12 @@ desktop Inkscape process.
 - Segmentation decides which raster structures are AA and which are protected
   intentional features. Its result is persisted, validated, and consumed by
   tracing.
-- Cutter cleanup is optional and operates on labels using physical or pixel
-  thresholds; its defaults remain zero.
+- Cutter cleanup is its own stage between editing and tracing. It is optional
+  and operates on labels using physical or pixel thresholds; its defaults
+  remain zero. One physical size governs both its thresholds and the traced
+  SVG. The removed colour is excluded from cleanup and keeps its pixels.
+- Tracing never cleans labels itself; it consumes the cleanup stage's labels,
+  size and removed colour (the CLI runs the same cleanup inline first).
 - Every colour interface has one stable canonical chain identity. Pair-specific
   palette costs move shared vertices away from the integer grid without
   allowing adjacent colours to fit their interface independently.

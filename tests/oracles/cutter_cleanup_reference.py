@@ -7,11 +7,11 @@ import numpy as np
 from scipy import ndimage
 
 from vinylgen.colour import srgb_to_lab
-from vinylgen.contracts import TraceSettings
+from vinylgen.contracts import CleanupSettings
 
 
 def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
-                   settings: TraceSettings, units_per_pixel: float) -> tuple[np.ndarray, dict]:
+                   settings: CleanupSettings, units_per_pixel: float) -> tuple[np.ndarray, dict]:
     result = labels.copy()
     summary = {"enabled": settings.cleanup, "action": settings.cleanup_action,
                "removed_regions": 0, "removed_pixels": 0, "widened_regions": 0,

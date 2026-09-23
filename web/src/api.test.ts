@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, followJob, type UpscaleSettings } from './api'
-import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -13,6 +13,16 @@ describe('abortable project artifact requests', () => {
     await api.project('project-1', controller.signal)
 
     expect(fetch).toHaveBeenCalledWith('/api/projects/project-1', { signal: controller.signal })
+  })
+
+  it('asks for the raster from before cleanup only when requested', async () => {
+    const controller = new AbortController()
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify([]))))
+    vi.stubGlobal('fetch', fetch)
+    await api.effectiveArtifacts('revision-1', controller.signal)
+    await api.effectiveArtifacts('revision-1', controller.signal, { beforeCleanup: true })
+    expect(fetch).toHaveBeenNthCalledWith(1, '/api/revisions/revision-1/effective-artifacts', { signal: controller.signal })
+    expect(fetch).toHaveBeenNthCalledWith(2, '/api/revisions/revision-1/effective-artifacts?before_cleanup=true', { signal: controller.signal })
   })
 
   it('passes the caller signal to Inkscape handoff requests', async () => {
@@ -73,19 +83,25 @@ describe('abortable project artifact requests', () => {
     expect(request).not.toHaveProperty('revision_id')
   })
 
-  it('sends complete typed palette and trace settings to pipeline jobs', async () => {
+  it('sends complete typed palette, cleanup and trace settings to pipeline jobs', async () => {
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ id: 'job' }))))
     vi.stubGlobal('fetch', fetch)
     await api.startPipeline('palette', 'project-1', 'revision-1', { palette: DEFAULT_PALETTE_SETTINGS })
     await api.startPipeline('trace', 'project-1', 'revision-1', { trace: DEFAULT_TRACE_SETTINGS })
+    await api.startPipeline('cleanup', 'project-1', 'revision-1', { cleanup: DEFAULT_CLEANUP_SETTINGS })
     expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
       kind: 'palette', project_id: 'project-1', revision_id: 'revision-1', palette: DEFAULT_PALETTE_SETTINGS,
     })
     expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
       kind: 'trace', project_id: 'project-1', revision_id: 'revision-1', trace: DEFAULT_TRACE_SETTINGS,
     })
+    expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({
+      kind: 'cleanup', project_id: 'project-1', revision_id: 'revision-1', cleanup: DEFAULT_CLEANUP_SETTINGS,
+    })
     expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(29)
-    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(21)
+    // The same field counts as the server's TraceJobSettings and CleanupJobSettings.
+    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(13)
+    expect(Object.keys(DEFAULT_CLEANUP_SETTINGS)).toHaveLength(8)
   })
 
 })

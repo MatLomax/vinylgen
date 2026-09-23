@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { PaletteColour, PaletteSettings, TraceSettings } from './api'
+import type { CleanupSettings, PaletteColour, PaletteSettings, TraceSettings } from './api'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 1, similar_delta_e: 28, small_share: .004, small_delta_e: 36, fold_small_colours: true,
@@ -7,26 +7,55 @@ export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   intentional_line_min_contrast: 12, intentional_line_min_length: 8, protect_intentional_lines: true, aa_ambiguity_margin: 7, aa_smoothness: 2.5, aa_resolution_passes: 5, resolve_antialiasing: true, flatten_upscale: 1, flatten_smooth_edges: true,
   protected_component_points: [], preserved_colour_points: [], distinct_colour_point_pairs: [],
 }
-export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
-  width_mm: null, height_mm: null, overlap: 0, solid_underlayers: false, remove_colour: null, layer_order: null, corner_threshold: 60,
-  curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, corner_straightness: 1.6,
+export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
+  width_mm: null, height_mm: null, remove_colour: null,
   cleanup: false, cleanup_action: 'remove', min_detail_width: 0, min_region_area: 0, remove_below_width: 0,
+}
+export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
+  overlap: 0, solid_underlayers: false, layer_order: null, corner_threshold: 60,
+  curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, corner_straightness: 1.6,
   soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
+}
+const CLEANUP_KEYS = Object.keys(DEFAULT_CLEANUP_SETTINGS) as (keyof CleanupSettings)[]
+// Trace settings recorded before the cleanup stage existed embed the physical size, the
+// removed colour and the cutter cleanup. Those values belong to the Cleanup form; this
+// picks them out of a stored trace record, or returns undefined when it holds none.
+export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<CleanupSettings> | undefined {
+  const picked = Object.fromEntries(CLEANUP_KEYS.filter(key => key in stored).map(key => [key, stored[key]]))
+  return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
 // Bring stored trace settings up to the current fields. Settings recorded without
 // `corner_straightness` detected corners with their straight-line deviation, so they
 // load with that value (absent both, the 1.6 px default applies when merged over the
 // defaults). A `curve_optimization: false` flag loads as a straight-line deviation of
-// 0 (straighten only exactly straight runs); the flag itself is dropped.
+// 0 (straighten only exactly straight runs); the flag itself is dropped. Embedded
+// cleanup-stage fields (see legacyCleanupSettings) are dropped from the trace form.
 export function normalizeTraceSettings<T extends Partial<TraceSettings>>(stored: T & { curve_optimization?: unknown }): T {
   const { curve_optimization: legacy, ...rest } = stored
   const next: Partial<TraceSettings> = { ...rest }
+  for (const key of CLEANUP_KEYS) delete (next as Record<string, unknown>)[key]
   if (next.corner_straightness == null) {
     delete next.corner_straightness
     if (typeof next.straight_line_max_deviation === 'number') next.corner_straightness = next.straight_line_max_deviation
   }
   if (legacy === false) next.straight_line_max_deviation = 0
   return next as T
+}
+// The physical size a trace uses, from its cleanup: both sides in mm, with a one-sided
+// size completed from the raster's proportions once those are known.
+export type PhysicalSize = { width: number | null; height: number | null }
+export function physicalSize(cleanup: Partial<CleanupSettings> | null | undefined, raster: { width: number; height: number } | null): PhysicalSize | null {
+  const width = cleanup?.width_mm ?? null, height = cleanup?.height_mm ?? null
+  if (width === null && height === null) return null
+  if (width !== null && height === null) return { width, height: raster ? width * raster.height / raster.width : null }
+  if (height !== null && width === null) return { width: raster ? height * raster.width / raster.height : null, height }
+  return { width, height }
+}
+export function formatPhysicalSize(size: PhysicalSize | null): string {
+  if (!size) return 'No physical size (px)'
+  const mm = (value: number) => String(Number(value.toFixed(2)))
+  if (size.width !== null && size.height !== null) return `Size: ${mm(size.width)} × ${mm(size.height)} mm (set in Cleanup)`
+  return size.width !== null ? `Size: ${mm(size.width)} mm wide (set in Cleanup)` : `Size: ${mm(size.height!)} mm high (set in Cleanup)`
 }
 export type SelectionMode = 'protect-component' | 'preserve-colour' | 'distinct-first' | 'distinct-second' | null
 
@@ -65,7 +94,7 @@ export function Slider({ label, help, value, onChange, min, max, step, format, d
   </Field>
 }
 // A feature sub-group whose master checkbox skips its whole stage when off, greying
-// out the dependent fields. Mirrors the trace stage's cutter-cleanup gating.
+// out the dependent fields.
 function ToggleGroup({ label, help, on, dirty, onToggle, children }: {
   label: string; help: string; on: boolean; dirty?: boolean; onToggle: (on: boolean) => void; children: React.ReactNode
 }) {
@@ -132,18 +161,23 @@ function LayerOrderList({ colours, order, onChange, dirty }: {
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null }: {
-  stage: 'flatten' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null }: {
+  stage: 'flatten' | 'cleanup' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
+  cleanup?: CleanupSettings; setCleanup?: (value: CleanupSettings) => void; baseCleanup?: CleanupSettings
   paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
   tracedSize?: { width: number; height: number } | null
+  // The physical size the trace uses, set by the nearest cleanup; null traces in px.
+  traceSize?: PhysicalSize | null
 }) {
   const p = <K extends keyof PaletteSettings>(key: K, value: PaletteSettings[K]) => setPalette({ ...palette, [key]: value })
   const t = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => setTrace({ ...trace, [key]: value })
+  const c = <K extends keyof CleanupSettings>(key: K, value: CleanupSettings[K]) => setCleanup({ ...cleanup, [key]: value })
   const pd = (key: keyof PaletteSettings) => !sameSetting(palette[key], basePalette[key])
   const td = (key: keyof TraceSettings) => !sameSetting(trace[key], baseTrace[key])
+  const cd = (key: keyof CleanupSettings) => !sameSetting(cleanup[key], baseCleanup[key])
   // Fitting settings are always pixels of the traced image; physical settings follow
-  // the configured output size.
-  const physical = trace.width_mm !== null || trace.height_mm !== null
+  // the output size: the Cleanup form's own, and for Trace the size its cleanup set.
+  const physical = stage === 'cleanup' ? cleanup.width_mm !== null || cleanup.height_mm !== null : traceSize !== null
   const length = physical ? 'mm' : 'px'
   const area = physical ? 'mm²' : 'px²'
   const preservationDirty = pd('protected_component_points') || pd('preserved_colour_points') || pd('distinct_colour_point_pairs')
@@ -206,18 +240,25 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       </div>{selectionMode && <p className="selection-status" role="status">{selectionMode === 'distinct-second' ? 'Now select the second colour.' : selectionMode === 'distinct-first' ? 'Select the first colour.' : 'Select the intended source detail.'}</p>}
       <PointList title="Protected details" points={palette.protected_component_points} onRemove={index => p('protected_component_points', palette.protected_component_points.filter((_, row) => row !== index))} /><PointList title="Preserved colours" points={palette.preserved_colour_points} onRemove={index => p('preserved_colour_points', palette.preserved_colour_points.filter((_, row) => row !== index))} />
       {palette.distinct_colour_point_pairs.length > 0 && <div className="selection-list"><strong>Separate pairs</strong>{palette.distinct_colour_point_pairs.map((pair, index) => <span key={index}><code>{pair[0].join(', ')} ↔ {pair[1].join(', ')}</code><button type="button" className="secondary" onClick={() => p('distinct_colour_point_pairs', palette.distinct_colour_point_pairs.filter((_, row) => row !== index))}>Remove</button></span>)}</div>}</section>
+    </> : stage === 'cleanup' ? <>
+      <section className="settings-group"><h3>Physical output</h3><p>Set the vinyl size and the colour left uncut. Trace uses both; changing them means running Cleanup again.</p><div className="settings-grid">
+        <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches overlap and cleanup to mm; it never changes the curves." value={cleanup.width_mm} optional dirty={cd('width_mm')} onChange={value => c('width_mm', value)} />
+        <NumberField label="Height (mm)" help="Cut height of the whole design in mm, as an alternative to width. Blank both to keep overlap and cleanup in px." value={cleanup.height_mm} optional dirty={cd('height_mm')} onChange={value => c('height_mm', value)} />
+        <Field label="Remove colour" help="Leave one colour out of the cut, by name or hex, usually the colour of the backing material. Blank cuts every colour." dirty={cd('remove_colour')}><input value={cleanup.remove_colour ?? ''} placeholder="None" onChange={event => c('remove_colour', event.target.value || null)} /></Field>
+      </div></section>
+      <section className="settings-group"><h3>Cutter cleanup</h3><p>Optionally remove or widen geometry that is difficult to cut.</p><div className="settings-grid">
+        <label className="check-field"><input type="checkbox" checked={cleanup.cleanup} onChange={event => c('cleanup', event.target.checked)} /><span><strong>Enable cutter cleanup<DirtyDot dirty={cd('cleanup')} /></strong><small>On: remove or widen parts too small or thin to cut and weed, using the rules below, before tracing. Off: the run only records the size and removed colour, and the traced shapes follow the flattened image exactly.</small></span></label>
+        <Field label="Cleanup action" help="Remove: small or thin parts become a neighbouring colour. Widen: thin parts grow into their neighbours. Remove then widen: drop the smallest, then widen the rest." dirty={cd('cleanup_action')}><select value={cleanup.cleanup_action} onChange={event => c('cleanup_action', event.target.value as CleanupSettings['cleanup_action'])}><option value="remove">Remove</option><option value="widen">Widen</option><option value="remove_then_widen">Remove then widen</option></select></Field>
+        <NumberField label={`Minimum detail width (${length})`} help={`Parts thinner than this, in ${length}, are removed (Remove) or widened (Widen, Remove then widen). 0 turns it off; higher cleans up more.`} value={cleanup.min_detail_width} dirty={cd('min_detail_width')} onChange={value => c('min_detail_width', value!)} /><NumberField label={`Minimum region area (${area})`} help={`Regions smaller than this area, in ${area}, are removed (with Widen, grown instead). 0 turns it off; higher cleans up larger specks.`} value={cleanup.min_region_area} dirty={cd('min_region_area')} onChange={value => c('min_region_area', value!)} /><NumberField label={`Remove below width (${length})`} help={`With Remove then widen: parts thinner than this, in ${length}, are removed before the rest are widened. Keep it below Minimum detail width; 0 turns it off.`} value={cleanup.remove_below_width} dirty={cd('remove_below_width')} onChange={value => c('remove_below_width', value!)} />
+      </div></section>
     </> : <>
       {tracedSize && <p className="settings-save-note traced-size">Traced image: {tracedSize.width} × {tracedSize.height} px</p>}
-      <section className="settings-group"><h3>Physical output &amp; cleanup</h3><p>Set vinyl size and optionally remove or widen geometry that is difficult to cut.</p><div className="settings-grid">
-        <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches overlap and cleanup to mm; it never changes the curves." value={trace.width_mm} optional dirty={td('width_mm')} onChange={value => t('width_mm', value)} />
-        <NumberField label="Height (mm)" help="Cut height of the whole design in mm, as an alternative to width. Blank both to keep overlap and cleanup in px." value={trace.height_mm} optional dirty={td('height_mm')} onChange={value => t('height_mm', value)} />
+      <section className="settings-group"><h3>Layers &amp; overlap</h3><p>Stack the colour layers for cutting. The physical size and removed colour are set in Cleanup.</p>
+        <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
+        <div className="settings-grid">
         <NumberField label={`Layer overlap (${length})`} help={`How far each lower layer extends under the layers above it, in ${length}. 0: colours meet edge to edge. Higher: more forgiving of misaligned layers, uses more vinyl.`} value={trace.overlap} dirty={td('overlap')} onChange={value => t('overlap', value!)} />
         <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>On: each lower layer is cut as a solid shape under everything above it, so no edges are shared and alignment is easiest; uses the most vinyl. Replaces the overlap distance.</small></span></label>
-        <Field label="Remove colour" help="Leave one colour out of the cut, by name or hex, usually the colour of the backing material. Blank cuts every colour." dirty={td('remove_colour')}><input value={trace.remove_colour ?? ''} placeholder="None" onChange={event => t('remove_colour', event.target.value || null)} /></Field>
         {trace.solid_underlayers && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} />}
-        <label className="check-field"><input type="checkbox" checked={trace.cleanup} onChange={event => t('cleanup', event.target.checked)} /><span><strong>Enable cutter cleanup<DirtyDot dirty={td('cleanup')} /></strong><small>On: remove or widen parts too small or thin to cut and weed, using the rules below, before tracing. Off: the traced shapes follow the flattened image exactly.</small></span></label>
-        <Field label="Cleanup action" help="Remove: small or thin parts become a neighbouring colour. Widen: thin parts grow into their neighbours. Remove then widen: drop the smallest, then widen the rest." dirty={td('cleanup_action')}><select value={trace.cleanup_action} onChange={event => t('cleanup_action', event.target.value as TraceSettings['cleanup_action'])}><option value="remove">Remove</option><option value="widen">Widen</option><option value="remove_then_widen">Remove then widen</option></select></Field>
-        <NumberField label={`Minimum detail width (${length})`} help={`Parts thinner than this, in ${length}, are removed (Remove) or widened (Widen, Remove then widen). 0 turns it off; higher cleans up more.`} value={trace.min_detail_width} dirty={td('min_detail_width')} onChange={value => t('min_detail_width', value!)} /><NumberField label={`Minimum region area (${area})`} help={`Regions smaller than this area, in ${area}, are removed (with Widen, grown instead). 0 turns it off; higher cleans up larger specks.`} value={trace.min_region_area} dirty={td('min_region_area')} onChange={value => t('min_region_area', value!)} /><NumberField label={`Remove below width (${length})`} help={`With Remove then widen: parts thinner than this, in ${length}, are removed before the rest are widened. Keep it below Minimum detail width; 0 turns it off.`} value={trace.remove_below_width} dirty={td('remove_below_width')} onChange={value => t('remove_below_width', value!)} />
       </div></section>
       <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Distances here are pixels of the traced image, whatever the physical size.</p><div className="settings-grid">
         <NumberField label="Corner threshold" help="How sharp a bend, in degrees, must be to become a hard corner. Lower: more bends become sharp points. Higher: gentle bends stay smooth curves." value={trace.corner_threshold} max={180} dirty={td('corner_threshold')} onChange={value => t('corner_threshold', value!)} /><NumberField label="Corner analysis span (px)" help="Length of edge, in px, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored." value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Corner straightness (px)" help="How far, in px, the edges beside a corner may wobble and still confirm it. Lower: only clean straight edges make sharp corners. Higher: rougher edges still get sharp corners." value={trace.corner_straightness} dirty={td('corner_straightness')} onChange={value => t('corner_straightness', value!)} /><NumberField label="Curve-fit tolerance (px)" help="How far, in px, a curve may stray from the pixel edge. Lower: follows the pixels more closely, more nodes. Higher: smoother, fewer nodes." value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (px)" help="How far, in px, an edge may bend and still be drawn as one straight line. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved." value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (px)" help="Shortest edge, in px, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved." value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (px)" help="In px (Automatic: 2): caps the curve-fit tolerance, limits how far a corner may shift, and sets how much drift the check after tracing allows. Lower than the curve-fit tolerance: tighter curves, more nodes, stricter check; higher: only relaxes the check. Does not limit straight lines." value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />

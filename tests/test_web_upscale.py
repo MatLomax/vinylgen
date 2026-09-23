@@ -166,7 +166,7 @@ class UpscaleRunnerTest(unittest.TestCase):
         self.assertEqual(revision["settings"]["checkpoint"],
                          "blue_pencil-XL-v7.0.0.safetensors")
         self.assertEqual(revision["settings"]["stale_concerns"],
-                         ["palette", "trace", "validation", "export"])
+                         ["palette", "cleanup", "trace", "validation", "export"])
 
         artifacts = self.store.effective_artifacts(revision_id)
         self.assertIn("source", artifacts)

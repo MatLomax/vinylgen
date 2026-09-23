@@ -101,22 +101,74 @@ regenerated whenever either SVG changes. It targets 768 DPI, but its longer
 side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
 when local curve-fit fallback occurs. `trace.json` records effective
 configuration, backend versions, colour names/order, component/node/hole
-counts, cleanup, render comparisons, warnings, and structural validation.
+counts, render comparisons, warnings, and structural validation. Its
+`settings` block holds the trace settings and `cleanup_settings` the size,
+removed colour and cleanup settings it used, with the physical size resolved.
+`cleanup` holds the cleanup summary when the trace CLI cleaned inline, and is
+`null` when the labels came from the cleanup stage, whose `cleanup.json` holds
+that summary.
+
+### Cleanup artifacts
+
+The cleanup stage writes `cleanup.json`: the requested and resolved settings,
+the raster dimensions, pixel or physical mode with the physical size in mm,
+the omitted colour, the number of changed pixels, and the cleanup summary:
+removed, widened and unchanged regions with warnings,
+`protected_kept_regions` (explicitly protected regions kept although under a
+threshold), and `auto_protected_components_cleared` /
+`auto_protected_pixels_cleared` (eight-connected automatic protected details,
+and their pixels, whose protection lapsed because the cleanup changed their
+labels). A widening whose every needed pixel is explicitly protected changes
+nothing; it is counted as unchanged with a warning, not as widened. The
+web job's result message states the three protection counts. Every run
+rewrites the pixel shares in `palette.json` for the raster it results in (its
+input's shares when nothing changed). When the run changed pixels it also
+rewrites `segmentation.npz` (cleaned labels, automatic protection cleared where
+labels changed; palette costs, explicit protection and palette unchanged,
+still contract v3), `flattened.png` (derived from the cleaned labels) and
+`report.png` (re-rendered from the cleaned raster and shares). A cleanup always starts from
+the raster before any earlier cleanup. The trace CLI's `trace.json` `cleanup`
+summary carries the same fields.
 
 ### Web revision artifacts
 
 The web API stores these same files as content-addressed immutable artifacts.
-Palette, trace, validation, and export jobs each create a child revision and
-return its ID as `result_revision_id`. A revision's effective artifact set is
-the newest artifact of each kind found while walking its parent chain. Revision
-settings retain effective palette and trace defaults and list stale downstream
-concerns; this makes retracing and export provenance explicit without mutating
-an earlier result.
+Palette, cleanup, trace, validation, and export jobs each create a child
+revision and return its ID as `result_revision_id`. A revision's effective
+artifact set is the newest artifact of each kind found while walking its parent
+chain. Stale concerns accumulate along the walk: once any revision on the path
+marks a concern stale, artifacts of that concern's kinds from older revisions
+are excluded. A cleanup replaces any earlier cleanup, so an older `cleanup`
+revision's raster artifacts (`flattened`, `segmentation`, `palette`, `report`)
+are skipped once a newer cleanup has been passed. `GET
+/api/revisions/{id}/effective-artifacts?before_cleanup=true` skips every
+cleanup revision's raster, resolving the raster the cleanup stage starts from.
+Revision settings retain the effective settings of their stage and list stale
+downstream concerns; this makes retracing and export provenance explicit
+without mutating an earlier result.
+
+A `cleanup` revision records `settings.cleanup` (width and height in mm, removed
+colour, and the cleanup switch, action and thresholds) and marks trace,
+validation, and export stale. When it changed pixels its artifacts are the
+cleaned `flattened`, `segmentation`, `palette` and `report` plus the
+`cleanup-audit` (`cleanup.json`); a run that changed nothing (cleanup off, or
+nothing under the thresholds) holds only `palette` (its raster's shares) and
+the `cleanup-audit`, and its effective raster is the uncleaned one. Palette and
+label edits read, and build on, the raster from before any cleanup (the
+`before_cleanup` lookup), so an edit made after a cleanup never carries that
+cleanup's changes. Palette revisions, label edits and upscaled sources mark
+cleanup stale, so an earlier cleanup's audit and settings no longer apply
+beyond them, and a trace job is refused ("the artwork changed after Cleanup:
+re-run Cleanup before tracing") until Cleanup runs again. The web Trace panel
+offers a one-click re-run of that cleanup with its own recorded settings. Trace revisions record only trace settings; the size
+and removed colour they used come from their nearest cleanup ancestor.
+Trace revisions recorded before the cleanup stage keep the size, removed colour
+and cleanup settings embedded in `settings.trace` as they were traced.
 
 An `upscaled-source` revision is the output of the manual, optional tiled
 generative upscale. It is a parent-linked child of a source revision whose sole
 artifact is a fresh full-frame `source.png` (the ComfyUI tiled-regen redraw of
-the parent's source), and it marks palette, trace, validation, and export stale
+the parent's source), and it marks palette, cleanup, trace, validation, and export stale
 so the deterministic pipeline reruns on the higher-detail image. Its settings
 record the effective upscale configuration, the resolved checkpoint, and the
 seed for auditability; the parent source revision is left untouched.

@@ -8,7 +8,7 @@ from numba import njit
 from scipy import ndimage
 
 from vinylgen.colour import srgb_to_lab
-from vinylgen.contracts import TraceSettings
+from vinylgen.contracts import CleanupSettings
 
 
 def _padded_edt(mask: np.ndarray) -> np.ndarray:
@@ -114,12 +114,74 @@ def _widen_refusal(result, target, seed_idx, targets, exp_r0, exp_c0,
     return False
 
 
+def resolve_physical_size(settings: CleanupSettings, width: int, height: int) -> CleanupSettings:
+    """The settings with a one-sided physical size completed from the raster's
+    proportions. Without a size both dimensions stay ``None`` (pixel units)."""
+    width_mm, height_mm = settings.width_mm, settings.height_mm
+    if width_mm is not None and height_mm is None:
+        height_mm = width_mm * height / width
+    elif height_mm is not None and width_mm is None:
+        width_mm = height_mm * width / height
+    return replace(settings, width_mm=width_mm, height_mm=height_mm)
+
+
+def pixel_scale(resolved: CleanupSettings, width: int) -> float:
+    """Millimetres per raster pixel with a physical size, else 1 (pixel units)."""
+    return resolved.width_mm / width if resolved.width_mm is not None else 1.0
+
+
+def apply_cleanup(labels: np.ndarray, palette: list[dict], settings: CleanupSettings,
+                  omitted: int | None, *, protected_features: np.ndarray,
+                  explicit_protected_features: np.ndarray,
+                  ) -> tuple[np.ndarray, np.ndarray, dict, CleanupSettings]:
+    """Run cutter cleanup on a label raster under its physical size.
+
+    ``omitted`` is the palette index of the removed colour: it gets no vinyl layer, so
+    it is excluded from the cleanup regions and its pixels stay as they are.
+
+    The user's explicit protections win: an explicitly protected pixel is never
+    reassigned (see ``cleanup_labels``). Automatic protection is cleared wherever the
+    cleanup changed a label, since that detail was removed on purpose; no explicitly
+    protected pixel ever changes, so explicit protection stays as it was.
+
+    Returns the cleaned labels, the updated automatic-plus-explicit protected mask,
+    the cleanup summary (with the automatic protection it cleared) and the settings
+    with the physical size resolved against the raster. This is the one cleanup
+    implementation shared by the cleanup stage and the trace CLI.
+    """
+    height, width = labels.shape
+    resolved = resolve_physical_size(settings, width, height)
+    included = [index for index in range(len(palette)) if index != omitted]
+    explicit = explicit_protected_features.astype(bool)
+    cleaned, summary = cleanup_labels(labels, included, palette, resolved,
+                                      pixel_scale(resolved, width), explicit=explicit)
+    changed = cleaned != labels
+    automatic = protected_features.astype(bool) & ~explicit
+    cleared = automatic & changed
+    # A protected detail is an eight-connected component, as tracing's protection
+    # audit counts it (a diagonal stroke is one detail).
+    components, _ = ndimage.label(automatic, structure=np.ones((3, 3), dtype=bool))
+    touched = np.unique(components[cleared])
+    summary["auto_protected_components_cleared"] = int(np.count_nonzero(touched))
+    summary["auto_protected_pixels_cleared"] = int(cleared.sum())
+    return cleaned, protected_features.astype(bool) & ~cleared, summary, resolved
+
+
 def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
-                   settings: TraceSettings, units_per_pixel: float) -> tuple[np.ndarray, dict]:
+                   settings: CleanupSettings, units_per_pixel: float,
+                   *, explicit: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
+    """Remove or widen undersized regions of ``included`` colours.
+
+    ``explicit`` marks the user's explicitly protected pixels, which are never
+    reassigned to another colour: an undersized region holding any of them is kept
+    whole (counted in ``protected_kept_regions``) and widening never consumes one.
+    Such a region may still be widened itself.
+    """
     result = labels.copy()
     summary = {"enabled": settings.cleanup, "action": settings.cleanup_action,
                "removed_regions": 0, "removed_pixels": 0, "widened_regions": 0,
-               "widened_pixels": 0, "unchanged_regions": 0, "warnings": []}
+               "widened_pixels": 0, "unchanged_regions": 0, "protected_kept_regions": 0,
+               "warnings": []}
     if not settings.cleanup:
         return result, summary
     width = settings.min_detail_width
@@ -129,11 +191,11 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                                   min_detail_width=settings.remove_below_width,
                                   min_region_area=area)
         removed, remove_summary = cleanup_labels(
-            result, included, palette, remove_settings, units_per_pixel)
+            result, included, palette, remove_settings, units_per_pixel, explicit=explicit)
         widen_settings = replace(settings, cleanup_action="widen",
                                  min_detail_width=width, min_region_area=0.0)
         widened, widen_summary = cleanup_labels(
-            removed, included, palette, widen_settings, units_per_pixel)
+            removed, included, palette, widen_settings, units_per_pixel, explicit=explicit)
         combined = {"enabled": True, "action": "remove_then_widen",
                     "removed_regions": remove_summary["removed_regions"],
                     "removed_pixels": remove_summary["removed_pixels"],
@@ -141,6 +203,8 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                     "widened_pixels": widen_summary["widened_pixels"],
                     "unchanged_regions": (remove_summary["unchanged_regions"] +
                                           widen_summary["unchanged_regions"]),
+                    "protected_kept_regions": (remove_summary["protected_kept_regions"] +
+                                               widen_summary["protected_kept_regions"]),
                     "warnings": [*remove_summary["warnings"], *widen_summary["warnings"]],
                     "stages": {"remove_below_area": remove_summary,
                                "widen_below_width": widen_summary}}
@@ -182,6 +246,9 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                 feature_width = 2.0 * float(field[bounds][local].max())
                 too_small = ((area_px > 0 and pixels < area_px) or
                              (width_px > 0 and feature_width < width_px))
+                if too_small and explicit is not None and explicit[bounds][local].any():
+                    summary["protected_kept_regions"] += 1
+                    continue
                 if too_small:
                     component_number += 1
                     small_mask[bounds][local] = True
@@ -287,6 +354,18 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                 grown = ndimage.binary_dilation(component_mask, iterations=needed)
             result_view = result[expanded]
             targets = grown & (result_view == target)
+            if explicit is not None:
+                guarded = targets & explicit[expanded]
+                if guarded.any():
+                    targets &= ~guarded
+                    if not targets.any():
+                        # Every pixel the widening needed is explicitly protected, so
+                        # nothing can grow: this is a refusal, not a widening.
+                        summary["unchanged_regions"] += 1
+                        summary["warnings"].append(
+                            f"{palette[source]['name']} component {component}: widening "
+                            "blocked by explicitly protected pixels")
+                        continue
             # Protect each neighbouring band by its own residual geometry rather
             # than a global colour total: consuming these pixels must not thin any
             # affected neighbour component below the feature-width threshold, nor

@@ -140,15 +140,16 @@ class JobManager:
 
     def start_pipeline(self, job_id: str, *, kind: str, project_id: str, revision_id: str,
                        palette: dict | None, trace: dict | None,
-                       colour_names: dict[str, str]) -> None:
+                       colour_names: dict[str, str], cleanup: dict | None = None) -> None:
         self._pipeline_cancellations[job_id] = threading.Event()
         self._tasks[job_id] = asyncio.create_task(
-            self._run_pipeline(job_id, kind, project_id, revision_id, palette, trace, colour_names),
+            self._run_pipeline(job_id, kind, project_id, revision_id, palette, trace,
+                               colour_names, cleanup),
             name=f"vinylgen-job-{job_id}")
 
     async def _run_pipeline(self, job_id: str, kind: str, project_id: str, revision_id: str,
                             palette: dict | None, trace: dict | None,
-                            colour_names: dict[str, str]) -> None:
+                            colour_names: dict[str, str], cleanup: dict | None) -> None:
         loop = asyncio.get_running_loop()
         cancellation = self._pipeline_cancellations[job_id]
 
@@ -165,10 +166,10 @@ class JobManager:
                 lambda: self.pipeline.run(
                     job_id, kind, project_id, revision_id, palette=palette,
                     trace=trace, colour_names=colour_names, progress=progress,
-                    cancelled=cancellation.is_set))
+                    cancelled=cancellation.is_set, cleanup=cleanup))
             if cancellation.is_set():
                 raise asyncio.CancelledError
-            await self._update(job_id, status="succeeded", progress=1, message="Complete",
+            await self._update(job_id, status="succeeded", progress=1, message=self.pipeline.completion_message(kind, result_revision_id),
                                result_revision_id=result_revision_id, error=None, finished_at=_now())
         except asyncio.CancelledError:
             await self._update(job_id, status="cancelled", message="Cancelled", error=None,

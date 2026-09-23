@@ -7,17 +7,28 @@ from pathlib import Path
 
 import numpy as np
 
-from vinylgen.contracts import SegmentationBundle, TraceSettings
-from vinylgen.cutter_cleanup import cleanup_labels
+from vinylgen.contracts import CleanupSettings, SegmentationBundle
+from vinylgen.cutter_cleanup import apply_cleanup, cleanup_labels
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _REFERENCE_PATH = Path(__file__).resolve().parent / "oracles" / "cutter_cleanup_reference.py"
 _OVERLAP_ROOT = _REPO_ROOT / ".tmp" / "trace-baseline" / "before" / "overlap"
 _SOURCEUP = _REPO_ROOT / "outputs" / "sourceup"
 
-_CORPUS_SETTINGS = dict(overlap=0.4, width_mm=150.0, cleanup=True,
+_CORPUS_SETTINGS = dict(width_mm=150.0, cleanup=True,
                         cleanup_action="remove_then_widen", min_detail_width=0.6,
                         min_region_area=1.5, remove_below_width=0.3)
+
+
+def _without_protection_counts(summary: dict) -> dict:
+    """The summary minus the explicit-protection count, which the frozen reference
+    (written before explicit protection) does not report; it must be zero here."""
+    assert summary["protected_kept_regions"] == 0
+    trimmed = {key: value for key, value in summary.items() if key != "protected_kept_regions"}
+    if "stages" in trimmed:
+        trimmed["stages"] = {name: _without_protection_counts(stage)
+                             for name, stage in trimmed["stages"].items()}
+    return trimmed
 
 
 def _require_slow_tests() -> None:
@@ -106,7 +117,7 @@ class CutterCleanupFastTests(unittest.TestCase):
             labels.copy(), included, palette, settings, upp)
         self.assertEqual(got_labels.dtype, want_labels.dtype)
         self.assertTrue(np.array_equal(got_labels, want_labels), "labels differ")
-        self.assertEqual(got_summary, want_summary)
+        self.assertEqual(_without_protection_counts(got_summary), want_summary)
 
     def test_fuzz_matches_reference(self):
         rng = np.random.default_rng(20260905)
@@ -126,7 +137,7 @@ class CutterCleanupFastTests(unittest.TestCase):
             upp = float(rng.uniform(0.3, 2.0))
             width_px_target = float(rng.uniform(0.5, 6.0))
             area_px_target = float(rng.uniform(0.0, 20.0))
-            settings = TraceSettings(
+            settings = CleanupSettings(
                 cleanup=True, cleanup_action=action,
                 min_detail_width=width_px_target * upp,
                 min_region_area=area_px_target * upp * upp,
@@ -139,7 +150,7 @@ class CutterCleanupFastTests(unittest.TestCase):
                     labels.copy(), included, palette, settings, upp)
                 self.assertEqual(got_labels.dtype, want_labels.dtype)
                 self.assertTrue(np.array_equal(got_labels, want_labels), "labels differ")
-                self.assertEqual(got_summary, want_summary)
+                self.assertEqual(_without_protection_counts(got_summary), want_summary)
             if any("constrained by neighbour threshold" in w
                    for w in want_summary["warnings"]):
                 refused_seen += 1
@@ -161,7 +172,7 @@ class CutterCleanupFastTests(unittest.TestCase):
             palette = json.loads(palette_path.read_text())["palette"]
             included = list(range(len(palette)))
             height, width = bundle.labels.shape
-            settings = TraceSettings(**_CORPUS_SETTINGS)
+            settings = CleanupSettings(**_CORPUS_SETTINGS)
             upp = settings.width_mm / width
             with self.subTest(subject=subject):
                 self._compare(bundle.labels, included, palette, settings, upp)
@@ -179,9 +190,114 @@ class CutterCleanupFastTests(unittest.TestCase):
         palette = json.loads(palette_path.read_text())["palette"]
         included = list(range(len(palette)))
         height, width = bundle.labels.shape
-        settings = TraceSettings(**_CORPUS_SETTINGS)
+        settings = CleanupSettings(**_CORPUS_SETTINGS)
         upp = settings.width_mm / width
         self._compare(bundle.labels, included, palette, settings, upp)
+
+
+
+_PALETTE = [
+    {"rgb": [0, 0, 0], "name": "Black"},
+    {"rgb": [230, 100, 20], "name": "Orange"},
+    {"rgb": [240, 220, 160], "name": "Cream"},
+]
+
+
+class CleanupProtectionTests(unittest.TestCase):
+    """The user's explicit protection wins over cleanup; automatic protection lapses
+    where the cleanup changed the raster."""
+
+    def specks(self) -> np.ndarray:
+        labels = np.zeros((12, 16), dtype=np.int16)
+        labels[2, 2:4] = 1      # a two-pixel speck
+        labels[8, 10] = 2       # a one-pixel speck
+        return labels
+
+    def test_remove_keeps_an_explicitly_protected_undersized_region_whole(self):
+        labels = self.specks()
+        settings = CleanupSettings(cleanup=True, cleanup_action="remove", min_region_area=4)
+        unprotected, summary = cleanup_labels(labels, [0, 1, 2], _PALETTE, settings, 1.0)
+        self.assertFalse(np.any(unprotected != 0))
+        self.assertEqual(summary["protected_kept_regions"], 0)
+        explicit = np.zeros(labels.shape, dtype=bool)
+        explicit[2, 3] = True   # one protected pixel protects the whole region
+        kept, summary = cleanup_labels(labels, [0, 1, 2], _PALETTE, settings, 1.0, explicit=explicit)
+        self.assertTrue(np.all(kept[2, 2:4] == 1))
+        self.assertEqual(kept[8, 10], 0)
+        self.assertEqual(summary["protected_kept_regions"], 1)
+        self.assertEqual(summary["removed_regions"], 1)
+
+    def test_remove_then_widen_keeps_explicit_protection_through_its_remove_half(self):
+        labels = self.specks()
+        explicit = np.zeros(labels.shape, dtype=bool)
+        explicit[8, 10] = True
+        cleaned, summary = cleanup_labels(labels, [0, 1, 2], _PALETTE, CleanupSettings(
+            cleanup=True, cleanup_action="remove_then_widen", min_region_area=4,
+            min_detail_width=3), 1.0, explicit=explicit)
+        self.assertEqual(cleaned[8, 10], 2)
+        self.assertEqual(summary["protected_kept_regions"], 1)
+        self.assertEqual(summary["stages"]["remove_below_area"]["protected_kept_regions"], 1)
+
+    def test_widening_a_neighbour_never_consumes_an_explicitly_protected_pixel(self):
+        labels = np.zeros((15, 20), dtype=np.int16)
+        labels[7, 2:18] = 1     # a one-pixel line widened into the background
+        settings = CleanupSettings(cleanup=True, cleanup_action="widen", min_detail_width=3)
+        grown, _ = cleanup_labels(labels, [0, 1], _PALETTE[:2], settings, 1.0)
+        self.assertTrue(np.any(grown[6, 2:18] == 1))
+        explicit = np.zeros(labels.shape, dtype=bool)
+        explicit[6, 2:18] = True
+        guarded, summary = cleanup_labels(labels, [0, 1], _PALETTE[:2], settings, 1.0, explicit=explicit)
+        self.assertTrue(np.all(guarded[6, 2:18] == 0))
+        self.assertTrue(np.any(guarded[8, 2:18] == 1))
+        self.assertGreater(summary["widened_pixels"], 0)
+
+    def test_apply_cleanup_clears_automatic_protection_only_where_labels_changed(self):
+        labels = self.specks()
+        protected = np.zeros(labels.shape, dtype=bool)
+        protected[2, 2:4] = True        # automatic, on the removed two-pixel speck
+        protected[8, 10] = True         # explicit, on the one-pixel speck
+        protected[5, 5:8] = True        # automatic, on untouched background
+        explicit = np.zeros(labels.shape, dtype=bool)
+        explicit[8, 10] = True
+        cleaned, after, summary, _ = apply_cleanup(
+            labels, _PALETTE, CleanupSettings(cleanup=True, min_region_area=4), None,
+            protected_features=protected, explicit_protected_features=explicit)
+        self.assertTrue(np.all(cleaned[2, 2:4] == 0))
+        self.assertEqual(cleaned[8, 10], 2)
+        expected = protected.copy()
+        expected[2, 2:4] = False
+        np.testing.assert_array_equal(after, expected)
+        self.assertEqual(summary["auto_protected_components_cleared"], 1)
+        self.assertEqual(summary["auto_protected_pixels_cleared"], 2)
+        self.assertEqual(summary["protected_kept_regions"], 1)
+
+
+class CleanupProtectionAuditTests(unittest.TestCase):
+    def test_widening_fully_blocked_by_explicit_protection_is_a_warned_refusal(self):
+        labels = np.ones((20, 20), dtype=np.int16)
+        labels[2:18, 10] = 0
+        explicit = labels == 1
+        out, protected, summary, _ = apply_cleanup(
+            labels, _PALETTE[:2], CleanupSettings(cleanup=True, cleanup_action="widen",
+                                                  min_detail_width=3), None,
+            protected_features=explicit.copy(), explicit_protected_features=explicit)
+        np.testing.assert_array_equal(out, labels)
+        self.assertEqual((summary["widened_regions"], summary["widened_pixels"]), (0, 0))
+        self.assertEqual(summary["unchanged_regions"], 1)
+        self.assertTrue(any("blocked by explicitly protected pixels" in warning
+                            for warning in summary["warnings"]))
+
+    def test_a_diagonal_automatic_detail_counts_as_one_component(self):
+        labels = np.zeros((20, 20), dtype=np.int16)
+        for step in range(5):
+            labels[5 + step, 5 + step] = 1
+        automatic = labels == 1
+        _, protected, summary, _ = apply_cleanup(
+            labels, _PALETTE, CleanupSettings(cleanup=True, min_region_area=4), None,
+            protected_features=automatic, explicit_protected_features=np.zeros_like(automatic))
+        self.assertFalse(protected.any())
+        self.assertEqual(summary["auto_protected_components_cleared"], 1)
+        self.assertEqual(summary["auto_protected_pixels_cleared"], 5)
 
 
 if __name__ == "__main__":

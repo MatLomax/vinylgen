@@ -20,8 +20,13 @@ from .store import Store
 _CROSS = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
 
 
+# Palette and label edits apply to the raster from before any cleanup: an edit made
+# after a cleanup marks that cleanup stale, and the next cleanup starts from this
+# uncleaned-plus-edited raster, so an earlier cleanup is never baked into it.
+
+
 def _segmentation_path(store: Store, revision_id: str) -> Path:
-    artifacts = store.effective_artifacts(revision_id)
+    artifacts = store.effective_artifacts(revision_id, before_cleanup=True)
     missing = {"segmentation", "palette"} - artifacts.keys()
     if missing:
         raise ValueError(f"revision is missing editor artifacts: {', '.join(sorted(missing))}")
@@ -30,7 +35,7 @@ def _segmentation_path(store: Store, revision_id: str) -> Path:
 
 def _inputs(store: Store, revision_id: str, *, with_costs: bool = False,
             ) -> tuple[SegmentationBundle, dict[str, Any]]:
-    artifacts = store.effective_artifacts(revision_id)
+    artifacts = store.effective_artifacts(revision_id, before_cleanup=True)
     missing = {"segmentation", "palette"} - artifacts.keys()
     if missing:
         raise ValueError(f"revision is missing editor artifacts: {', '.join(sorted(missing))}")
@@ -43,6 +48,9 @@ def _inputs(store: Store, revision_id: str, *, with_costs: bool = False,
 
 def editor_state(store: Store, revision_id: str) -> dict[str, Any]:
     bundle, report = _inputs(store, revision_id)
+    # A trace records the palette.json it traced, whose shares may describe a cleaned
+    # raster; state the shares of the raster the editor actually edits.
+    _refresh_report(report, bundle)
     return {"width": bundle.labels.shape[1], "height": bundle.labels.shape[0],
             "palette": report["palette"],
             "requested_colour_count": report.get("fixed_colour_count", {}).get("requested"),
@@ -176,7 +184,7 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
         message=message or f"Applied {len(operations)} flattened-label edit(s)",
         settings={"pipeline_stage": "label-edit",
                   "operations": [operation.model_dump(mode="json") for operation in operations],
-                  "stale_concerns": ["trace", "validation", "export"]})
+                  "stale_concerns": ["cleanup", "trace", "validation", "export"]})
 
     segmentation = _serialize_segmentation(
         store, revision_id, bundle, costs_changed=costs_changed)

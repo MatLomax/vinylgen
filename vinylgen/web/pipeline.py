@@ -15,9 +15,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
-from vinylgen.contracts import PaletteSettings, TraceSettings
+from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
 from vinylgen.validation import validate_svg
 
+from .cleanup import completion_message
 from .store import Store
 
 
@@ -117,6 +118,10 @@ PALETTE_FILES = {
     "source": "source.png", "flattened": "flattened.png",
     "segmentation": "segmentation.npz", "palette": "palette.json", "report": "report.png",
 }
+CLEANUP_FILES = {
+    "flattened": "flattened.png", "segmentation": "segmentation.npz",
+    "palette": "palette.json", "report": "report.png", "cleanup-audit": "cleanup.json",
+}
 TRACE_FILES = {
     "palette": "palette.json",
     "traced-overlap": "traced-overlap.svg", "traced-edge": "traced-edge.svg",
@@ -128,19 +133,58 @@ MEDIA_TYPES = {".png": "image/png", ".svg": "image/svg+xml", ".json": "applicati
                ".npz": "application/octet-stream", ".html": "text/html", ".zip": "application/zip"}
 
 
-def _provenance(stage: str, palette: dict | None, trace: dict | None) -> dict:
+def _provenance(stage: str, palette: dict | None, trace: dict | None,
+                cleanup: dict | None = None) -> dict:
     stale_after = {
-        "palette": ["trace", "validation", "export"],
+        "palette": ["cleanup", "trace", "validation", "export"],
+        "cleanup": ["trace", "validation", "export"],
         "trace": ["export"],
         "validate": ["export"],
         "export": [],
     }
-    return {
+    provenance = {
         "pipeline_stage": stage,
         "palette": palette,
         "trace": trace,
         "stale_concerns": stale_after[stage],
     }
+    # Only a cleanup revision records cleanup settings; a trace reads them from its
+    # nearest active cleanup ancestor (``active_cleanup_settings``).
+    if cleanup is not None:
+        provenance["cleanup"] = cleanup
+    return provenance
+
+
+STALE_CLEANUP_MESSAGE = "the artwork changed after Cleanup: re-run Cleanup before tracing"
+
+
+def nearest_cleanup(store: Store, revision_id: str) -> tuple[dict | None, bool]:
+    """The nearest ``cleanup`` ancestor of ``revision_id`` (itself included) and
+    whether it is stale: a revision in between (a flatten, a label edit, a source
+    upscale) marked cleanup stale. ``(None, False)`` when there is no cleanup."""
+    stale = False
+    current: str | None = revision_id
+    seen: set[str] = set()
+    while current:
+        if current in seen:
+            raise ValueError("revision ancestry contains a cycle")
+        seen.add(current)
+        revision = store.get_revision(current)
+        settings = revision["settings"]
+        if revision["kind"] == "cleanup" and settings.get("cleanup") is not None:
+            return revision, stale
+        if "cleanup" in settings.get("stale_concerns", ()):
+            stale = True
+        current = revision["parent_revision_id"]
+    return None, False
+
+
+def active_cleanup_settings(store: Store, revision_id: str) -> dict | None:
+    """The cleanup settings a trace of ``revision_id`` uses: those of the nearest
+    ``cleanup`` ancestor while it is not stale. ``None`` means trace in pixels,
+    cutting every colour (or, with a stale cleanup, that tracing is blocked)."""
+    revision, stale = nearest_cleanup(store, revision_id)
+    return revision["settings"]["cleanup"] if revision is not None and not stale else None
 
 
 def _effective_settings(store: Store, revision_id: str) -> tuple[dict | None, dict | None]:
@@ -178,12 +222,16 @@ class PipelineRunner:
 
     def run(self, job_id: str, kind: str, project_id: str, revision_id: str,
             *, palette: dict | None, trace: dict | None, colour_names: dict[str, str],
-            progress: Progress, cancelled: Cancelled = lambda: False) -> str:
+            progress: Progress, cancelled: Cancelled = lambda: False,
+            cleanup: dict | None = None) -> str:
         work = self.scratch_root / job_id
         work.mkdir(parents=True, exist_ok=False)
         try:
             if kind == "palette":
                 return self._palette(project_id, revision_id, work, palette or {}, progress, cancelled)
+            if kind == "cleanup":
+                return self._cleanup(project_id, revision_id, work, cleanup or {},
+                                     progress, cancelled)
             if kind == "trace":
                 return self._trace(project_id, revision_id, work, trace or {}, colour_names,
                                    progress, cancelled)
@@ -195,8 +243,17 @@ class PipelineRunner:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    def _copy_inputs(self, revision_id: str, target: Path, required: set[str]) -> dict[str, dict]:
-        artifacts = self.store.effective_artifacts(revision_id)
+    def completion_message(self, kind: str, revision_id: str) -> str:
+        """The finished job's result line; a cleanup states what it did to protected detail."""
+        if kind != "cleanup":
+            return "Complete"
+        audit = next(row for row in self.store.list_artifacts(revision_id)
+                     if row["kind"] == "cleanup-audit")
+        return completion_message(json.loads(self.store.artifact_path(audit["id"]).read_text()))
+
+    def _copy_inputs(self, revision_id: str, target: Path, required: set[str],
+                     *, before_cleanup: bool = False) -> dict[str, dict]:
+        artifacts = self.store.effective_artifacts(revision_id, before_cleanup=before_cleanup)
         missing = sorted(required - artifacts.keys())
         if missing:
             raise ValueError(f"revision is missing required artifacts: {', '.join(missing)}")
@@ -242,17 +299,51 @@ class PipelineRunner:
         return self._commit(project_id, parent_id, "palette", files,
                             _provenance("palette", effective, None))
 
+    def _cleanup(self, project_id: str, parent_id: str, work: Path, values: dict,
+                 progress: Progress, cancelled: Cancelled) -> str:
+        _require_fresh(self.store, parent_id, {"palette"})
+        subject = work / self.store.get_project(project_id)["slug"]
+        # Always clean the raster from before any earlier cleanup, so turning cleanup
+        # off, or changing the size or thresholds, replaces that cleanup instead of
+        # stacking on it.
+        self._copy_inputs(parent_id, subject, {"segmentation", "palette"}, before_cleanup=True)
+        cleanup_settings = CleanupSettings(**values)
+        effective = asdict(cleanup_settings)
+        progress(0.05, "Cleaning up cutter geometry")
+        run_worker(
+            {"op": "cleanup", "subject": str(subject), "settings": effective},
+            on_progress=lambda fraction, message: progress(0.05 + fraction * 0.85, message),
+            cancelled=cancelled)
+        progress(0.9, "Storing cleaned artifacts")
+        # A run that changed no pixel (cleanup off, or nothing under the thresholds)
+        # records only the audit and palette.json with its raster's shares; its
+        # effective raster is the uncleaned one, because a cleanup replaces the raster
+        # of any earlier cleanup (Store.effective_artifacts).
+        changed = json.loads((subject / "cleanup.json").read_text())["changed_pixels"]
+        kinds = CLEANUP_FILES if changed else {
+            "palette": "palette.json", "cleanup-audit": "cleanup.json"}
+        files = {kind: subject / filename for kind, filename in kinds.items()}
+        palette_settings, _ = _effective_settings(self.store, parent_id)
+        return self._commit(project_id, parent_id, "cleanup", files,
+                            _provenance("cleanup", palette_settings, None, effective))
+
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
                colour_names: dict[str, str], progress: Progress, cancelled: Cancelled) -> str:
         _require_fresh(self.store, parent_id, {"palette"})
+        cleanup_revision, cleanup_stale = nearest_cleanup(self.store, parent_id)
+        if cleanup_stale:
+            raise ValueError(STALE_CLEANUP_MESSAGE)
         subject = work / self.store.get_project(project_id)["slug"]
         required = set(PALETTE_FILES)
         self._copy_inputs(parent_id, subject, required)
         trace_settings = TraceSettings(**values)
+        cleanup_settings = (cleanup_revision["settings"]["cleanup"]
+                            if cleanup_revision is not None else None)
         progress(0.1, "Tracing shared boundaries")
         run_worker(
             {"op": "trace", "subject": str(subject),
-             "settings": asdict(trace_settings), "colour_names": colour_names},
+             "settings": asdict(trace_settings), "colour_names": colour_names,
+             "cleanup": cleanup_settings},
             on_progress=lambda fraction, message: progress(0.1 + fraction * 0.8, message),
             cancelled=cancelled)
         effective = asdict(trace_settings)

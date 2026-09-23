@@ -73,9 +73,11 @@ identifiers. Names must be unique within one palette and are stored in
 `palette.json` so all downstream artifacts use them consistently. Palette-stage
 configuration may override generated names.
 
-Tracing can optionally omit one palette colour. CLI input accepts either its
-human-readable name or hex value; a later GUI will use a palette dropdown. When
-no colour is configured, all colours are included.
+Tracing can optionally omit one palette colour: it gets no vinyl layer and its
+pixels stay in the raster as uncut background. The removed colour is a cleanup
+stage setting that the trace applies; the CLI accepts it as a trace flag.
+Input accepts either its human-readable name or hex value. When no colour is
+configured, all colours are included.
 
 ## Size, units, and cropping
 
@@ -96,7 +98,10 @@ outputs/<subject>/cropped.png
 Aspect-ratio and crop settings belong to the palette-stage configuration, not
 the tracing command.
 
-Trace settings follow one rule: fitting in pixels, cutting in millimetres.
+Trace settings follow one rule: fitting in pixels, cutting in millimetres. The
+physical size is set by the cleanup stage and applies to both the cleanup
+thresholds and the traced SVG; in the web workflow the trace shows it read-only
+and changing it means running cleanup again.
 
 - Curve-fitting settings are always in pixels of the traced image:
   `curve_fit_tolerance`, `straight_line_max_deviation`,
@@ -113,11 +118,32 @@ Trace settings follow one rule: fitting in pixels, cutting in millimetres.
 
 ## Cutter cleanup (raster labels)
 
-Physical/detail cleanup runs during the trace stage on a trace-local copy of
-the labelled partition, before shared-boundary construction and curve fitting.
-It does not alter `flattened.png`. This permits retracing the same palette
-raster at different physical sizes and keeps palette reduction separate from
-cutter geometry decisions.
+Physical/detail cleanup is its own stage between editing and tracing, before
+shared-boundary construction and curve fitting. In the web workflow it writes a
+`cleanup` revision with cleaned labels and a derived `flattened.png`, so its
+cost is paid once and every trace of that revision's boundaries depends only
+on the cleaned raster. A cleanup always starts from the raster before any
+earlier cleanup, so cleanups never stack. After a flatten or edit that follows
+a cleanup, tracing waits until Cleanup is run again. The trace CLI applies the
+same cleanup function to an in-memory copy of the labels before tracing and
+leaves the subject's files unchanged. Web and CLI both infer layer order,
+validate, and draw fallback and warning images against the cleaned labels and
+the raster derived from them, which is what was traced. The removed colour is
+excluded from the cleanup regions and its pixels are never changed.
+
+The user's explicit protections (`explicit_protected_features`) win over
+cleanup. `remove`, and the remove half of `remove_then_widen`, never reassign
+an undersized region holding an explicitly protected pixel; it is kept whole
+and counted as `protected_kept_regions`. Widening may still grow such a
+region, but widening a neighbour never consumes an explicitly protected pixel;
+a widening whose every needed pixel is explicitly protected is a refusal,
+recorded as unchanged with a warning.
+Automatic protection (protected pixels that are not explicit) is cleared
+wherever the cleanup changed labels, since that detail was removed on purpose;
+the audit counts the automatic protected details (eight-connected components)
+and pixels cleared. Explicit protection is carried unchanged. Validation then
+checks protection against the cleaned labels with this updated mask. Palette reduction stays separate from cutter
+geometry decisions.
 
 Cleanup is optional, configurable, and disabled by default. All removal,
 filling, and widening thresholds default to zero, so enabling cleanup without
@@ -146,7 +172,8 @@ When cleanup is enabled without an explicit action, it defaults to `remove`.
 
 Widening must not reduce either neighbouring band below the same threshold. If
 the requested widening is impossible, the original geometry remains unchanged
-and `trace.json` records a warning. A request to widen must never silently fall
+and the cleanup summary (`cleanup.json`, or `trace.json` for the CLI) records a
+warning. A request to widen must never silently fall
 back to removal.
 
 ## Trace accuracy and complexity
@@ -280,14 +307,16 @@ symmetric detail controls.
 `trace.json` records at least:
 
 - Source artifact paths and dimensions.
-- Effective tracing and cleanup configuration.
+- Effective tracing configuration and the cleanup settings used (size, removed
+  colour, cleanup).
 - Tracing backend and version.
 - Physical size or pixel-mode status.
 - Included and omitted palette colours and their names.
 - Inferred layer order, user overrides, and ordering warnings.
 - Path and node counts per component, layer, and document.
 - Compound-path and hole counts.
-- Regions removed, widened, or left unchanged with warnings.
+- Regions removed, widened, or left unchanged with warnings, when the CLI
+  cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
 - Rendered comparison metrics against `flattened.png`.
 - Local boundary-fallback locations and effective tolerances.
 - Structural validation results.

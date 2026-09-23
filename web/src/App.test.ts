@@ -3,8 +3,8 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
-import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { ancestorPaletteIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, tracedSvgKind, tracedSvgName } from './App'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
+import { activeCleanupRevision, ancestorCleanupIterations, ancestorPaletteIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -129,8 +129,20 @@ describe('traced SVG variant', () => {
   it('names the variant with the overlap in the units the run used', () => {
     expect(tracedSvgName({ overlap: 0, solid_underlayers: false })).toBe('Traced SVG · edge to edge')
     expect(tracedSvgName({ overlap: 0, solid_underlayers: true })).toBe('Traced SVG · solid underlayers')
-    expect(tracedSvgName({ overlap: 2, solid_underlayers: false, width_mm: 300 })).toBe('Traced SVG · 2 mm overlap')
-    expect(tracedSvgName({ overlap: 2, solid_underlayers: false, width_mm: null, height_mm: null })).toBe('Traced SVG · 2 px overlap')
+    expect(tracedSvgName({ overlap: 2, solid_underlayers: false }, true)).toBe('Traced SVG · 2 mm overlap')
+    expect(tracedSvgName({ overlap: 2, solid_underlayers: false }, false)).toBe('Traced SVG · 2 px overlap')
+  })
+
+  it('takes a run\'s units from its cleanup, or from its own settings when recorded before the cleanup stage', () => {
+    const palette: Revision = { ...revision, id: 'palette', kind: 'palette', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
+    const cleaned: Revision = { ...revision, id: 'cleanup', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 300, height_mm: null } } }
+    const run: Revision = { ...revision, id: 'run', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: { overlap: 2 } } }
+    const pixelRun: Revision = { ...run, id: 'pixel-run', parent_revision_id: 'palette' }
+    const legacyRun: Revision = { ...run, id: 'legacy-run', parent_revision_id: 'palette', settings: { trace: { overlap: 2, width_mm: null, height_mm: 90 } } }
+    const revisions = [run, pixelRun, legacyRun, cleaned, palette]
+    expect(traceRunIsPhysical(revisions, 'run')).toBe(true)
+    expect(traceRunIsPhysical(revisions, 'pixel-run')).toBe(false)
+    expect(traceRunIsPhysical(revisions, 'legacy-run')).toBe(true)
   })
 })
 
@@ -216,6 +228,36 @@ describe('pipeline setting provenance', () => {
     expect(inheritedPipelineSettings([trace, edit, palette], 'trace')).toEqual({
       palette: { initial_colours: 9 }, trace: { curve_fit_tolerance: .4 },
     })
+  })
+
+  it('restores cleanup settings from the nearest cleanup, and from a pre-cleanup-stage trace run', () => {
+    const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: { initial_colours: 9 } } }
+    const legacy = { ...revision, id: 'legacy', parent_revision_id: 'palette', kind: 'trace', settings: { trace: { overlap: 1, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 } } }
+    const cleaned = { ...revision, id: 'cleanup', parent_revision_id: 'legacy', kind: 'cleanup', settings: { cleanup: { width_mm: 250, cleanup: false } } }
+    const traced = { ...revision, id: 'trace', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: { overlap: 3 } } }
+    const revisions = [traced, cleaned, legacy, palette]
+    // The legacy run's embedded values fill the Cleanup form, never the Trace form.
+    expect(inheritedPipelineSettings(revisions, 'legacy')).toEqual({
+      palette: { initial_colours: 9 }, trace: { overlap: 1 },
+      cleanup: { width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 },
+    })
+    expect(inheritedPipelineSettings(revisions, 'trace')).toEqual({
+      palette: { initial_colours: 9 }, trace: { overlap: 3 }, cleanup: { width_mm: 250, cleanup: false },
+    })
+    // Both recorded cleanups are steps of the Cleanup form, newest first.
+    expect(ancestorCleanupIterations(revisions, 'trace').map(item => [item.width_mm, item.cleanup])).toEqual([[250, false], [400, true]])
+  })
+
+  it('finds the active cleanup until a flatten or edit marks it stale', () => {
+    const palette = { ...revision, id: 'palette', kind: 'palette', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
+    const cleaned = { ...revision, id: 'cleanup', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 250 }, stale_concerns: ['trace', 'validation', 'export'] } }
+    const traced = { ...revision, id: 'trace', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: {}, stale_concerns: ['export'] } }
+    const edited = { ...revision, id: 'edit', parent_revision_id: 'trace', kind: 'label-edit', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
+    const revisions = [edited, traced, cleaned, palette]
+    expect(activeCleanupRevision(revisions, 'trace')?.id).toBe('cleanup')
+    expect(activeCleanupRevision(revisions, 'cleanup')?.id).toBe('cleanup')
+    expect(activeCleanupRevision(revisions, 'edit')).toBeNull()
+    expect(activeCleanupRevision(revisions, 'palette')).toBeNull()
   })
 
   it('lists each flatten iteration along the ancestry, newest first and merged over defaults', () => {
@@ -938,6 +980,245 @@ describe('stepping through trace runs', () => {
     expect(storedDraft()).toBeUndefined()
   })
 
+})
+
+describe('cleanup stage', () => {
+  const stale = ['cleanup', 'trace', 'validation', 'export']
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {}, stale_concerns: stale } }
+  const cleanupRevision: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02',
+    settings: { cleanup: { width_mm: 300, height_mm: null, remove_colour: null, cleanup: true, cleanup_action: 'remove', min_detail_width: .4, min_region_area: 0, remove_below_width: 0 }, stale_concerns: ['trace', 'validation', 'export'] } }
+  const segmentation = () => artifact('segmentation', 'application/octet-stream')
+  const cleanedFlattened = { ...artifact('flattened'), id: 'flattened-cleaned', revision_id: 'cleanup-1', download_url: '/artifacts/flattened-cleaned' }
+  const pressedView = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name }).getAttribute('aria-pressed')
+
+  function serve(revisions: Revision[]) {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions })
+    // The cleanup revision's raster is its own cleaned one; everything else inherits the
+    // palette revision's flattened image.
+    // A before-cleanup lookup resolves the raster the cleanup started from.
+    mocks.effectiveArtifacts.mockImplementation(async (id: string, _signal?: AbortSignal, options?: { beforeCleanup?: boolean }) => [artifact('source'), segmentation(),
+      id === 'palette-1' || id === 'revision-1' || id.startsWith('palette-') || options?.beforeCleanup || id === 'cleanup-off' ? artifact('flattened') : cleanedFlattened])
+    mocks.editor.mockResolvedValue({ width: 600, height: 400, protected_pixels: 0, palette: [] })
+  }
+
+  it('sits between Edit and Trace with the Lucide eraser icon', async () => {
+    render(createElement((await import('./App')).default))
+    const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label'))
+    expect(tabs.slice(tabs.indexOf('Edit'), tabs.indexOf('Edit') + 3)).toEqual(['Edit', 'Cleanup', 'Trace'])
+    expect(screen.getByRole('tab', { name: 'Cleanup' }).querySelector('svg.lucide-eraser')).toBeTruthy()
+  })
+
+  it('runs cleanup with the form settings, spends its draft, and lands on the Cleaned view', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-cleanup', kind: 'cleanup' })
+    serve([paletteRevision, revision])
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ cleanup: { width_mm: 300, cleanup: true }, trace: { overlap: 4 } }))
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+    const width = within(panel).getByLabelText(/Width \(mm\)/) as HTMLInputElement
+    await vi.waitFor(() => expect(width.value).toBe('300'))
+    // The draft differs from the (default) baseline, so it carries a pending dot.
+    expect(width.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    expect(within(panel).getByText('Minimum detail width (mm)')).toBeTruthy()
+    const run = within(panel).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'palette-1', { cleanup: expect.objectContaining({ width_mm: 300, cleanup: true, cleanup_action: 'remove' }) })
+
+    serve([cleanupRevision, paletteRevision, revision])
+    await vi.waitFor(() => expect(update).toBeDefined())
+    const result = 'Cleanup changed 40 px; removed 2 automatically protected details (11 px); kept 1 explicitly protected regions under the threshold'
+    await act(async () => update?.({ ...queuedJob, id: 'job-cleanup', kind: 'cleanup', status: 'succeeded', progress: 1, message: result, result_revision_id: 'cleanup-1' }))
+    await vi.waitFor(() => expect(pressedView('Cleaned')).toBe('true'))
+    // The job result states what the cleanup did to protected detail.
+    expect(screen.getByText(result)).toBeTruthy()
+    expect(window.location.hash).toContain('revision=cleanup-1')
+    await vi.waitFor(() => expect(within(panel).getByText('Iteration 1 of 1')).toBeTruthy())
+    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
+    expect(stored.cleanup).toBeUndefined()
+    expect(stored.trace).toEqual({ overlap: 4 })
+    // The recorded cleanup is now the baseline, so nothing is pending.
+    expect(width.closest('label')?.querySelector('.field-dirty')).toBeNull()
+  })
+
+  it('saves a pending cleanup draft when a field loses focus', async () => {
+    serve([paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+    const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+    fireEvent.change(colour, { target: { value: 'Sand' } })
+    expect(localStorage.getItem(`vinylgen.project-settings.${project.id}`)).toBeNull()
+    fireEvent.blur(colour)
+    expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').cleanup.remove_colour).toBe('Sand')
+  })
+
+  it('shows the cleaned raster as Cleaned and the raster before cleanup as Flattened', async () => {
+    serve([cleanupRevision, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=cleanup-1`)
+    render(createElement((await import('./App')).default))
+    const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+    expect(within(group).getByRole('button', { name: 'Cleaned' })).toBeTruthy()
+    fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('flattened-cleaned'))
+    fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id'))
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === 'flattened-id')?.name).toMatch(/before cleanup/)
+    expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('cleanup-1', expect.anything(), { beforeCleanup: true })
+  })
+
+  it('shows the trace size read-only from the active cleanup and sends no cleanup fields with a trace', async () => {
+    const traceRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'cleanup-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 1 }, stale_concerns: ['export'] } }
+    serve([traceRun, cleanupRevision, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-1`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    expect(await within(panel).findByText('Size: 300 × 200 mm (set in Cleanup)')).toBeTruthy()
+    expect(within(panel).getByText('Layer overlap (mm)')).toBeTruthy()
+    expect(within(panel).queryByLabelText(/Width \(mm\)/)).toBeNull()
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    const sent = mocks.startPipeline.mock.calls[0][3].trace
+    for (const key of ['width_mm', 'height_mm', 'remove_colour', 'cleanup', 'cleanup_action', 'min_detail_width', 'min_region_area', 'remove_below_width'])
+      expect(sent).not.toHaveProperty(key)
+  })
+
+  it('blocks tracing once a flatten after the cleanup marks it stale, offering a one-click re-run', async () => {
+    const reflattened: Revision = { ...paletteRevision, id: 'palette-2', parent_revision_id: 'cleanup-1', created_at: '2026-01-04' }
+    serve([reflattened, cleanupRevision, paletteRevision, revision])
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-rerun', kind: 'cleanup' })
+    // A pending Cleanup form draft that the re-run must neither use nor spend.
+    const draft = { width_mm: 999, remove_colour: 'Sand', cleanup: false }
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ cleanup: draft }))
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-2`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    expect(await within(panel).findByText('The artwork changed after Cleanup: re-run Cleanup')).toBeTruthy()
+    const trace = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    const rerun = within(panel).getByRole('button', { name: 'Re-run Cleanup with its last settings' }) as HTMLButtonElement
+    expect(rerun.title).toMatch(/settings of the last Cleanup run, not the Cleanup form/)
+    await vi.waitFor(() => expect(rerun.disabled).toBe(false))
+    expect(trace.disabled).toBe(true)
+    const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+    expect(within(group).queryByRole('button', { name: 'Cleaned' })).toBeNull()
+    // The re-run uses the stale cleanup revision's recorded settings on the current revision.
+    fireEvent.click(rerun)
+    expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'palette-2', { cleanup: { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupRevision.settings.cleanup as object) } })
+    await vi.waitFor(() => expect(update).toBeDefined())
+    await act(async () => update?.({ ...queuedJob, id: 'job-rerun', kind: 'cleanup', status: 'succeeded', progress: 1, result_revision_id: 'palette-2' }))
+    expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').cleanup).toEqual(draft)
+  })
+
+  it('edits the raster from before the cleanup, never the Cleaned image', async () => {
+    // Record which raster the editor decodes into its pixel buffer.
+    const decoded: string[] = []
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!
+    vi.spyOn(HTMLImageElement.prototype, 'src', 'set').mockImplementation(function (this: HTMLImageElement, value: string) { decoded.push(value); descriptor.set!.call(this, value) })
+    serve([cleanupRevision, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=cleanup-1`)
+    render(createElement((await import('./App')).default))
+    const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+    expect(within(group).getByRole('button', { name: 'Cleaned' })).toBeTruthy()
+    await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id'))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+    // On the Cleaned image, editing is disabled and points back to the editable one.
+    fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
+    expect(screen.getByText(/Switch to the Flattened image to select and edit areas\./)).toBeTruthy()
+    expect(decoded.some(url => url.endsWith('/artifacts/flattened'))).toBe(true)
+    expect(decoded.some(url => url.endsWith('/artifacts/flattened-cleaned'))).toBe(false)
+    vi.restoreAllMocks()
+  })
+
+  it('leaves tracing allowed in pixels when no cleanup was ever run', async () => {
+    serve([paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    expect(await within(panel).findByText('No physical size (px)')).toBeTruthy()
+    const trace = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(trace.disabled).toBe(false))
+    expect(within(panel).queryByText(/re-run Cleanup/)).toBeNull()
+  })
+
+  it('offers no Cleaned view for a cleanup run that changed no pixels', async () => {
+    const off: Revision = { ...cleanupRevision, id: 'cleanup-off', settings: { cleanup: { width_mm: 300, cleanup: false }, stale_concerns: ['trace', 'validation', 'export'] } }
+    serve([off, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=cleanup-off`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    // Its size still governs the trace.
+    expect(await within(panel).findByText('Size: 300 × 200 mm (set in Cleanup)')).toBeTruthy()
+    const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+    expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
+    expect(within(group).queryByRole('button', { name: 'Cleaned' })).toBeNull()
+  })
+
+  it('moves a pre-cleanup-stage trace draft\'s size and cleanup into the Cleanup draft', async () => {
+    serve([paletteRevision, revision])
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45, width_mm: 250, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7, min_region_area: 0, remove_below_width: 0 } }))
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+    const width = within(panel).getByLabelText(/Width \(mm\)/) as HTMLInputElement
+    await vi.waitFor(() => expect(width.value).toBe('250'))
+    expect((within(panel).getByLabelText(/Remove colour/) as HTMLInputElement).value).toBe('Sand')
+    expect(width.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
+    expect(stored.cleanup).toMatchObject({ width_mm: 250, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7 })
+    expect(stored.trace).toEqual({ ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45 })
+  })
+
+  it('loads a pre-cleanup-stage trace run\'s size and cleanup into the Cleanup form, not the Trace form', async () => {
+    const legacyRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02',
+      settings: { trace: { overlap: 2, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 } } }
+    serve([legacyRun, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=trace-1`)
+    render(createElement((await import('./App')).default))
+    const cleanupPanel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+    const width = within(cleanupPanel).getByLabelText(/Width \(mm\)/) as HTMLInputElement
+    await vi.waitFor(() => expect(width.value).toBe('400'))
+    expect((within(cleanupPanel).getByLabelText(/Remove colour/) as HTMLInputElement).value).toBe('Sand')
+    expect((within(cleanupPanel).getByLabelText(/Cleanup action/) as HTMLSelectElement).value).toBe('widen')
+    expect((within(cleanupPanel).getByRole('checkbox', { name: /Enable cutter cleanup/ }) as HTMLInputElement).checked).toBe(true)
+    // Recorded values, not pending edits.
+    expect(width.closest('label')?.querySelector('.field-dirty')).toBeNull()
+    expect(within(cleanupPanel).getByText('Iteration 1 of 1')).toBeTruthy()
+    // The run's own overlap stays on Trace, and a new trace sends none of the moved fields.
+    const tracePanel = screen.getByRole('tabpanel', { name: 'Trace' })
+    expect((within(tracePanel).getByLabelText(/Layer overlap/) as HTMLInputElement).value).toBe('2')
+    const run = within(tracePanel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    const sent = mocks.startPipeline.mock.calls[0][3].trace
+    expect(sent.overlap).toBe(2)
+    expect(sent).not.toHaveProperty('width_mm')
+    expect(sent).not.toHaveProperty('cleanup')
+  })
+
+  it('steps the Cleanup form through prior cleanup runs without changing the shown revision', async () => {
+    const newer: Revision = { ...cleanupRevision, id: 'cleanup-2', parent_revision_id: 'cleanup-1', created_at: '2026-01-03',
+      settings: { cleanup: { width_mm: 500 }, stale_concerns: ['trace', 'validation', 'export'] } }
+    serve([newer, cleanupRevision, paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=cleanup-2`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+    const width = within(panel).getByLabelText(/Width \(mm\)/) as HTMLInputElement
+    await vi.waitFor(() => expect(width.value).toBe('500'))
+    fireEvent.click(within(panel).getByLabelText("Load an older iteration's settings"))
+    expect(width.value).toBe('300')
+    expect(within(panel).getByText('Iteration 1 of 2')).toBeTruthy()
+    expect(window.location.hash).toContain('revision=cleanup-2')
+    fireEvent.click(within(panel).getByLabelText("Load a newer iteration's settings"))
+    expect(width.value).toBe('500')
+  })
 })
 
 describe('legacy curve optimisation settings', () => {

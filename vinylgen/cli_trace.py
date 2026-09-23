@@ -7,7 +7,7 @@ import sys
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from vinylgen.contracts import TraceSettings
+from vinylgen.contracts import CleanupSettings, TraceSettings
 from vinylgen.tracing import normalize_hex, resolve_subjects, trace_subject
 
 
@@ -75,25 +75,49 @@ def upgrade_legacy_config(values: dict) -> dict:
     return values
 
 
-def settings_from_args(args: argparse.Namespace) -> tuple[TraceSettings, dict[str, str]]:
+_TRACE_FIELDS = {f.name for f in fields(TraceSettings)}
+_CLEANUP_FIELDS = {f.name for f in fields(CleanupSettings)}
+
+
+def config_values(config: dict) -> dict:
+    """Flatten a config file into one block of trace and cleanup fields."""
+    if isinstance(config.get("settings"), dict):
+        config = {**config["settings"], "cleanup_settings": config.get("cleanup_settings")}
+    values = dict(config)
+    cleanup = values.pop("cleanup_settings", None)
+    if cleanup is not None:
+        values = {**cleanup, **values}
+    return upgrade_legacy_config(values)
+
+
+def settings_from_args(args: argparse.Namespace
+                       ) -> tuple[TraceSettings, CleanupSettings, dict[str, str]]:
+    """The trace settings, the cleanup settings (size, removed colour and cutter
+    cleanup, applied inline before tracing) and the colour-name overrides.
+
+    A config file is one flat block that may mix both groups' fields (as an older
+    trace.json ``settings`` block does), a block carrying a ``cleanup_settings``
+    object, or a whole trace.json, whose ``settings`` and ``cleanup_settings``
+    are merged so a traced subject's configuration round-trips. Flags override it."""
     values = {}
     if args.config:
-        values = upgrade_legacy_config(json.loads(args.config.read_text()))
-        unknown = set(values) - {f.name for f in fields(TraceSettings)}
+        values = config_values(json.loads(args.config.read_text()))
+        unknown = set(values) - _TRACE_FIELDS - _CLEANUP_FIELDS
         if unknown:
             raise ValueError(f"unknown config setting(s): {', '.join(sorted(unknown))}")
-    mapping = {f.name: getattr(args, f.name, None) for f in fields(TraceSettings)}
+    mapping = {name: getattr(args, name, None) for name in _TRACE_FIELDS | _CLEANUP_FIELDS}
     for key, value in mapping.items():
         if value is not None:
             values[key] = value
     if args.layer_order is not None:
         values["layer_order"] = [x.strip() for x in args.layer_order.split(",") if x.strip()]
-    settings = TraceSettings(**values)
-    if settings.width_mm is not None and settings.width_mm <= 0 or settings.height_mm is not None and settings.height_mm <= 0:
+    settings = TraceSettings(**{k: v for k, v in values.items() if k in _TRACE_FIELDS})
+    cleanup = CleanupSettings(**{k: v for k, v in values.items() if k in _CLEANUP_FIELDS})
+    if cleanup.width_mm is not None and cleanup.width_mm <= 0 or cleanup.height_mm is not None and cleanup.height_mm <= 0:
         raise ValueError("physical dimensions must be positive")
     if settings.overlap < 0:
         raise ValueError("overlap must be non-negative")
-    if settings.remove_below_width < 0:
+    if cleanup.remove_below_width < 0:
         raise ValueError("remove-below width must be non-negative")
     overrides = {}
     for item in args.colour_name:
@@ -101,14 +125,15 @@ def settings_from_args(args: argparse.Namespace) -> tuple[TraceSettings, dict[st
             raise ValueError("--colour-name must be HEX=NAME")
         key, name = item.split("=", 1)
         overrides[normalize_hex(key)] = name.strip().title()
-    return settings, overrides
+    return settings, cleanup, overrides
 
 
 def main() -> None:
     args = parser().parse_args()
     try:
-        settings, overrides = settings_from_args(args)
-        reports = [trace_subject(path, TraceSettings(**asdict(settings)), overrides)
+        settings, cleanup, overrides = settings_from_args(args)
+        reports = [trace_subject(path, TraceSettings(**asdict(settings)), overrides,
+                                 cleanup=CleanupSettings(**asdict(cleanup)), clean_inline=True)
                    for path in resolve_subjects(args.inputs)]
         print(json.dumps({r["subject"]: {"valid": all(
                                                     r["validation"][variant]["passed"]

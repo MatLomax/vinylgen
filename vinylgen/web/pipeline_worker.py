@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from vinylgen.contracts import PaletteSettings, TraceSettings
+from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
 
 
 def _emit(value: float, message: str) -> None:
@@ -33,11 +33,17 @@ def _run(spec: dict) -> None:
 
         infer_palette(Path(spec["source"]), Path(spec["outputs"]),
                       PaletteSettings(**spec["settings"]), progress=_emit)
+    elif op == "cleanup":
+        from vinylgen.web.cleanup import clean_subject
+
+        clean_subject(Path(spec["subject"]), CleanupSettings(**spec["settings"]), progress=_emit)
     elif op == "trace":
         from vinylgen.tracing import trace_subject
 
+        cleanup = spec.get("cleanup")
         trace_subject(Path(spec["subject"]), TraceSettings(**spec["settings"]),
-                      spec["colour_names"], progress=_emit)
+                      spec["colour_names"], progress=_emit,
+                      cleanup=CleanupSettings(**cleanup) if cleanup is not None else None)
     else:
         raise ValueError(f"unknown pipeline worker op: {op}")
 

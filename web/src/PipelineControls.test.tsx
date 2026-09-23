@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { PaletteColour, TraceSettings } from './api'
-import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, normalizeTraceSettings } from './PipelineControls'
+import type { CleanupSettings, PaletteColour, TraceSettings } from './api'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, formatPhysicalSize, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type PhysicalSize } from './PipelineControls'
 
 afterEach(cleanup)
 
@@ -25,18 +25,20 @@ describe('numeric field empty handling', () => {
   })
 
   it('clears an optional field to null when emptied', () => {
-    const setTrace = vi.fn()
-    const trace: TraceSettings = { ...DEFAULT_TRACE_SETTINGS, width_mm: 120 }
-    render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
-      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
-
+    const setCleanup = vi.fn()
+    renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, width_mm: 120 }, setCleanup)
     fireEvent.change(screen.getByLabelText(/Width \(mm\)/), { target: { value: '' } })
-    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ width_mm: null }))
+    expect(setCleanup).toHaveBeenCalledWith(expect.objectContaining({ width_mm: null }))
   })
 })
 
-function renderTrace(trace: TraceSettings, setTrace: (value: TraceSettings) => void, colours = COLOURS) {
+function renderTrace(trace: TraceSettings, setTrace: (value: TraceSettings) => void, colours = COLOURS, traceSize: PhysicalSize | null = null) {
   render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={colours}
+    selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} traceSize={traceSize} />)
+}
+function renderCleanup(cleanup: CleanupSettings, setCleanup: (value: CleanupSettings) => void, baseCleanup = DEFAULT_CLEANUP_SETTINGS) {
+  render(<PipelineControls stage="cleanup" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS}
+    cleanup={cleanup} setCleanup={setCleanup} baseCleanup={baseCleanup} paletteColours={COLOURS}
     selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
 }
 
@@ -117,22 +119,26 @@ describe('iteration stepper', () => {
 })
 
 describe('trace setting units', () => {
-  const physicalLabels = (unit: string, areaUnit: string) => [
-    `Layer overlap (${unit})`, `Minimum detail width (${unit})`, `Remove below width (${unit})`, `Minimum region area (${areaUnit})`]
   const fittingLabels = ['Curve-fit tolerance (px)', 'Straight-line deviation (px)', 'Minimum straight length (px)', 'Corner analysis span (px)', 'Maximum deviation (px)']
 
-  it('labels physical settings in pixels without a physical size, and fitting settings in pixels', () => {
+  it('labels the overlap in pixels without a physical size from Cleanup, and fitting settings in pixels', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
-    for (const label of [...physicalLabels('px', 'px²'), ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
+    for (const label of ['Layer overlap (px)', ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.getByText('No physical size (px)')).toBeTruthy()
   })
 
-  it('switches physical labels to millimetres when a width or height is set, leaving fitting labels in pixels', () => {
-    for (const size of [{ width_mm: 120 }, { height_mm: 80 }]) {
-      renderTrace({ ...DEFAULT_TRACE_SETTINGS, ...size }, () => undefined)
-      for (const label of [...physicalLabels('mm', 'mm²'), ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
-      expect(screen.queryByText('Layer overlap (px)')).toBeNull()
-      cleanup()
-    }
+  it('switches the overlap to millimetres when Cleanup set a size, leaving fitting labels in pixels', () => {
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined, COLOURS, { width: 300, height: 200 })
+    for (const label of ['Layer overlap (mm)', ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.queryByText('Layer overlap (px)')).toBeNull()
+    expect(screen.getByText('Size: 300 × 200 mm (set in Cleanup)')).toBeTruthy()
+  })
+
+  it('shows the size read-only and no longer offers the cleanup, size or removed-colour fields', () => {
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined, COLOURS, { width: 300, height: 200 })
+    for (const label of [/Width \(mm\)/, /Height \(mm\)/, /Remove colour/, /Cleanup action/, /Minimum detail width/, /Minimum region area/, /Remove below width/])
+      expect(screen.queryByLabelText(label)).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Enable cutter cleanup/ })).toBeNull()
   })
 
   it('offers straight-line deviation as an unbounded number field with no curve optimisation checkbox', () => {
@@ -155,7 +161,75 @@ describe('trace setting units', () => {
   })
 })
 
+describe('cleanup settings form', () => {
+  const physicalLabels = (unit: string, areaUnit: string) => [
+    `Minimum detail width (${unit})`, `Remove below width (${unit})`, `Minimum region area (${areaUnit})`]
+
+  it('holds the size, removed colour and cutter cleanup, labelled in px without a size', () => {
+    renderCleanup(DEFAULT_CLEANUP_SETTINGS, () => undefined)
+    for (const label of ['Width (mm)', 'Height (mm)', 'Remove colour', 'Cleanup action', ...physicalLabels('px', 'px²')]) expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Enable cutter cleanup/ })).toBeTruthy()
+    // The trace-only settings stay on Trace.
+    expect(screen.queryByText(/Layer overlap/)).toBeNull()
+    expect(screen.queryByText(/Curve-fit tolerance/)).toBeNull()
+    expect(screen.getByText(/Blank both to keep overlap and cleanup in px\./)).toBeTruthy()
+    expect(screen.getByText(/Off: the run only records the size and removed colour/)).toBeTruthy()
+  })
+
+  it('switches its physical labels to millimetres when a width or height is set', () => {
+    for (const size of [{ width_mm: 120 }, { height_mm: 80 }]) {
+      renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, ...size }, () => undefined)
+      for (const label of physicalLabels('mm', 'mm²')) expect(screen.getByText(label)).toBeTruthy()
+      cleanup()
+    }
+  })
+
+  it('edits its own keys and flags fields that differ from the recorded cleanup', () => {
+    const setCleanup = vi.fn()
+    renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, remove_colour: 'Red' }, setCleanup)
+    const colour = screen.getByLabelText(/Remove colour/)
+    expect(colour.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    expect(screen.getByLabelText(/Width \(mm\)/).closest('label')?.querySelector('.field-dirty')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: /Enable cutter cleanup/ }))
+    expect(setCleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanup: true, remove_colour: 'Red' }))
+    fireEvent.change(screen.getByLabelText(/Cleanup action/), { target: { value: 'widen' } })
+    expect(setCleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanup_action: 'widen' }))
+  })
+
+  it('steps its settings history like Flatten', () => {
+    const onStep = vi.fn()
+    render(<PipelineControls stage="cleanup" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={2} iterationIndex={0} onStep={onStep} onCommitDraft={() => undefined} />)
+    expect(screen.getByRole('group', { name: 'Step through previous iterations' })).toBeTruthy()
+    fireEvent.click(screen.getByLabelText("Load an older iteration's settings"))
+    expect(onStep).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('physical size', () => {
+  it('completes a one-sided size from the raster proportions', () => {
+    expect(physicalSize({ width_mm: 300, height_mm: null }, { width: 600, height: 400 })).toEqual({ width: 300, height: 200 })
+    expect(physicalSize({ width_mm: null, height_mm: 100 }, { width: 600, height: 400 })).toEqual({ width: 150, height: 100 })
+    expect(physicalSize({ width_mm: 300, height_mm: null }, null)).toEqual({ width: 300, height: null })
+    expect(physicalSize({ width_mm: null, height_mm: null }, { width: 600, height: 400 })).toBeNull()
+    expect(physicalSize(undefined, null)).toBeNull()
+  })
+
+  it('reads as the trace panel states it', () => {
+    expect(formatPhysicalSize(null)).toBe('No physical size (px)')
+    expect(formatPhysicalSize({ width: 300, height: 213.3333 })).toBe('Size: 300 × 213.33 mm (set in Cleanup)')
+    expect(formatPhysicalSize({ width: 300, height: null })).toBe('Size: 300 mm wide (set in Cleanup)')
+  })
+})
+
 describe('legacy trace settings', () => {
+  it('moves embedded size, removed colour and cleanup out of the trace form', () => {
+    const stored = { overlap: 2, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 1, remove_below_width: 0 }
+    expect(normalizeTraceSettings(stored as Partial<TraceSettings>)).toEqual({ overlap: 2 })
+    expect(legacyCleanupSettings(stored)).toEqual({ width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 1, remove_below_width: 0 })
+    expect(legacyCleanupSettings({ overlap: 2 })).toBeUndefined()
+  })
+
   it('maps curve_optimization false to a straight-line deviation of 0 and drops the flag', () => {
     // Corners keep the recorded deviation they were detected with.
     expect(normalizeTraceSettings({ curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 2 })).toEqual({ straight_line_max_deviation: 0, corner_straightness: 1.6, overlap: 2 })

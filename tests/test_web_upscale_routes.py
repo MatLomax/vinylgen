@@ -129,7 +129,7 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revision["parent_revision_id"], self.parent_id)
         self.assertEqual(revision["settings"]["seed"], 4242)
         self.assertEqual(revision["settings"]["stale_concerns"],
-                         ["palette", "trace", "validation", "export"])
+                         ["palette", "cleanup", "trace", "validation", "export"])
         self.assertEqual(self.provider.calls[0]["settings"].seed, 4242)
 
     async def test_default_settings_are_applied_when_body_is_empty(self) -> None:

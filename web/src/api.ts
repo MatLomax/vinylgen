@@ -15,14 +15,18 @@ export type PaletteSettings = {
   protected_component_points: [number, number][]; preserved_colour_points: [number, number][]
   distinct_colour_point_pairs: [[number, number], [number, number]][]
 }
+// The cleanup stage owns the physical size and the removed colour, which the trace
+// then uses, as well as the cutter cleanup of the flattened labels.
+export type CleanupSettings = {
+  width_mm: number | null; height_mm: number | null; remove_colour: string | null
+  cleanup: boolean; cleanup_action: 'remove' | 'widen' | 'remove_then_widen'
+  min_detail_width: number; min_region_area: number; remove_below_width: number
+}
 export type TraceSettings = {
-  width_mm: number | null; height_mm: number | null; overlap: number; solid_underlayers: boolean
-  remove_colour: string | null; layer_order: string[] | null
+  overlap: number; solid_underlayers: boolean; layer_order: string[] | null
   corner_threshold: number; curve_fit_tolerance: number
   straight_line_max_deviation: number; minimum_straight_length: number
   max_deviation: number | null; corner_analysis_span: number; corner_straightness: number
-  cleanup: boolean; cleanup_action: 'remove' | 'widen' | 'remove_then_widen'
-  min_detail_width: number; min_region_area: number; remove_below_width: number
   soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
 }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
@@ -50,7 +54,9 @@ export const api = {
   project: (projectId: string, signal?: AbortSignal) => fetch(`/api/projects/${projectId}`, { signal }).then(result<Project & { revisions: Revision[] }>),
   deleteProject: (projectId: string) => fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).then(async response => { if (!response.ok) throw new Error((await response.text()) || response.statusText) }),
   artifacts: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/artifacts`, { signal }).then(result<Artifact[]>),
-  effectiveArtifacts: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/effective-artifacts`, { signal }).then(result<Artifact[]>),
+  // `beforeCleanup` resolves the raster the cleanup stage starts from (see Store.effective_artifacts).
+  effectiveArtifacts: (revisionId: string, signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
+    fetch(`/api/revisions/${revisionId}/effective-artifacts${options?.beforeCleanup ? '?before_cleanup=true' : ''}`, { signal }).then(result<Artifact[]>),
   editor: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/editor`, { signal }).then(result<EditorState>),
   applyEdits: (projectId: string, revisionId: string, operations: EditOperation[]) => fetch(`/api/projects/${projectId}/revisions/${revisionId}/edits`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations }),
@@ -92,8 +98,8 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind: 'foundation-demo', project_id: projectId }),
   }).then(result<Job>),
-  startPipeline: (kind: 'palette' | 'trace' | 'validate' | 'export', projectId: string, revisionId: string,
-    settings?: { palette?: PaletteSettings; trace?: TraceSettings; colour_names?: Record<string, string> }) => fetch('/api/jobs', {
+  startPipeline: (kind: 'palette' | 'cleanup' | 'trace' | 'validate' | 'export', projectId: string, revisionId: string,
+    settings?: { palette?: PaletteSettings; cleanup?: CleanupSettings; trace?: TraceSettings; colour_names?: Record<string, string> }) => fetch('/api/jobs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, project_id: projectId, revision_id: revisionId, ...settings }),
   }).then(result<Job>),

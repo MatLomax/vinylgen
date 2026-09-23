@@ -250,9 +250,12 @@ def create_app(config: WebConfig | None = None,
             raise missing(exc) from exc
 
     @app.get("/api/revisions/{revision_id}/effective-artifacts", response_model=list[Artifact])
-    async def effective_artifacts(revision_id: str) -> list[Artifact]:
+    async def effective_artifacts(revision_id: str, before_cleanup: bool = False) -> list[Artifact]:
+        # ``before_cleanup`` resolves the raster the cleanup stage starts from, which
+        # the Flattened and Edited views show while a cleanup is active.
         try:
-            return [artifact(row) for row in store.effective_artifacts(revision_id).values()]
+            return [artifact(row) for row in store.effective_artifacts(
+                revision_id, before_cleanup=before_cleanup).values()]
         except KeyError as exc:
             raise missing(exc) from exc
         except ValueError as exc:
@@ -377,6 +380,7 @@ def create_app(config: WebConfig | None = None,
                     revision_id=payload.revision_id or "",
                     palette=payload.palette.model_dump() if payload.palette else None,
                     trace=payload.trace.model_dump() if payload.trace else None,
+                    cleanup=payload.cleanup.model_dump() if payload.cleanup else None,
                     colour_names=payload.colour_names)
             return job
         except KeyError as exc:

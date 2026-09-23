@@ -21,8 +21,8 @@ from shapely.geometry import box
 from shapely.ops import unary_union
 
 from vinylgen.colour import colour_names, nearest_palette_labels
-from vinylgen.contracts import SegmentationBundle, TraceSettings
-from vinylgen.cutter_cleanup import cleanup_labels
+from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
+from vinylgen.cutter_cleanup import apply_cleanup, pixel_scale, resolve_physical_size
 from vinylgen.curve_fit import (
     SharedChainFitter, geometry_components, region_components, shared_boundary_components)
 from vinylgen.palette import Progress, _noop
@@ -225,8 +225,18 @@ document.querySelector('#opacity').addEventListener('input', event => {{
 
 
 def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
-                  progress: Progress | None = None) -> dict:
+                  progress: Progress | None = None, *, cleanup: CleanupSettings | None = None,
+                  clean_inline: bool = False) -> dict:
+    """Trace a subject's segmentation into layered SVGs.
+
+    ``cleanup`` supplies the physical size and the removed colour; without it the
+    trace is in pixels and cuts every colour. The segmentation is traced as it is
+    stored, which in the web pipeline is the cleanup stage's cleaned labels. With
+    ``clean_inline`` (the trace CLI) the cutter cleanup in ``cleanup`` is first
+    applied to the labels in memory, through the same function the cleanup stage uses.
+    """
     tick = progress or _noop
+    cleanup = cleanup or CleanupSettings()
     tick(0.01, "Reading segmentation")
     flattened_path = subject_dir / "flattened.png"
     palette_path = subject_dir / "palette.json"
@@ -258,25 +268,37 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     if segmentation.labels.shape != (height, width):
         raise ValueError("segmentation dimensions do not match flattened.png")
     labels = segmentation.labels.copy()
-    omitted = resolve_colour(settings.remove_colour, palette)
+    omitted = resolve_colour(cleanup.remove_colour, palette)
     included = [i for i in range(len(palette)) if i != omitted]
     if not included:
         raise ValueError("cannot omit the only palette colour")
+    if clean_inline:
+        # From here on the trace sees exactly what the cleanup stage would have
+        # stored: layer order, validation, fallback and warning images all use the
+        # cleaned labels and the raster derived from them, never the uncleaned one.
+        labels, protected, cleanup_summary, _ = apply_cleanup(
+            labels, palette, cleanup, omitted,
+            protected_features=segmentation.protected_features,
+            explicit_protected_features=segmentation.explicit_protected_features)
+        segmentation.labels = labels
+        segmentation.protected_features = protected
+        source = segmentation.palette_rgb[labels].astype(np.uint8)
+    else:
+        cleanup_summary = None
+    working = labels
     inferred, order_warnings = infer_order(labels, included, palette)
     order, override = apply_order_override(inferred, settings.layer_order, palette)
     if any(i not in included for i in order):
         raise ValueError("omitted colour cannot occur in layer order")
-    if settings.width_mm is not None and settings.height_mm is None:
-        settings.height_mm = settings.width_mm * height / width
-    elif settings.height_mm is not None and settings.width_mm is None:
-        settings.width_mm = settings.height_mm * width / height
-    units_per_pixel = settings.width_mm / width if settings.width_mm is not None else 1.0
+    physical = resolve_physical_size(cleanup, width, height)
+    units_per_pixel = pixel_scale(physical, width)
+    physical_mm = ((physical.width_mm, physical.height_mm)
+                   if physical.width_mm is not None else None)
     # Curve-fitting settings, max_deviation included, are always in pixels of
     # the traced image; only overlap and the cutter-cleanup thresholds are
     # physical and converted through units_per_pixel.
     if settings.max_deviation is None:
         settings.max_deviation = 2.0
-    working, cleanup = cleanup_labels(labels, included, palette, settings, units_per_pixel)
     overlap_px = settings.overlap / units_per_pixel
     tracing_settings = TraceSettings(**asdict(settings))
     warnings = list(order_warnings)
@@ -351,7 +373,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             progress=lambda fraction, message: report(fraction * 0.6, message),
             fitter=shared_fitter)
         variant_stats: dict[str, list[dict]] = {"overlap": [], "edge": []}
-        roots = {name: svg_document(width, height, settings) for name in variant_stats}
+        roots = {name: svg_document(width, height, physical_mm) for name in variant_stats}
         for position, index in enumerate(order):
             report(0.6 + 0.2 * position / len(order),
                    f"Fitting layer {position + 1} of {len(order)}")
@@ -559,16 +581,17 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                          "palette": str(palette_path),
                          "segmentation": str(segmentation_path)},
              "raster_dimensions": [width, height],
-             "mode": "physical" if settings.width_mm is not None else "pixels",
-             "physical_dimensions_mm": [settings.width_mm, settings.height_mm] if settings.width_mm is not None else None,
+             "mode": "physical" if physical_mm is not None else "pixels",
+             "physical_dimensions_mm": list(physical_mm) if physical_mm is not None else None,
              "settings": asdict(settings),
+             "cleanup_settings": asdict(physical),
              "backend": {"tracer": "shared raster boundary graph",
                          "planar_geometry": f"Shapely {shapely.__version__}"},
              "colours": {"included": [palette[i] for i in order], "omitted": palette[omitted] if omitted is not None else None},
              "layer_order": {"inferred_bottom_to_top": [palette[i]["name"] for i in inferred],
                              "effective_bottom_to_top": [palette[i]["name"] for i in order],
                              "override": [palette[i]["name"] for i in override], "warnings": order_warnings},
-             "cleanup": cleanup, "geometry": variant_stats, "topology": topology,
+             "cleanup": cleanup_summary, "geometry": variant_stats, "topology": topology,
              "validation": validations, "warnings": warnings,
              "raster_partition_validation": {"edge_has_gaps_or_overlaps": False,
                                              "method": "global polygonization of once-simplified shared boundaries"}}

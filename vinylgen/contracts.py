@@ -96,12 +96,29 @@ class SegmentationBundle:
 
 
 @dataclass
-class TraceSettings:
+class CleanupSettings:
+    """The cleanup stage's settings: the physical output size, the colour left out
+    of the cut, and the cutter cleanup applied to the labels.
+
+    One physical size governs both the cleanup thresholds and the traced SVG, so the
+    trace reads ``width_mm``, ``height_mm`` and ``remove_colour`` from here. Without
+    a size, every length is in pixels of the flattened raster.
+    """
+
     width_mm: float | None = None
     height_mm: float | None = None
+    remove_colour: str | None = None
+    cleanup: bool = False
+    cleanup_action: str = "remove"
+    min_detail_width: float = 0.0
+    min_region_area: float = 0.0
+    remove_below_width: float = 0.0
+
+
+@dataclass
+class TraceSettings:
     overlap: float = 0.0
     solid_underlayers: bool = False
-    remove_colour: str | None = None
     layer_order: list[str] | None = None
     corner_threshold: float = 60.0
     curve_fit_tolerance: float = 1.5
@@ -117,11 +134,6 @@ class TraceSettings:
     # straight-line deviation, which is what settings recorded without this
     # field were traced with; it is resolved once, at construction.
     corner_straightness: float | None = None
-    cleanup: bool = False
-    cleanup_action: str = "remove"
-    min_detail_width: float = 0.0
-    min_region_area: float = 0.0
-    remove_below_width: float = 0.0
     soft_path_nodes: int = 5_000
     soft_layer_nodes: int = 50_000
     soft_document_nodes: int = 200_000

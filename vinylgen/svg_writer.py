@@ -4,19 +4,18 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from vinylgen.contracts import TraceSettings
-
 SVG = "http://www.w3.org/2000/svg"
 INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
 ET.register_namespace("", SVG)
 ET.register_namespace("inkscape", INKSCAPE)
 
 
-def svg_document(width: int, height: int, settings: TraceSettings) -> ET.Element:
+def svg_document(width: int, height: int,
+                 physical_mm: tuple[float, float] | None) -> ET.Element:
     attrs = {"version": "1.1", "viewBox": f"0 0 {width} {height}"}
-    if settings.width_mm is not None:
-        attrs["width"] = f"{settings.width_mm:g}mm"
-        attrs["height"] = f"{settings.height_mm:g}mm"
+    if physical_mm is not None:
+        attrs["width"] = f"{physical_mm[0]:g}mm"
+        attrs["height"] = f"{physical_mm[1]:g}mm"
     else:
         attrs["width"] = str(width)
         attrs["height"] = str(height)

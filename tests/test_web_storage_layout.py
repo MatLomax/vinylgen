@@ -60,7 +60,7 @@ class SlugLayoutTest(unittest.TestCase):
         self.assertEqual(revision["settings"]["checkpoint"], "blue_pencil-XL-v7.0.0.safetensors")
         self.assertEqual(revision["settings"]["seed"], 12345)
         self.assertEqual(revision["settings"]["stale_concerns"],
-                         ["palette", "trace", "validation", "export"])
+                         ["palette", "cleanup", "trace", "validation", "export"])
 
         [artifact] = self.store.list_artifacts(revision_id)
         self.assertEqual(artifact["kind"], "source")

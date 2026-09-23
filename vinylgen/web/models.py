@@ -115,12 +115,27 @@ class PaletteJobSettings(BaseModel):
         return self
 
 
-class TraceJobSettings(BaseModel):
+class CleanupJobSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     width_mm: float | None = Field(default=None, gt=0)
     height_mm: float | None = Field(default=None, gt=0)
+    remove_colour: str | None = None
+    cleanup: bool = False
+    cleanup_action: Literal["remove", "widen", "remove_then_widen"] = "remove"
+    min_detail_width: float = Field(default=0.0, ge=0)
+    min_region_area: float = Field(default=0.0, ge=0)
+    remove_below_width: float = Field(default=0.0, ge=0)
+
+
+class TraceJobSettings(BaseModel):
+    # The physical size, removed colour and cutter cleanup belong to the cleanup
+    # stage; a trace request carrying them is rejected rather than silently traced
+    # without them.
+    model_config = ConfigDict(extra="forbid")
+
     overlap: float = Field(default=0.0, ge=0)
     solid_underlayers: bool = False
-    remove_colour: str | None = None
     layer_order: list[str] | None = None
     corner_threshold: float = Field(default=60.0, ge=0, le=180)
     curve_fit_tolerance: float = Field(default=1.5, gt=0)
@@ -129,23 +144,19 @@ class TraceJobSettings(BaseModel):
     max_deviation: float | None = Field(default=None, gt=0)
     corner_analysis_span: float = Field(default=8.0, gt=0)
     corner_straightness: float | None = Field(default=None, ge=0)
-    cleanup: bool = False
-    cleanup_action: Literal["remove", "widen", "remove_then_widen"] = "remove"
-    min_detail_width: float = Field(default=0.0, ge=0)
-    min_region_area: float = Field(default=0.0, ge=0)
-    remove_below_width: float = Field(default=0.0, ge=0)
     soft_path_nodes: int = Field(default=5_000, ge=1)
     soft_layer_nodes: int = Field(default=50_000, ge=1)
     soft_document_nodes: int = Field(default=200_000, ge=1)
 
 
 class StartJob(BaseModel):
-    kind: Literal["foundation-demo", "palette", "trace", "validate", "export"] = "foundation-demo"
+    kind: Literal["foundation-demo", "palette", "cleanup", "trace", "validate", "export"] = "foundation-demo"
     project_id: str | None = None
     revision_id: str | None = None
     steps: int = Field(default=20, ge=1, le=200)
     step_delay_ms: int = Field(default=100, ge=10, le=2000)
     palette: PaletteJobSettings | None = None
+    cleanup: CleanupJobSettings | None = None
     trace: TraceJobSettings | None = None
     colour_names: dict[str, str] = Field(default_factory=dict)
 

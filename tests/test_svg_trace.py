@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from vinylgen.contracts import SegmentationBundle, TraceSettings
+from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
 )
@@ -79,10 +79,12 @@ class SvgTraceTests(unittest.TestCase):
                             for chain in track.chains))
 
     def test_cleanup_thresholds_default_to_zero(self):
+        cleanup = CleanupSettings()
+        self.assertFalse(cleanup.cleanup)
+        self.assertEqual(cleanup.min_detail_width, 0.0)
+        self.assertEqual(cleanup.min_region_area, 0.0)
+        self.assertEqual(cleanup.remove_below_width, 0.0)
         settings = TraceSettings()
-        self.assertEqual(settings.min_detail_width, 0.0)
-        self.assertEqual(settings.min_region_area, 0.0)
-        self.assertEqual(settings.remove_below_width, 0.0)
         self.assertEqual(settings.curve_fit_tolerance, 1.5)
         self.assertEqual(settings.corner_analysis_span, 8.0)
 
@@ -97,7 +99,7 @@ class SvgTraceTests(unittest.TestCase):
         ]
         cleaned, summary = cleanup_labels(
             labels, [0, 1, 2], palette,
-            TraceSettings(cleanup=True, cleanup_action="remove",
+            CleanupSettings(cleanup=True, cleanup_action="remove",
                           min_region_area=3, min_detail_width=0), 1.0)
         self.assertTrue(np.all(cleaned[2, 2:6] == 0))
         self.assertEqual(summary["removed_regions"], 2)
@@ -114,7 +116,7 @@ class SvgTraceTests(unittest.TestCase):
         ]
         cleaned, summary = cleanup_labels(
             labels, [0, 1, 2], palette,
-            TraceSettings(cleanup=True, cleanup_action="remove_then_widen",
+            CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
                           min_region_area=2, min_detail_width=3), 1.0)
         self.assertEqual(cleaned[1, 1], 0)
         self.assertGreater(int((cleaned == 2).sum()), 5)
@@ -132,7 +134,7 @@ class SvgTraceTests(unittest.TestCase):
         ]
         cleaned, summary = cleanup_labels(
             labels, [0, 1, 2], palette,
-            TraceSettings(cleanup=True, cleanup_action="remove_then_widen",
+            CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
                           min_region_area=0, remove_below_width=3,
                           min_detail_width=6), 1.0)
         self.assertFalse(np.any(cleaned == 1))
@@ -150,7 +152,7 @@ class SvgTraceTests(unittest.TestCase):
 
         cleaned, summary = cleanup_labels(
             labels, [0, 1], palette,
-            TraceSettings(cleanup=True, cleanup_action="widen",
+            CleanupSettings(cleanup=True, cleanup_action="widen",
                           min_detail_width=2), 1.0)
 
         self.assertGreater(int((cleaned == 1).sum()), int((labels == 1).sum()))
@@ -174,7 +176,7 @@ class SvgTraceTests(unittest.TestCase):
         ]
         cleaned, summary = cleanup_labels(
             labels, [0, 1, 2], palette,
-            TraceSettings(cleanup=True, cleanup_action="widen",
+            CleanupSettings(cleanup=True, cleanup_action="widen",
                           min_detail_width=3), 1.0)
         self.assertTrue(np.all(cleaned[7:9, 0:20] == 2))
         self.assertEqual(int((cleaned == 2).sum()), int((labels == 2).sum()))
@@ -231,7 +233,8 @@ class SvgTraceTests(unittest.TestCase):
         ).save(subject / "segmentation.npz")
         return subject
 
-    def _trace_capturing_fit_settings(self, subject: Path, settings: TraceSettings):
+    def _trace_capturing_fit_settings(self, subject: Path, settings: TraceSettings,
+                                      cleanup: CleanupSettings | None = None):
         """Trace, returning the report, the settings the curve fitter received, and edge paths."""
         seen: list[TraceSettings] = []
         real = tracing.shared_boundary_components
@@ -241,7 +244,7 @@ class SvgTraceTests(unittest.TestCase):
             return real(track, included, fit_settings, *args, **kwargs)
 
         with mock.patch.object(tracing, "shared_boundary_components", spy):
-            report = trace_subject(subject, settings, {})
+            report = trace_subject(subject, settings, {}, cleanup=cleanup)
         root = ET.parse(subject / "traced-edge.svg").getroot()
         paths = [path.attrib["d"] for path in root.iter(f"{{{SVG}}}path")]
         return report, seen, paths
@@ -255,7 +258,8 @@ class SvgTraceTests(unittest.TestCase):
                 pixels, pixel_fits, pixel_paths = self._trace_capturing_fit_settings(
                     subject, TraceSettings(max_deviation=explicit))
                 physical, physical_fits, physical_paths = self._trace_capturing_fit_settings(
-                    subject, TraceSettings(width_mm=400, max_deviation=explicit))
+                    subject, TraceSettings(max_deviation=explicit),
+                    cleanup=CleanupSettings(width_mm=400))
                 expected = 2.0 if explicit is None else explicit
                 self.assertEqual(physical["mode"], "physical")
                 for report, fits in ((pixels, pixel_fits), (physical, physical_fits)):
@@ -404,7 +408,8 @@ class SvgTraceTests(unittest.TestCase):
     def test_optional_colour_removal(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(remove_colour="#E15F2D"), {})
+            report = trace_subject(subject, TraceSettings(), {},
+                                   cleanup=CleanupSettings(remove_colour="#E15F2D"))
             self.assertEqual(report["colours"]["omitted"]["hex"], "#E15F2D")
             self.assertEqual(report["validation"]["edge"]["layer_count"], 1)
 

@@ -46,6 +46,7 @@ CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_
 
 STALE_ARTIFACT_KINDS = {
     "palette": {"flattened", "segmentation", "palette", "report"},
+    "cleanup": {"cleanup-audit"},
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
@@ -53,6 +54,10 @@ STALE_ARTIFACT_KINDS = {
     "validation": {"validation"},
     "export": {"export"},
 }
+
+
+# The raster a cleanup revision rewrites; a newer cleanup replaces them.
+CLEANUP_RASTER_KINDS = {"flattened", "segmentation", "palette", "report"}
 
 
 def _now() -> str:
@@ -357,7 +362,7 @@ class Store:
         revision_id, artifact_id, now = _id(), _id(), _now()
         effective_settings = {
             **settings, "checkpoint": checkpoint, "seed": seed,
-            "stale_concerns": ["palette", "trace", "validation", "export"],
+            "stale_concerns": ["palette", "cleanup", "trace", "validation", "export"],
         }
         sha256, size, incoming = self._stage_incoming(artifact_id, source)
         storage_path = str(blob_relpath(project["slug"], "upscaled-source", now, "source.png"))
@@ -435,26 +440,41 @@ class Store:
                 "SELECT * FROM artifacts WHERE revision_id=? ORDER BY created_at", (revision_id,)
             )]
 
-    def effective_artifacts(self, revision_id: str) -> dict[str, dict[str, Any]]:
-        """Resolve current artifacts through ancestry without exposing stale ancestors."""
+    def effective_artifacts(self, revision_id: str, *, before_cleanup: bool = False
+                            ) -> dict[str, dict[str, Any]]:
+        """Resolve current artifacts through ancestry without exposing stale ancestors.
+
+        The newest artifact of each kind wins. Stale concerns accumulate while walking:
+        once a revision marks a concern stale, the artifacts of that concern's kinds
+        from every older revision are excluded. A cleanup replaces any earlier cleanup,
+        so the raster artifacts of a ``cleanup`` revision are skipped once a newer
+        cleanup has been passed; with ``before_cleanup`` they are skipped from the
+        start, which resolves the raster that cleanup starts from.
+        """
         result: dict[str, dict[str, Any]] = {}
         current: str | None = revision_id
         seen: set[str] = set()
-        root = self.get_revision(revision_id)
-        stale_kinds = {
-            kind
-            for concern in root["settings"].get("stale_concerns", ())
-            for kind in STALE_ARTIFACT_KINDS.get(concern, ())
-        }
+        stale_kinds: set[str] = set()
+        cleanup_superseded = before_cleanup
         while current:
             if current in seen:
                 raise ValueError("revision ancestry contains a cycle")
             seen.add(current)
+            revision = self.get_revision(current)
+            skip_raster = revision["kind"] == "cleanup" and cleanup_superseded
             for row in self.list_artifacts(current):
-                if current != revision_id and row["kind"] in stale_kinds:
+                if row["kind"] in stale_kinds:
+                    continue
+                if skip_raster and row["kind"] in CLEANUP_RASTER_KINDS:
                     continue
                 result.setdefault(row["kind"], row)
-            current = self.get_revision(current)["parent_revision_id"]
+            stale_kinds.update(
+                kind
+                for concern in revision["settings"].get("stale_concerns", ())
+                for kind in STALE_ARTIFACT_KINDS.get(concern, ()))
+            if revision["kind"] == "cleanup":
+                cleanup_superseded = True
+            current = revision["parent_revision_id"]
         return result
 
     def create_job(self, *, kind: str, project_id: str | None,

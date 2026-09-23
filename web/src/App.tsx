@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
-import { api, followJob, type Artifact, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
+import { Download, Eraser, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
+import { api, followJob, type Artifact, type CleanupSettings, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
@@ -9,7 +9,7 @@ import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, normalizeTraceSettings, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -21,8 +21,8 @@ const OVERLAY_ARTIFACT_KINDS = new Set([
 ])
 
 type Dimensions = [number, number]
-type WorkflowStage = 'create' | 'upload' | 'flatten' | 'trace' | 'palette' | 'edit' | 'export'
-type ArtworkView = 'source' | 'flattened' | 'edited' | 'traced'
+type WorkflowStage = 'create' | 'upload' | 'flatten' | 'cleanup' | 'trace' | 'palette' | 'edit' | 'export'
+type ArtworkView = 'source' | 'flattened' | 'edited' | 'cleaned' | 'traced'
 
 const WORKFLOW_STAGES: { id: WorkflowStage; label: string; description: string; icon: typeof Sparkles }[] = [
   { id: 'create', label: 'Create', description: 'Generate a source', icon: Sparkles },
@@ -30,6 +30,7 @@ const WORKFLOW_STAGES: { id: WorkflowStage; label: string; description: string; 
   { id: 'flatten', label: 'Flatten', description: 'Reduce the palette', icon: WandSparkles },
   { id: 'palette', label: 'Palette', description: 'Edit whole colours', icon: Palette },
   { id: 'edit', label: 'Edit', description: 'Edit selected areas', icon: Pencil },
+  { id: 'cleanup', label: 'Cleanup', description: 'Size and cutter cleanup', icon: Eraser },
   { id: 'trace', label: 'Trace', description: 'Build vinyl layers', icon: Layers3 },
   { id: 'export', label: 'Export', description: 'Download or hand off', icon: Download },
 ]
@@ -99,18 +100,57 @@ export function frameFromDimensions(width: number, height: number): string {
   return 'custom'
 }
 
-export function inheritedPipelineSettings(revisions: Revision[], revisionId: string | null): { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } {
+// Each stage's form settings from the nearest ancestor that recorded them. A trace run
+// recorded before the cleanup stage embedded the size, removed colour and cutter
+// cleanup in its trace settings; those fill the Cleanup form, never the Trace form.
+export function inheritedPipelineSettings(revisions: Revision[], revisionId: string | null): { palette?: Partial<PaletteSettings>; cleanup?: Partial<CleanupSettings>; trace?: Partial<TraceSettings> } {
   let current = revisions.find(row => row.id === revisionId)
   let palette: Partial<PaletteSettings> | undefined
+  let cleanup: Partial<CleanupSettings> | undefined
   let trace: Partial<TraceSettings> | undefined
   const seen = new Set<string>()
-  while (current && (!palette || !trace) && !seen.has(current.id)) {
+  while (current && (!palette || !cleanup || !trace) && !seen.has(current.id)) {
     seen.add(current.id)
     if (!palette && current.settings.palette) palette = current.settings.palette as Partial<PaletteSettings>
-    if (!trace && current.settings.trace) trace = normalizeTraceSettings(current.settings.trace as Partial<TraceSettings>)
+    if (!cleanup && current.settings.cleanup) cleanup = current.settings.cleanup as Partial<CleanupSettings>
+    if (current.settings.trace) {
+      const stored = current.settings.trace as Record<string, unknown>
+      if (!trace) trace = normalizeTraceSettings(stored as Partial<TraceSettings>)
+      if (!cleanup) cleanup = legacyCleanupSettings(stored)
+    }
     current = revisions.find(row => row.id === current?.parent_revision_id)
   }
-  return { palette, trace }
+  return { palette, cleanup, trace }
+}
+
+// The nearest `cleanup` ancestor and whether it is stale: a revision in between (a
+// flatten, an edit, a source upscale) marked cleanup stale. Mirrors the server's
+// nearest_cleanup, which blocks a trace while that cleanup is stale.
+export function nearestCleanup(revisions: Revision[], revisionId: string | null): { revision: Revision | null; stale: boolean } {
+  const seen = new Set<string>()
+  let stale = false
+  for (let node = revisions.find(row => row.id === revisionId); node && !seen.has(node.id);
+    node = revisions.find(row => row.id === node?.parent_revision_id)) {
+    seen.add(node.id)
+    if (node.kind === 'cleanup' && node.settings.cleanup) return { revision: node, stale }
+    if ((node.settings.stale_concerns as string[] | undefined)?.includes('cleanup')) stale = true
+  }
+  return { revision: null, stale: false }
+}
+// The cleanup a trace of this revision uses: the nearest cleanup while it is not stale.
+export function activeCleanupRevision(revisions: Revision[], revisionId: string | null): Revision | null {
+  const { revision, stale } = nearestCleanup(revisions, revisionId)
+  return stale ? null : revision
+}
+
+// Whether a trace run's overlap was in mm: a run recorded before the cleanup stage says
+// so in its own settings; any other run used the size of the cleanup behind it.
+export function traceRunIsPhysical(revisions: Revision[], runId: string | undefined): boolean {
+  const run = revisions.find(row => row.id === runId)
+  const legacy = legacyCleanupSettings((run?.settings.trace ?? {}) as Record<string, unknown>)
+  if (legacy && ('width_mm' in legacy || 'height_mm' in legacy)) return Boolean(legacy.width_mm || legacy.height_mm)
+  const cleanup = activeCleanupRevision(revisions, runId ?? null)?.settings.cleanup as Partial<CleanupSettings> | undefined
+  return physicalSize(cleanup, null) !== null
 }
 
 // Every complete stage setting recorded along the shown revision's ancestry, newest
@@ -124,6 +164,22 @@ export function ancestorPaletteIterations(revisions: Revision[], revisionId: str
   while (current && !seen.has(current.id)) {
     seen.add(current.id)
     if (current.settings.palette) list.push({ ...DEFAULT_PALETTE_SETTINGS, ...(current.settings.palette as Partial<PaletteSettings>) })
+    current = revisions.find(row => row.id === current?.parent_revision_id)
+  }
+  return list
+}
+// The cleanup settings recorded along the shown revision's ancestry, newest first and
+// merged over defaults: each cleanup run's, and each pre-cleanup-stage trace run's
+// embedded values, so the Cleanup form steps back through them like Flatten.
+export function ancestorCleanupIterations(revisions: Revision[], revisionId: string | null): CleanupSettings[] {
+  const list: CleanupSettings[] = []
+  const seen = new Set<string>()
+  let current = revisions.find(row => row.id === revisionId)
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    const recorded = current.kind === 'cleanup' ? current.settings.cleanup as Partial<CleanupSettings> | undefined
+      : current.kind === 'trace' ? legacyCleanupSettings((current.settings.trace ?? {}) as Record<string, unknown>) : undefined
+    if (recorded) list.push({ ...DEFAULT_CLEANUP_SETTINGS, ...recorded })
     current = revisions.find(row => row.id === current?.parent_revision_id)
   }
   return list
@@ -173,9 +229,9 @@ export function tracedSvgKind(trace: Partial<TraceSettings> | undefined): 'trace
   return trace?.solid_underlayers || (trace?.overlap ?? 0) > 0 ? 'traced-overlap' : 'traced-edge'
 }
 
-export function tracedSvgName(trace: Partial<TraceSettings> | undefined): string {
+export function tracedSvgName(trace: Partial<TraceSettings> | undefined, physical = false): string {
   return trace?.solid_underlayers ? 'Traced SVG · solid underlayers'
-    : (trace?.overlap ?? 0) > 0 ? `Traced SVG · ${trace!.overlap} ${trace!.width_mm || trace!.height_mm ? 'mm' : 'px'} overlap` : 'Traced SVG · edge to edge'
+    : (trace?.overlap ?? 0) > 0 ? `Traced SVG · ${trace!.overlap} ${physical ? 'mm' : 'px'} overlap` : 'Traced SVG · edge to edge'
 }
 
 function formatElapsed(seconds: number): string {
@@ -220,6 +276,8 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [preEditFlattened, setPreEditFlattened] = useState<Artifact | null>(null)
+  // The raster the active cleanup started from, shown by the Flattened/Edited views.
+  const [preCleanupFlattened, setPreCleanupFlattened] = useState<Artifact | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   // null while bytes are still transferring is never used; during transfer this is
@@ -229,13 +287,19 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [paletteSettings, setPaletteSettings] = useState<PaletteSettings>(DEFAULT_PALETTE_SETTINGS)
   const [traceSettings, setTraceSettings] = useState<TraceSettings>(DEFAULT_TRACE_SETTINGS)
+  const [cleanupSettings, setCleanupSettings] = useState<CleanupSettings>(DEFAULT_CLEANUP_SETTINGS)
   // Position within the flatten settings history: 0 is the working form (the newest
   // recorded iteration, plus any un-run edits), higher indices are older iterations.
   // The working form is stashed on first step back so stepping forward restores the
   // un-run edits it replaced.
   const [paletteStep, setPaletteStep] = useState(0)
   const paletteLive = useRef<PaletteSettings | null>(null)
+  // The Cleanup form's settings history, stepped exactly like Flatten's.
+  const [cleanupStep, setCleanupStep] = useState(0)
+  const cleanupLive = useRef<CleanupSettings | null>(null)
   const traceDraftSpent = useRef<string | null>(null)
+  // A re-run of a stale cleanup with its own settings leaves the Cleanup form's draft.
+  const cleanupDraftSpent = useRef<string | null>(null)
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null)
   const [distinctFirst, setDistinctFirst] = useState<[number, number] | null>(null)
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
@@ -279,6 +343,15 @@ export default function App() {
   const tracedRunId = artifacts.find(row => TRACED_SVG_KINDS.has(row.kind))?.revision_id
   const tracedRunSettings = (revisions.find(row => row.id === tracedRunId)?.settings.trace ?? pipelineBaseline.trace) as Partial<TraceSettings> | undefined
   const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(tracedRunSettings))
+  const cleanupLookup = useMemo(() => nearestCleanup(revisions, current?.id || null), [revisions, current?.id])
+  const activeCleanup = cleanupLookup.stale ? null : cleanupLookup.revision
+  // The artwork changed after the last Cleanup, so tracing waits for Cleanup to re-run.
+  const cleanupStale = cleanupLookup.stale
+  // The Cleaned view exists only when the active cleanup changed pixels, i.e. it wrote
+  // its own raster; a cleanup run with cleanup off keeps the uncleaned one.
+  const hasCleanup = Boolean(activeCleanup) && flattened?.revision_id === activeCleanup?.id
+  // The raster Palette and Edit decode and edit: the one from before the cleanup.
+  const editableFlattened = hasCleanup ? preCleanupFlattened : flattened
   const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
     let node = revisions.find(row => row.id === revision)
     const seen = new Set<string>()
@@ -294,18 +367,21 @@ export default function App() {
   }, [revision, revisions])
   const source = artifacts.find(row => row.kind === 'source')
   const flattenAvailable = hasFlatten || Boolean(flattened)
+  // Palette and Edit always act on the raster from before any cleanup (the server's
+  // editor reads it too), so the Cleaned image is never the editable one.
   const editableView: ArtworkView = hasEdit ? 'edited' : 'flattened'
-  const defaultView: ArtworkView = hasEdit ? 'edited' : flattenAvailable ? 'flattened' : 'source'
+  const defaultView: ArtworkView = hasCleanup ? 'cleaned' : hasEdit ? 'edited' : flattenAvailable ? 'flattened' : 'source'
   const viewOptions: { id: ArtworkView; label: string; available: boolean }[] = [
     { id: 'source', label: 'Source', available: Boolean(source) },
     { id: 'flattened', label: 'Flattened', available: flattenAvailable },
     { id: 'edited', label: 'Edited', available: hasEdit },
+    { id: 'cleaned', label: 'Cleaned', available: hasCleanup },
     { id: 'traced', label: 'Traced', available: Boolean(tracedSvg) },
   ]
   const availableViews = viewOptions.filter(option => option.available).map(option => option.id)
   const editSelectable = view === editableView
   const editableLabel = hasEdit ? 'Edited' : 'Flattened'
-  const artworkStageActive = ['flatten', 'trace', 'palette', 'edit'].includes(stage) || Boolean(selectionMode)
+  const artworkStageActive = ['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || Boolean(selectionMode)
   const viewToggle = () => availableViews.length > 1
     ? <div className="view-toggle" role="group" aria-label="Artwork view">{viewOptions.filter(option => option.available).map(option => <button key={option.id} type="button" className={view === option.id ? 'active' : ''} aria-pressed={view === option.id} onClick={() => setView(option.id)}>{option.label}</button>)}</div>
     : null
@@ -314,7 +390,9 @@ export default function App() {
   // Fields diverging from it are flagged as pending edits.
   const baselinePalette = useMemo<PaletteSettings>(() => ({ ...DEFAULT_PALETTE_SETTINGS, ...pipelineBaseline.palette }), [pipelineBaseline])
   const baselineTrace = useMemo<TraceSettings>(() => ({ ...DEFAULT_TRACE_SETTINGS, ...pipelineBaseline.trace }), [pipelineBaseline])
+  const baselineCleanup = useMemo<CleanupSettings>(() => ({ ...DEFAULT_CLEANUP_SETTINGS, ...pipelineBaseline.cleanup }), [pipelineBaseline])
   const paletteIterations = useMemo(() => ancestorPaletteIterations(revisions, current?.id || null), [revisions, current?.id])
+  const cleanupIterations = useMemo(() => ancestorCleanupIterations(revisions, current?.id || null), [revisions, current?.id])
   const traceRuns = useMemo(() => traceRunChain(revisions, current?.id || null), [revisions, current?.id])
   function stepPalette(delta: number) {
     const next = Math.max(0, Math.min(paletteIterations.length - 1, paletteStep + delta))
@@ -322,6 +400,13 @@ export default function App() {
     if (paletteStep === 0) paletteLive.current = paletteSettings
     setPaletteSettings(next === 0 ? (paletteLive.current ?? paletteSettings) : paletteIterations[next])
     setPaletteStep(next)
+  }
+  function stepCleanup(delta: number) {
+    const next = Math.max(0, Math.min(cleanupIterations.length - 1, cleanupStep + delta))
+    if (next === cleanupStep) return
+    if (cleanupStep === 0) cleanupLive.current = cleanupSettings
+    setCleanupSettings(next === 0 ? (cleanupLive.current ?? cleanupSettings) : cleanupIterations[next])
+    setCleanupStep(next)
   }
   // Trace iterations are the saved runs themselves: a step makes that run the active
   // revision and lands on its traced SVG.
@@ -349,9 +434,11 @@ export default function App() {
       // baseline, so the pending draft for this step is spent — drop it before the
       // settings effect reloads (baseline alone then equals the applied values).
       if (next.kind === 'palette' && next.project_id) clearDraft(next.project_id, 'palette')
+      if (next.kind === 'cleanup' && next.project_id && cleanupDraftSpent.current === next.id) clearDraft(next.project_id, 'cleanup')
       if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) clearDraft(next.project_id, 'trace')
       setRevision(next.result_revision_id)
       if (next.kind === 'palette') setPendingView({ view: 'flattened', revision: next.result_revision_id })
+      if (next.kind === 'cleanup') setPendingView({ view: 'cleaned', revision: next.result_revision_id })
       if (next.kind === 'trace') setPendingView({ view: 'traced', revision: next.result_revision_id })
       // A finished source generation lands the user on Flatten, the next step, so
       // the freshly generated artwork is ready to reduce without hunting for the tab.
@@ -420,10 +507,19 @@ export default function App() {
     // (defaults before it ran), then overlay any pending per-step draft so un-run
     // edits survive a refresh until the stage is run. An older trace run shows exactly
     // its own settings; the trace draft belongs to the newest run.
-    const { palette: storedPalette, trace: storedTrace } = inheritedPipelineSettings(revisions, current?.id || null)
-    let draft: { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } = {}
+    const { palette: storedPalette, cleanup: storedCleanup, trace: storedTrace } = inheritedPipelineSettings(revisions, current?.id || null)
+    let draft: { palette?: Partial<PaletteSettings>; cleanup?: Partial<CleanupSettings>; trace?: Partial<TraceSettings> } = {}
     try { draft = selected ? JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') : {} } catch { /* use revision values */ }
+    // A trace draft saved before the cleanup stage carries the size, removed colour and
+    // cleanup; move them into the Cleanup draft, where they now belong, and store that.
+    const legacyDraft = draft.trace && legacyCleanupSettings(draft.trace as Record<string, unknown>)
+    if (selected && legacyDraft) {
+      draft = { ...draft, cleanup: { ...legacyDraft, ...draft.cleanup }, trace: normalizeTraceSettings(draft.trace!) }
+      localStorage.setItem(draftKey(selected), JSON.stringify(draft))
+    }
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draft.palette })
+    setCleanupSettings({ ...DEFAULT_CLEANUP_SETTINGS, ...storedCleanup, ...draft.cleanup })
+    setCleanupStep(0); cleanupLive.current = null
     setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...(traceRuns.index > 0 || !draft.trace ? {} : normalizeTraceSettings(draft.trace)) })
     setPaletteStep(0); paletteLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
@@ -450,7 +546,7 @@ export default function App() {
     else if (decision.action === 'clear') { preserveRegion.current = null; setRegionSelection([]) }
     setRegionError('')
     setPaintedCells(new Map()); setPencilError('')
-    if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); setTracedSize(null); return }
+    if (!revision || !editableFlattened) { setFlattenedPixels(null); setEditorPalette([]); setTracedSize(null); return }
     const controller = new AbortController()
     api.editor(revision, controller.signal).then(state => { setEditorPalette(state.palette); setTracedSize({ width: state.width, height: state.height }) })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
@@ -473,9 +569,9 @@ export default function App() {
         setFlattenedPixels({ data: data.data, width: canvas.width, height: canvas.height })
       } catch { /* canvas unavailable; region selection stays disabled */ }
     }
-    image.src = flattened.download_url
+    image.src = editableFlattened.download_url
     return () => { controller.abort(); image.onload = null }
-  }, [revision, flattened?.id])
+  }, [revision, editableFlattened?.id])
   useEffect(() => {
     // The Edit stage shows one overlay for whichever tool is active: the pencil's
     // staged (uncommitted) pixels in their target colours, or the selected areas.
@@ -524,6 +620,15 @@ export default function App() {
   useEffect(() => {
     if (selectionMode) setView('source')
   }, [selectionMode])
+  useEffect(() => {
+    setPreCleanupFlattened(null)
+    if (!hasCleanup || !current?.id) return
+    const controller = new AbortController()
+    api.effectiveArtifacts(current.id, controller.signal, { beforeCleanup: true })
+      .then(rows => { const before = rows.find(row => row.kind === 'flattened'); if (before) setPreCleanupFlattened(before) })
+      .catch(() => { /* leave null; the Flattened/Edited views fall back to the current flattened */ })
+    return () => controller.abort()
+  }, [hasCleanup, current?.id])
   useEffect(() => {
     setPreEditFlattened(null)
     if (!hasEdit || !paletteAncestorId) return
@@ -602,30 +707,35 @@ export default function App() {
     } catch (cause) { setError(String(cause)) }
   }
 
-  async function runPipeline(kind: 'palette' | 'trace' | 'validate' | 'export') {
+  // `cleanupOverride` re-runs a stale cleanup with its own recorded settings.
+  async function runPipeline(kind: 'palette' | 'cleanup' | 'trace' | 'validate' | 'export', cleanupOverride?: CleanupSettings) {
     if (!selected || !revision) return
     setError('')
     try {
       const settings = kind === 'palette' ? { palette: paletteSettings }
-        : kind === 'trace' ? { trace: traceSettings } : undefined
+        : kind === 'cleanup' ? { cleanup: cleanupOverride ?? cleanupSettings }
+          : kind === 'trace' ? { trace: traceSettings } : undefined
       const started = await api.startPipeline(kind, selected, revision, settings)
       // Only a run from the newest trace carries the pending trace draft, so only that
       // run spends it; a branch from an older run leaves it for the newest.
       traceDraftSpent.current = kind === 'trace' && traceRuns.index <= 0 ? started.id : null
+      cleanupDraftSpent.current = kind === 'cleanup' && !cleanupOverride ? started.id : null
       setJob(started)
     }
     catch (cause) { setError(String(cause)) }
   }
-  function persistDraft(step: 'palette' | 'trace') {
+  function persistDraft(step: 'palette' | 'cleanup' | 'trace') {
     // The trace draft belongs to the newest run; an older run's form is its record.
     if (!selected || (step === 'trace' && traceRuns.index > 0)) return
-    let draft: { palette?: PaletteSettings; trace?: TraceSettings } = {}
+    let draft: { palette?: PaletteSettings; cleanup?: CleanupSettings; trace?: TraceSettings } = {}
     try { draft = JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') } catch { draft = {} }
-    if (step === 'palette') draft.palette = paletteSettings; else draft.trace = traceSettings
+    if (step === 'palette') draft.palette = paletteSettings
+    else if (step === 'cleanup') draft.cleanup = cleanupSettings
+    else draft.trace = traceSettings
     localStorage.setItem(draftKey(selected), JSON.stringify(draft))
   }
-  function clearDraft(projectId: string, step: 'palette' | 'trace') {
-    let draft: { palette?: PaletteSettings; trace?: TraceSettings } = {}
+  function clearDraft(projectId: string, step: 'palette' | 'cleanup' | 'trace') {
+    let draft: { palette?: PaletteSettings; cleanup?: CleanupSettings; trace?: TraceSettings } = {}
     try { draft = JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') } catch { return }
     delete draft[step]
     localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
@@ -665,17 +775,28 @@ export default function App() {
   }, [overlayOperation])
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
     .map(layer => TRACED_SVG_KINDS.has(artifacts.find(row => row.id === layer.id)?.kind ?? '') && flattened ? { ...layer, sizeFrom: flattened.id } : layer)
-    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(tracedRunSettings) } : layer)
+    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(tracedRunSettings, traceRunIsPhysical(revisions, tracedRunId)) } : layer)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
     url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',
   } : null
-  const displayLayers = preEditLayer ? [...workspaceLayers, preEditLayer] : workspaceLayers
+  // A cleanup run with cleanup off keeps its parent's raster, so the pre-cleanup layer is
+  // only added when it is a different artifact.
+  const preCleanupLayer: WorkspaceLayer | null = hasCleanup && preCleanupFlattened && preCleanupFlattened.id !== flattened?.id
+    && preCleanupFlattened.id !== preEditLayer?.id ? {
+      id: preCleanupFlattened.id, name: `${hasEdit ? 'edited' : 'flattened'} (before cleanup) · ${preCleanupFlattened.filename}`,
+      url: preCleanupFlattened.download_url, mediaType: preCleanupFlattened.media_type, role: 'image',
+    } : null
+  const displayLayers = [...workspaceLayers, ...(preEditLayer ? [preEditLayer] : []), ...(preCleanupLayer ? [preCleanupLayer] : [])]
+  const beforeCleanupId = hasCleanup ? (preCleanupFlattened?.id ?? flattened?.id) : flattened?.id
   const viewLayerId = (target: ArtworkView): string | undefined =>
     target === 'source' ? source?.id
       : target === 'traced' ? tracedSvg?.id
-        : target === 'edited' ? flattened?.id
-          : hasEdit ? (preEditLayer?.id ?? flattened?.id) : flattened?.id
+        : target === 'cleaned' ? flattened?.id
+          : target === 'edited' ? beforeCleanupId
+            : hasEdit ? (preEditLayer?.id ?? flattened?.id) : beforeCleanupId
+  // The size the next trace uses, from the active cleanup, completed from the raster.
+  const traceSize = physicalSize(activeCleanup?.settings.cleanup as Partial<CleanupSettings> | undefined, tracedSize)
 
   const regionLabels = selectionLabels(regionSelection)
   const regionNeighbours = useMemo(
@@ -803,7 +924,7 @@ export default function App() {
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
-        {WORKFLOW_STAGES.map(item => <button key={item.id} id={`workflow-tab-${item.id}`} type="button" role="tab" aria-label={item.label} data-stage-button={item.id} aria-selected={stage === item.id} aria-controls={`workflow-panel-${item.id}`} tabIndex={stage === item.id ? 0 : -1} onKeyDown={event => navigateStageByKey(event, item.id)} onClick={() => navigateStage(item.id)}><item.icon aria-hidden="true"/><span><strong>{item.label}</strong><small>{item.description}</small></span>{(item.id === 'flatten' || item.id === 'trace') && busy && <i className="stage-running" aria-label="Job running" />}</button>)}
+        {WORKFLOW_STAGES.map(item => <button key={item.id} id={`workflow-tab-${item.id}`} type="button" role="tab" aria-label={item.label} data-stage-button={item.id} aria-selected={stage === item.id} aria-controls={`workflow-panel-${item.id}`} tabIndex={stage === item.id ? 0 : -1} onKeyDown={event => navigateStageByKey(event, item.id)} onClick={() => navigateStage(item.id)}><item.icon aria-hidden="true"/><span><strong>{item.label}</strong><small>{item.description}</small></span>{(item.id === 'flatten' || item.id === 'cleanup' || item.id === 'trace') && busy && <i className="stage-running" aria-label="Job running" />}</button>)}
       </nav>
     </div>
     <p className="visually-hidden" aria-live="polite" aria-atomic="true">{WORKFLOW_STAGES.find(item => item.id === stage)?.label} stage</p>
@@ -811,7 +932,7 @@ export default function App() {
     {error && <p className="error global-error" role="alert">{error}</p>}
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
-      <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
+      <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
         {stage === 'palette' || stage === 'edit' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : 'Palette canvas'}
@@ -865,10 +986,16 @@ export default function App() {
           onReset={() => { setPaletteSettings(DEFAULT_PALETTE_SETTINGS); setSelectionMode(null) }}
           iterationCount={paletteIterations.length} iterationIndex={paletteStep} onStep={stepPalette} onCommitDraft={() => persistDraft('palette')} />
         </section>
+        <section id="workflow-panel-cleanup" role="tabpanel" aria-labelledby="workflow-tab-cleanup" className={`side-section pipeline-section workflow-surface ${stage === 'cleanup' ? 'mobile-stage-active' : ''}`} data-stage="cleanup">
+          <div className="section-heading"><h2>Clean up for cutting</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Set the physical size and removed colour the trace uses, and remove or widen details too small to cut.</p>
+          <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('cleanup')}>Run cleanup</button></div>
+          <PipelineControls stage="cleanup" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} cleanup={cleanupSettings} setCleanup={setCleanupSettings} baseCleanup={baselineCleanup} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setCleanupSettings(DEFAULT_CLEANUP_SETTINGS)} iterationCount={cleanupIterations.length} iterationIndex={cleanupStep} onStep={stepCleanup} onCommitDraft={() => persistDraft('cleanup')} />
+        </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
-          <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} />
+          {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
+          <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy || cleanupStale} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}
