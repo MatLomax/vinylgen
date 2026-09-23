@@ -7,11 +7,14 @@ import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
+import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
 import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
+// Traced SVGs are drawn on the flattened pixel grid (their viewBox), whatever their physical size.
+const TRACED_SVG_KINDS = new Set(['traced-overlap', 'traced-edge'])
 const OVERLAY_ARTIFACT_KINDS = new Set([
   'trace-fallbacks',
   'trace-semantic-warnings',
@@ -173,6 +176,11 @@ export default function App() {
   const [customRatio, setCustomRatio] = useState<Dimensions>([16, 9])
   const [stage, setStage] = useState<WorkflowStage>(() => stageFromHash(window.location.hash))
   const [view, setView] = useState<ArtworkView>('source')
+  // The view a just-finished flatten or trace should open on, held until the revision
+  // it produced has loaded far enough to offer that view.
+  const [pendingView, setPendingView] = useState<{ view: ArtworkView; revision: string } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [preEditFlattened, setPreEditFlattened] = useState<Artifact | null>(null)
   const [projectLoading, setProjectLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -225,7 +233,7 @@ export default function App() {
   const patchedFlattened = useRef<{ revision: string; pixels: Pixels } | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
-  const tracedPreview = artifacts.find(row => row.kind === 'traced-preview')
+  const tracedSvg = artifacts.find(row => row.kind === 'traced-overlap')
   const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
     let node = revisions.find(row => row.id === revision)
     const seen = new Set<string>()
@@ -247,7 +255,7 @@ export default function App() {
     { id: 'source', label: 'Source', available: Boolean(source) },
     { id: 'flattened', label: 'Flattened', available: flattenAvailable },
     { id: 'edited', label: 'Edited', available: hasEdit },
-    { id: 'traced', label: 'Traced', available: Boolean(tracedPreview) },
+    { id: 'traced', label: 'Traced', available: Boolean(tracedSvg) },
   ]
   const availableViews = viewOptions.filter(option => option.available).map(option => option.id)
   const editSelectable = view === editableView
@@ -297,6 +305,8 @@ export default function App() {
       // settings effect reloads (baseline alone then equals the applied values).
       if ((next.kind === 'palette' || next.kind === 'trace') && next.project_id) clearDraft(next.project_id, next.kind)
       setRevision(next.result_revision_id)
+      if (next.kind === 'palette') setPendingView({ view: 'flattened', revision: next.result_revision_id })
+      if (next.kind === 'trace') setPendingView({ view: 'traced', revision: next.result_revision_id })
       // A finished source generation lands the user on Flatten, the next step, so
       // the freshly generated artwork is ready to reduce without hunting for the tab.
       if (next.kind === 'generate') navigateStage('flatten')
@@ -455,6 +465,13 @@ export default function App() {
     if (availableViews.length && !availableViews.includes(view)) setView(defaultView)
   }, [availableViews.join(','), view, defaultView])
   useEffect(() => {
+    // Palette and Edit always show the editable image (and already switch to the
+    // edited result themselves); moving to another revision abandons the landing too.
+    if (!pendingView) return
+    if (pendingView.revision !== revision || stage === 'palette' || stage === 'edit') { setPendingView(null); return }
+    if (availableViews.includes(pendingView.view)) { setView(pendingView.view); setPendingView(null) }
+  }, [pendingView, revision, stage, availableViews.join(',')])
+  useEffect(() => {
     if (stage === 'palette' || stage === 'edit') setView(editableView)
   }, [stage, editableView])
   useEffect(() => {
@@ -470,21 +487,23 @@ export default function App() {
     return () => controller.abort()
   }, [hasEdit, paletteAncestorId])
 
-  async function deleteSelectedProject() {
-    if (!selected) return
-    const target = projects.find(project => project.id === selected)
-    if (!window.confirm(`Delete "${target?.name ?? 'this project'}"? This permanently removes its revisions and artwork and cannot be undone.`)) return
+  async function deleteProject(id: string) {
     setError('')
-    const id = selected
+    setDeleting(true)
     try {
       await api.deleteProject(id)
       localStorage.removeItem(draftKey(id))
       setProjects(current => current.filter(project => project.id !== id))
-      setJob(null)
-      setSelected(null)
-      setRevision(null)
+      if (selected === id) {
+        setJob(null)
+        setSelected(null)
+        setRevision(null)
+        requestAnimationFrame(() => document.querySelector<HTMLSelectElement>('header select.active-project')?.focus())
+      }
     } catch (cause) { setError(String(cause)) }
+    finally { setDeleting(false); setConfirmDelete(null) }
   }
+  const selectedProjectName = projects.find(project => project.id === selected)?.name
 
   async function importImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -593,6 +612,7 @@ export default function App() {
     return () => clearInterval(timer)
   }, [overlayOperation])
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
+    .map(layer => TRACED_SVG_KINDS.has(artifacts.find(row => row.id === layer.id)?.kind ?? '') && flattened ? { ...layer, sizeFrom: flattened.id } : layer)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
     url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',
@@ -600,7 +620,7 @@ export default function App() {
   const displayLayers = preEditLayer ? [...workspaceLayers, preEditLayer] : workspaceLayers
   const viewLayerId = (target: ArtworkView): string | undefined =>
     target === 'source' ? source?.id
-      : target === 'traced' ? tracedPreview?.id
+      : target === 'traced' ? tracedSvg?.id
         : target === 'edited' ? flattened?.id
           : hasEdit ? (preEditLayer?.id ?? flattened?.id) : flattened?.id
 
@@ -726,7 +746,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{viewToggle()}<label className="active-project"><span>Active project</span><select aria-label="Active project" value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{selected && <button type="button" className="delete-project" aria-label="Delete project" onClick={deleteSelectedProject}><Trash2 aria-hidden="true" /><span className="delete-label">Delete project</span></button>}</header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
@@ -739,8 +759,10 @@ export default function App() {
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
       <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
-        {stage === 'palette' || stage === 'edit' || selectionMode ? <ImageWorkspace
+        {stage === 'palette' || stage === 'edit' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
+          canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : 'Palette canvas'}
+          inspectionToggles={stage === 'trace' && !selectionMode}
           preferredLayerId={viewLayerId(view)}
           selectionLabel={stage === 'edit' ? (editTool === 'pencil' ? 'Flattened artwork pencil' : 'Flattened artwork area selector') : selectionMode ? 'Source image preservation-point selector' : undefined}
           onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
@@ -820,6 +842,7 @@ export default function App() {
       {!handoff && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}
       {selected && revision && handoff && <section className="inkscape-handoff"><h2>Export or finish in Inkscape</h2><p>{handoff.guidance}</p><div className="handoff-actions">{handoff.exports.map(item => <span key={item.id}><a className="button-link" href={item.download_url}>Download {item.filename}</a>{handoff.shared_folder_enabled && <button className="secondary" onClick={() => api.saveForInkscape(revision, item.id).then(saved => setHandoffMessage(`Saved ${saved.filename} to the shared folder.`)).catch(cause => setError(String(cause)))}>Save {item.media_type === 'image/png' ? 'PNG' : 'SVG'} to shared folder</button>}</span>)}</div><form onSubmit={reimportSvg}><label className="file">Edited SVG<input name="svg" type="file" accept="image/svg+xml,.svg" required /></label><button type="submit">Validate and reimport</button></form>{handoffMessage && <p className="success" role="status" aria-live="polite">{handoffMessage}</p>}</section>}
     </section>
+    <ConfirmDialog open={Boolean(confirmDelete)} title="Delete project?" message={`Delete "${confirmDelete?.name}"? This permanently removes its revisions and artwork and cannot be undone.`} confirmLabel="Delete project" busy={deleting} onConfirm={() => confirmDelete && deleteProject(confirmDelete.id)} onCancel={() => setConfirmDelete(null)} />
     {selected && sourceRevision && <UpscalePanel open={upscaleOpen} projectId={selected} revisionId={sourceRevision.id} onClose={() => setUpscaleOpen(false)} onStarted={started => { setJob(started); setUpscaleOpen(false) }} />}
   </main>
 }

@@ -301,3 +301,40 @@ describe('ImageWorkspace interactions', () => {
     result.unmount()
   })
 })
+
+describe('traced vector layers on the editor canvas', () => {
+  const traced: WorkspaceLayer[] = [
+    { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
+    { id: 'svg', name: 'Traced', url: '/traced.svg', mediaType: 'image/svg+xml', role: 'image', sizeFrom: 'flat' },
+    { id: 'fallbacks', name: 'Trace fallbacks', url: '/fallbacks.png', mediaType: 'image/png', role: 'overlay' },
+  ]
+
+  function loadUrl(container: HTMLElement, suffix: string, width: number, height: number) {
+    for (const image of [...container.querySelectorAll('img')].filter(node => node.src.endsWith(suffix)) as HTMLImageElement[]) {
+      Object.defineProperties(image, { naturalWidth: { configurable: true, value: width }, naturalHeight: { configurable: true, value: height } })
+      fireEvent.load(image)
+    }
+  }
+
+  it('registers a millimetre-sized SVG on the flattened pixel grid and overlays the trace audit', () => {
+    const { container } = render(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    // A 1200 mm wide SVG reports ~4535 CSS px; the raster grid is 3000 × 1000.
+    loadUrl(container, '/traced.svg', 4535, 1512)
+    loadUrl(container, '/flat.png', 3000, 1000)
+    loadUrl(container, '/fallbacks.png', 3000, 1000)
+    const stage = container.querySelector('.image-stage') as HTMLElement
+    expect(stage.style.width).toBe('3000px')
+    expect(stage.style.height).toBe('1000px')
+    expect(screen.getByText('Trace canvas')).toBeTruthy()
+    expect(screen.getByAltText('Traced').classList.contains('vector')).toBe(true)
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Trace fallbacks'))
+    const overlay = screen.getByAltText('Trace fallbacks')
+    expect(overlay.parentElement?.classList.contains('image-stage')).toBe(true)
+  })
+
+  it('offers no inspection toggles on the palette canvas', () => {
+    render(<ImageWorkspace layers={traced} editorMode />)
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+  })
+})

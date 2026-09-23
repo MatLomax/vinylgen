@@ -8,7 +8,7 @@ import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspace
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
   generate: vi.fn(), startPipeline: vi.fn(), inkscapeHandoff: vi.fn(), saveForInkscape: vi.fn(),
-  importProject: vi.fn(), health: vi.fn(),
+  importProject: vi.fn(), health: vi.fn(), deleteProject: vi.fn(),
   followJob: vi.fn(),
 }))
 
@@ -16,9 +16,11 @@ vi.mock('./api', async importOriginal => {
   const original = await importOriginal<typeof import('./api')>()
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
-const workspaceProps = vi.hoisted(() => ({ current: null as { onSelectPoint?: (point: [number, number]) => void } | null }))
-vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: { onSelectPoint?: (point: [number, number]) => void }) => { workspaceProps.current = props; return null } }))
-vi.mock('./FlattenedEditor', () => ({ FlattenedEditor: () => null }))
+type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; layers?: { id: string; sizeFrom?: string }[] }
+const workspaceProps = vi.hoisted(() => ({ current: null as CapturedWorkspace | null }))
+vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: CapturedWorkspace) => { workspaceProps.current = props; return null } }))
+const editorProps = vi.hoisted(() => ({ current: null as { onCommit: (id: string) => void } | null }))
+vi.mock('./FlattenedEditor', () => ({ FlattenedEditor: (props: { onCommit: (id: string) => void }) => { editorProps.current = props; return null } }))
 
 const project: Project = { id: 'project-1', slug: 'sky-whale', name: 'Sky whale', created_at: '2026-01-01', updated_at: '2026-01-01' }
 const revision: Revision = { id: 'revision-1', project_id: project.id, parent_revision_id: null, kind: 'source', message: null, settings: {}, created_at: '2026-01-01' }
@@ -27,6 +29,7 @@ const queuedJob: Job = { id: 'job-1', project_id: project.id, revision_id: revis
 beforeEach(() => {
   vi.clearAllMocks()
   workspaceProps.current = null
+  editorProps.current = null
   localStorage.clear()
   window.history.replaceState(null, '', '/')
   window.scrollTo = vi.fn()
@@ -40,6 +43,7 @@ beforeEach(() => {
   mocks.importProject.mockResolvedValue({ ...project, revisions: [revision] })
   mocks.health.mockResolvedValue({ status: 'ok', max_upload_bytes: 100 * 1024 * 1024 })
   mocks.followJob.mockReturnValue(() => undefined)
+  mocks.deleteProject.mockResolvedValue(undefined)
 })
 afterEach(cleanup)
 
@@ -642,5 +646,126 @@ describe('upload size limit', () => {
     await screen.findByText('Uploading image… 50%')
     expect(screen.getAllByRole('status')).toHaveLength(1)
     expect(screen.getByRole('status').textContent).toContain('Uploading image…')
+  })
+})
+
+describe('landing on the newly produced artwork', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette' }
+  const traceRevision: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace' }
+  const editRevision: Revision = { ...revision, id: 'edit-1', parent_revision_id: 'palette-1', kind: 'label-edit' }
+  const pressedView = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name }).getAttribute('aria-pressed')
+
+  function followWithUpdates() {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    return (job: Job) => act(async () => update?.(job))
+  }
+
+  it('shows the flattened image once a flatten run succeeds', async () => {
+    const finish = followWithUpdates()
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValueOnce({ ...project, revisions: [revision] })
+      .mockResolvedValue({ ...project, revisions: [paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'palette-1'
+      ? [artifact('source'), artifact('flattened')] : [artifact('source')])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+    const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(mocks.followJob).toHaveBeenCalled())
+
+    await finish({ ...queuedJob, kind: 'palette', status: 'succeeded', progress: 1, result_revision_id: 'palette-1' })
+    await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
+  })
+
+  it('traces on the shared canvas and shows the traced SVG once a trace run succeeds', async () => {
+    const finish = followWithUpdates()
+    const svg = artifact('traced-overlap', 'image/svg+xml')
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
+      .mockResolvedValue({ ...project, revisions: [traceRevision, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'trace-1'
+      ? [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), svg, artifact('traced-preview')]
+      : [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.editorMode).toBe(true))
+    expect(workspaceProps.current?.canvasLabel).toBe('Trace canvas')
+    await screen.findAllByRole('group', { name: 'Artwork view' })
+    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Source' }))
+    await vi.waitFor(() => expect(pressedView('Source')).toBe('true'))
+
+    const run = screen.getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(mocks.followJob).toHaveBeenCalled())
+    await finish({ ...queuedJob, kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' })
+
+    await vi.waitFor(() => expect(pressedView('Traced')).toBe('true'))
+    // The Traced view renders the vector layers themselves, not the PNG preview.
+    expect(workspaceProps.current?.preferredLayerId).toBe(svg.id)
+    // Traced SVGs register on the flattened pixel grid; rasters keep their own size.
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === svg.id)?.sizeFrom).toBe('flattened-id')
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === 'source-id')?.sizeFrom).toBeUndefined()
+  })
+
+  it('keeps the Palette canvas on the editable image when a trace finishes there', async () => {
+    const finish = followWithUpdates()
+    const svg = artifact('traced-overlap', 'image/svg+xml')
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
+      .mockResolvedValue({ ...project, revisions: [traceRevision, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'trace-1'
+      ? [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), svg]
+      : [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')])
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const run = await screen.findByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(mocks.followJob).toHaveBeenCalled())
+    // The user moves on to Palette while the trace is still running.
+    fireEvent.click(screen.getByRole('tab', { name: 'Palette' }))
+    await finish({ ...queuedJob, kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' })
+
+    await vi.waitFor(() => expect(pressedView('Traced')).toBe('false'))
+    expect(pressedView('Flattened')).toBe('true')
+    expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id')
+  })
+
+  it('shows the edited image once a palette edit commits', async () => {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
+      .mockResolvedValue({ ...project, revisions: [editRevision, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editorProps.current).not.toBeNull())
+    act(() => editorProps.current!.onCommit('edit-1'))
+    await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+  })
+})
+
+describe('project deletion', () => {
+  it('deletes only after the confirmation dialog is accepted', async () => {
+    mocks.projects.mockResolvedValue([project])
+    render(createElement((await import('./App')).default))
+    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Delete project?' })
+    expect(dialog.textContent).toContain('Sky whale')
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(mocks.deleteProject).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete project' }))
+    await vi.waitFor(() => expect(mocks.deleteProject).toHaveBeenCalledWith(project.id))
+    await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe('')
   })
 })

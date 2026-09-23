@@ -3,10 +3,13 @@ import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 
-export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay' }
+// `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
+// sized in physical units reports an intrinsic size in CSS pixels, not the pixel
+// grid its viewBox (and every registered raster) uses.
+export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay'; sizeFrom?: string }
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -37,7 +40,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const sheetPanel = useRef<HTMLDivElement>(null)
   const controlsButton = useRef<HTMLButtonElement>(null)
   const doneButton = useRef<HTMLButtonElement>(null)
-  const [dimensions, setDimensions] = useState<Record<string, ImageSize>>({})
+  const [naturalDimensions, setDimensions] = useState<Record<string, ImageSize>>({})
+  const dimensions: Record<string, ImageSize> = { ...naturalDimensions }
+  for (const layer of layers) {
+    const adopted = layer.sizeFrom ? naturalDimensions[layer.sizeFrom] : undefined
+    if (adopted && naturalDimensions[layer.id]) dimensions[layer.id] = adopted
+  }
   const [enabledInspections, setEnabledInspections] = useState<Record<string, boolean>>({})
 
   const visible = layers.filter(layer => layer.role === 'image')
@@ -56,7 +64,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     const pair = defaultComparePair(ids, ids.includes(beforeId) ? beforeId : undefined, dimensions)
     if (pair.beforeId !== beforeId) setBeforeId(pair.beforeId)
     if ((!ids.includes(afterId) || afterId === pair.beforeId) && pair.afterId !== afterId) setAfterId(pair.afterId)
-  }, [layers, beforeId, afterId, dimensions])
+  }, [layers, beforeId, afterId, naturalDimensions])
 
   useEffect(() => {
     // Only force the single-view fallback once availability is genuinely known to
@@ -149,7 +157,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     const down = (event: KeyboardEvent) => {
       if (event.code !== 'Space' || event.repeat) return
       const target = event.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable || target.closest('[aria-modal="true"]'))) return
       event.preventDefault()
       spaceHeld.current = true
       setSpacePan(true)
@@ -239,13 +247,17 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   function imageLoaded(layerId: string, event: React.SyntheticEvent<HTMLImageElement>) {
     const image = event.currentTarget
-    if (image.naturalWidth) setDimensions(value => ({ ...value, [layerId]: { width: image.naturalWidth, height: image.naturalHeight } }))
-    if (layerId === before?.id && (!size.width || size.width !== image.naturalWidth || size.height !== image.naturalHeight) && image.naturalWidth) {
-      const next = { width: image.naturalWidth, height: image.naturalHeight }
-      setSize(next)
-      fit(next.width, next.height)
-    }
+    if (image.naturalWidth) setDimensions(value => value[layerId]?.width === image.naturalWidth && value[layerId]?.height === image.naturalHeight
+      ? value : ({ ...value, [layerId]: { width: image.naturalWidth, height: image.naturalHeight } }))
   }
+
+  useEffect(() => {
+    // Size the stage to Before's registered pixel grid once it is known, refitting only
+    // when that grid changes so toggling between same-size views keeps the zoom.
+    if (!beforeSize || (size.width === beforeSize.width && size.height === beforeSize.height)) return
+    setSize(beforeSize)
+    fit(beforeSize.width, beforeSize.height)
+  }, [before?.id, beforeSize?.width, beforeSize?.height, size.width, size.height])
 
   function localPoint(clientX: number, clientY: number) {
     const bounds = viewport.current!.getBoundingClientRect()
@@ -407,11 +419,11 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
-    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? 'Palette canvas' : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
+    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
     <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
       <div className="image-stage" style={transformStyle}>
-        {before && <img src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
-        {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
+        {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => imageLoaded(before.id, event)} />}
+        {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
       </div>
       {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
@@ -433,6 +445,10 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         onKeyDown={dividerKeyDown}
       ><span className="split-line" aria-hidden="true" /></div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
+      {editorMode && inspectionToggles && inspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
+        {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[layer.id])} onChange={event => setEnabledInspections(value => ({ ...value, [layer.id]: event.target.checked }))} />{layer.name}</label>)}
+        {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
+      </div>}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>
