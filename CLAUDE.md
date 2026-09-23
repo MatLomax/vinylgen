@@ -134,7 +134,7 @@ Read only the references relevant to the current task.
 | [Palette pipeline](docs/palette-pipeline.md) | Changing inference, colour conversion, merging, cleanup, performance, or thresholds |
 | [Files and output contract](docs/files-and-outputs.md) | Adding artifacts, reorganising folders, changing JSON/report formats, or naming files |
 | [Validation and testing](docs/validation-and-testing.md) | Adding checks, changing connectivity/cleanup, benchmarking, or judging cutter readiness |
-| [SVG tracing specification](docs/svg-tracing-spec.md) | Implementing or changing tracing, SVG geometry, vector cleanup, layer ordering, or trace outputs |
+| [SVG tracing specification](docs/svg-tracing-spec.md) | Implementing or changing tracing, SVG geometry, cutter cleanup, layer ordering, or trace outputs |
 | [Roadmap and risks](docs/roadmap-and-risks.md) | Planning SVG tracing, physical vinyl handling, generative editing, or the application UI |
 | [Tiled-upscale stage](docs/upscale-stage.md) | Planning or implementing the generative pre-flatten tiled-upscale stage or its ComfyUI integration |
 

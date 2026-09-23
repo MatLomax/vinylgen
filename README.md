@@ -76,9 +76,12 @@ colour omission, order overrides, curve controls, cleanup, and reusable JSON
 configuration.
 
 The boundary graph uses source classification confidence to place shared
-interfaces off the integer pixel grid. The curve pass uses a two-source-pixel
-default fitting tolerance, retains straight segments and sharp corners, and
-emits cubic Beziers for shallow bends. It operates reversibly on shared
+interfaces off the integer pixel grid. The curve pass works in pixels of the
+traced image whatever the physical size (default 1.5 px curve-fit tolerance
+within a 2 px maximum deviation), retains straight segments and sharp corners,
+and emits cubic Beziers for shallow bends. A straight-line deviation of 0
+turns off the straight-line shortcut, but a bend shallower than the curve-fit
+tolerance can still become a line; lower the tolerance to keep it curved. It operates reversibly on shared
 boundaries, so neighbouring colours receive the same curve in opposite
 directions.
 

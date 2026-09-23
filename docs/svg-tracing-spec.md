@@ -96,12 +96,22 @@ outputs/<subject>/cropped.png
 Aspect-ratio and crop settings belong to the palette-stage configuration, not
 the tracing command.
 
-When physical dimensions are supplied, physical geometry settings use
-millimetres and square millimetres. Without physical dimensions, tracing uses
-the raster pixel coordinate system and equivalent pixel-based settings. The
-SVG retains the raster dimensions as its `viewBox`.
+Trace settings follow one rule: fitting in pixels, cutting in millimetres.
 
-## Vector cleanup
+- Curve-fitting settings are always in pixels of the traced image:
+  `curve_fit_tolerance`, `straight_line_max_deviation`,
+  `minimum_straight_length`, `corner_analysis_span`, `corner_straightness`,
+  and `max_deviation`.
+  The traced image is the flattened (or edited) raster, with any palette-stage
+  `flatten_upscale` already applied; the SVG `viewBox` is the same pixel grid.
+  Setting a physical size never changes how curves are fitted.
+- Physical settings are `overlap`, `min_detail_width`, `remove_below_width`
+  (lengths) and `min_region_area` (an area). When a width or height is
+  supplied they are millimetres and square millimetres, converted to pixels
+  through the physical scale; without physical dimensions they are pixels and
+  square pixels.
+
+## Cutter cleanup (raster labels)
 
 Physical/detail cleanup runs during the trace stage on a trace-local copy of
 the labelled partition, before shared-boundary construction and curve fitting.
@@ -141,15 +151,53 @@ back to removal.
 
 ## Trace accuracy and complexity
 
-Maximum contour deviation is configurable. The default fit tolerance is two
-source-raster pixels; in physical mode the audit records the equivalent
-physical distance for the configured output size. An explicit maximum-
-deviation setting overrides this default.
+Maximum contour deviation (`max_deviation`) is configurable in pixels of the
+traced image. Its default is 2 px in both pixel and physical mode, and
+`trace.json` records the effective pixel value. It does three things:
 
-The default curve-model tolerance is 0.8 source pixels. This deliberately
-clears the half-pixel sampling error of a one-pixel staircase, allowing it to
-collapse into a sustained line or broad Bézier while remaining comfortably
-inside the two-pixel maximum-deviation audit.
+- Curve fitting uses `min(curve_fit_tolerance, max_deviation)`, so only a
+  value below the curve-fit tolerance changes the fit (tighter, more nodes).
+  It does not limit straight lines: a run that passes the straight-line test
+  becomes a line on `straight_line_max_deviation` alone.
+- It is the threshold of the post-fit semantic audit. Lower values flag more
+  features as drifting and trigger local recovery of explicitly protected
+  details sooner; higher values relax the audit.
+- It limits how far corner analysis may move a corner sample to the
+  intersection of the adjacent straight runs. Lower values reject corners that
+  would move further.
+
+
+The default curve-fit tolerance is 1.5 px. It clears the half-pixel sampling
+error of a one-pixel staircase, allowing it to collapse into a broad Bézier
+while staying inside the 2 px maximum-deviation audit.
+
+Straightening is controlled by `straight_line_max_deviation` (default 1.6 px,
+no upper limit). A run at least `minimum_straight_length` long whose robust
+best-fit line stays within this deviation becomes one straight segment; every
+other run is fitted within the curve-fit tolerance. Higher values straighten
+more. At 0 the straight-line shortcut applies only to exactly straight runs,
+but the curve fitter may still emit a line for a piece that bows less than the
+curve-fit tolerance, because a line within tolerance is a valid fit (at the
+1.5 px default, a 40 px arc with a 1 px bow becomes one line). Lower the
+curve-fit tolerance to keep such gentle bows as curves.
+
+Corner detection has its own straightness limit, `corner_straightness` (px).
+A hard corner needs a coherent straight run on each side, each within this
+distance of its best-fit line and at least `minimum_straight_length` long,
+examined over `corner_analysis_span` and turning by at least
+`corner_threshold` degrees. Lower values confirm corners only between clean
+straight edges; higher values let rougher edges form sharp corners. It is
+independent of `straight_line_max_deviation`, so lowering the deviation does
+not soften corners. When omitted (`null` or absent) it resolves, once, at
+settings construction, to the straight-line deviation, which reproduces the
+corners of stored settings that lack the field; `trace.json` records the
+resolved value. Consequently a CLI run or config that sets
+`straight_line_max_deviation` to 0 without `corner_straightness` also disables
+most corner detection; pass `--corner-straightness` (for example 1.6) to keep
+corners. The web client default is 1.6 px, and it loads stored
+settings that lack the field with their recorded straight-line deviation.
+Local recovery halves it together with the straight-line deviation at the
+reclassification stage.
 
 The cleaned flattened raster is authoritative. A surviving explicitly
 protected feature is recovered locally and in a fixed order: tighten its curve

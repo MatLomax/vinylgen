@@ -349,7 +349,7 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings) -> dict[int,
     """
     if len(points) < 5:
         return {}
-    deviation = max(1e-4, float(settings.straight_line_max_deviation))
+    deviation = max(1e-4, float(settings.corner_straightness))
     minimum = max(1e-4, float(settings.minimum_straight_length))
     span = max(minimum, float(settings.corner_analysis_span))
     threshold = math.radians(float(settings.corner_threshold))
@@ -626,6 +626,11 @@ def _fit(points: np.ndarray, tolerance: float) -> list[Primitive]:
     return primitives
 
 
+def _tightened(value: float, divisor: float) -> float:
+    """Divide a recovery tolerance, floored at 0.05 but never above ``value``."""
+    return min(float(value), max(0.05, float(value) / divisor))
+
+
 def _fit_classified(points: np.ndarray, settings: TraceSettings,
                     source_start: int, source_end: int,
                     ) -> tuple[list[Primitive], RunDiagnostic]:
@@ -674,11 +679,7 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
             math.sqrt(delta[0] * delta[0] + delta[1] * delta[1]), 0))
     for start, end in zip(split_indices, split_indices[1:]):
         section = model_points[start:end + 1]
-        if not settings.curve_optimization:
-            fitted_piece = [("L", tuple(section[-1]))]
-            diagnostic = RunDiagnostic("straight", start, end, 0.0, 1)
-        else:
-            fitted_piece, diagnostic = _fit_classified(section, settings, start, end)
+        fitted_piece, diagnostic = _fit_classified(section, settings, start, end)
         pieces.extend(fitted_piece)
         diagnostics.append(diagnostic)
     primitives = tuple(pieces)
@@ -744,12 +745,12 @@ class SharedChainFitter:
         forward = points <= tuple(reversed(points))
         canonical = points if forward else tuple(reversed(points))
         constraint_key = tuple(sorted(point for point in constraints if point in canonical))
-        key = (canonical, anchor_key, constraint_key, bool(settings.curve_optimization),
+        key = (canonical, anchor_key, constraint_key,
                float(settings.curve_fit_tolerance),
                float(settings.straight_line_max_deviation),
                float(settings.minimum_straight_length),
                float(settings.corner_analysis_span), float(settings.corner_threshold),
-               settings.max_deviation)
+               float(settings.corner_straightness), settings.max_deviation)
         return key, forward, canonical, anchors, constraint_key
 
     def fit(self, coords: Iterable[Point], settings: TraceSettings,
@@ -1054,16 +1055,21 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
         stage = int(state.get("stage", 0))
         constraint = state.get("constraint")
         constraints = [tuple(constraint)] if constraint is not None and stage >= 3 else []
+        # Each recovery stage only tightens: the 0.05 floor never raises a
+        # configured value that is already below it (a straight-line deviation
+        # of 0 stays 0). Stage 2 halves corner straightness together with the
+        # straight-line deviation, so fewer runs confirm a hard corner.
         if stage >= 1:
             chain_settings = replace(
                 chain_settings,
-                curve_fit_tolerance=max(0.05, settings.curve_fit_tolerance / 2.0))
+                curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 2.0))
         if stage >= 2:
             chain_settings = replace(
                 chain_settings,
-                curve_fit_tolerance=max(0.05, settings.curve_fit_tolerance / 4.0),
-                straight_line_max_deviation=max(
-                    0.05, settings.straight_line_max_deviation / 2.0))
+                curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 4.0),
+                straight_line_max_deviation=_tightened(
+                    settings.straight_line_max_deviation, 2.0),
+                corner_straightness=_tightened(settings.corner_straightness, 2.0))
         if stage >= 4:
             primitives = tuple(("L", point) for point in samples[1:])
             fits[chain.identity] = ChainFit(

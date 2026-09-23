@@ -3,6 +3,7 @@ import math
 import re
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from vinylgen.cutter_cleanup import cleanup_labels
 from vinylgen.curve_fit import ring_path
 from vinylgen.svg_writer import SVG
 from vinylgen.preview import PREVIEW_MAX_SIDE, preview_plan
+from vinylgen import tracing
 from vinylgen.tracing import partition_watertight_fault, trace_subject
 
 
@@ -228,6 +230,42 @@ class SvgTraceTests(unittest.TestCase):
             palette_costs=costs,
         ).save(subject / "segmentation.npz")
         return subject
+
+    def _trace_capturing_fit_settings(self, subject: Path, settings: TraceSettings):
+        """Trace, returning the report, the settings the curve fitter received, and edge paths."""
+        seen: list[TraceSettings] = []
+        real = tracing.shared_boundary_components
+
+        def spy(track, included, fit_settings, *args, **kwargs):
+            seen.append(fit_settings)
+            return real(track, included, fit_settings, *args, **kwargs)
+
+        with mock.patch.object(tracing, "shared_boundary_components", spy):
+            report = trace_subject(subject, settings, {})
+        root = ET.parse(subject / "traced-edge.svg").getroot()
+        paths = [path.attrib["d"] for path in root.iter(f"{{{SVG}}}path")]
+        return report, seen, paths
+
+    def test_max_deviation_is_in_traced_pixels_whatever_the_physical_size(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.fixture(Path(name))
+            # 400 mm over the 40 px fixture is 10 mm per pixel, so any mm conversion
+            # would move the fitting limit by a factor of ten.
+            for explicit in (None, .5):
+                pixels, pixel_fits, pixel_paths = self._trace_capturing_fit_settings(
+                    subject, TraceSettings(max_deviation=explicit))
+                physical, physical_fits, physical_paths = self._trace_capturing_fit_settings(
+                    subject, TraceSettings(width_mm=400, max_deviation=explicit))
+                expected = 2.0 if explicit is None else explicit
+                self.assertEqual(physical["mode"], "physical")
+                for report, fits in ((pixels, pixel_fits), (physical, physical_fits)):
+                    self.assertEqual(report["settings"]["max_deviation"], expected)
+                    self.assertEqual(
+                        report["validation"]["semantic"]["settings"]["maximum_deviation_px"], expected)
+                    self.assertTrue(fits)
+                    self.assertTrue(all(fit.max_deviation == expected for fit in fits))
+                # A physical size changes cut dimensions, never the fitted geometry.
+                self.assertEqual(pixel_paths, physical_paths)
 
     def test_layers_components_holes_and_determinism(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:

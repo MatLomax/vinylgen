@@ -123,12 +123,12 @@ class TraceJobSettings(BaseModel):
     remove_colour: str | None = None
     layer_order: list[str] | None = None
     corner_threshold: float = Field(default=60.0, ge=0, le=180)
-    curve_optimization: bool = True
     curve_fit_tolerance: float = Field(default=1.5, gt=0)
     straight_line_max_deviation: float = Field(default=1.6, ge=0)
     minimum_straight_length: float = Field(default=4.0, ge=0)
     max_deviation: float | None = Field(default=None, gt=0)
     corner_analysis_span: float = Field(default=8.0, gt=0)
+    corner_straightness: float | None = Field(default=None, ge=0)
     cleanup: bool = False
     cleanup_action: Literal["remove", "widen", "remove_then_widen"] = "remove"
     min_detail_width: float = Field(default=0.0, ge=0)

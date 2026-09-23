@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
+import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 import { ancestorPaletteIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
@@ -937,4 +938,70 @@ describe('stepping through trace runs', () => {
     expect(storedDraft()).toBeUndefined()
   })
 
+})
+
+describe('legacy curve optimisation settings', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
+  const legacyRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02',
+    settings: { trace: { curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 0 } } }
+  const currentRun: Revision = { ...legacyRun, settings: { trace: { curve_optimization: true, straight_line_max_deviation: 1.2 } } }
+
+  it('maps a recorded curve_optimization false to a straight-line deviation of 0 and drops the flag', () => {
+    expect(inheritedPipelineSettings([legacyRun, paletteRevision], 'trace-1').trace).toEqual({ straight_line_max_deviation: 0, corner_straightness: 1.6, overlap: 0 })
+    expect(inheritedPipelineSettings([currentRun, paletteRevision], 'trace-1').trace).toEqual({ straight_line_max_deviation: 1.2, corner_straightness: 1.2 })
+  })
+
+  async function openTrace(runs: Revision[]) {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [...runs, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')])
+    mocks.editor.mockResolvedValue({ width: 4344, height: 1448, protected_pixels: 0, palette: [] })
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=${runs[0].id}`)
+    render(createElement((await import('./App')).default))
+    return screen.getByRole('tabpanel', { name: 'Trace' })
+  }
+
+  it('loads a legacy revision as deviation 0, not pending, and never sends the flag', async () => {
+    const panel = await openTrace([legacyRun])
+    const deviation = within(panel).getByLabelText(/Straight-line deviation/) as HTMLInputElement
+    await vi.waitFor(() => expect(deviation.value).toBe('0'))
+    expect(deviation.closest('label')?.querySelector('.field-dirty')).toBeNull()
+    // Corners are still detected with the deviation the run recorded.
+    const corners = within(panel).getByLabelText(/Corner straightness/) as HTMLInputElement
+    expect(corners.value).toBe('1.6')
+    expect(corners.closest('label')?.querySelector('.field-dirty')).toBeNull()
+    expect(within(panel).queryByRole('checkbox', { name: /Optimize curves/ })).toBeNull()
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    const sent = mocks.startPipeline.mock.calls[0][3].trace
+    expect(sent.straight_line_max_deviation).toBe(0)
+    expect(sent.corner_straightness).toBe(1.6)
+    expect(sent).not.toHaveProperty('curve_optimization')
+  })
+
+  it('maps a legacy localStorage draft and rewrites it without the flag', async () => {
+    // persistDraft stores the whole form, so an older draft carries every field it
+    // knew: the curve_optimization flag and no corner_straightness.
+    const { corner_straightness: _absent, ...fields } = DEFAULT_TRACE_SETTINGS
+    const legacyDraft = { ...fields, curve_optimization: false, straight_line_max_deviation: 1, corner_threshold: 45 }
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: legacyDraft }))
+    const panel = await openTrace([currentRun])
+    const deviation = within(panel).getByLabelText(/Straight-line deviation/) as HTMLInputElement
+    const corners = within(panel).getByLabelText(/Corner straightness/) as HTMLInputElement
+    const threshold = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
+    // Corners keep the deviation the draft recorded; the deviation itself becomes 0.
+    await vi.waitFor(() => expect(corners.value).toBe('1'))
+    expect(deviation.value).toBe('0')
+    expect(threshold.value).toBe('45')
+    fireEvent.blur(deviation)
+    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
+    expect(stored).not.toHaveProperty('curve_optimization')
+    expect(stored).toEqual({ ...DEFAULT_TRACE_SETTINGS, straight_line_max_deviation: 0, corner_straightness: 1, corner_threshold: 45 })
+  })
+
+  it('states the traced image size from the editor state', async () => {
+    const panel = await openTrace([currentRun])
+    expect(await within(panel).findByText('Traced image: 4344 × 1448 px')).toBeTruthy()
+  })
 })

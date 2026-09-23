@@ -104,7 +104,6 @@ class TraceSettings:
     remove_colour: str | None = None
     layer_order: list[str] | None = None
     corner_threshold: float = 60.0
-    curve_optimization: bool = True
     curve_fit_tolerance: float = 1.5
     # Geometry classification is deliberately independent from curve fitting.
     # A raster staircase may be this far from its best-fit line and still be
@@ -113,6 +112,11 @@ class TraceSettings:
     minimum_straight_length: float = 4.0
     max_deviation: float | None = None
     corner_analysis_span: float = 8.0
+    # How far (px) the runs either side of a candidate corner may stray from
+    # their best-fit lines and still confirm a hard corner. None takes the
+    # straight-line deviation, which is what settings recorded without this
+    # field were traced with; it is resolved once, at construction.
+    corner_straightness: float | None = None
     cleanup: bool = False
     cleanup_action: str = "remove"
     min_detail_width: float = 0.0
@@ -121,3 +125,7 @@ class TraceSettings:
     soft_path_nodes: int = 5_000
     soft_layer_nodes: int = 50_000
     soft_document_nodes: int = 200_000
+
+    def __post_init__(self) -> None:
+        if self.corner_straightness is None:
+            self.corner_straightness = self.straight_line_max_deviation

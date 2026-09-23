@@ -9,7 +9,7 @@ import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, type SelectionMode } from './PipelineControls'
+import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, normalizeTraceSettings, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -107,7 +107,7 @@ export function inheritedPipelineSettings(revisions: Revision[], revisionId: str
   while (current && (!palette || !trace) && !seen.has(current.id)) {
     seen.add(current.id)
     if (!palette && current.settings.palette) palette = current.settings.palette as Partial<PaletteSettings>
-    if (!trace && current.settings.trace) trace = current.settings.trace as Partial<TraceSettings>
+    if (!trace && current.settings.trace) trace = normalizeTraceSettings(current.settings.trace as Partial<TraceSettings>)
     current = revisions.find(row => row.id === current?.parent_revision_id)
   }
   return { palette, trace }
@@ -241,6 +241,8 @@ export default function App() {
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
   const [flattenedPixels, setFlattenedPixels] = useState<Pixels | null>(null)
   const [editorPalette, setEditorPalette] = useState<PaletteColour[]>([])
+  // Pixel size of the image the trace stage fits curves to (the flattened/edited grid).
+  const [tracedSize, setTracedSize] = useState<{ width: number; height: number } | null>(null)
   const [overlayFrame, setOverlayFrame] = useState<OverlayFrame | undefined>(undefined)
   const [paletteDraft, setPaletteDraft] = useState<{ index: number; hex: string } | null>(null)
   const [palettePreviewFrame, setPalettePreviewFrame] = useState<OverlayFrame | undefined>(undefined)
@@ -422,7 +424,7 @@ export default function App() {
     let draft: { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } = {}
     try { draft = selected ? JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') : {} } catch { /* use revision values */ }
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draft.palette })
-    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...(traceRuns.index > 0 ? {} : draft.trace) })
+    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...(traceRuns.index > 0 || !draft.trace ? {} : normalizeTraceSettings(draft.trace)) })
     setPaletteStep(0); paletteLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
@@ -448,9 +450,9 @@ export default function App() {
     else if (decision.action === 'clear') { preserveRegion.current = null; setRegionSelection([]) }
     setRegionError('')
     setPaintedCells(new Map()); setPencilError('')
-    if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); return }
+    if (!revision || !flattened) { setFlattenedPixels(null); setEditorPalette([]); setTracedSize(null); return }
     const controller = new AbortController()
-    api.editor(revision, controller.signal).then(state => setEditorPalette(state.palette))
+    api.editor(revision, controller.signal).then(state => { setEditorPalette(state.palette); setTracedSize({ width: state.width, height: state.height }) })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
     // An area/pencil edit already knows exactly which pixels changed, so adopt the
     // pre-computed buffer for the revision it produced rather than decoding a fresh
@@ -866,7 +868,7 @@ export default function App() {
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} />
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}

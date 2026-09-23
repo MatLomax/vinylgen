@@ -271,14 +271,14 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     elif settings.height_mm is not None and settings.width_mm is None:
         settings.width_mm = settings.height_mm * width / height
     units_per_pixel = settings.width_mm / width if settings.width_mm is not None else 1.0
+    # Curve-fitting settings, max_deviation included, are always in pixels of
+    # the traced image; only overlap and the cutter-cleanup thresholds are
+    # physical and converted through units_per_pixel.
     if settings.max_deviation is None:
-        settings.max_deviation = 2.0 * units_per_pixel
+        settings.max_deviation = 2.0
     working, cleanup = cleanup_labels(labels, included, palette, settings, units_per_pixel)
     overlap_px = settings.overlap / units_per_pixel
     tracing_settings = TraceSettings(**asdict(settings))
-    if tracing_settings.width_mm is not None:
-        if tracing_settings.max_deviation is not None:
-            tracing_settings.max_deviation /= units_per_pixel
     warnings = list(order_warnings)
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)

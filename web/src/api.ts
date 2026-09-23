@@ -18,9 +18,9 @@ export type PaletteSettings = {
 export type TraceSettings = {
   width_mm: number | null; height_mm: number | null; overlap: number; solid_underlayers: boolean
   remove_colour: string | null; layer_order: string[] | null
-  corner_threshold: number; curve_optimization: boolean; curve_fit_tolerance: number
+  corner_threshold: number; curve_fit_tolerance: number
   straight_line_max_deviation: number; minimum_straight_length: number
-  max_deviation: number | null; corner_analysis_span: number
+  max_deviation: number | null; corner_analysis_span: number; corner_straightness: number
   cleanup: boolean; cleanup_action: 'remove' | 'widen' | 'remove_then_widen'
   min_detail_width: number; min_region_area: number; remove_below_width: number
   soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
