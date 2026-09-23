@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
+import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
+import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
 
 const layers: WorkspaceLayer[] = [
   { id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' },
@@ -464,5 +466,132 @@ describe('traced vector layers on the editor canvas', () => {
     loadUrl(container, '/b-marks.png', 300, 100)
     expect(toggle().checked).toBe(true)
     expect((screen.getByAltText('Tightened boundaries') as HTMLImageElement).getAttribute('src')).toBe('/b-marks.png')
+  })
+})
+
+describe('canvas loading states and wheel zoom', () => {
+  const single: WorkspaceLayer[] = [{ id: 'svg', name: 'Traced SVG · solid underlayers', url: '/run-8.svg', mediaType: 'image/svg+xml', role: 'image' }]
+
+  function fitted(container: HTMLElement) {
+    const viewport = container.querySelector('.viewport') as HTMLElement
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
+    viewport.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) })
+    const image = container.querySelector('.image-stage img') as HTMLImageElement
+    Object.defineProperties(image, { naturalWidth: { configurable: true, value: 1000 }, naturalHeight: { configurable: true, value: 700 } })
+    fireEvent.load(image)
+    return viewport
+  }
+
+  it('titles the canvas as loading, never with the previous layer\'s name, while a revision loads', () => {
+    const { container, rerender } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" />)
+    const title = () => container.querySelector('.viewport-toolbar span')?.textContent
+    expect(title()).toBe('Traced SVG · solid underlayers')
+    rerender(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" loading />)
+    expect(title()).toBe('Loading…')
+    // The old image stays underneath.
+    expect(screen.getByAltText('Traced SVG · solid underlayers')).toBeTruthy()
+  })
+
+  it('keeps the Live preview switch through a load, requesting and drawing nothing until unpaused', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
+    const fetch = vi.fn(() => new Promise(() => undefined))
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const live = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } }
+      const view = (paused: boolean) => <ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" livePreview={live} livePreviewPaused={paused} />
+      const { container, rerender } = render(view(true))
+      fitted(container)
+      fireEvent.click(screen.getByLabelText('Zoom in'))
+      fireEvent.click(screen.getByLabelText('Zoom in'))
+      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
+      expect(screen.getByRole('switch', { name: 'Live preview' })).toBeTruthy()
+      expect(fetch).not.toHaveBeenCalled()
+      expect(screen.queryByText('Zoom in to preview')).toBeNull()
+      rerender(view(false))
+      fireEvent.click(screen.getByLabelText('Zoom in'))
+      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
+      expect(fetch).toHaveBeenCalledTimes(1)
+    } finally { localStorage.clear(); vi.useRealTimers() }
+  })
+
+  it('zooms on the wheel through a non-passive listener that cancels the page scroll', () => {
+    const added = vi.spyOn(HTMLElement.prototype, 'addEventListener')
+    const { container } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" />)
+    const viewport = fitted(container)
+    // The viewport's own wheel listener (React's root listener is passive).
+    const registrations = added.mock.calls.filter((call, index) => call[0] === 'wheel' && added.mock.contexts[index] === viewport)
+    expect(registrations.map(call => call[2])).toEqual([{ passive: false }])
+    added.mockRestore()
+    const stage = container.querySelector('.image-stage') as HTMLElement
+    const before = stage.style.transform
+    const event = new WheelEvent('wheel', { deltaY: -100, clientX: 400, clientY: 300, bubbles: true, cancelable: true })
+    act(() => { viewport.dispatchEvent(event) })
+    expect(event.defaultPrevented).toBe(true)
+    expect(stage.style.transform).not.toBe(before)
+  })
+
+  it('titles a real step as App drives it: old run, loading, then only the new run', () => {
+    // The props App hands the canvas across a step from run 9 (edge to edge) to run 8
+    // (solid underlayers): the revision changes (loading, old layers), the fetch runs,
+    // the new layers commit, then loading ends.
+    // Named and identified as App builds them: each run lists both SVG variants; the
+    // run's own variant carries the settings name (tracedSvgKind picks it).
+    const run = (id: string, shown: 'edge' | 'overlap', name: string): WorkspaceLayer[] => [
+      { id: 'source-id', name: 'source · source.png', url: '/source.png', mediaType: 'image/png', role: 'image' },
+      { id: `${id}-edge`, name: shown === 'edge' ? name : 'traced-edge · traced-edge.svg', url: `/${id}-edge.svg`, mediaType: 'image/svg+xml', role: 'image' },
+      { id: `${id}-overlap`, name: shown === 'overlap' ? name : 'traced-overlap · traced-overlap.svg', url: `/${id}-overlap.svg`, mediaType: 'image/svg+xml', role: 'image' },
+    ]
+    const steps: [WorkspaceLayer[], string, boolean][] = [
+      [run('trace-9', 'edge', 'Traced SVG · edge to edge'), 'trace-9-edge', false],
+      [run('trace-9', 'edge', 'Traced SVG · edge to edge'), 'trace-9-edge', true],
+      [run('trace-8', 'overlap', 'Traced SVG · solid underlayers'), 'trace-8-overlap', true],
+      [run('trace-8', 'overlap', 'Traced SVG · solid underlayers'), 'trace-8-overlap', false],
+    ]
+    const { container, rerender } = render(<ImageWorkspace layers={steps[0][0]} preferredLayerId={steps[0][1]} editorMode canvasLabel="Trace canvas" loading={steps[0][2]} />)
+    const titles = [container.querySelector('.viewport-toolbar span')?.textContent]
+    for (const [layers, preferred, loading] of steps.slice(1)) {
+      rerender(<ImageWorkspace layers={layers} preferredLayerId={preferred} editorMode canvasLabel="Trace canvas" loading={loading} />)
+      titles.push(container.querySelector('.viewport-toolbar span')?.textContent)
+    }
+    expect(titles).toEqual(['Traced SVG · edge to edge', 'Loading…', 'Loading…', 'Traced SVG · solid underlayers'])
+  })
+
+  it('attaches the wheel listener once the viewport first appears, and removes it on unmount', () => {
+    const added = vi.spyOn(HTMLElement.prototype, 'addEventListener')
+    const removed = vi.spyOn(HTMLElement.prototype, 'removeEventListener')
+    const { container, rerender, unmount } = render(<ImageWorkspace layers={[]} editorMode canvasLabel="Trace canvas" />)
+    expect(container.querySelector('.viewport')).toBeNull()
+    rerender(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" />)
+    const viewport = fitted(container)
+    const wheelOn = (spy: typeof added) => spy.mock.calls.filter((call, index) => call[0] === 'wheel' && spy.mock.contexts[index] === viewport)
+    expect(wheelOn(added)).toHaveLength(1)
+    const listener = wheelOn(added)[0][1]
+    const event = new WheelEvent('wheel', { deltaY: -100, clientX: 400, clientY: 300, bubbles: true, cancelable: true })
+    act(() => { viewport.dispatchEvent(event) })
+    expect(event.defaultPrevented).toBe(true)
+    unmount()
+    expect(wheelOn(removed).map(call => call[1])).toEqual([listener])
+    added.mockRestore(); removed.mockRestore()
+  })
+
+  it('keeps the switch with no traced grid yet, requesting nothing and saying why when told', () => {
+    vi.useFakeTimers()
+    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
+    const fetch = vi.fn(() => new Promise(() => undefined))
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const live = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: null }
+      const { container } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" livePreview={live} livePreviewStatus="Preview unavailable: no traced grid" />)
+      fitted(container)
+      fireEvent.click(screen.getByLabelText('Zoom in'))
+      fireEvent.click(screen.getByLabelText('Zoom in'))
+      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
+      expect(screen.getByRole('switch', { name: 'Live preview' })).toBeTruthy()
+      expect(fetch).not.toHaveBeenCalled()
+      const status = container.querySelector('.trace-preview-paused')
+      expect(status?.getAttribute('aria-live')).toBe('polite')
+      expect(status?.textContent).toBe('Preview unavailable: no traced grid')
+    } finally { localStorage.clear(); vi.useRealTimers() }
   })
 })

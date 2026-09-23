@@ -44,6 +44,9 @@ CREATE INDEX IF NOT EXISTS revisions_project ON revisions(project_id, created_at
 CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_at);
 """
 
+# The artifact kinds each stale concern hides. The trace concern covers the trace
+# run's own outputs and an Inkscape edit of that run's SVG: both describe geometry
+# a retrace replaces.
 STALE_ARTIFACT_KINDS = {
     "palette": {"flattened", "segmentation", "palette", "report"},
     "cleanup": {"cleanup-audit"},
@@ -51,10 +54,18 @@ STALE_ARTIFACT_KINDS = {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
         "trace-fallbacks-overlay", "trace-missed-details-overlay",
+        "inkscape-svg", "inkscape-preview", "inkscape-audit",
     },
     "validation": {"validation"},
     "export": {"export"},
 }
+
+# Everything a ``trace`` revision supersedes from older revisions, whatever its
+# recorded ``stale_concerns``: every trace-derived artifact of an older run, and
+# the validation and export made of that run.
+TRACE_RUN_SUPERSEDES = (
+    STALE_ARTIFACT_KINDS["trace"] | STALE_ARTIFACT_KINDS["validation"]
+    | STALE_ARTIFACT_KINDS["export"])
 
 
 # The raster a cleanup revision rewrites; a newer cleanup replaces them.
@@ -452,7 +463,9 @@ class Store:
         cleanup has been passed; with ``before_cleanup`` they are skipped from the
         start, which resolves the raster that cleanup starts from. A ``trace`` run
         writes its complete output set, so it supersedes every trace artifact of an
-        older run, including optional audits that run did not repeat.
+        older run, including optional audits that run did not repeat, and an older
+        run's Inkscape edit, validation and export (``TRACE_RUN_SUPERSEDES``); this
+        holds for trace revisions recorded before a trace marked validation stale.
         """
         result: dict[str, dict[str, Any]] = {}
         current: str | None = revision_id
@@ -478,7 +491,7 @@ class Store:
             if revision["kind"] == "cleanup":
                 cleanup_superseded = True
             if revision["kind"] == "trace":
-                stale_kinds.update(STALE_ARTIFACT_KINDS["trace"])
+                stale_kinds.update(TRACE_RUN_SUPERSEDES)
             current = revision["parent_revision_id"]
         return result
 

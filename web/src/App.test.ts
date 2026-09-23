@@ -48,6 +48,13 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+// Pick a project from the header only once its option has rendered: the select is on the
+// page before the project list loads, and choosing a value it lacks selects nothing.
+async function chooseProject(target: Project = project) {
+  await screen.findByRole('option', { name: target.name })
+  fireEvent.change(screen.getByLabelText('Active project'), { target: { value: target.id } })
+}
+
 function artifact(kind: string, mediaType = 'image/png'): Artifact {
   return {
     id: `${kind}-id`,
@@ -217,7 +224,7 @@ describe('generation frame dimensions', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [generated] })
     mocks.effectiveArtifacts.mockResolvedValue([{ ...artifact('source'), revision_id: generated.id }])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
 
     await vi.waitFor(() => expect((screen.getByLabelText('Short subject') as HTMLTextAreaElement).value).toBe('sky whale city'))
     expect((screen.getByLabelText(/Number of colours/) as HTMLInputElement).value).toBe('8')
@@ -303,7 +310,7 @@ describe('pipeline setting provenance', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [newer, older] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
 
     // Both stage panels mount a stepper, so scope queries to the flatten panel.
@@ -327,7 +334,7 @@ describe('pipeline setting provenance', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [older] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
 
     const panel = screen.getByRole('tabpanel', { name: 'Flatten' })
@@ -353,7 +360,7 @@ describe('pipeline setting provenance', () => {
     mocks.projects.mockResolvedValue([project])
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     fireEvent.click(screen.getByRole('button', { name: /Protect connected detail/ }))
     expect(document.querySelector('.artwork-surface')?.className).toContain('mobile-stage-active')
@@ -363,7 +370,7 @@ describe('pipeline setting provenance', () => {
     mocks.projects.mockResolvedValue([project])
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     fireEvent.click(screen.getByRole('button', { name: /Protect connected detail/ }))
     expect(screen.getByText('Select the intended source detail.')).toBeTruthy()
@@ -381,7 +388,7 @@ describe('pipeline setting provenance', () => {
   it('flags an edited field with a pending dot and saves the draft on blur, not on keystroke', async () => {
     mocks.projects.mockResolvedValue([project])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     const field = screen.getByLabelText(/Initial candidates/)
 
@@ -401,7 +408,7 @@ describe('pipeline setting provenance', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [flattened] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
 
     const field = await screen.findByLabelText(/Initial candidates/)
@@ -418,7 +425,7 @@ describe('pipeline setting provenance', () => {
       return () => undefined
     })
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
@@ -448,7 +455,7 @@ describe('workflow tab navigation', () => {
 
     expect(screen.getByRole('tab', { name: 'Export' }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByRole('tabpanel', { name: 'Export' }).className).toContain('mobile-stage-active')
-    expect((await screen.findByLabelText('Current work')).textContent).toContain('Sky whale')
+    await vi.waitFor(() => expect(screen.getByLabelText('Current work').textContent).toContain('Sky whale'))
     expect(screen.getByLabelText('Current work').textContent).toContain('Export')
   })
 
@@ -494,6 +501,21 @@ describe('workflow tab navigation', () => {
 })
 
 describe('application status accessibility', () => {
+  // A submitted generation selects its new project, whose load briefly swaps the job
+  // overlay for the loading overlay (same element, new text). Once that load has fetched
+  // its artifacts the loading overlay has already rendered, so the job overlay showing
+  // then is the settled one; reading it any earlier can catch the pre-load render.
+  async function settledJobOverlay(message = 'Preparing artwork') {
+    await vi.waitFor(() => {
+      expect(mocks.effectiveArtifacts).toHaveBeenCalled()
+      const statuses = screen.getAllByRole('status')
+      expect(statuses).toHaveLength(1)
+      expect(statuses[0].textContent).toContain(message)
+      expect(screen.queryByRole('progressbar', { name: 'Job progress' })).not.toBeNull()
+    })
+    return screen.getByRole('progressbar', { name: 'Job progress' })
+  }
+
   it('announces actionable errors assertively', async () => {
     mocks.projects.mockRejectedValue(new Error('Project service unavailable'))
     render(createElement((await import('./App')).default))
@@ -507,7 +529,7 @@ describe('application status accessibility', () => {
     fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
     fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
 
-    const progress = await screen.findByRole('progressbar', { name: 'Job progress' })
+    const progress = await settledJobOverlay()
     expect(progress.getAttribute('aria-valuenow')).toBeNull()
     const statuses = screen.getAllByRole('status')
     expect(statuses).toHaveLength(1)
@@ -523,7 +545,7 @@ describe('application status accessibility', () => {
     render(createElement((await import('./App')).default))
     fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
     fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
-    const progress = await screen.findByRole('progressbar', { name: 'Job progress' })
+    const progress = await settledJobOverlay()
     // Queued: no measured value yet, so the bar stays indeterminate and the spinner shows.
     expect(progress.getAttribute('aria-valuenow')).toBeNull()
     expect(document.querySelector('.spinner')).not.toBeNull()
@@ -569,7 +591,7 @@ describe('application status accessibility', () => {
     render(createElement((await import('./App')).default))
     fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
     fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
-    await screen.findByRole('progressbar')
+    await settledJobOverlay()
 
     await act(async () => update?.({ ...queuedJob, status: 'cancelled', progress: 0.4, message: 'Generation cancelled' }))
     expect(screen.getByRole('status').textContent).toContain('Generation cancelled')
@@ -586,7 +608,7 @@ describe('application status accessibility', () => {
     render(createElement((await import('./App')).default))
     fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
     fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
-    await screen.findByRole('progressbar')
+    await settledJobOverlay()
 
     await act(async () => update?.({ ...queuedJob, status: 'failed', progress: 0.5, message: 'Generation stopped', error: 'Provider timed out' }))
     const alert = screen.getByRole('alert')
@@ -602,12 +624,13 @@ describe('application status accessibility', () => {
     mocks.inkscapeHandoff.mockResolvedValue({ exports: [svg], shared_folder_enabled: true, guidance: 'Inspect before cutting.' })
     mocks.saveForInkscape.mockResolvedValue({ filename: 'traced-overlap.svg', shared_path: '/shared/traced-overlap.svg' })
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(await screen.findByRole('button', { name: 'Save SVG to shared folder' }))
 
-    const status = await screen.findByRole('status')
+    const status = (await screen.findByText('Saved traced-overlap.svg to the shared folder.')).closest('[role="status"]')!
+    expect(status).not.toBeNull()
     expect(status.getAttribute('aria-live')).toBe('polite')
-    expect(status.textContent).toContain('Saved traced-overlap.svg to the shared folder.')
+    expect(screen.getAllByRole('status')).toEqual([status])
   })
 })
 
@@ -620,7 +643,7 @@ describe('artwork view toggle', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [paletteRevision] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
 
     const group = await screen.findByRole('group', { name: 'Artwork view' })
     expect(within(group).getByRole('button', { name: 'Source' })).toBeTruthy()
@@ -634,7 +657,7 @@ describe('artwork view toggle', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [paletteRevision] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     const group = await screen.findByRole('group', { name: 'Artwork view' })
 
     fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
@@ -651,7 +674,7 @@ describe('artwork view toggle', () => {
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
     mocks.artifacts.mockResolvedValue([{ ...artifact('flattened'), id: 'flattened-original', revision_id: 'palette-1' }])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     const group = await screen.findByRole('group', { name: 'Artwork view' })
     expect(within(group).getByRole('button', { name: 'Edited' })).toBeTruthy()
     expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
@@ -781,7 +804,7 @@ describe('landing on the newly produced artwork', () => {
     mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'palette-1'
       ? [artifact('source'), artifact('flattened')] : [artifact('source')])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
@@ -881,7 +904,7 @@ describe('project deletion', () => {
   it('deletes only after the confirmation dialog is accepted', async () => {
     mocks.projects.mockResolvedValue([project])
     render(createElement((await import('./App')).default))
-    fireEvent.change(await screen.findByLabelText('Active project'), { target: { value: project.id } })
+    await chooseProject()
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
     const dialog = screen.getByRole('alertdialog', { name: 'Delete project?' })
@@ -1478,15 +1501,20 @@ describe('shown artwork stays consistent across cleanups', () => {
   }
   const tracedSizeOf = () => (captured as { livePreview?: { tracedSize?: unknown } } | null)?.livePreview?.tracedSize
   const livePreview = () => (captured as { livePreview?: unknown } | null)?.livePreview
+  const previewPaused = () => (captured as { livePreviewPaused?: boolean } | null)?.livePreviewPaused
   const pressed = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).queryByRole('button', { name })?.getAttribute('aria-pressed') ?? null
   let history: { preferred?: string; layers: string[] }[], captured: CapturedWorkspace | null
+  // Every live-preview state the canvas is handed: which revision, which grid, paused.
+  let previews: { revisionId: string; tracedSize: { width: number; height: number } | null; paused?: boolean }[] = []
+  const previewStatus = () => (captured as { livePreviewStatus?: string } | null)?.livePreviewStatus
   const shown = () => captured as CapturedWorkspace | null
 
   beforeEach(() => {
-    hold = new Set(); fail = new Set(); late = new Set(); release = {}; history = []; captured = null
+    hold = new Set(); fail = new Set(); late = new Set(); release = {}; history = []; previews = []; captured = null
     Object.defineProperty(workspaceProps, 'current', { configurable: true, get: () => captured, set: value => {
       captured = value
       if (value) history.push({ preferred: value.preferredLayerId, layers: (value.layers ?? []).map((layer: { id: string }) => layer.id) })
+      if (value?.livePreview) previews.push({ revisionId: value.livePreview.revisionId, tracedSize: value.livePreview.tracedSize, paused: value.livePreviewPaused })
     } })
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValue({ ...project, revisions: [cleanup3, edit1, cleanup2, palette2, trace1, cleanup1, paletteRevision, revision] })
@@ -1530,13 +1558,16 @@ describe('shown artwork stays consistent across cleanups', () => {
     expect(pressed('Cleaned')).toBe('true')
     expect(history.every(entry => entry.preferred === 'clean-1' && entry.layers.includes('flat-P'))).toBe(true)
     expect(mocks.editor).not.toHaveBeenCalledWith('cleanup-2', expect.anything())
-    // The traced grid (and so the live preview) is unknown until the jump's artifacts load.
-    expect(screen.queryByText(/Traced image:/)).toBeNull()
-    expect(livePreview()).toBeUndefined()
+    // The new traced grid is unknown until the jump's artifacts load: the size line and
+    // the Live preview switch stay put, and the preview pauses.
+    expect(screen.getByText('Traced image: 600 × 400 px')).toBeTruthy()
+    expect(livePreview()).toBeDefined()
+    expect(previewPaused()).toBe(true)
     await act(async () => release['main:cleanup-2']())
     await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
     await screen.findByText('Traced image: 610 × 410 px')
     expect(tracedSizeOf()).toEqual({ width: 610, height: 410 })
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
     expect(pressed('Cleaned')).toBe('true')
     await vi.waitFor(() => expect(mocks.editor).toHaveBeenCalledWith('cleanup-2', expect.anything()))
   })
@@ -1706,6 +1737,191 @@ describe('shown artwork stays consistent across cleanups', () => {
     expect(screen.getByRole('alert').textContent).toContain('lookup failed')
     expect(screen.getByRole('alert').textContent).not.toContain('before the edits')
   })
+
+  it('never runs the preview on another revision\'s traced grid across a jump', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    hold.add('main:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['main:cleanup-2']).toBeDefined())
+    await act(async () => release['main:cleanup-2']())
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    expect(previews.some(state => state.revisionId === 'cleanup-2' && state.paused)).toBe(true)
+    // Unpaused, the preview always carries its own revision's grid.
+    for (const state of previews.filter(state => !state.paused)) {
+      expect(state.tracedSize).toEqual({ width: sizes[state.revisionId][0], height: sizes[state.revisionId][1] })
+    }
+  })
+
+  it('leaves loading when a revision\'s artifacts fail, keeping the old artwork, and retries on the next change', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+    fail.add('main:cleanup-2')
+    navigate('cleanup-2')
+    expect((await screen.findByRole('alert')).textContent).toContain('lookup failed')
+    await vi.waitFor(() => expect(shown()?.loading).toBe(false))
+    expect(shown()?.preferredLayerId).toBe('clean-1')
+    expect(previewPaused()).toBe(true)
+    expect(previewStatus()).toBe('Preview unavailable: the selected revision failed to load.')
+    // The next revision change loads normally again.
+    navigate('trace-1')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    expect(previewStatus()).toBeUndefined()
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    expect(mocks.effectiveArtifacts.mock.calls.filter(call => call[0] === 'cleanup-2' && !call[2]?.beforeCleanup)).toHaveLength(2)
+  })
+
+  it('says why the preview is paused when the traced grid cannot be measured, and retries', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    fail.add('editor:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(previewStatus()).toBe('Preview unavailable: Error: lookup failed'))
+    expect(previewPaused()).toBe(true)
+    expect(shown()?.loading).toBe(false)
+    navigate('trace-1')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    expect(previewStatus()).toBeUndefined()
+    await screen.findByText('Traced image: 610 × 410 px')
+  })
+
+  it('keeps the Live preview switch, paused, on a revision with no flattened image and through the jump away', async () => {
+    main['revision-1'] = [artifact('source')]
+    try {
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
+      render(createElement((await import('./App')).default))
+      await vi.waitFor(() => expect(livePreview()).toBeDefined())
+      expect(tracedSizeOf()).toBeNull()
+      expect(previewPaused()).toBe(true)
+      hold.add('main:cleanup-1')
+      previews = []; history = []
+      navigate('cleanup-1')
+      await vi.waitFor(() => expect(release['main:cleanup-1']).toBeDefined())
+      await act(async () => release['main:cleanup-1']())
+      await vi.waitFor(() => expect(previewPaused()).toBe(false))
+      // Handed to the canvas on every render of the jump: the switch never unmounts.
+      expect(history.length).toBeGreaterThan(0)
+      expect(previews).toHaveLength(history.length)
+      expect(tracedSizeOf()).toEqual({ width: 600, height: 400 })
+    } finally { delete main['revision-1'] }
+  })
+
+  it('clears the old reason while the traced grid is measured again', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    fail.add('editor:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(previewStatus()).toBe('Preview unavailable: Error: lookup failed'))
+    navigate('trace-1')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    hold.add('editor:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['editor:cleanup-2']).toBeDefined())
+    // Measuring: paused, with no stale failure standing.
+    expect(previewPaused()).toBe(true)
+    expect(previewStatus()).toBeUndefined()
+    await act(async () => release['editor:cleanup-2']())
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+  })
+
+  // Every control that would act on the selected revision, with the reason shown.
+  // Each locked job button is described by the reason, shown only once the load failed.
+  function expectLockedButton(panelName: string, buttonName: string, reason: string, shown: boolean) {
+    const button = within(screen.getByRole('tabpanel', { name: panelName })).getByRole('button', { name: buttonName }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    const described = document.getElementById(button.getAttribute('aria-describedby') ?? '')
+    expect(described?.textContent).toContain(reason)
+    expect(described?.classList.contains('visually-hidden')).toBe(!shown)
+  }
+  async function expectSelectedRevisionLocked(reason: string) {
+    const failed = reason === 'The selected revision failed to load.'
+    expectLockedButton('Trace', 'Trace and validate', reason, failed)
+    expectLockedButton('Cleanup', 'Run cleanup', reason, failed)
+    expectLockedButton('Flatten', 'Flatten image', reason, failed)
+    // The palette editor (mocked here) is disabled with the reason.
+    const palette = editorProps.current as unknown as { disabled?: boolean; disabledHint?: string }
+    expect(palette.disabled).toBe(true)
+    expect(palette.disabledHint).toBe(reason)
+  }
+  async function expectSelectedRevisionUnlocked() {
+    const trace = screen.getByRole('tabpanel', { name: 'Trace' })
+    await vi.waitFor(() => expect((within(trace).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement).disabled).toBe(false))
+    expect((within(screen.getByRole('tabpanel', { name: 'Cleanup' })).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((editorProps.current as unknown as { disabled?: boolean }).disabled).toBe(false)
+  }
+
+  it('locks every edit and job while the selected revision is loading, or failed to load', async () => {
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=cleanup-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editorProps.current).not.toBeNull())
+    await expectSelectedRevisionUnlocked()
+    // Pending: R's artwork shown, R2 selected.
+    hold.add('main:cleanup-2')
+    navigate('cleanup-2')
+    await vi.waitFor(() => expect(release['main:cleanup-2']).toBeDefined())
+    await expectSelectedRevisionLocked('Loading the selected revision…')
+    await act(async () => release['main:cleanup-2']())
+    await expectSelectedRevisionUnlocked()
+    // Failed: R2's artwork stays shown and R3 stays locked until it loads.
+    fail.add('main:trace-1')
+    navigate('trace-1')
+    await screen.findByRole('alert')
+    await expectSelectedRevisionLocked('The selected revision failed to load.')
+    // The Edit panel's area editor too.
+    fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
+    await vi.waitFor(() => expect(screen.getByRole('tabpanel', { name: 'Edit' }).textContent).toContain('The selected revision failed to load.'))
+    navigate('cleanup-1')
+    await expectSelectedRevisionUnlocked()
+  })
+
+  it('retries a failed revision from its lock reason', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    fail.add('main:cleanup-2')
+    navigate('cleanup-2')
+    await screen.findByRole('alert')
+    const trace = screen.getByRole('tabpanel', { name: 'Trace' })
+    await vi.waitFor(() => expect(trace.querySelector('.lock-reason')).not.toBeNull())
+    fireEvent.click(within(trace.querySelector<HTMLElement>('.lock-reason')!).getByRole('button', { name: 'Retry' }))
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(trace.querySelector('.lock-reason')).toBeNull()
+    expect(mocks.effectiveArtifacts.mock.calls.filter(call => call[0] === 'cleanup-2' && !call[2]?.beforeCleanup)).toHaveLength(2)
+  })
+
+  it('offers Retry loading only under the load\'s own error, and never clears another one', async () => {
+    await openAt('cleanup-1', 'Cleaned')
+    await vi.waitFor(() => expect(previewPaused()).toBe(false))
+    fail.add('main:cleanup-2')
+    navigate('cleanup-2')
+    await screen.findByRole('button', { name: 'Retry loading' })
+    // An unrelated failure replaces the message: no load retry is offered under it.
+    mocks.deleteProject.mockRejectedValueOnce(new Error('delete refused'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete project' }))
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('delete refused'))
+    expect(screen.queryByRole('button', { name: 'Retry loading' })).toBeNull()
+    // The lock reason's Retry reloads the revision and leaves the delete error standing.
+    const trace = screen.getByRole('tabpanel', { name: 'Trace' })
+    fireEvent.click(within(trace.querySelector<HTMLElement>('.lock-reason')!).getByRole('button', { name: 'Retry' }))
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
+    expect(screen.getByRole('alert').textContent).toContain('delete refused')
+  })
+
+  it('retries a project that failed to load on a switch', async () => {
+    mocks.project.mockRejectedValueOnce(new Error('server unavailable'))
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=cleanup-1`)
+    render(createElement((await import('./App')).default))
+    expect((await screen.findByRole('alert')).textContent).toContain('server unavailable')
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry loading' }))
+    await vi.waitFor(() => expect(shown()?.layers?.some(layer => layer.id === 'clean-1')).toBe(true))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry loading' })).toBeNull()
+  })
 })
 
 describe('editor pixels right after an area or pencil edit', () => {
@@ -1717,11 +1933,15 @@ describe('editor pixels right after an area or pencil edit', () => {
   const editorStates: Record<string, { width: number; height: number; protected_pixels: number; palette: ReturnType<typeof colour>[] }> = {
     'palette-1': { width: 2, height: 1, protected_pixels: 0, palette: [colour(0, 'Navy', '#0F233C', [15, 35, 60]), colour(1, 'Orange', '#E15F2D', [225, 95, 45])] },
     'edit-9': { width: 2, height: 1, protected_pixels: 0, palette: [colour(0, 'Midnight', '#0F233C', [15, 35, 60]), colour(1, 'Ember', '#E15F2D', [225, 95, 45])] },
+    'other-1': { width: 2, height: 1, protected_pixels: 0, palette: [colour(0, 'Moss', '#0F233C', [15, 35, 60]), colour(1, 'Sand', '#E15F2D', [225, 95, 45])] },
   }
+  // A second project to switch to while an edit is in flight: its own flatten, orange|navy.
+  const otherProject: Project = { ...project, id: 'project-2', slug: 'moon-forge', name: 'Moon forge' }
+  const otherRevision: Revision = { ...revision, id: 'other-1', project_id: otherProject.id, kind: 'palette', settings: { palette: {} } }
   const NAVY = [15, 35, 60, 255], ORANGE = [225, 95, 45, 255]
   // Each 2 × 1 flattened PNG decodes to its own pixels: the flatten's navy|orange, the
   // area edit's orange|orange.
-  const decoded: Record<string, number[]> = { '/artifacts/flat-palette-1': [...NAVY, ...ORANGE], '/artifacts/flat-edit-9': [...ORANGE, ...ORANGE] }
+  const decoded: Record<string, number[]> = { '/artifacts/flat-palette-1': [...NAVY, ...ORANGE], '/artifacts/flat-edit-9': [...ORANGE, ...ORANGE], '/artifacts/flat-other-1': [...ORANGE, ...NAVY] }
   let decodedUrls: string[], releaseEdited: (() => void) | undefined
   class DecodedImage {
     onload: (() => void) | null = null
@@ -1744,8 +1964,9 @@ describe('editor pixels right after an area or pencil edit', () => {
     } as unknown as CanvasRenderingContext2D)
     const { api } = await import('./api')
     const applyEdits = vi.spyOn(api, 'applyEdits').mockResolvedValue(edited)
-    mocks.projects.mockResolvedValue([project])
-    mocks.project.mockResolvedValue({ ...project, revisions: [edited, paletteRevision, revision] })
+    mocks.projects.mockResolvedValue([project, otherProject])
+    mocks.project.mockImplementation(async (id: string) => id === otherProject.id
+      ? { ...otherProject, revisions: [otherRevision] } : { ...project, revisions: [edited, paletteRevision, revision] })
     mocks.editor.mockImplementation(async (id: string, signal?: AbortSignal) => {
       if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
       return editorStates[id]
@@ -1779,6 +2000,114 @@ describe('editor pixels right after an area or pencil edit', () => {
   }
 
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  // Holds the edit request open, switches to the other project and lets it load fully,
+  // then resolves the edit: the other project's revision, pixels, layers and editor
+  // state must be exactly what its own load produced, never touched by the edit.
+  async function resolveAfterSwitch(applyEdits: ReturnType<typeof vi.spyOn>, submit: () => void) {
+    let resolveEdit: ((value: Revision) => void) | undefined
+    applyEdits.mockImplementation(() => new Promise<Revision>(resolve => { resolveEdit = resolve }))
+    submit()
+    await vi.waitFor(() => expect(resolveEdit).toBeDefined())
+    await chooseProject(otherProject)
+    await vi.waitFor(() => expect(swatch('Moss')).not.toBeNull())
+    await vi.waitFor(() => expect(decodedUrls).toContain('/artifacts/flat-other-1'))
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-other-1')).toBe(true))
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    await act(async () => { resolveEdit!(edited); await new Promise(resolve => setTimeout(resolve, 20)) })
+    // Never even transiently on the edit's revision: no hash, load or editor request for it.
+    expect(replaceState.mock.calls.some(call => String(call[2]).includes('edit-9'))).toBe(false)
+    expect(window.location.hash).toContain(`project=${otherProject.id}`)
+    expect(window.location.hash).toContain('revision=other-1')
+    expect(mocks.effectiveArtifacts.mock.calls.some(call => call[0] === 'edit-9')).toBe(false)
+    expect(mocks.editor.mock.calls.some(call => call[0] === 'edit-9')).toBe(false)
+    // Its own palette, layers and pixels (orange|navy: the orange area is one pixel wide,
+    // where the edit's orange|orange would fill the raster).
+    expect(swatch('Moss')).not.toBeNull()
+    expect(swatch('Ember')).toBeNull()
+    expect(workspace()!.layers!.map(layer => layer.id)).toContain('flat-other-1')
+    expect(workspace()!.layers!.some(layer => layer.id.includes('edit-9') || layer.id.includes('palette-1'))).toBe(false)
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Select areas' }))
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    expect(selectedWidth(0, 0)).toBe(1)
+    expect(selectedWidth(1, 0)).toBe(1)
+    expect(within(panel()).queryByRole('alert')).toBeNull()
+  }
+
+  it('drops an area edit that resolves after a project switch', async () => {
+    const applyEdits = await openEditor()
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    await vi.waitFor(() => expect(selectedWidth(0, 0)).toBe(1))
+    act(() => workspace()!.onSelectPoint!([0, 0]))
+    await vi.waitFor(() => expect(swatch('Orange')!.disabled).toBe(false))
+    await resolveAfterSwitch(applyEdits, () => fireEvent.click(swatch('Orange')!))
+    expect(applyEdits).toHaveBeenCalledWith(project.id, 'palette-1', [{ tool: 'reassign_region', point: [0, 0], target_label: 1 }])
+  })
+
+  it('drops a pencil edit that resolves after a project switch', async () => {
+    const applyEdits = await openEditor()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Pencil' }))
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    act(() => workspace()!.onPaint!(1, 0))
+    await resolveAfterSwitch(applyEdits, () => fireEvent.click(within(panel()).getByRole('button', { name: 'Apply pencil edits' })))
+    expect(applyEdits).toHaveBeenCalledWith(project.id, 'palette-1', [{ tool: 'paint_pixels', target_label: 0, pixels: [[1, 0]] }])
+  })
+
+  // Holds the edit open and returns its resolver. The first project then lists no edit
+  // revision, so returning to it lands on its flatten with nothing held.
+  function holdEdit(applyEdits: ReturnType<typeof vi.spyOn>) {
+    let resolveEdit: ((value: Revision) => void) | undefined
+    applyEdits.mockImplementation(() => new Promise<Revision>(resolve => { resolveEdit = resolve }))
+    mocks.project.mockImplementation(async (id: string) => id === otherProject.id
+      ? { ...otherProject, revisions: [otherRevision] } : { ...project, revisions: [paletteRevision, revision] })
+    return () => resolveEdit
+  }
+  const areaBusy = () => within(panel()).queryByText(/Replacing colour/)
+
+  it('shows an area edit as busy only on its own project, and clears it when it resolves elsewhere', async () => {
+    const applyEdits = await openEditor()
+    const resolver = holdEdit(applyEdits)
+    await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
+    await vi.waitFor(() => expect(selectedWidth(0, 0)).toBe(1))
+    act(() => workspace()!.onSelectPoint!([0, 0]))
+    await vi.waitFor(() => expect(swatch('Orange')!.disabled).toBe(false))
+    fireEvent.click(swatch('Orange')!)
+    await vi.waitFor(() => expect(resolver()).toBeDefined())
+    expect(areaBusy()).not.toBeNull()
+    await chooseProject(otherProject)
+    await vi.waitFor(() => expect(swatch('Moss')).not.toBeNull())
+    expect(areaBusy()).toBeNull()
+    // Back on its own project while it is still in flight, it shows busy again.
+    await chooseProject(project)
+    await vi.waitFor(() => expect(swatch('Orange')).not.toBeNull())
+    expect(areaBusy()).not.toBeNull()
+    await chooseProject(otherProject)
+    await vi.waitFor(() => expect(swatch('Moss')).not.toBeNull())
+    await act(async () => { resolver()!(edited); await new Promise(resolve => setTimeout(resolve, 20)) })
+    await chooseProject(project)
+    await vi.waitFor(() => expect(swatch('Orange')).not.toBeNull())
+    expect(areaBusy()).toBeNull()
+  })
+
+  it('shows a pencil edit as busy only on its own project, and clears it when it resolves there', async () => {
+    const applyEdits = await openEditor()
+    const resolver = holdEdit(applyEdits)
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Pencil' }))
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    act(() => workspace()!.onPaint!(1, 0))
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Apply pencil edits' }))
+    await vi.waitFor(() => expect(resolver()).toBeDefined())
+    const pencil = (name: string) => within(panel()).getByRole('radio', { name: new RegExp(`Paint with ${name}`) }) as HTMLButtonElement
+    expect(pencil('Navy').disabled).toBe(true)
+    await chooseProject(otherProject)
+    await vi.waitFor(() => expect(within(panel()).queryByRole('radio', { name: /Paint with Moss/ })).not.toBeNull())
+    expect(pencil('Moss').disabled).toBe(false)
+    await chooseProject(project)
+    await vi.waitFor(() => expect(within(panel()).queryByRole('radio', { name: /Paint with Navy/ })).not.toBeNull())
+    expect(pencil('Navy').disabled).toBe(true)
+    await act(async () => { resolver()!(edited); await new Promise(resolve => setTimeout(resolve, 20)) })
+    await vi.waitFor(() => expect(within(panel()).getAllByRole('radio').every(button => !(button as HTMLButtonElement).disabled)).toBe(true))
+  })
 
   it('adopts the area edit\'s own pixels at once, with that revision\'s palette, while its artifacts load', async () => {
     const applyEdits = await openEditor()
@@ -1836,6 +2165,42 @@ describe('editor pixels right after an area or pencil edit', () => {
     expect(calls('edit-9')).toBe(1)
   })
 
+  it('drops staged pencil strokes when the project is switched away, even if it comes straight back', async () => {
+    await openEditor()
+    // The other project's load never lands.
+    mocks.project.mockImplementation(async (id: string) => id === otherProject.id
+      ? new Promise(() => undefined) : { ...project, revisions: [edited, paletteRevision, revision] })
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Pencil' }))
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    act(() => workspace()!.onPaint!(1, 0))
+    await vi.waitFor(() => expect(panel().textContent).toContain('1 pixel painted, not yet applied.'))
+    // Switch to the other project (its load never lands), then straight back.
+    const select = screen.getByLabelText('Active project') as HTMLSelectElement
+    await screen.findByRole('option', { name: otherProject.name })
+    fireEvent.change(select, { target: { value: otherProject.id } })
+    fireEvent.change(select, { target: { value: project.id } })
+    await vi.waitFor(() => expect(within(panel()).queryByRole('button', { name: 'Apply pencil edits' })).not.toBeNull())
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    expect(panel().textContent).toContain('No pixels painted yet.')
+  })
+
+  it('keeps pencil strokes painted on the adopted pixels when the revision\'s artifacts land', async () => {
+    await openEditor()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Pencil' }))
+    await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+    act(() => workspace()!.onPaint!(1, 0))
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Apply pencil edits' }))
+    await vi.waitFor(() => expect(releaseEdited).toBeDefined())
+    // Paint on the adopted pixels while the edited revision's artifacts are held.
+    await vi.waitFor(() => expect(within(panel()).getByRole('button', { name: 'Apply pencil edits' })).toBeTruthy())
+    act(() => workspace()!.onPaint!(0, 0))
+    await vi.waitFor(() => expect(panel().textContent).toContain('1 pixel painted, not yet applied.'))
+    await act(async () => releaseEdited!())
+    await vi.waitFor(() => expect(workspace()?.layers?.some(layer => layer.id === 'flat-edit-9')).toBe(true))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    expect(panel().textContent).toContain('1 pixel painted, not yet applied.')
+  })
+
   it('releases the adopted buffer once the revision loads, decoding it afresh after navigating away and back', async () => {
     await openEditor()
     await vi.waitFor(() => expect(workspace()?.onSelectPoint).toBeDefined())
@@ -1854,5 +2219,333 @@ describe('editor pixels right after an area or pencil edit', () => {
     await vi.waitFor(() => expect(decodedUrls).toContain('/artifacts/flat-edit-9'))
     await vi.waitFor(() => expect(swatch('Ember')).not.toBeNull())
     await vi.waitFor(() => expect(selectedWidth(1, 0)).toBe(2))
+  })
+})
+
+describe('continuations that resolve after a project switch', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {} } }
+  const otherProject: Project = { ...project, id: 'project-2', slug: 'moon-forge', name: 'Moon forge' }
+  const otherRevision: Revision = { ...revision, id: 'other-1', project_id: otherProject.id, kind: 'palette', settings: { palette: {} } }
+  const svg = artifact('traced-overlap', 'image/svg+xml')
+  const pressedView = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).queryByRole('button', { name })?.getAttribute('aria-pressed')
+  // Each project resolves to its own revisions and artifacts; the other project's
+  // flattened raster is its own artifact.
+  function twoProjects(ownArtifacts: (id: string) => Artifact[] = () => [artifact('source'), artifact('flattened')]) {
+    mocks.projects.mockResolvedValue([project, otherProject])
+    mocks.project.mockImplementation(async (id: string) => id === otherProject.id
+      ? { ...otherProject, revisions: [otherRevision] } : { ...project, revisions: [paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === otherRevision.id
+      ? [{ ...artifact('source'), id: 'other-source' }, { ...artifact('flattened'), id: 'other-flat', revision_id: otherRevision.id }]
+      : ownArtifacts(id))
+  }
+  async function switchToOther() {
+    await chooseProject(otherProject)
+    await vi.waitFor(() => expect(window.location.hash).toContain('revision=other-1'))
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts.mock.calls.some(call => call[0] === otherRevision.id)).toBe(true))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+  }
+  // The other project stays exactly as its own load left it: selected, on its revision,
+  // with nothing fetched for the revision the continuation produced.
+  function expectOtherUntouched(foreignRevision: string) {
+    expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe(otherProject.id)
+    expect(window.location.hash).toContain(`project=${otherProject.id}`)
+    expect(window.location.hash).toContain('revision=other-1')
+    expect(mocks.effectiveArtifacts.mock.calls.some(call => call[0] === foreignRevision)).toBe(false)
+    expect(mocks.editor.mock.calls.some(call => call[0] === foreignRevision)).toBe(false)
+  }
+  let replaceState: { mock: { calls: Parameters<History['replaceState']>[] } }
+  const hashVisited = (revisionId: string) => replaceState.mock.calls.some(call => String(call[2]).includes(`revision=${revisionId}`))
+  function watchHash() { replaceState = vi.spyOn(window.history, 'replaceState') }
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('leaves the shown project alone when another project\'s flatten job finishes, still spending that project\'s draft', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ palette: { initial_colours: 23 } }))
+    twoProjects()
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+    const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(update).toBeDefined())
+    await switchToOther()
+    watchHash()
+    await act(async () => update!({ ...queuedJob, kind: 'palette', status: 'succeeded', progress: 1, message: 'Flatten finished', result_revision_id: 'palette-2' }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expectOtherUntouched('palette-2')
+    expect(hashVisited('palette-2')).toBe(false)
+    expect(window.location.hash).toContain('stage=flatten')
+    expect(screen.getByText('Flatten finished')).toBeTruthy()
+    expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').palette).toBeUndefined()
+  })
+
+  it('keeps the shown project\'s stage when a generation for another project finishes', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    mocks.generate.mockResolvedValue({ project: { ...project, revisions: [revision] }, job: queuedJob, expanded_prompt: 'Expanded' })
+    twoProjects()
+    render(createElement((await import('./App')).default))
+    await screen.findByRole('option', { name: otherProject.name })
+    fireEvent.change(screen.getByLabelText('Short subject'), { target: { value: 'sky whale' } })
+    fireEvent.submit(screen.getByLabelText('Short subject').closest('form')!)
+    // Generation switches to the project it creates.
+    await vi.waitFor(() => expect(window.location.hash).toContain(`project=${project.id}`))
+    await vi.waitFor(() => expect(update).toBeDefined())
+    await switchToOther()
+    watchHash()
+    await act(async () => update!({ ...queuedJob, status: 'succeeded', progress: 1, message: 'Artwork ready', result_revision_id: 'generated-1' }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expectOtherUntouched('generated-1')
+    expect(hashVisited('generated-1')).toBe(false)
+    expect(window.location.hash).toContain('stage=create')
+    expect(screen.getByRole('tab', { name: 'Create' }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('drops an Inkscape reimport that resolves after a project switch', async () => {
+    twoProjects(() => [artifact('source'), artifact('flattened'), svg])
+    mocks.inkscapeHandoff.mockResolvedValue({ exports: [svg], shared_folder_enabled: false, guidance: 'Inspect before cutting.' })
+    const { api } = await import('./api')
+    let resolveReimport: ((value: Revision) => void) | undefined
+    const reimport = vi.spyOn(api, 'reimportInkscape').mockImplementation(() => new Promise<Revision>(resolve => { resolveReimport = resolve }))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    const input = await screen.findByLabelText('Edited SVG') as HTMLInputElement
+    // jsdom's FormData never sees a file set on an input, so hand the form its file.
+    const edited = new File(['<svg/>'], 'edited.svg', { type: 'image/svg+xml' })
+    const formGet = FormData.prototype.get
+    vi.spyOn(FormData.prototype, 'get').mockImplementation(function (this: FormData, name: string) { return name === 'svg' ? edited : formGet.call(this, name) })
+    fireEvent.submit(input.closest('form')!)
+    await vi.waitFor(() => expect(resolveReimport).toBeDefined())
+    expect(reimport).toHaveBeenCalledWith(project.id, 'palette-1', edited)
+    await switchToOther()
+    watchHash()
+    await act(async () => { resolveReimport!({ ...revision, id: 'reimport-1', parent_revision_id: 'palette-1', kind: 'inkscape-reimport' }) })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expectOtherUntouched('reimport-1')
+    expect(hashVisited('reimport-1')).toBe(false)
+    expect(screen.queryByText('Edited SVG validated and saved as a new revision.')).toBeNull()
+  })
+
+  it('drops a palette edit committed after a project switch', async () => {
+    twoProjects()
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editorProps.current).not.toBeNull())
+    // The commit callback as it stood when the recolour was started in the first project.
+    const commitFromFirst = editorProps.current!.onCommit
+    await switchToOther()
+    await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
+    watchHash()
+    await act(async () => commitFromFirst('edit-1'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expectOtherUntouched('edit-1')
+    expect(hashVisited('edit-1')).toBe(false)
+    expect(pressedView('Edited')).toBeUndefined()
+  })
+
+  it('keeps the shown project selected when deleting another project finishes after a switch', async () => {
+    twoProjects()
+    let finishDelete: (() => void) | undefined
+    mocks.deleteProject.mockImplementation(() => new Promise<void>(resolve => { finishDelete = resolve }))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    await vi.waitFor(() => expect(window.location.hash).toContain('revision=palette-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete project' }))
+    await vi.waitFor(() => expect(finishDelete).toBeDefined())
+    await switchToOther()
+    await act(async () => finishDelete!())
+    await vi.waitFor(() => expect(screen.queryByRole('option', { name: project.name })).toBeNull())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe(otherProject.id)
+    expect(window.location.hash).toContain(`project=${otherProject.id}`)
+    expect(window.location.hash).toContain('revision=other-1')
+    expect(screen.getByRole('option', { name: otherProject.name })).toBeTruthy()
+  })
+
+  it('shows no shared-folder confirmation for another project\'s save', async () => {
+    twoProjects(() => [artifact('source'), artifact('flattened'), svg])
+    mocks.effectiveArtifacts.mockImplementation(async () => [artifact('source'), artifact('flattened'), svg])
+    mocks.inkscapeHandoff.mockResolvedValue({ exports: [svg], shared_folder_enabled: true, guidance: 'Inspect before cutting.' })
+    let finishSave: ((value: { filename: string; shared_path: string }) => void) | undefined
+    mocks.saveForInkscape.mockImplementation(() => new Promise(resolve => { finishSave = resolve }))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save SVG to shared folder' }))
+    await vi.waitFor(() => expect(finishSave).toBeDefined())
+    await switchToOther()
+    await screen.findByRole('button', { name: 'Save SVG to shared folder' })
+    await act(async () => finishSave!({ filename: 'traced-overlap.svg', shared_path: '/shared/traced-overlap.svg' }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(screen.queryByText('Saved traced-overlap.svg to the shared folder.')).toBeNull()
+  })
+
+  it('names the project in a shared-folder save failure reported after a switch, and only then', async () => {
+    twoProjects(() => [artifact('source'), artifact('flattened'), svg])
+    mocks.effectiveArtifacts.mockImplementation(async () => [artifact('source'), artifact('flattened'), svg])
+    mocks.inkscapeHandoff.mockResolvedValue({ exports: [svg], shared_folder_enabled: true, guidance: 'Inspect before cutting.' })
+    mocks.saveForInkscape.mockRejectedValueOnce(new Error('disk full'))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save SVG to shared folder' }))
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Error: disk full'))
+
+    let failSave: ((cause: Error) => void) | undefined
+    mocks.saveForInkscape.mockImplementation(() => new Promise((_resolve, reject) => { failSave = reject }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save SVG to shared folder' }))
+    await vi.waitFor(() => expect(failSave).toBeDefined())
+    await switchToOther()
+    await act(async () => failSave!(new Error('disk full')))
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe(`${project.name}: could not save ${svg.filename} to the shared folder: Error: disk full`))
+  })
+
+  it('names the project in an Inkscape reimport failure reported after a switch, and only then', async () => {
+    twoProjects(() => [artifact('source'), artifact('flattened'), svg])
+    mocks.inkscapeHandoff.mockResolvedValue({ exports: [svg], shared_folder_enabled: false, guidance: 'Inspect before cutting.' })
+    const { api } = await import('./api')
+    const reimport = vi.spyOn(api, 'reimportInkscape').mockRejectedValueOnce(new Error('invalid SVG'))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    const input = await screen.findByLabelText('Edited SVG') as HTMLInputElement
+    // jsdom's FormData never sees a file set on an input, so hand the form its file.
+    const edited = new File(['<svg/>'], 'edited.svg', { type: 'image/svg+xml' })
+    const formGet = FormData.prototype.get
+    vi.spyOn(FormData.prototype, 'get').mockImplementation(function (this: FormData, name: string) { return name === 'svg' ? edited : formGet.call(this, name) })
+    fireEvent.submit(input.closest('form')!)
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Error: invalid SVG'))
+
+    let failReimport: ((cause: Error) => void) | undefined
+    reimport.mockImplementation(() => new Promise((_resolve, reject) => { failReimport = reject }))
+    fireEvent.submit(input.closest('form')!)
+    await vi.waitFor(() => expect(failReimport).toBeDefined())
+    await switchToOther()
+    await act(async () => failReimport!(new Error('invalid SVG')))
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent)
+      .toBe(`${project.name}: could not reimport the edited SVG: Error: invalid SVG`))
+  })
+})
+
+describe('stepping trace runs while their artifacts load', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
+  const solid: Revision = { ...revision, id: 'trace-8', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02', settings: { trace: { overlap: 0, solid_underlayers: true } } }
+  const edge: Revision = { ...revision, id: 'trace-9', parent_revision_id: 'trace-8', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 0, solid_underlayers: false } } }
+  const run = (id: string) => [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'),
+    { ...artifact('traced-edge', 'image/svg+xml'), id: `${id}-edge`, revision_id: id },
+    { ...artifact('traced-overlap', 'image/svg+xml'), id: `${id}-overlap`, revision_id: id }]
+  // What the canvas would title itself with on every render: the preferred layer's
+  // name, or the neutral loading title while loading.
+  let titles: string[], preferred: (string | undefined)[], captured: CapturedWorkspace | null, release: (() => void) | undefined
+
+  beforeEach(() => {
+    titles = []; preferred = []; captured = null; release = undefined
+    Object.defineProperty(workspaceProps, 'current', { configurable: true, get: () => captured, set: value => {
+      captured = value
+      if (!value) return
+      preferred.push(value.preferredLayerId)
+      titles.push(value.loading ? 'Loading…' : value.layers?.find((layer: { id: string }) => layer.id === value.preferredLayerId)?.name ?? '')
+    } })
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [edge, solid, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => {
+      if (id === 'trace-8') await new Promise<void>(resolve => { release = resolve })
+      return run(id)
+    })
+  })
+  afterEach(() => { Object.defineProperty(workspaceProps, 'current', { configurable: true, writable: true, value: null }) })
+
+  async function openNewestRun(view: string) {
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-9`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    await within(panel).findByText('Iteration 2 of 2')
+    await screen.findAllByRole('group', { name: 'Artwork view' })
+    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: view }))
+    return panel
+  }
+
+  it('never titles the canvas with the previous run while the stepped-to run loads', async () => {
+    const panel = await openNewestRun('Traced')
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-9-edge'))
+    expect(titles.at(-1)).toBe('Traced SVG · edge to edge')
+    titles = []
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await vi.waitFor(() => expect(release).toBeDefined())
+    await act(async () => release!())
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-overlap'))
+    await vi.waitFor(() => expect(titles.at(-1)).toBe('Traced SVG · solid underlayers'))
+    expect(titles).not.toContain('Traced SVG · edge to edge')
+    expect(new Set(titles)).toEqual(new Set(['Loading…', 'Traced SVG · solid underlayers']))
+  })
+
+  it('stays on the Source view until the stepped-to run has loaded, never showing the previous run', async () => {
+    const panel = await openNewestRun('Source')
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('source-id'))
+    preferred = []
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(preferred.every(id => id === 'source-id')).toBe(true)
+    await act(async () => release!())
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-overlap'))
+    expect(preferred).not.toContain('trace-9-edge')
+    expect(preferred).not.toContain('trace-9-overlap')
+  })
+
+  it('keeps the Trace panel still across a step: same heading, same controls, no inserted reason', async () => {
+    const panel = await openNewestRun('Traced')
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-9-edge'))
+    const trace = () => within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(trace().disabled).toBe(false))
+    const heading = () => panel.querySelector('.section-heading span')?.textContent
+    // Every visible element above the stepper (the run's own settings below it may differ).
+    const layout = () => {
+      const nodes = [...panel.querySelectorAll('*')].filter(node => !node.closest('.visually-hidden'))
+      const stepper = nodes.indexOf(within(panel).getByLabelText('Show the previous trace run'))
+      return nodes.slice(0, stepper).map(node => `${node.tagName}.${node.className}`)
+    }
+    const before = layout()
+    expect(heading()).toBe('Ready')
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await vi.waitFor(() => expect(release).toBeDefined())
+    // Mid-load: locked, with the reason for assistive tech only; nothing shifts.
+    expect(trace().disabled).toBe(true)
+    const reason = document.getElementById(trace().getAttribute('aria-describedby') ?? '')
+    expect(reason?.textContent).toBe('Loading the selected revision…')
+    expect(reason?.className).toBe('visually-hidden')
+    expect(panel.querySelector('.lock-reason')).toBeNull()
+    expect(heading()).toBe('Ready')
+    expect(layout()).toEqual(before)
+    await act(async () => release!())
+    await within(panel).findByText('Iteration 1 of 2')
+    await vi.waitFor(() => expect(trace().disabled).toBe(false))
+    expect(trace().getAttribute('aria-describedby')).toBeNull()
+    expect(heading()).toBe('Ready')
+    expect(layout()).toEqual(before)
+  })
+
+  it('never offers the Inkscape handoff of a revision whose artifacts are not yet shown', async () => {
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => {
+      if (id === 'palette-1') {
+        await new Promise<void>(resolve => { release = resolve })
+        return [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')]
+      }
+      return run(id)
+    })
+    await openNewestRun('Traced')
+    await vi.waitFor(() => expect(mocks.inkscapeHandoff).toHaveBeenCalledWith('trace-9', expect.anything()))
+    await screen.findByRole('button', { name: 'Validate and reimport' })
+    act(() => {
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    // The untraced revision is selected but not loaded: no handoff, no reimport form.
+    expect(screen.queryByRole('button', { name: 'Validate and reimport' })).toBeNull()
+    await act(async () => release!())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    expect(screen.queryByRole('button', { name: 'Validate and reimport' })).toBeNull()
+    expect(mocks.inkscapeHandoff).not.toHaveBeenCalledWith('palette-1', expect.anything())
   })
 })

@@ -288,6 +288,13 @@ function LoadingOverlay({ title, message, progress, elapsedSeconds, progressLabe
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selected, setSelected] = useState<string | null>(() => hashParameters().get('project'))
+  // The selected project as of now, updated in the same call that selects one, so an
+  // async continuation can tell whether the project it started in is still selected.
+  const selectedRef = useRef(selected)
+  function selectProject(id: string | null) { selectedRef.current = id; setSelected(id) }
+  // True while `projectId` is still the selected project. Every continuation that sets
+  // project-scoped state after an await checks this and drops its result otherwise.
+  const stillSelected = (projectId: string | null | undefined) => Boolean(projectId) && selectedRef.current === projectId
   const [job, setJob] = useState<Job | null>(null)
   const [revision, setRevision] = useState<string | null>(() => hashParameters().get('revision'))
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
@@ -393,18 +400,37 @@ export default function App() {
   const [distinctFirst, setDistinctFirst] = useState<[number, number] | null>(null)
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
   const [flattenedPixels, setFlattenedPixels] = useState<Pixels | null>(null)
+  // The revision `flattenedPixels` belong to; area/pencil edits act only on that one.
+  const [pixelsRevision, setPixelsRevision] = useState<string | null>(null)
   const [editorPalette, setEditorPalette] = useState<PaletteColour[]>([])
   // Pixel size of the image the trace stage fits curves to (the flattened/edited grid).
-  const [tracedSize, setTracedSize] = useState<{ width: number; height: number } | null>(null)
+  // The traced grid and the revision it was measured for. A load keeps the last one on
+  // display (the live preview pauses until the new revision's grid is known).
+  const [tracedGrid, setTracedGrid] = useState<{ revision: string; width: number; height: number } | null>(null)
+  const tracedSize = useMemo(() => tracedGrid ? { width: tracedGrid.width, height: tracedGrid.height } : null, [tracedGrid])
+  // Why the traced grid of a revision could not be measured, so the paused preview says so.
+  const [tracedGridError, setTracedGridError] = useState<{ revision: string; message: string } | null>(null)
+  // The revision whose artifacts failed to load: the previous artwork stays shown, not
+  // loading, until the next revision change retries.
+  const [failedRevision, setFailedRevision] = useState<string | null>(null)
+  // The error the last project/artifacts load reported (Retry offers itself only while that
+  // error is the one shown, and clears only it), and a counter a Retry bumps to reload.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [reloadCount, setReloadCount] = useState(0)
+  function retryLoad() { setError(shown => shown === loadError ? '' : shown); setReloadCount(count => count + 1) }
   const [overlayFrame, setOverlayFrame] = useState<OverlayFrame | undefined>(undefined)
   const [paletteDraft, setPaletteDraft] = useState<{ index: number; hex: string } | null>(null)
   const [palettePreviewFrame, setPalettePreviewFrame] = useState<OverlayFrame | undefined>(undefined)
-  const [regionBusy, setRegionBusy] = useState(false)
+  // The projects with an area edit in flight; the busy state shows only on its own project.
+  const [regionBusyProjects, setRegionBusyProjects] = useState<string[]>([])
+  const regionBusy = Boolean(selected) && regionBusyProjects.includes(selected!)
   const [regionError, setRegionError] = useState('')
   const [editTool, setEditTool] = useState<'areas' | 'pencil'>('areas')
   const [pencilLabel, setPencilLabel] = useState<number | null>(null)
   const [paintedCells, setPaintedCells] = useState<Map<number, number>>(new Map())
-  const [pencilBusy, setPencilBusy] = useState(false)
+  // The projects with a pencil edit in flight, shown busy only on their own project.
+  const [pencilBusyProjects, setPencilBusyProjects] = useState<string[]>([])
+  const pencilBusy = Boolean(selected) && pencilBusyProjects.includes(selected!)
   const [pencilError, setPencilError] = useState('')
   const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
   const [upscaleOpen, setUpscaleOpen] = useState(false)
@@ -423,6 +449,9 @@ export default function App() {
   // effect adopts this buffer instead of re-fetching and re-decoding the full flattened
   // PNG, since the two are identical (both are four-connected exact-palette regions).
   const patchedFlattened = useRef<{ revision: string; pixels: Pixels } | null>(null)
+  // The revision the pixel effect last ran for: its re-runs for the same revision (the
+  // artifacts landing after an adopted edit) keep the staged pencil strokes.
+  const pixelEffectRevision = useRef<string | null>(null)
   const current = revisions.find(row => row.id === revision)
   const flattened = artifacts.find(row => row.kind === 'flattened')
   // The settings that produced the shown image, recorded on its nearest ancestor.
@@ -449,6 +478,23 @@ export default function App() {
   // The raster Palette and Edit decode and edit: the one from before the cleanup. None
   // while the shown artifacts belong to another revision, so no edit acts on them.
   const artifactsCurrent = Boolean(revision) && artifactsRevision === revision
+  // While the shown artifacts are another revision's, nothing may act on the selected
+  // one on their evidence: edits and jobs wait, saying why.
+  const selectedUnavailable = !revision || artifactsCurrent ? null
+    : failedRevision === revision ? 'The selected revision failed to load.' : 'Loading the selected revision…'
+  // Whether the selected revision itself has a segmentation to clean up or trace.
+  const selectedHasSegmentation = artifactsCurrent && artifacts.some(row => row.kind === 'segmentation')
+  const selectedFailed = Boolean(revision) && failedRevision === revision
+  // The stage headings hold steady through a load (they describe the shown artwork) and
+  // only change once the selected revision's own state is known or has failed.
+  const readiness = selectedFailed ? 'Unavailable' : artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'
+  // Why a stage's controls are locked: announced to assistive tech through the buttons'
+  // aria-describedby, and shown (below the controls, so nothing shifts during a normal
+  // load) only once the revision has failed, with a way to retry.
+  const lockReason = (id: string) => selectedUnavailable
+    ? <p id={id} className={selectedFailed ? 'stage-guidance lock-reason' : 'visually-hidden'}>{selectedUnavailable}{selectedFailed && <> <button type="button" className="secondary" onClick={retryLoad}>Retry</button></>}</p>
+    : null
+  const lockedBy = (id: string) => selectedUnavailable ? id : undefined
   const editableFlattened = !artifactsCurrent ? null : hasCleanup ? preCleanupFlattened : flattened ?? null
   const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => editAncestry(revisions, artifactsRevision), [artifactsRevision, revisions])
   const preEditFlattened = hasEdit && preEdit && preEdit.paletteId === paletteAncestorId ? preEdit.flattened : null
@@ -525,6 +571,9 @@ export default function App() {
       if (next.kind === 'palette' && next.project_id) clearDraft(next.project_id, 'palette')
       if (next.kind === 'cleanup' && next.project_id && cleanupDraftSpent.current === next.id) clearDraft(next.project_id, 'cleanup')
       if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) clearDraft(next.project_id, 'trace')
+      // The result lands only in its own project; one that finishes after the user
+      // switched away leaves the now-selected project's revision, view and stage alone.
+      if (!stillSelected(next.project_id)) return
       setRevision(next.result_revision_id)
       if (next.kind === 'palette') setPendingView({ view: 'flattened', revision: next.result_revision_id })
       if (next.kind === 'cleanup') setPendingView({ view: 'cleaned', revision: next.result_revision_id })
@@ -543,8 +592,11 @@ export default function App() {
     const switchingProject = loadedProject.current !== selected
     // Drop any adopted-buffer left from the previous project so its ~hundreds of MB do
     // not linger; a revision id never collides across projects, so this is purely tidying.
+    // Staged pencil strokes belong to the project being left.
+    if (switchingProject) { setPaintedCells(new Map()); pixelEffectRevision.current = null }
     if (switchingProject) { setProjectLoading(true); setArtifacts([]); setArtifactsRevision(null); setPreCleanup(null); preCleanupRef.current = null; setPreEdit(null); preEditRef.current = null; patchedFlattened.current = null }
     setRevisionLoading(!switchingProject)
+    setFailedRevision(null); setLoadError(null)
     api.project(selected, controller.signal).then(async project => {
       if (controller.signal.aborted) return
       setRevisions(project.revisions)
@@ -568,10 +620,10 @@ export default function App() {
       setArtifacts(rows); setArtifactsRevision(latest || null); setPreCleanup(before.raster); setPreEdit(original.raster)
       loadedProject.current = selected
     }).catch(cause => {
-      if (!controller.signal.aborted) setError(String(cause))
+      if (!controller.signal.aborted) { setError(String(cause)); setFailedRevision(revision); setLoadError(String(cause)) }
     }).finally(() => { if (!controller.signal.aborted) { setProjectLoading(false); setRevisionLoading(false) } })
     return () => controller.abort()
-  }, [selected, revision])
+  }, [selected, revision, reloadCount])
   useEffect(() => {
     const syncStage = () => {
       stageScroll.current[stage] = window.scrollY
@@ -579,7 +631,7 @@ export default function App() {
       const next = stageFromHash(window.location.hash)
       setStage(next)
       if (next !== 'flatten' && next !== 'trace') { setSelectionMode(null); setDistinctFirst(null) }
-      setSelected(parameters.get('project'))
+      selectProject(parameters.get('project'))
       setRevision(parameters.get('revision'))
       requestAnimationFrame(() => window.scrollTo?.({ top: stageScroll.current[next] || 0 }))
       requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[data-stage-button="${next}"]`)?.focus())
@@ -601,12 +653,13 @@ export default function App() {
   }, [stage, selected, revision])
   useEffect(() => {
     setHandoff(null); setHandoffMessage('')
-    if (revision && artifacts.some(row => row.media_type === 'image/svg+xml')) {
+    // Only the selected revision's own artifacts say whether it has SVGs to hand off.
+    if (revision && artifactsCurrent && artifacts.some(row => row.media_type === 'image/svg+xml')) {
       const controller = new AbortController()
       api.inkscapeHandoff(revision, controller.signal).then(setHandoff).catch(cause => { if (!controller.signal.aborted) setError(String(cause)) })
       return () => controller.abort()
     }
-  }, [revision, artifacts.map(row => row.id).join(',')])
+  }, [revision, artifactsCurrent, artifacts.map(row => row.id).join(',')])
   useEffect(() => {
     // Fill each stage's fields from the settings that produced the shown revision
     // (defaults before it ran), then overlay any pending per-step draft so un-run
@@ -650,7 +703,8 @@ export default function App() {
     if (decision.action === 'apply') { setRegionSelection(decision.selection); preserveRegion.current = decision.handoff }
     else if (decision.action === 'clear') { preserveRegion.current = null; setRegionSelection([]) }
     setRegionError('')
-    setPaintedCells(new Map()); setPencilError('')
+    if (pixelEffectRevision.current !== revision) { setPaintedCells(new Map()); setPencilError('') }
+    pixelEffectRevision.current = revision
     // An area/pencil edit already knows exactly which pixels its revision holds, so
     // adopt that pre-computed buffer (at once, before the revision's artifacts arrive)
     // rather than decoding a fresh 89-megapixel PNG. The reference is dropped on
@@ -658,12 +712,12 @@ export default function App() {
     // state then owns the buffer), so it never pins a second one.
     if (patchedFlattened.current && patchedFlattened.current.revision !== revision) patchedFlattened.current = null
     const patched = revision && patchedFlattened.current?.revision === revision ? patchedFlattened.current : null
-    if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setEditorPalette([]); return }
+    if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setPixelsRevision(null); setEditorPalette([]); return }
     const controller = new AbortController()
     requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setEditorPalette(state.palette) })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
     if (patched) {
-      setFlattenedPixels(patched.pixels)
+      setFlattenedPixels(patched.pixels); setPixelsRevision(revision)
       if (editableFlattened) patchedFlattened.current = null
       return () => controller.abort()
     }
@@ -677,7 +731,7 @@ export default function App() {
       context.drawImage(image, 0, 0)
       try {
         const data = context.getImageData(0, 0, canvas.width, canvas.height)
-        setFlattenedPixels({ data: data.data, width: canvas.width, height: canvas.height })
+        setFlattenedPixels({ data: data.data, width: canvas.width, height: canvas.height }); setPixelsRevision(revision)
       } catch { /* canvas unavailable; region selection stays disabled */ }
     }
     image.src = editableFlattened.download_url
@@ -685,12 +739,14 @@ export default function App() {
   }, [revision, editableFlattened?.id])
   useEffect(() => {
     // The traced grid is the current revision's (cleaned) raster, whatever the editable
-    // raster; unknown while a jump's artifacts are still loading.
-    setTracedSize(null)
-    if (!revision || !artifactsCurrent || !flattened) return
+    // raster; measured once that revision's artifacts are current.
+    if (!revision || !flattened) { setTracedGrid(null); return }
+    if (!artifactsCurrent) return
+    // A new measurement supersedes the last failure: the preview says only "paused" meanwhile.
+    setTracedGridError(null)
     const controller = new AbortController()
-    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setTracedSize({ width: state.width, height: state.height }) })
-      .catch(() => { /* the region/pencil editor reports editor-state failures */ })
+    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setTracedGrid({ revision, width: state.width, height: state.height }) })
+      .catch(cause => { if (!controller.signal.aborted) setTracedGridError({ revision, message: String(cause) }) })
     return () => controller.abort()
   }, [revision, artifactsCurrent, flattened?.id])
   useEffect(() => {
@@ -733,8 +789,10 @@ export default function App() {
     // edited result themselves); moving to another revision abandons the landing too.
     if (!pendingView) return
     if (pendingView.revision !== revision || stage === 'palette' || stage === 'edit') { setPendingView(null); return }
+    // The views on offer describe the shown artifacts; wait until they are the revision's.
+    if (!artifactsCurrent) return
     if (availableViews.includes(pendingView.view)) { setView(pendingView.view); setPendingView(null) }
-  }, [pendingView, revision, stage, availableViews.join(',')])
+  }, [pendingView, revision, stage, availableViews.join(','), artifactsCurrent])
   useEffect(() => {
     if (stage === 'palette' || stage === 'edit') setView(editableView)
   }, [stage, editableView])
@@ -783,9 +841,11 @@ export default function App() {
       await api.deleteProject(id)
       localStorage.removeItem(draftKey(id))
       setProjects(current => current.filter(project => project.id !== id))
-      if (selected === id) {
+      // Leave the deleted project only if it is still the one shown; the selection at
+      // the time of the click may have changed while the delete was in flight.
+      if (stillSelected(id)) {
         setJob(null)
-        setSelected(null)
+        selectProject(null)
         setRevision(null)
         requestAnimationFrame(() => document.querySelector<HTMLSelectElement>('header select.active-project')?.focus())
       }
@@ -793,6 +853,10 @@ export default function App() {
     finally { setDeleting(false); setConfirmDelete(null) }
   }
   const selectedProjectName = projects.find(project => project.id === selected)?.name
+  // A failure's message, naming the project it happened in once that is no longer shown.
+  function projectFailure(projectId: string, projectName: string | undefined, action: string, cause: unknown) {
+    return stillSelected(projectId) ? String(cause) : `${projectName ?? 'Another project'}: ${action}: ${String(cause)}`
+  }
 
   async function importImage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -814,7 +878,7 @@ export default function App() {
       // Hand straight to the project-load overlay in the same commit that clears
       // uploading, so the canvas never flashes uncovered between the two.
       setProjectLoading(true)
-      setSelected(project.id)
+      selectProject(project.id)
       setRevision(project.revisions[0].id)
       formElement.reset()
     } catch (cause) { setError(String(cause)) }
@@ -839,7 +903,7 @@ export default function App() {
         required_motifs: list('required'), rejected_motifs: list('rejected'),
       })
       setProjects(current => [started.project, ...current])
-      setSelected(started.project.id)
+      selectProject(started.project.id)
       setJob(started.job)
     } catch (cause) { setError(String(cause)) }
   }
@@ -884,11 +948,13 @@ export default function App() {
     const form = new FormData(formElement)
     const file = form.get('svg') as File
     if (!file?.size) return setError('Choose an edited SVG to reimport')
+    const projectId = selected, projectName = selectedProjectName
     try {
-      const next = await api.reimportInkscape(selected, revision, file)
+      const next = await api.reimportInkscape(projectId, revision, file)
+      if (!stillSelected(projectId)) return
       setRevision(next.id); setHandoffMessage('Edited SVG validated and saved as a new revision.')
       formElement.reset()
-    } catch (cause) { setError(String(cause)) }
+    } catch (cause) { setError(projectFailure(projectId, projectName, 'could not reimport the edited SVG', cause)) }
   }
   const redo = revisions.filter(row => row.parent_revision_id === revision).sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)
   const jobMessage = job?.status === 'failed'
@@ -942,7 +1008,7 @@ export default function App() {
     [regionSelection, flattenedPixels, editorPalette])
 
   function toggleRegion(point: [number, number]) {
-    if (!flattenedPixels) return
+    if (!flattenedPixels || pixelsRevision !== revision) return
     setRegionSelection(selection => toggleComponent(selection, flattenedPixels, point[0], point[1], editorPalette))
   }
 
@@ -953,10 +1019,14 @@ export default function App() {
       .filter(component => component.label !== label)
       .map(component => ({ tool: 'reassign_region' as const, point: component.point, target_label: label }))
     if (operations.length === 0) return
-    setRegionBusy(true); setRegionError('')
+    const projectId = selected
+    setRegionBusyProjects(busy => [...busy, projectId]); setRegionError('')
     try {
       const reassigned = submitted.filter(component => component.label !== label)
-      const next = await api.applyEdits(selected, revision, operations)
+      const next = await api.applyEdits(projectId, revision, operations)
+      // An edit resolving after a project switch belongs to the project left behind:
+      // its pixels, selection and revision must not land on the one now shown.
+      if (!stillSelected(projectId)) return
       // Adopt the exact recoloured raster instead of re-decoding the flattened PNG — but
       // only when every palette colour is a distinct RGB. With a duplicate RGB an
       // RGB-flooded component can straddle two labels, whereas the server reassigns just
@@ -971,8 +1041,14 @@ export default function App() {
       // than setting selection here (which it would immediately overwrite).
       preserveRegion.current = { id: next.id, selection: removeComponents(regionSelectionRef.current, submitted), applied: false }
       setRevision(next.id)
-    } catch (cause) { setRegionError(String(cause)) }
-    finally { setRegionBusy(false) }
+    } catch (cause) { if (stillSelected(projectId)) setRegionError(String(cause)) }
+    finally { setRegionBusyProjects(busy => busy.filter(id => id !== projectId)) }
+  }
+
+  // A revision a child editor committed in `projectId`, applied only while that project is
+  // still selected: a palette edit resolving after a switch belongs to the project left.
+  function revisionIn(projectId: string) {
+    return (id: string) => { if (stillSelected(projectId)) setRevision(id) }
   }
 
   function undoRegion() {
@@ -987,7 +1063,7 @@ export default function App() {
   }
 
   function paintPixel(x: number, y: number) {
-    if (pencilLabel === null || !flattenedPixels) return
+    if (pencilLabel === null || !flattenedPixels || pixelsRevision !== revision) return
     const cell = y * flattenedPixels.width + x
     setPaintedCells(prev => prev.get(cell) === pencilLabel ? prev : new Map(prev).set(cell, pencilLabel))
   }
@@ -1002,16 +1078,19 @@ export default function App() {
       pixels.push([x, y]); byLabel.set(label, pixels)
     }
     const operations = [...byLabel].map(([label, pixels]) => ({ tool: 'paint_pixels' as const, target_label: label, pixels }))
-    setPencilBusy(true); setPencilError('')
+    const projectId = selected
+    setPencilBusyProjects(busy => [...busy, projectId]); setPencilError('')
     try {
-      const next = await api.applyEdits(selected, revision, operations)
+      const next = await api.applyEdits(projectId, revision, operations)
+      // Dropped after a project switch, exactly as an area edit is.
+      if (!stillSelected(projectId)) return
       // Adopt the exact painted raster instead of re-decoding the flattened PNG.
       patchedFlattened.current = {
         revision: next.id, pixels: pixelsWithPaintedCells(flattenedPixels, paintedCells, editorPalette) }
       setPaintedCells(new Map())
       setRevision(next.id)
-    } catch (cause) { setPencilError(String(cause)) }
-    finally { setPencilBusy(false) }
+    } catch (cause) { if (stillSelected(projectId)) setPencilError(String(cause)) }
+    finally { setPencilBusyProjects(busy => busy.filter(id => id !== projectId)) }
   }
 
   function selectPreservationPoint(point: [number, number]) {
@@ -1058,7 +1137,7 @@ export default function App() {
   }
 
   return <main>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => setSelected(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => selectProject(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
@@ -1068,6 +1147,7 @@ export default function App() {
     <p className="visually-hidden" aria-live="polite" aria-atomic="true">{WORKFLOW_STAGES.find(item => item.id === stage)?.label} stage</p>
     <section className="mobile-context" aria-label="Current work"><div className="mobile-context-head"><strong>{WORKFLOW_STAGES.find(item => item.id === stage)?.label}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></div>{artworkStageActive && availableViews.length > 1 && <div className="mobile-view-switch">{viewToggle()}</div>}</section>
     {error && <p className="error global-error" role="alert">{error}</p>}
+    {error && error === loadError && <button type="button" className="secondary global-retry" onClick={retryLoad}>Retry loading</button>}
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage}`}>
       <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
@@ -1075,8 +1155,14 @@ export default function App() {
           layers={displayLayers} editorMode
           canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionToggles={stage === 'trace' && !selectionMode}
-          livePreview={stage === 'trace' && !selectionMode && revision && tracedSize ? { revisionId: revision, settings: traceSettings, tracedSize } : undefined}
-          loading={revisionLoading}
+          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: traceSettings, tracedSize } : undefined}
+          // Paused until the selected revision's own traced grid is known, so a preview is
+          // never requested with another revision's size.
+          livePreviewPaused={!artifactsCurrent || tracedGrid?.revision !== revision}
+          livePreviewStatus={failedRevision && failedRevision === revision ? 'Preview unavailable: the selected revision failed to load.'
+            : tracedGridError && tracedGridError.revision === revision && tracedGrid?.revision !== revision ? `Preview unavailable: ${tracedGridError.message}` : undefined}
+          // Loading from the moment the revision changes, not only once the fetch starts.
+          loading={revisionLoading || (Boolean(artifactsRevision) && !artifactsCurrent && failedRevision !== revision)}
           preferredLayerId={viewLayerId(view)}
           selectionLabel={stage === 'edit' ? (editTool === 'pencil' ? 'Flattened artwork pencil' : 'Flattened artwork area selector') : selectionMode ? 'Source image preservation-point selector' : undefined}
           onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
@@ -1118,8 +1204,9 @@ export default function App() {
         <div className="section-heading"><h2>Flatten colours</h2><span>{revision ? 'Ready' : 'Choose a project'}</span></div><p className="section-intro">Turn the source into an exact limited-colour raster. Review preservation exceptions before running.</p>
         <div className="job">
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
-          <button disabled={!revision || busy} onClick={() => runPipeline('palette')}>Flatten image</button>
-          {sourceRevision && <button type="button" className="secondary" disabled={busy} onClick={() => setUpscaleOpen(true)}>Upscale source…</button>}
+          <button disabled={!revision || busy || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => runPipeline('palette')}>Flatten image</button>
+          {sourceRevision && <button type="button" className="secondary" disabled={busy || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => setUpscaleOpen(true)}>Upscale source…</button>}
+          {lockReason('flatten-lock-reason')}
         </div>
         <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette}
           selectionMode={selectionMode} setSelectionMode={setSelectionMode}
@@ -1127,21 +1214,21 @@ export default function App() {
           iterationCount={paletteIterations.length} iterationIndex={paletteStep} onStep={stepPalette} onCommitDraft={() => persistDraft('palette')} />
         </section>
         <section id="workflow-panel-cleanup" role="tabpanel" aria-labelledby="workflow-tab-cleanup" className={`side-section pipeline-section workflow-surface ${stage === 'cleanup' ? 'mobile-stage-active' : ''}`} data-stage="cleanup">
-          <div className="section-heading"><h2>Clean up for cutting</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Set the physical size and removed colour the trace uses, and remove or widen details too small to cut.</p>
-          <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('cleanup')}>Run cleanup</button></div>
+          <div className="section-heading"><h2>Clean up for cutting</h2><span>{readiness}</span></div><p className="section-intro">Set the physical size and removed colour the trace uses, and remove or widen details too small to cut.</p>
+          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy} aria-describedby={lockedBy('cleanup-lock-reason')} onClick={() => runPipeline('cleanup')}>Run cleanup</button>{lockReason('cleanup-lock-reason')}</div>
           <PipelineControls stage="cleanup" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} cleanup={cleanupSettings} setCleanup={setCleanupSettings} baseCleanup={baselineCleanup} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setCleanupSettings(DEFAULT_CLEANUP_SETTINGS)} iterationCount={cleanupIterations.length} iterationIndex={cleanupStep} onStep={stepCleanup} onCommitDraft={() => persistDraft('cleanup')} />
         </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
-          <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
-          {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
-          <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy || cleanupStale} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
+          <div className="section-heading"><h2>Trace vinyl layers</h2><span>{readiness}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
+          {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
+          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || cleanupStale} aria-describedby={lockedBy('trace-lock-reason')} onClick={() => runPipeline('trace')}>Trace and validate</button>{lockReason('trace-lock-reason')}</div>
           <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}
           {selected && revision && flattened && <>
             <nav className="history" aria-label="Revision history"><button disabled={!current?.parent_revision_id} onClick={() => current?.parent_revision_id && setRevision(current.parent_revision_id)}>Undo</button><select aria-label="Revision" value={revision} onChange={event => setRevision(event.target.value)}>{revisions.map(row => <option key={row.id} value={row.id}>{row.kind} · {new Date(row.created_at).toLocaleString()}</option>)}</select><button disabled={!redo} onClick={() => redo && setRevision(redo.id)}>Redo</button></nav>
-            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={setRevision} onPreview={(index, hex) => setPaletteDraft({ index, hex })} onPreviewEnd={() => setPaletteDraft(null)} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to edit its palette.`} />
+            <FlattenedEditor projectId={selected} revisionId={revision} flattened={flattened} onCommit={revisionIn(selected)} onPreview={(index, hex) => setPaletteDraft({ index, hex })} onPreviewEnd={() => setPaletteDraft(null)} disabled={!editSelectable || Boolean(selectedUnavailable)} disabledHint={selectedUnavailable ?? `Switch to the ${editableLabel} image to edit its palette.`} />
           </>}
           {selected && revision && source && !flattened && <><h2>Palette unavailable</h2><p className="stage-guidance">Flatten this revision first to edit its palette.</p></>}
         </section>
@@ -1152,15 +1239,15 @@ export default function App() {
               <button type="button" className={editTool === 'pencil' ? 'active' : ''} aria-pressed={editTool === 'pencil'} onClick={() => chooseEditTool('pencil')}>Pencil</button>
             </div>
             {editTool === 'areas'
-              ? <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to select and edit areas.`} />
-              : <PencilEditor palette={editorPalette} activeLabel={pencilLabel} onPickColour={setPencilLabel} paintedCount={paintedCells.size} onApply={commitPencil} onDiscard={() => setPaintedCells(new Map())} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={pencilBusy} error={pencilError} disabled={!editSelectable} disabledHint={`Switch to the ${editableLabel} image to paint pixels.`} />}
+              ? <RegionEditor palette={editorPalette} selectionLabels={regionLabels} neighbourLabels={regionNeighbours} onPick={applyRegionColour} onClear={() => setRegionSelection([])} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={regionBusy} error={regionError} disabled={!editSelectable || pixelsRevision !== revision} disabledHint={!editSelectable ? `Switch to the ${editableLabel} image to select and edit areas.` : selectedUnavailable ?? 'Loading the artwork…'} />
+              : <PencilEditor palette={editorPalette} activeLabel={pencilLabel} onPickColour={setPencilLabel} paintedCount={paintedCells.size} onApply={commitPencil} onDiscard={() => setPaintedCells(new Map())} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={pencilBusy} error={pencilError} disabled={!editSelectable || pixelsRevision !== revision} disabledHint={!editSelectable ? `Switch to the ${editableLabel} image to paint pixels.` : selectedUnavailable ?? 'Loading the artwork…'} />}
           </>}
         </section>
       </aside>
     </section>
     <section id="workflow-panel-export" role="tabpanel" aria-labelledby="workflow-tab-export" className={`workflow-surface export-surface ${stage === 'export' ? 'mobile-stage-active' : ''}`} data-stage="export">
       {!handoff && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}
-      {selected && revision && handoff && <section className="inkscape-handoff"><h2>Export or finish in Inkscape</h2><p>{handoff.guidance}</p><div className="handoff-actions">{handoff.exports.map(item => <span key={item.id}><a className="button-link" href={item.download_url}>Download {item.filename}</a>{handoff.shared_folder_enabled && <button className="secondary" onClick={() => api.saveForInkscape(revision, item.id).then(saved => setHandoffMessage(`Saved ${saved.filename} to the shared folder.`)).catch(cause => setError(String(cause)))}>Save {item.media_type === 'image/png' ? 'PNG' : 'SVG'} to shared folder</button>}</span>)}</div><form onSubmit={reimportSvg}><label className="file">Edited SVG<input name="svg" type="file" accept="image/svg+xml,.svg" required /></label><button type="submit">Validate and reimport</button></form>{handoffMessage && <p className="success" role="status" aria-live="polite">{handoffMessage}</p>}</section>}
+      {selected && revision && handoff && <section className="inkscape-handoff"><h2>Export or finish in Inkscape</h2><p>{handoff.guidance}</p><div className="handoff-actions">{handoff.exports.map(item => <span key={item.id}><a className="button-link" href={item.download_url}>Download {item.filename}</a>{handoff.shared_folder_enabled && <button className="secondary" onClick={() => { const projectId = selected, projectName = selectedProjectName; api.saveForInkscape(revision, item.id).then(saved => { if (stillSelected(projectId)) setHandoffMessage(`Saved ${saved.filename} to the shared folder.`) }).catch(cause => setError(projectFailure(projectId, projectName, `could not save ${item.filename} to the shared folder`, cause))) }}>Save {item.media_type === 'image/png' ? 'PNG' : 'SVG'} to shared folder</button>}</span>)}</div><form onSubmit={reimportSvg}><label className="file">Edited SVG<input name="svg" type="file" accept="image/svg+xml,.svg" required /></label><button type="submit">Validate and reimport</button></form>{handoffMessage && <p className="success" role="status" aria-live="polite">{handoffMessage}</p>}</section>}
     </section>
     <ConfirmDialog open={Boolean(confirmDelete)} title="Delete project?" message={`Delete "${confirmDelete?.name}"? This permanently removes its revisions and artwork and cannot be undone.`} confirmLabel="Delete project" busy={deleting} onConfirm={() => confirmDelete && deleteProject(confirmDelete.id)} onCancel={() => setConfirmDelete(null)} />
     {selected && sourceRevision && <UpscalePanel open={upscaleOpen} projectId={selected} revisionId={sourceRevision.id} onClose={() => setUpscaleOpen(false)} onStarted={started => { setJob(started); setUpscaleOpen(false) }} />}

@@ -29,7 +29,9 @@ commands for palette inference, cleanup or tracing. Successful stages create
 immutable, parent-linked revisions. Their settings record the complete
 effective configuration of their stage plus concern-level downstream staleness.
 Artifact lookup walks revision ancestry, so a trace revision reuses its
-parent's source and segmentation without copying blobs.
+parent's source and segmentation without copying blobs. A trace revision
+supersedes everything made of an older run (its trace outputs, Inkscape edit,
+validation and export), so export requires a validation of the current run.
 
 The web workflow is Flatten, Palette, Edit, Cleanup, Trace. Cleanup
 (`vinylgen/web/cleanup.py`) owns the physical output size, the removed colour
@@ -116,7 +118,8 @@ Reimport accepts only passive, self-contained SVG, renders it headlessly with
 the shared preview policy (`vinylgen/preview.py`), and stores a neutral edited-SVG artifact, fresh inspection preview,
 and validation audit on a new `inkscape-edit` revision. Because an arbitrary
 edit cannot honestly be classified as both edge and overlap trace geometry,
-trace, validation, and export are stale until retracing. The generated trace on
+trace, validation, and export are stale until retracing, and a retrace hides the
+edit's artifacts with the rest of the older run's output. The generated trace on
 the parent is untouched.
 The hosted service never claims that a phone or remote browser can launch a
 desktop Inkscape process.

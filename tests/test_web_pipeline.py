@@ -113,7 +113,7 @@ class WebPipelineTest(PipelineApiHarness):
         settings_by_kind = {row["kind"]: row["settings"] for row in revisions}
         self.assertEqual(settings_by_kind["palette"]["stale_concerns"],
                          ["cleanup", "trace", "validation", "export"])
-        self.assertEqual(settings_by_kind["trace"]["stale_concerns"], ["export"])
+        self.assertEqual(settings_by_kind["trace"]["stale_concerns"], ["validation", "export"])
         self.assertEqual(settings_by_kind["export"]["stale_concerns"], [])
         self.assertIn("initial_colours", settings_by_kind["trace"]["palette"])
         self.assertIn("curve_fit_tolerance", settings_by_kind["trace"]["trace"])
@@ -211,6 +211,119 @@ class WebPipelineTest(PipelineApiHarness):
         export = await self.run_failed_job("export", project["id"], stale["id"])
         self.assertIn("stale prerequisite concerns: trace", validation["error"])
         self.assertIn("stale prerequisite concerns: trace, validation", export["error"])
+
+    async def flattened_project(self, name: str) -> tuple[dict, str]:
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": name},
+            files={"source": ("fixture.png", self.source_png(), "image/png")})
+        self.assertEqual(imported.status_code, 201, imported.text)
+        project = imported.json()
+        palette = await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 2, "min_colour_share": 0})
+        return project, palette["result_revision_id"]
+
+    async def effective_kinds(self, revision_id: str) -> dict[str, dict]:
+        rows = (await self.client.get(f"/api/revisions/{revision_id}/effective-artifacts")).json()
+        return {row["kind"]: row for row in rows}
+
+    async def test_a_new_trace_run_needs_its_own_validation_before_export(self) -> None:
+        # The trace stepper lets a new run hang off an older run's validation.
+        project, palette_revision = await self.flattened_project("Rerun Fixture")
+        first = (await self.run_job("trace", project["id"], palette_revision))["result_revision_id"]
+        first_validation = (await self.run_job(
+            "validate", project["id"], first))["result_revision_id"]
+        second = (await self.run_job(
+            "trace", project["id"], first_validation))["result_revision_id"]
+
+        self.assertNotIn("validation", await self.effective_kinds(second))
+        refused = await self.run_failed_job("export", project["id"], second)
+        self.assertIn("stale prerequisite concerns: validation", refused["error"])
+
+        second_validation = (await self.run_job(
+            "validate", project["id"], second))["result_revision_id"]
+        validation_row = (await self.effective_kinds(second_validation))["validation"]
+        self.assertEqual(validation_row["revision_id"], second_validation)
+        exported = (await self.run_job(
+            "export", project["id"], second_validation))["result_revision_id"]
+        archive_row = (await self.effective_kinds(exported))["export"]
+        archive_bytes = (await self.client.get(archive_row["download_url"])).content
+        packaged = (await self.client.get(validation_row["download_url"])).content
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            self.assertEqual(archive.read("validation.json"), packaged)
+
+    async def test_export_refuses_a_run_without_validation_behind_a_neutral_revision(self) -> None:
+        # A revision recording no stale concerns, and a trace recorded before a trace
+        # marked validation stale, must not let an unvalidated run reach export.
+        project, palette_revision = await self.flattened_project("Neutral Fixture")
+        store = self.app.state.store
+        first = (await self.run_job("trace", project["id"], palette_revision))["result_revision_id"]
+        first_validation = (await self.run_job(
+            "validate", project["id"], first))["result_revision_id"]
+        second = (await self.run_job(
+            "trace", project["id"], first_validation))["result_revision_id"]
+        note = store.create_revision(project["id"], parent_revision_id=second, kind="note",
+                                     message="No stale concerns", settings={})
+        refused = await self.run_failed_job("export", project["id"], note["id"])
+        self.assertIn("stale prerequisite concerns: validation", refused["error"])
+
+        legacy = store.create_revision(
+            project["id"], parent_revision_id=first_validation, kind="trace",
+            message="Recorded when a trace only marked export stale",
+            settings={"pipeline_stage": "trace", "stale_concerns": ["export"]})
+        for row in store.list_artifacts(second):
+            with store.artifact_path(row["id"]).open("rb") as source:
+                store.add_artifact(legacy["id"], kind=row["kind"], filename=row["filename"],
+                                   media_type=row["media_type"], source=source)
+        self.assertNotIn("validation", await self.effective_kinds(legacy["id"]))
+        refused = await self.run_failed_job("export", project["id"], legacy["id"])
+        self.assertIn("stale prerequisite concerns: validation", refused["error"])
+
+    async def test_a_new_trace_run_drops_an_inkscape_edit_of_the_older_run(self) -> None:
+        project, palette_revision = await self.flattened_project("Inkscape Rerun Fixture")
+        first = (await self.run_job("trace", project["id"], palette_revision))["result_revision_id"]
+        svg = (await self.client.get(
+            (await self.effective_kinds(first))["traced-edge"]["download_url"])).content
+        edited = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{first}/inkscape-reimport",
+            files={"svg": ("edited.svg", svg, "image/svg+xml")})
+        self.assertEqual(edited.status_code, 201, edited.text)
+        inkscape_kinds = {"inkscape-svg", "inkscape-preview", "inkscape-audit"}
+        self.assertTrue(inkscape_kinds <= set(await self.effective_kinds(edited.json()["id"])))
+
+        second = (await self.run_job(
+            "trace", project["id"], edited.json()["id"]))["result_revision_id"]
+        self.assertFalse(inkscape_kinds & set(await self.effective_kinds(second)))
+        handoff = (await self.client.get(f"/api/revisions/{second}/inkscape-handoff")).json()
+        self.assertTrue(all(row["revision_id"] == second for row in handoff["exports"]))
+        validated = (await self.run_job("validate", project["id"], second))["result_revision_id"]
+        exported = (await self.run_job("export", project["id"], validated))["result_revision_id"]
+        archive_row = (await self.effective_kinds(exported))["export"]
+        archive_bytes = (await self.client.get(archive_row["download_url"])).content
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            self.assertNotIn("inkscape-edited.svg", archive.namelist())
+
+    async def test_a_new_trace_run_drops_an_older_runs_export(self) -> None:
+        project, palette_revision = await self.flattened_project("Export Rerun Fixture")
+        first = (await self.run_job("trace", project["id"], palette_revision))["result_revision_id"]
+        validated = (await self.run_job("validate", project["id"], first))["result_revision_id"]
+        exported = (await self.run_job("export", project["id"], validated))["result_revision_id"]
+        second = (await self.run_job("trace", project["id"], exported))["result_revision_id"]
+        effective = await self.effective_kinds(second)
+        self.assertFalse({"export", "validation"} & set(effective))
+
+    async def test_exporting_an_export_never_nests_the_earlier_zip(self) -> None:
+        project, palette_revision = await self.flattened_project("Export Nesting Fixture")
+        traced = (await self.run_job("trace", project["id"], palette_revision))["result_revision_id"]
+        validated = (await self.run_job("validate", project["id"], traced))["result_revision_id"]
+        first = (await self.run_job("export", project["id"], validated))["result_revision_id"]
+        second = (await self.run_job("export", project["id"], first))["result_revision_id"]
+        archive_row = (await self.effective_kinds(second))["export"]
+        self.assertEqual(archive_row["revision_id"], second)
+        archive_bytes = (await self.client.get(archive_row["download_url"])).content
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            self.assertIn("traced-edge.svg", archive.namelist())
+            self.assertFalse([name for name in archive.namelist() if name.endswith(".zip")])
 
     async def test_trace_preserves_palette_settings_across_intermediate_revision(self) -> None:
         imported = await self.client.post(

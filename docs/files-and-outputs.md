@@ -159,7 +159,15 @@ revision's raster artifacts (`flattened`, `segmentation`, `palette`, `report`)
 are skipped once a newer cleanup has been passed. A `trace` run likewise
 writes its complete output set, so it hides every trace-kind artifact of an
 older run, including optional audits (fallbacks, semantic warnings and their
-overlays) it did not repeat. `GET
+overlays) it did not repeat, together with everything made of that older run:
+its `inkscape-edit` artifacts, its `validation` and its `export`. A trace
+revision marks validation and export stale, and trace revisions recorded
+before it did are treated the same way, so a run started from an older run's
+validation or export never inherits them. An export packages the run's own
+validation: an export job is refused ("revision has stale prerequisite
+concerns: validation") until the current trace run has been validated, whether
+the parent marks validation stale itself or simply has no effective
+`validation` artifact. `GET
 /api/revisions/{id}/effective-artifacts?before_cleanup=true` skips every
 cleanup revision's raster, resolving the raster the cleanup stage starts from.
 Revision settings retain the effective settings of their stage and list stale
@@ -196,7 +204,10 @@ An `inkscape-edit` revision preserves an arbitrary reimport as the neutral
 `inkscape-svg` artifact and adds its freshly rendered `inkscape-preview` plus
 `inkscape-audit`. It does not relabel one SVG payload as both the semantically
 distinct edge and overlap trace variants. Trace, validation, and export are
-therefore stale until the deterministic trace stage is run again. SVG and PNG
+therefore stale until the deterministic trace stage is run again, and the
+retrace hides the edit's `inkscape-*` artifacts along with the older run's
+trace outputs; anything that marks trace stale (a flatten, label edit, cleanup
+or source upscale) hides them the same way. SVG and PNG
 handoff exports are always selected explicitly by the user; generating the PNG
 inspection preview does not write it to the configured shared folder
 automatically.

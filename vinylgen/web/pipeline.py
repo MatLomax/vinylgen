@@ -140,7 +140,8 @@ def _provenance(stage: str, palette: dict | None, trace: dict | None,
     stale_after = {
         "palette": ["cleanup", "trace", "validation", "export"],
         "cleanup": ["trace", "validation", "export"],
-        "trace": ["export"],
+        # A new trace run needs its own validation: an older run's never carries over.
+        "trace": ["validation", "export"],
         "validate": ["export"],
         "export": [],
     }
@@ -208,13 +209,15 @@ def _effective_settings(store: Store, revision_id: str) -> tuple[dict | None, di
     return palette, trace
 
 
+def _stale_prerequisites(concerns: list[str]) -> ValueError:
+    return ValueError("revision has stale prerequisite concerns: " + ", ".join(concerns))
+
+
 def _require_fresh(store: Store, revision_id: str, concerns: set[str]) -> None:
     stale = set(store.get_revision(revision_id)["settings"].get("stale_concerns", ()))
     blocked = sorted(stale & concerns)
     if blocked:
-        raise ValueError(
-            "revision has stale prerequisite concerns: " + ", ".join(blocked)
-        )
+        raise _stale_prerequisites(blocked)
 
 
 class PipelineRunner:
@@ -381,11 +384,19 @@ class PipelineRunner:
         artifacts = self.store.effective_artifacts(parent_id)
         if not {"traced-edge", "traced-overlap", "traced-preview"}.issubset(artifacts):
             raise ValueError("revision has no complete traced output to export")
+        # A trace run hides every older validation (Store.effective_artifacts), so an
+        # effective validation is one of the current run. Its absence is stale
+        # validation even when the parent's own concerns do not say so: a revision in
+        # between recorded none, or the run predates trace marking validation stale.
+        if "validation" not in artifacts:
+            raise _stale_prerequisites(["validation"])
         project = self.store.get_project(project_id)
         archive = work / f"{project['slug']}-vinylgen.zip"
         progress(0.3, "Packaging immutable artifacts")
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-            for row in sorted(artifacts.values(), key=lambda item: (item["kind"], item["filename"])):
+            # An earlier export zip is not part of the artwork, so it is never nested.
+            packaged = [row for row in artifacts.values() if row["kind"] != "export"]
+            for row in sorted(packaged, key=lambda item: (item["kind"], item["filename"])):
                 output.write(self.store.artifact_path(row["id"]), arcname=row["filename"])
         palette_settings, trace_settings = _effective_settings(self.store, parent_id)
         return self._commit(project_id, parent_id, "export", {"export": archive},

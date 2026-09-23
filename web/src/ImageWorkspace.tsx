@@ -1,4 +1,4 @@
-import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, WheelEvent, useEffect, useId, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useRef, useState } from 'react'
 import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
@@ -10,12 +10,15 @@ import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 // `kind` names what a layer is independently of its artifact id, so an inspection toggle
 // keyed by it stays on when a new run's layer of the same kind replaces the old one.
 export type WorkspaceLayer = { id: string; name: string; url: string; mediaType: string; role: 'image' | 'mask' | 'overlay'; sizeFrom?: string; kind?: string }
+// The Trace canvas's live preview; `tracedSize` is null while the revision's traced grid
+// is unknown, which pauses it.
+export type CanvasLivePreview = Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: ImageSize | null }
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
 // The absolute URL an <img> resolves a layer's (possibly relative) URL to.
 const absoluteUrl = (url: string) => new URL(url, document.baseURI).href
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, loading = false, livePreview, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; loading?: boolean; livePreview?: LivePreviewOptions; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, loading = false, livePreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; loading?: boolean; livePreview?: CanvasLivePreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -372,10 +375,19 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     gesture.current = null
   }
 
-  function wheel(event: WheelEvent<HTMLDivElement>) {
-    event.preventDefault()
-    setTransform(value => zoomAt(value, localPoint(event.clientX, event.clientY), Math.exp(-event.deltaY * 0.0015)))
-  }
+  // Wheel zoom must cancel the page scroll, which React's (passive) onWheel cannot, so
+  // it is a native non-passive listener on the viewport.
+  const hasImages = visible.length > 0
+  useEffect(() => {
+    const element = viewport.current
+    if (!element) return
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault()
+      setTransform(value => zoomAt(value, localPoint(event.clientX, event.clientY), Math.exp(-event.deltaY * 0.0015)))
+    }
+    element.addEventListener('wheel', wheel, { passive: false })
+    return () => element.removeEventListener('wheel', wheel)
+  }, [hasImages])
 
   function dividerPointerDown(event: PointerEvent<HTMLDivElement>) {
     event.stopPropagation()
@@ -414,7 +426,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const showAfter = mode === 'split' || (mode === 'blink' && blinkAfter)
   const transformStyle = { width: size.width, height: size.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }
   // The Trace canvas's live preview of the zoomed-in area (inert without `livePreview`).
-  const tracePreview = useTracePreview(livePreview, transform, { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }, size)
+  // Paused (while the revision's traced grid is unknown), the switch stays but nothing
+  // is in view to preview, so no request is made, and no shapes are drawn.
+  const previewPaused = livePreviewPaused || !livePreview?.tracedSize
+  // While paused nothing is in view, so the grid given here is never read.
+  const previewOptions: LivePreviewOptions | undefined = livePreview ? { ...livePreview, tracedSize: livePreview.tracedSize ?? { width: 1, height: 1 } } : undefined
+  const tracePreview = useTracePreview(previewOptions, transform, previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }, size)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
 
   const controls = <>
@@ -448,13 +465,13 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
     <p className="visually-hidden" aria-live="polite">{announcement}</p>
-    <div className="viewport-toolbar" inert={sheetOpen}><span>{before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
-    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)} onWheel={wheel}>
+    <div className="viewport-toolbar" inert={sheetOpen}><span>{loading ? 'Loading…' : before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
+    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)}>
       <div className="image-stage" style={transformStyle}>
         {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => beforeSettled(event, true)} onError={event => beforeSettled(event, false)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
-        {tracePreview.stageLayer}
+        {!previewPaused && tracePreview.stageLayer}
       </div>
       {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       {mode === 'split' && compatibleAfter && <div
@@ -481,6 +498,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       </div>}
       {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
       {tracePreview.controls}
+      {livePreview && <div className="trace-preview-paused" aria-live="polite">{previewPaused && livePreviewStatus && <p className="trace-preview-status error">{livePreviewStatus}</p>}</div>}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>

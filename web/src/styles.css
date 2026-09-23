@@ -40,6 +40,8 @@ body { margin: 0; min-width: 320px; min-height: 100vh; }
 .workflow-surface { display: contents; }
 .mobile-stage-state { display: none; }
 .global-error { margin: 0; border-radius: 0; }
+.global-retry { justify-self: start; margin: 8px 18px; }
+.lock-reason button { margin-inline-start: 8px; }
 .visually-hidden { position: fixed; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 button, input, select, textarea { font: inherit; }
 header { height: 70px; display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface-panel); }
@@ -734,6 +736,8 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 .trace-preview-badge { border: 1px solid var(--accent); color: var(--accent); font-weight: 700; letter-spacing: .02em; }
 .trace-preview-badge svg { flex: none; width: 14px; height: 14px; animation: spin .8s linear infinite; }
 .trace-preview-status.error { color: var(--error); overflow-wrap: anywhere; }
+/* Why a paused live preview cannot run, just below the switch. */
+.trace-preview-paused { position: absolute; z-index: 6; inset-block-start: 58px; inset-inline-start: 14px; max-width: min(320px, calc(100% - 90px)); pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .trace-preview-badge svg { animation: none; }
 }

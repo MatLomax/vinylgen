@@ -226,6 +226,37 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(effective["traced-overlap"]["revision_id"], later["id"])
         self.assertIn("trace-fallbacks-overlay", store.effective_artifacts(earlier["id"]))
 
+    async def test_a_trace_run_hides_an_older_runs_validation_export_and_inkscape_edit(self) -> None:
+        # Whatever stale concerns the newer trace recorded (this one predates trace
+        # marking validation stale), nothing made of the older run surfaces below it.
+        store = self.app.state.store
+        project = store.create_project("Downstream")
+        earlier = store.create_revision(
+            project["id"], parent_revision_id=None, kind="trace", message=None,
+            settings={"stale_concerns": ["export"]},
+        )
+        store.add_artifact(earlier["id"], kind="flattened", filename="flattened.png",
+                           media_type="image/png", source=io.BytesIO(b"flat"))
+        made_of_earlier = store.create_revision(
+            project["id"], parent_revision_id=earlier["id"], kind="note", message=None,
+            settings={},
+        )
+        for kind in ("validation", "export", "inkscape-svg", "inkscape-preview",
+                     "inkscape-audit"):
+            store.add_artifact(made_of_earlier["id"], kind=kind, filename=f"{kind}.bin",
+                               media_type="application/octet-stream",
+                               source=io.BytesIO(kind.encode()))
+        later = store.create_revision(
+            project["id"], parent_revision_id=made_of_earlier["id"], kind="trace", message=None,
+            settings={"stale_concerns": ["export"]},
+        )
+        self.assertEqual(set(store.effective_artifacts(later["id"])), {"flattened"})
+        edited = store.create_revision(
+            project["id"], parent_revision_id=made_of_earlier["id"], kind="label-edit",
+            message=None, settings={"stale_concerns": ["cleanup", "trace", "validation", "export"]},
+        )
+        self.assertEqual(set(store.effective_artifacts(edited["id"])), {"flattened"})
+
     async def test_delete_project_removes_rows_and_blobs(self) -> None:
         store = self.app.state.store
         project = store.import_project(
