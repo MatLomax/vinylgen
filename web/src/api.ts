@@ -3,7 +3,8 @@ export type Revision = { id: string; project_id: string; parent_revision_id: str
 export type Artifact = { id: string; revision_id: string; kind: string; filename: string; media_type: string; byte_size: number; download_url: string }
 export type Job = { id: string; project_id: string | null; revision_id: string | null; result_revision_id: string | null; kind: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress: number; message: string | null; error: string | null }
 export type PaletteColour = { index: number; name: string; hex: string; rgb: [number, number, number]; share_percent: number }
-export type EditorState = { width: number; height: number; palette: PaletteColour[]; requested_colour_count: number | null; protected_pixels: number }
+// `automatic_layer_order`: the bottom-to-top hex order a trace infers before any override.
+export type EditorState = { width: number; height: number; palette: PaletteColour[]; requested_colour_count: number | null; protected_pixels: number; automatic_layer_order?: string[] | null }
 export type EditOperation = { tool: 'merge_colour' | 'rename_colour' | 'recolour_colour' | 'reassign_region' | 'paint_pixels'; label?: number; source_label?: number; target_label?: number; name?: string; rgb?: [number, number, number]; point?: [number, number]; pixels?: [number, number][] }
 export type PaletteSettings = {
   initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number; dither_radius: number

@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
+from numba import njit, prange
 from PIL import Image, ImageDraw
 import shapely
 from scipy import ndimage
@@ -26,6 +27,7 @@ from vinylgen.cutter_cleanup import apply_cleanup, pixel_scale, resolve_physical
 from vinylgen.curve_fit import (
     SharedChainFitter, geometry_components, region_components, shared_boundary_components)
 from vinylgen.palette import Progress, _noop
+from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
 from vinylgen.preview import preview_plan
 from vinylgen.boundary_graph import (
     shared_boundary_polygons,
@@ -157,14 +159,36 @@ def label_raster(image: np.ndarray, palette: list[dict]) -> np.ndarray:
     return result
 
 
+@njit(parallel=True, cache=True)
+def _label_counts(labels, size):
+    """Pixels of each label ``0..size-1`` in a 2-D label array (other values are not
+    counted), tallied in parallel row bands."""
+    height, width = labels.shape
+    bands = 64
+    partial = np.zeros((bands, size + 1), np.int64)
+    step = (height + bands - 1) // bands
+    for band in prange(bands):
+        for y in range(band * step, min(height, (band + 1) * step)):
+            for x in range(width):
+                value = labels[y, x]
+                partial[band, value if 0 <= value < size else size] += 1
+    return partial.sum(axis=0)[:size]
+
+
 def infer_order(labels: np.ndarray, included: list[int], palette: list[dict]) -> tuple[list[int], list[str]]:
-    # Large, canvas-touching colours make the most plausible lower layers.
+    # Large, canvas-touching colours make the most plausible lower layers. The evidence
+    # per colour is its pixel count and its count along the four edges (the first and
+    # last row and column, so a corner pixel counts on both of its edges), tallied for
+    # every colour at once rather than with one full-image mask per colour.
     h, w = labels.shape
+    size = max(len(palette), max(included, default=-1) + 1)
+    with _KERNEL_LOCK:
+        areas = _label_counts(labels, size)
+        edges = (_label_counts(labels[:1], size) + _label_counts(labels[-1:], size)
+                 + _label_counts(labels[:, :1], size) + _label_counts(labels[:, -1:], size))
     rows = []
     for index in included:
-        mask = labels == index
-        border = int(mask[0].sum() + mask[-1].sum() + mask[:, 0].sum() + mask[:, -1].sum())
-        rows.append((-border, -int(mask.sum()), str(palette[index]["hex"]), index))
+        rows.append((-int(edges[index]), -int(areas[index]), str(palette[index]["hex"]), index))
     ordered = sorted(rows)
     order = [row[-1] for row in ordered]
     warnings = []

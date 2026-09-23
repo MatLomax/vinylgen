@@ -9,7 +9,7 @@ import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, resolvePaletteColour, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -204,6 +204,22 @@ export function editAncestry(revisions: Revision[], revisionId: string | null): 
     node = parent ? revisions.find(row => row.id === parent) : undefined
   }
   return { hasFlatten: flatten, hasEdit: edit, paletteAncestorId: paletteId }
+}
+// The trace settings with `layer_order` narrowed to the colours of `palette` that get a
+// layer (never `removedColour`, which the active cleanup removes), matched as the tracer
+// does (resolvePaletteColour), each once and in the stored order. Colours the order no
+// longer names fall to the automatic order; an order naming none becomes null.
+export function withPaletteLayerOrder(trace: TraceSettings, palette: PaletteColour[], removedColour: string | null = null): TraceSettings {
+  if (!trace.layer_order) return trace
+  const removed = removedColour ? resolvePaletteColour(removedColour, palette) : undefined
+  const matched: number[] = []
+  for (const entry of trace.layer_order) {
+    const colour = resolvePaletteColour(entry, palette)
+    if (colour && colour.index !== removed?.index && !matched.includes(colour.index)) matched.push(colour.index)
+  }
+  const kept = matched.map(index => palette.find(row => row.index === index)!.hex)
+  if (kept.length === trace.layer_order.length && kept.every((hex, at) => hex === trace.layer_order![at])) return trace
+  return { ...trace, layer_order: kept.length ? kept : null }
 }
 // The trace runs made on the shown artwork, newest first, and the shown run's index.
 // A run is a `trace` revision; validate/export records only copy a run's settings, so
@@ -403,6 +419,16 @@ export default function App() {
   // The revision `flattenedPixels` belong to; area/pencil edits act only on that one.
   const [pixelsRevision, setPixelsRevision] = useState<string | null>(null)
   const [editorPalette, setEditorPalette] = useState<PaletteColour[]>([])
+  // The revision `editorPalette` was read from. A load keeps the last palette listed, but
+  // only the selected revision's own may be used to write a layer order.
+  const [paletteRevision, setPaletteRevision] = useState<string | null>(null)
+  // That revision's automatic bottom-to-top order (the tracer's own inference), which
+  // colours an override leaves unnamed follow.
+  const [automaticOrder, setAutomaticOrder] = useState<string[] | null>(null)
+  // A trace job whose start is reading the revision's palette first; the job buttons wait.
+  const [startingJob, setStartingJob] = useState(false)
+  const startRead = useRef<AbortController | null>(null)
+  const starting = useRef(false)
   // Pixel size of the image the trace stage fits curves to (the flattened/edited grid).
   // The traced grid and the revision it was measured for. A load keeps the last one on
   // display (the live preview pauses until the new revision's grid is known).
@@ -712,9 +738,11 @@ export default function App() {
     // state then owns the buffer), so it never pins a second one.
     if (patchedFlattened.current && patchedFlattened.current.revision !== revision) patchedFlattened.current = null
     const patched = revision && patchedFlattened.current?.revision === revision ? patchedFlattened.current : null
-    if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setPixelsRevision(null); setEditorPalette([]); return }
+    // The palette is left to the revision's editor state (below): a same-project load
+    // keeps the last one shown until the new revision's arrives.
+    if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setPixelsRevision(null); return }
     const controller = new AbortController()
-    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setEditorPalette(state.palette) })
+    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) { setEditorPalette(state.palette); setAutomaticOrder(state.automatic_layer_order ?? null); setPaletteRevision(revision) } })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
     if (patched) {
       setFlattenedPixels(patched.pixels); setPixelsRevision(revision)
@@ -738,15 +766,25 @@ export default function App() {
     return () => { controller.abort(); image.onload = null }
   }, [revision, editableFlattened?.id])
   useEffect(() => {
-    // The traced grid is the current revision's (cleaned) raster, whatever the editable
+    // The traced grid and palette are the current revision's (cleaned raster's), whatever the editable
     // raster; measured once that revision's artifacts are current.
-    if (!revision || !flattened) { setTracedGrid(null); return }
+    // No flatten behind the shown revision (or a project switch cleared its artifacts):
+    // no grid and no palette. A same-project load keeps both until the new ones arrive.
+    if (!revision || !flattened) { setTracedGrid(null); setEditorPalette([]); setAutomaticOrder(null); setPaletteRevision(null); return }
     if (!artifactsCurrent) return
     // A new measurement supersedes the last failure: the preview says only "paused" meanwhile.
     setTracedGridError(null)
     const controller = new AbortController()
-    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) setTracedGrid({ revision, width: state.width, height: state.height }) })
-      .catch(cause => { if (!controller.signal.aborted) setTracedGridError({ revision, message: String(cause) }) })
+    requestEditor(revision, controller.signal).then(state => {
+      if (controller.signal.aborted) return
+      setTracedGrid({ revision, width: state.width, height: state.height }); setEditorPalette(state.palette); setAutomaticOrder(state.automatic_layer_order ?? null); setPaletteRevision(revision)
+    }).catch(cause => {
+      if (controller.signal.aborted) return
+      // Unmeasured: the preview pauses on this revision, saying why. The palette is left as
+      // it is, since only a successful read of this revision ever makes it this revision's.
+      setTracedGridError({ revision, message: String(cause) })
+      setTracedGrid(grid => grid?.revision === revision ? null : grid)
+    })
     return () => controller.abort()
   }, [revision, artifactsCurrent, flattened?.id])
   useEffect(() => {
@@ -910,12 +948,16 @@ export default function App() {
 
   // `cleanupOverride` re-runs a stale cleanup with its own recorded settings.
   async function runPipeline(kind: 'palette' | 'cleanup' | 'trace' | 'validate' | 'export', cleanupOverride?: CleanupSettings) {
-    if (!selected || !revision) return
+    if (!selected || !revision || starting.current) return
+    // Starting lasts until the server has answered (the job then keeps `busy`), so a second
+    // click in between never starts a second job.
+    starting.current = true
+    setStartingJob(true)
     setError('')
     try {
       const settings = kind === 'palette' ? { palette: paletteSettings }
         : kind === 'cleanup' ? { cleanup: cleanupOverride ?? cleanupSettings }
-          : kind === 'trace' ? { trace: traceSettings } : undefined
+          : kind === 'trace' ? { trace: traceSettingsForRun(revision) ?? await traceSettingsFetchingPalette(revision) } : undefined
       const started = await api.startPipeline(kind, selected, revision, settings)
       // Only a run from the newest trace carries the pending trace draft, so only that
       // run spends it; a branch from an older run leaves it for the newest.
@@ -923,7 +965,28 @@ export default function App() {
       cleanupDraftSpent.current = kind === 'cleanup' && !cleanupOverride ? started.id : null
       setJob(started)
     }
-    catch (cause) { setError(String(cause)) }
+    catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(String(cause)) }
+    finally { starting.current = false; setStartingJob(false) }
+  }
+  useEffect(() => () => { startRead.current?.abort() }, [revision, selected])
+  // The trace form for a run of `revisionId`, its layer order narrowed to that revision's
+  // own palette so a stale order never runs; null when that palette must be read first.
+  function traceSettingsForRun(revisionId: string): TraceSettings | null {
+    if (!traceSettings.layer_order) return traceSettings
+    return paletteRevision === revisionId ? withPaletteLayerOrder(traceSettings, editorPalette, removedColour) : null
+  }
+  // Reading the palette is part of starting the job (the job buttons stay disabled), and a
+  // revision or project change aborts it (the throw is then dropped).
+  async function traceSettingsFetchingPalette(revisionId: string): Promise<TraceSettings> {
+    const controller = new AbortController()
+    startRead.current = controller
+    try {
+      const state = await api.editor(revisionId, controller.signal)
+      if (controller.signal.aborted) throw new DOMException('The palette read was superseded.', 'AbortError')
+      return withPaletteLayerOrder(traceSettings, state.palette, removedColour)
+    } finally {
+      if (startRead.current === controller) startRead.current = null
+    }
   }
   function persistDraft(step: 'palette' | 'cleanup' | 'trace') {
     // The trace draft belongs to the newest run; an older run's form is its record.
@@ -1000,6 +1063,8 @@ export default function App() {
           : target === 'edited' ? beforeCleanupId
             : hasEdit ? preEditLayer?.id : beforeCleanupId
   // The size the next trace uses, from the active cleanup, completed from the raster.
+  // The colour the active cleanup removes: it gets no layer, so no layer order names it.
+  const removedColour = (activeCleanup?.settings.cleanup as Partial<CleanupSettings> | undefined)?.remove_colour ?? null
   const traceSize = physicalSize(activeCleanup?.settings.cleanup as Partial<CleanupSettings> | undefined, tracedSize)
 
   const regionLabels = selectionLabels(regionSelection)
@@ -1155,7 +1220,7 @@ export default function App() {
           layers={displayLayers} editorMode
           canvasLabel={stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionToggles={stage === 'trace' && !selectionMode}
-          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: traceSettings, tracedSize } : undefined}
+          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedColour), tracedSize } : undefined}
           // Paused until the selected revision's own traced grid is known, so a preview is
           // never requested with another revision's size.
           livePreviewPaused={!artifactsCurrent || tracedGrid?.revision !== revision}
@@ -1204,7 +1269,7 @@ export default function App() {
         <div className="section-heading"><h2>Flatten colours</h2><span>{revision ? 'Ready' : 'Choose a project'}</span></div><p className="section-intro">Turn the source into an exact limited-colour raster. Review preservation exceptions before running.</p>
         <div className="job">
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
-          <button disabled={!revision || busy || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => runPipeline('palette')}>Flatten image</button>
+          <button disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => runPipeline('palette')}>Flatten image</button>
           {sourceRevision && <button type="button" className="secondary" disabled={busy || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => setUpscaleOpen(true)}>Upscale source…</button>}
           {lockReason('flatten-lock-reason')}
         </div>
@@ -1215,14 +1280,16 @@ export default function App() {
         </section>
         <section id="workflow-panel-cleanup" role="tabpanel" aria-labelledby="workflow-tab-cleanup" className={`side-section pipeline-section workflow-surface ${stage === 'cleanup' ? 'mobile-stage-active' : ''}`} data-stage="cleanup">
           <div className="section-heading"><h2>Clean up for cutting</h2><span>{readiness}</span></div><p className="section-intro">Set the physical size and removed colour the trace uses, and remove or widen details too small to cut.</p>
-          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy} aria-describedby={lockedBy('cleanup-lock-reason')} onClick={() => runPipeline('cleanup')}>Run cleanup</button>{lockReason('cleanup-lock-reason')}</div>
+          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || startingJob} aria-describedby={lockedBy('cleanup-lock-reason')} onClick={() => runPipeline('cleanup')}>Run cleanup</button>{lockReason('cleanup-lock-reason')}</div>
           <PipelineControls stage="cleanup" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} cleanup={cleanupSettings} setCleanup={setCleanupSettings} baseCleanup={baselineCleanup} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setCleanupSettings(DEFAULT_CLEANUP_SETTINGS)} iterationCount={cleanupIterations.length} iterationIndex={cleanupStep} onStep={stepCleanup} onCommitDraft={() => persistDraft('cleanup')} />
         </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{readiness}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
-          {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
-          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || cleanupStale} aria-describedby={lockedBy('trace-lock-reason')} onClick={() => runPipeline('trace')}>Trace and validate</button>{lockReason('trace-lock-reason')}</div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
+          {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
+          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || startingJob || cleanupStale} aria-describedby={lockedBy('trace-lock-reason')} onClick={() => runPipeline('trace')}>Trace and validate</button>{lockReason('trace-lock-reason')}</div>
+          <PipelineControls stage="trace" removedColour={removedColour} automaticOrder={paletteRevision === revision ? automaticOrder : null} layerOrderLocked={!revision || paletteRevision === revision || (artifactsCurrent && !flattened) ? null
+            : tracedGridError && tracedGridError.revision === revision ? `Palette unavailable: ${tracedGridError.message}`
+              : selectedUnavailable ?? 'Loading the selected revision…'} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}

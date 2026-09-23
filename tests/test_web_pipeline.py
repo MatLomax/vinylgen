@@ -757,6 +757,60 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertIn("does not uniquely match the palette", job["error"])
 
 
+class EditorAutomaticLayerOrderTest(PipelineApiHarness):
+    """The editor state's automatic layer order is the one a trace of the revision infers."""
+
+    def three_colour_png(self) -> bytes:
+        # Navy fills the border; a large orange block sits inside, and a small cream block
+        # touches the right edge. The palette lists colours by share (orange before cream),
+        # but edge contact stacks cream below orange, so the orders differ.
+        pixels = np.full((32, 40, 3), (15, 35, 60), dtype=np.uint8)
+        pixels[4:28, 4:24] = (225, 95, 45)
+        pixels[8:14, 34:40] = (240, 230, 200)
+        buffer = io.BytesIO()
+        Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    async def traced_inferred_hex(self, project_id: str, revision_id: str) -> list[str]:
+        traced = (await self.run_job("trace", project_id, revision_id))["result_revision_id"]
+        rows = {row["kind"]: row for row in (await self.client.get(
+            f"/api/revisions/{traced}/effective-artifacts")).json()}
+        audit = json.loads((await self.client.get(rows["trace-audit"]["download_url"])).content)
+        by_name = {row["name"]: row["hex"] for row in audit["colours"]["included"]}
+        return [by_name[name] for name in audit["layer_order"]["inferred_bottom_to_top"]]
+
+    async def test_matches_the_tracer_with_and_without_a_removed_colour(self) -> None:
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": "Order Fixture"},
+            files={"source": ("fixture.png", self.three_colour_png(), "image/png")})
+        self.assertEqual(imported.status_code, 201, imported.text)
+        project = imported.json()
+        flattened = (await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 3, "min_colour_share": 0, "min_region_pixels": 0,
+                     "dither_radius": 0}))["result_revision_id"]
+        state = (await self.client.get(f"/api/revisions/{flattened}/editor")).json()
+        self.assertEqual(len(state["palette"]), 3)
+        palette_order = [row["hex"] for row in state["palette"]]
+        # Not palette order: returning it instead would fail here.
+        self.assertNotEqual(state["automatic_layer_order"], palette_order)
+        self.assertEqual(state["automatic_layer_order"],
+                         await self.traced_inferred_hex(project["id"], flattened))
+
+        # A cleanup removing a colour (named as the tracer resolves it): the order leaves it
+        # out, and still differs from the remaining colours' palette order.
+        navy = next(row for row in state["palette"] if row["rgb"][2] > row["rgb"][0])
+        cleaned = (await self.run_job("cleanup", project["id"], flattened, cleanup={
+            "width_mm": 40, "remove_colour": navy["hex"][1:].lower()}))["result_revision_id"]
+        cleaned_state = (await self.client.get(f"/api/revisions/{cleaned}/editor")).json()
+        self.assertEqual(len(cleaned_state["automatic_layer_order"]), 2)
+        self.assertNotIn(navy["hex"], cleaned_state["automatic_layer_order"])
+        self.assertNotEqual(cleaned_state["automatic_layer_order"],
+                            [row["hex"] for row in cleaned_state["palette"] if row["hex"] != navy["hex"]])
+        self.assertEqual(cleaned_state["automatic_layer_order"],
+                         await self.traced_inferred_hex(project["id"], cleaned))
+
+
 class PipelineWorkerTest(unittest.TestCase):
     """The compute worker runs in a killable subprocess, so cancellation stops the work
     immediately rather than waiting for the next progress checkpoint."""

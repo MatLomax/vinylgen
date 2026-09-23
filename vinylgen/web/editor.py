@@ -10,10 +10,12 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-from vinylgen.contracts import SegmentationBundle
+from vinylgen.contracts import CleanupSettings, SegmentationBundle
+from vinylgen.tracing import infer_order, resolve_colour
 
 from .models import LabelEditOperation
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
+from .pipeline import nearest_cleanup
 from .store import Store
 
 # Four-way connectivity: the authoritative rule for what one physical vinyl region is.
@@ -54,7 +56,38 @@ def editor_state(store: Store, revision_id: str) -> dict[str, Any]:
     return {"width": bundle.labels.shape[1], "height": bundle.labels.shape[0],
             "palette": report["palette"],
             "requested_colour_count": report.get("fixed_colour_count", {}).get("requested"),
-            "protected_pixels": int(bundle.explicit_protected_features.sum())}
+            "protected_pixels": int(bundle.explicit_protected_features.sum()),
+            "automatic_layer_order": automatic_layer_order(store, revision_id, bundle)}
+
+
+def automatic_layer_order(store: Store, revision_id: str,
+                          uncleaned: SegmentationBundle | None = None) -> list[str] | None:
+    """The bottom-to-top colour order (hex) a trace of ``revision_id`` infers before any
+    layer-order override: the tracer's own ``infer_order`` over the labels it traces
+    (the active cleanup's raster) without the colour that cleanup removes. Colours an
+    override leaves unnamed stack in this order. ``None`` when the revision cannot be
+    traced as it stands (no flatten, a stale cleanup, an unresolvable removed colour)."""
+    cleanup_revision, stale = nearest_cleanup(store, revision_id)
+    if stale:
+        return None
+    artifacts = store.effective_artifacts(revision_id)
+    if "segmentation" not in artifacts or "palette" not in artifacts:
+        return None
+    before = store.effective_artifacts(revision_id, before_cleanup=True).get("segmentation")
+    labels = (uncleaned.labels if uncleaned is not None and before is not None
+              and before["id"] == artifacts["segmentation"]["id"]
+              else SegmentationBundle.load(store.artifact_path(artifacts["segmentation"]["id"]),
+                                           with_costs=False).labels)
+    palette = json.loads(store.artifact_path(artifacts["palette"]["id"]).read_text())["palette"]
+    cleanup = CleanupSettings(**(cleanup_revision["settings"]["cleanup"]
+                                 if cleanup_revision is not None else {}))
+    try:
+        omitted = resolve_colour(cleanup.remove_colour, palette)
+    except ValueError:
+        return None
+    included = [index for index in range(len(palette)) if index != omitted]
+    inferred, _ = infer_order(labels, included, palette)
+    return [str(palette[index]["hex"]) for index in inferred]
 
 
 def _check_label(value: int | None, count: int, field: str = "label") -> int:
