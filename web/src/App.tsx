@@ -128,16 +128,43 @@ export function ancestorPaletteIterations(revisions: Revision[], revisionId: str
   }
   return list
 }
-export function ancestorTraceIterations(revisions: Revision[], revisionId: string | null): TraceSettings[] {
-  const list: TraceSettings[] = []
-  const seen = new Set<string>()
-  let current = revisions.find(row => row.id === revisionId)
-  while (current && !seen.has(current.id)) {
-    seen.add(current.id)
-    if (current.settings.trace) list.push({ ...DEFAULT_TRACE_SETTINGS, ...(current.settings.trace as Partial<TraceSettings>) })
-    current = revisions.find(row => row.id === current?.parent_revision_id)
+// The trace runs made on the shown artwork, newest first, and the shown run's index.
+// A run is a `trace` revision; validate/export records only copy a run's settings, so
+// they are passed through without counting. Forward, the chain follows the newest
+// child that leads to another run (ignoring edits, which Redo would follow); back, it
+// stops at the first revision outside the chain, so stepping never crosses an edit or
+// flatten. Off a run the chain is empty (index -1).
+export function traceRunChain(revisions: Revision[], revisionId: string | null): { runs: Revision[]; index: number } {
+  const byId = new Map(revisions.map(row => [row.id, row]))
+  const inChain = (row: Revision | undefined): row is Revision => row?.kind === 'trace' || row?.kind === 'validate' || row?.kind === 'export'
+  const parent = (row: Revision) => row.parent_revision_id ? byId.get(row.parent_revision_id) : undefined
+  let shown = revisionId ? byId.get(revisionId) : undefined
+  const climbed = new Set<string>()
+  while (inChain(shown) && shown.kind !== 'trace' && !climbed.has(shown.id)) { climbed.add(shown.id); shown = parent(shown) }
+  if (!inChain(shown) || shown.kind !== 'trace') return { runs: [], index: -1 }
+  const children = (row: Revision) => revisions.filter(other => other.parent_revision_id === row.id)
+  // A validate/export record only continues the chain when a later run hangs off it.
+  const leadsToRun = (row: Revision, seen: Set<string>): boolean => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return row.kind === 'trace' || (inChain(row) && children(row).some(child => leadsToRun(child, seen)))
   }
-  return list
+  let tip: Revision = shown
+  const visited = new Set([tip.id])
+  for (;;) {
+    const child = children(tip)
+      .filter(row => !visited.has(row.id) && leadsToRun(row, new Set(visited)))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)
+    if (!child) break
+    visited.add(child.id); tip = child
+  }
+  const runs: Revision[] = []
+  const walked = new Set<string>()
+  for (let node: Revision | undefined = tip; inChain(node) && !walked.has(node.id); node = parent(node)) {
+    walked.add(node.id)
+    if (node.kind === 'trace') runs.push(node)
+  }
+  return { runs, index: runs.findIndex(row => row.id === shown!.id) }
 }
 
 // Every trace writes both SVG variants; the overlap file only differs from the
@@ -202,14 +229,13 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [paletteSettings, setPaletteSettings] = useState<PaletteSettings>(DEFAULT_PALETTE_SETTINGS)
   const [traceSettings, setTraceSettings] = useState<TraceSettings>(DEFAULT_TRACE_SETTINGS)
-  // Position within the settings history: 0 is the working form (the newest recorded
-  // iteration, plus any un-run edits), higher indices are older iterations. The
-  // working form is stashed on first step back so stepping forward restores the
+  // Position within the flatten settings history: 0 is the working form (the newest
+  // recorded iteration, plus any un-run edits), higher indices are older iterations.
+  // The working form is stashed on first step back so stepping forward restores the
   // un-run edits it replaced.
   const [paletteStep, setPaletteStep] = useState(0)
-  const [traceStep, setTraceStep] = useState(0)
   const paletteLive = useRef<PaletteSettings | null>(null)
-  const traceLive = useRef<TraceSettings | null>(null)
+  const traceDraftSpent = useRef<string | null>(null)
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null)
   const [distinctFirst, setDistinctFirst] = useState<[number, number] | null>(null)
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
@@ -246,7 +272,11 @@ export default function App() {
   const flattened = artifacts.find(row => row.kind === 'flattened')
   // The settings that produced the shown image, recorded on its nearest ancestor.
   const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
-  const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(pipelineBaseline.trace))
+  // Pick the variant from the settings of the run that produced the loaded SVGs, so the
+  // choice and its label always describe the file shown, even mid-reload.
+  const tracedRunId = artifacts.find(row => TRACED_SVG_KINDS.has(row.kind))?.revision_id
+  const tracedRunSettings = (revisions.find(row => row.id === tracedRunId)?.settings.trace ?? pipelineBaseline.trace) as Partial<TraceSettings> | undefined
+  const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(tracedRunSettings))
   const { hasFlatten, hasEdit, paletteAncestorId } = useMemo(() => {
     let node = revisions.find(row => row.id === revision)
     const seen = new Set<string>()
@@ -283,7 +313,7 @@ export default function App() {
   const baselinePalette = useMemo<PaletteSettings>(() => ({ ...DEFAULT_PALETTE_SETTINGS, ...pipelineBaseline.palette }), [pipelineBaseline])
   const baselineTrace = useMemo<TraceSettings>(() => ({ ...DEFAULT_TRACE_SETTINGS, ...pipelineBaseline.trace }), [pipelineBaseline])
   const paletteIterations = useMemo(() => ancestorPaletteIterations(revisions, current?.id || null), [revisions, current?.id])
-  const traceIterations = useMemo(() => ancestorTraceIterations(revisions, current?.id || null), [revisions, current?.id])
+  const traceRuns = useMemo(() => traceRunChain(revisions, current?.id || null), [revisions, current?.id])
   function stepPalette(delta: number) {
     const next = Math.max(0, Math.min(paletteIterations.length - 1, paletteStep + delta))
     if (next === paletteStep) return
@@ -291,12 +321,13 @@ export default function App() {
     setPaletteSettings(next === 0 ? (paletteLive.current ?? paletteSettings) : paletteIterations[next])
     setPaletteStep(next)
   }
+  // Trace iterations are the saved runs themselves: a step makes that run the active
+  // revision and lands on its traced SVG.
   function stepTrace(delta: number) {
-    const next = Math.max(0, Math.min(traceIterations.length - 1, traceStep + delta))
-    if (next === traceStep) return
-    if (traceStep === 0) traceLive.current = traceSettings
-    setTraceSettings(next === 0 ? (traceLive.current ?? traceSettings) : traceIterations[next])
-    setTraceStep(next)
+    const target = traceRuns.runs[traceRuns.index + delta]
+    if (!target || traceRuns.index < 0) return
+    setPendingView({ view: 'traced', revision: target.id })
+    setRevision(target.id)
   }
   const sourceRevision = revisions.find(row => row.id === source?.revision_id)
   const generation = generationFromRevision(sourceRevision)
@@ -315,7 +346,8 @@ export default function App() {
       // The run recorded these values on the new revision; that revision is now the
       // baseline, so the pending draft for this step is spent — drop it before the
       // settings effect reloads (baseline alone then equals the applied values).
-      if ((next.kind === 'palette' || next.kind === 'trace') && next.project_id) clearDraft(next.project_id, next.kind)
+      if (next.kind === 'palette' && next.project_id) clearDraft(next.project_id, 'palette')
+      if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) clearDraft(next.project_id, 'trace')
       setRevision(next.result_revision_id)
       if (next.kind === 'palette') setPendingView({ view: 'flattened', revision: next.result_revision_id })
       if (next.kind === 'trace') setPendingView({ view: 'traced', revision: next.result_revision_id })
@@ -384,13 +416,14 @@ export default function App() {
   useEffect(() => {
     // Fill each stage's fields from the settings that produced the shown revision
     // (defaults before it ran), then overlay any pending per-step draft so un-run
-    // edits survive a refresh until the stage is run.
+    // edits survive a refresh until the stage is run. An older trace run shows exactly
+    // its own settings; the trace draft belongs to the newest run.
     const { palette: storedPalette, trace: storedTrace } = inheritedPipelineSettings(revisions, current?.id || null)
     let draft: { palette?: Partial<PaletteSettings>; trace?: Partial<TraceSettings> } = {}
     try { draft = selected ? JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') : {} } catch { /* use revision values */ }
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draft.palette })
-    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...draft.trace })
-    setPaletteStep(0); setTraceStep(0); paletteLive.current = null; traceLive.current = null
+    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...(traceRuns.index > 0 ? {} : draft.trace) })
+    setPaletteStep(0); paletteLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
   useEffect(() => {
@@ -573,12 +606,17 @@ export default function App() {
     try {
       const settings = kind === 'palette' ? { palette: paletteSettings }
         : kind === 'trace' ? { trace: traceSettings } : undefined
-      setJob(await api.startPipeline(kind, selected, revision, settings))
+      const started = await api.startPipeline(kind, selected, revision, settings)
+      // Only a run from the newest trace carries the pending trace draft, so only that
+      // run spends it; a branch from an older run leaves it for the newest.
+      traceDraftSpent.current = kind === 'trace' && traceRuns.index <= 0 ? started.id : null
+      setJob(started)
     }
     catch (cause) { setError(String(cause)) }
   }
   function persistDraft(step: 'palette' | 'trace') {
-    if (!selected) return
+    // The trace draft belongs to the newest run; an older run's form is its record.
+    if (!selected || (step === 'trace' && traceRuns.index > 0)) return
     let draft: { palette?: PaletteSettings; trace?: TraceSettings } = {}
     try { draft = JSON.parse(localStorage.getItem(draftKey(selected)) || '{}') } catch { draft = {} }
     if (step === 'palette') draft.palette = paletteSettings; else draft.trace = traceSettings
@@ -625,7 +663,7 @@ export default function App() {
   }, [overlayOperation])
   const workspaceLayers = artifacts.map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
     .map(layer => TRACED_SVG_KINDS.has(artifacts.find(row => row.id === layer.id)?.kind ?? '') && flattened ? { ...layer, sizeFrom: flattened.id } : layer)
-    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(pipelineBaseline.trace) } : layer)
+    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(tracedRunSettings) } : layer)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (original) · ${preEditFlattened.filename}`,
     url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',
@@ -828,7 +866,7 @@ export default function App() {
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           <div className="job"><button disabled={!revision || !artifacts.some(row => row.kind === 'segmentation') || busy} onClick={() => runPipeline('trace')}>Trace and validate</button></div>
-          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceIterations.length} iterationIndex={traceStep} onStep={stepTrace} onCommitDraft={() => persistDraft('trace')} />
+          <PipelineControls stage="trace" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
-import { ancestorPaletteIterations, ancestorTraceIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, tracedSvgKind, tracedSvgName } from './App'
+import { ancestorPaletteIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -78,6 +78,42 @@ describe('artifact to workspace layer integration', () => {
   it('excludes non-visual audit and inspection artifacts', () => {
     expect(artifactToWorkspaceLayer(artifact('trace-audit', 'application/json'))).toBeNull()
     expect(artifactToWorkspaceLayer(artifact('trace-inspection', 'text/html'))).toBeNull()
+  })
+})
+
+describe('trace run chain', () => {
+  const at = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00Z`
+  const rev = (id: string, parent: string | null, kind: string, minute: number): Revision =>
+    ({ ...revision, id, parent_revision_id: parent, kind, created_at: at(minute) })
+  // An older run before an edit, then three runs on the edited artwork with a validate
+  // record between two of them and an abandoned branch off the first.
+  const revisions = [
+    rev('p', null, 'palette', 0), rev('old', 'p', 'trace', 1), rev('e', 'old', 'label-edit', 2),
+    rev('t1', 'e', 'trace', 3), rev('t2', 't1', 'trace', 4), rev('v2', 't2', 'validate', 5),
+    rev('t3', 'v2', 'trace', 6), rev('branch', 't1', 'trace', 7),
+  ]
+
+  it('lists the runs on the shown artwork newest first without crossing an edit', () => {
+    expect(traceRunChain(revisions, 't2')).toEqual({ runs: [revisions[6], revisions[4], revisions[3]], index: 1 })
+  })
+
+  it('follows the newest trace child forward, as Redo does', () => {
+    // t1's newest child is the later branch, so stepping forward from t1 goes there.
+    const chain = traceRunChain(revisions, 't1')
+    expect(chain.runs.map(row => row.id)).toEqual(['branch', 't1'])
+    expect(chain.index).toBe(1)
+  })
+
+  it('does not let a trailing export on an older run hide the newer runs', () => {
+    const exported = [...revisions, rev('x', 't2', 'export', 8)]
+    expect(traceRunChain(exported, 'x').runs.map(row => row.id)).toEqual(['t3', 't2', 't1'])
+    expect(traceRunChain(exported, 't2').index).toBe(1)
+  })
+
+  it('places a validate record at the run it validated and is empty off a run', () => {
+    expect(traceRunChain(revisions, 'v2').index).toBe(1)
+    expect(traceRunChain(revisions, 'e')).toEqual({ runs: [], index: -1 })
+    expect(traceRunChain(revisions, null)).toEqual({ runs: [], index: -1 })
   })
 })
 
@@ -181,7 +217,7 @@ describe('pipeline setting provenance', () => {
     })
   })
 
-  it('lists each stage iteration along the ancestry, newest first and merged over defaults', () => {
+  it('lists each flatten iteration along the ancestry, newest first and merged over defaults', () => {
     const older = { ...revision, id: 'p1', kind: 'palette', settings: { palette: { initial_colours: 8 } } }
     const edit = { ...revision, id: 'e1', parent_revision_id: 'p1', kind: 'label-edit', settings: {} }
     const newer = { ...revision, id: 'p2', parent_revision_id: 'e1', kind: 'palette', settings: { palette: { initial_colours: 20 } } }
@@ -194,10 +230,6 @@ describe('pipeline setting provenance', () => {
     // iteration is a complete settings object the form can load.
     expect(palettes[0].protect_intentional_lines).toBe(true)
     expect(palettes[0].final_colours).toBeNull()
-
-    const traces = ancestorTraceIterations(revisions, 't1')
-    expect(traces.map(item => item.overlap)).toEqual([3])
-    expect(traces[0].curve_optimization).toBe(true)
   })
 
   it('steps the flatten form through prior iterations and restores un-run edits, image unchanged', async () => {
@@ -801,4 +833,108 @@ describe('project deletion', () => {
     await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe('')
   })
+})
+
+describe('stepping through trace runs', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
+  const run1: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02', settings: { trace: { overlap: 0, solid_underlayers: true } } }
+  const run2: Revision = { ...revision, id: 'trace-2', parent_revision_id: 'trace-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 0, solid_underlayers: false } } }
+  const svgs = (run: string) => [
+    { ...artifact('traced-edge', 'image/svg+xml'), id: `${run}-edge` },
+    { ...artifact('traced-overlap', 'image/svg+xml'), id: `${run}-overlap` },
+  ]
+
+  it('makes each run the active revision, shows its SVG, and keeps the draft on the newest run', async () => {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
+      [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { corner_threshold: 45 } }))
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    await within(panel).findByText('Iteration 2 of 2')
+    const solid = within(panel).getByRole('checkbox', { name: /Solid underlayers/ }) as HTMLInputElement
+    const corner = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
+    await vi.waitFor(() => expect(corner.value).toBe('45'))
+
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await within(panel).findByText('Iteration 1 of 2')
+    expect(window.location.hash).toContain('revision=trace-1')
+    // The older run's own traced SVG, its own variant, and exactly its own settings.
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-overlap'))
+    expect(solid.checked).toBe(true)
+    expect(corner.value).toBe('60')
+
+    fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
+    await within(panel).findByText('Iteration 2 of 2')
+    expect(window.location.hash).toContain('revision=trace-2')
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-2-edge'))
+    expect(solid.checked).toBe(false)
+    expect(corner.value).toBe('45')
+    expect((within(panel).getByLabelText('Show the next trace run') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  async function openAtNewestRun() {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
+      [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { corner_threshold: 45 } }))
+    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
+    render(createElement((await import('./App')).default))
+    const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+    await within(panel).findByText('Iteration 2 of 2')
+    const corner = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
+    await vi.waitFor(() => expect(corner.value).toBe('45'))
+    return { panel, corner }
+  }
+  const storedDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
+
+  it('never turns an older run\'s settings into the newest run\'s draft when focus leaves the form', async () => {
+    const { panel, corner } = await openAtNewestRun()
+    const back = within(panel).getByLabelText('Show the previous trace run')
+    fireEvent.click(back)
+    await within(panel).findByText('Iteration 1 of 2')
+    await vi.waitFor(() => expect(corner.value).toBe('60'))
+    // Focus leaving the stepper or an edited field at the older run commits no draft.
+    fireEvent.focusOut(back)
+    fireEvent.change(corner, { target: { value: '70' } })
+    fireEvent.focusOut(corner)
+    expect(storedDraft()).toEqual({ corner_threshold: 45 })
+
+    fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
+    await within(panel).findByText('Iteration 2 of 2')
+    await vi.waitFor(() => expect(corner.value).toBe('45'))
+  })
+
+  it('keeps the newest run\'s draft when a trace branches from an older run', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-branch', kind: 'trace' })
+    const { panel } = await openAtNewestRun()
+    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
+    await within(panel).findByText('Iteration 1 of 2')
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(update).toBeDefined())
+    await act(async () => update?.({ ...queuedJob, id: 'job-branch', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' }))
+    expect(storedDraft()).toEqual({ corner_threshold: 45 })
+  })
+
+  it('spends the draft when the newest run is traced again', async () => {
+    let update: ((job: Job) => void) | undefined
+    mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+    mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-tip', kind: 'trace' })
+    const { panel } = await openAtNewestRun()
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    expect(mocks.startPipeline).toHaveBeenCalledWith('trace', project.id, 'trace-2', { trace: expect.objectContaining({ corner_threshold: 45 }) })
+    await vi.waitFor(() => expect(update).toBeDefined())
+    await act(async () => update?.({ ...queuedJob, id: 'job-tip', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-2' }))
+    expect(storedDraft()).toBeUndefined()
+  })
+
 })

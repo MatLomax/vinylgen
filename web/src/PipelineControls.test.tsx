@@ -99,6 +99,15 @@ describe('iteration stepper', () => {
     expect(onStep).toHaveBeenCalledWith(-1)
   })
 
+  it('labels trace steps as saved runs and locks them while a job runs', () => {
+    const onStep = vi.fn()
+    render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={3} iterationIndex={1} onStep={onStep} stepDisabled onCommitDraft={() => undefined} />)
+    expect(screen.getByRole('group', { name: 'Step through trace runs' })).toBeTruthy()
+    expect((screen.getByLabelText('Show the previous trace run') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByLabelText('Show the next trace run') as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('disables both arrows and reads no past runs before any iteration exists', () => {
     const { back, forward } = renderStepper(0, 0)
     expect(screen.getByText('No past runs')).toBeTruthy()

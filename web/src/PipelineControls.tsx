@@ -117,9 +117,9 @@ function LayerOrderList({ colours, order, onChange, dirty }: {
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, onCommitDraft }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft }: {
   stage: 'flatten' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
-  paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; onCommitDraft: () => void
+  paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
 }) {
   const p = <K extends keyof PaletteSettings>(key: K, value: PaletteSettings[K]) => setPalette({ ...palette, [key]: value })
   const t = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => setTrace({ ...trace, [key]: value })
@@ -130,10 +130,12 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   // the stage bakes them into a revision and the parent then clears the draft.
   return <div className="stage-settings" onBlur={onCommitDraft}>
     <div className="settings-actions">
-      <div className="iteration-stepper" role="group" aria-label="Step through previous iterations">
-        <button type="button" className="secondary" aria-label="Load an older iteration's settings" disabled={iterationIndex >= iterationCount - 1} onClick={() => onStep(1)}>◀</button>
+      {/* Flatten steps only its form's settings; trace steps between saved runs, each
+          becoming the active revision with its own traced image. */}
+      <div className="iteration-stepper" role="group" aria-label={stage === 'trace' ? 'Step through trace runs' : 'Step through previous iterations'}>
+        <button type="button" className="secondary" aria-label={stage === 'trace' ? 'Show the previous trace run' : "Load an older iteration's settings"} disabled={stepDisabled || iterationIndex >= iterationCount - 1} onClick={() => onStep(1)}>◀</button>
         <span className="iteration-indicator">{iterationCount === 0 ? 'No past runs' : `Iteration ${iterationCount - iterationIndex} of ${iterationCount}`}</span>
-        <button type="button" className="secondary" aria-label="Load a newer iteration's settings" disabled={iterationIndex <= 0} onClick={() => onStep(-1)}>▶</button>
+        <button type="button" className="secondary" aria-label={stage === 'trace' ? 'Show the next trace run' : "Load a newer iteration's settings"} disabled={stepDisabled || iterationIndex <= 0} onClick={() => onStep(-1)}>▶</button>
       </div>
       <button type="button" className="secondary" onClick={onReset}>Reset this stage</button>
     </div>
