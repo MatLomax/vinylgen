@@ -108,6 +108,22 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **pixel mode** | Trace configuration without physical dimensions, making width and area settings use pixels and square pixels. | raster units mode | physical mode |
 | **trace fallback** | A recorded local recovery used when ordinary fitted geometry cannot satisfy protected-feature validation. | local fallback, dense fallback when that final step is meant | global raster trace |
 
+## Path nodes
+
+A **node** is an endpoint shared by two consecutive path segments; each cubic
+segment gives the node a **handle** (control point) on that side. Node types are
+defined by the node's two handles. The shape is the marker used to draw that
+type wherever Vinylgen shows nodes.
+
+| Canonical term | Definition | Shape | Avoid or qualify |
+|---|---|---|---|
+| **cusp node** | A node whose two handles are not at 180° to each other, so the path changes direction abruptly there; a node between two straight segments is always a cusp. | rhombus | sharp node; "corner" when the turn is below the corner threshold (that is a **kink**) |
+| **symmetric node** | A node whose two handles are at 180° to each other (collinear through the node) but may differ in length (unbalanced). | square | Inkscape calls this type *smooth* (`sodipodi:nodetypes` `s`); name it by Vinylgen's term |
+| **smooth node** | A node whose two handles are at 180° to each other and equal in length (balanced). | circle | Inkscape calls this type *symmetric* (`sodipodi:nodetypes` `z`); name it by Vinylgen's term |
+| **turn angle** | The change of direction at a node, in degrees: 0° is straight on, 180° doubles back. | bend angle | interior angle, which is 180° minus the turn |
+| **kink** | A cusp node whose turn angle is below the corner threshold: an unintended sharp change of direction in what should be a continuous edge. | | corner |
+| **corner threshold** | The turn angle at or above which a bend supported by straight runs on both sides becomes a hard corner (a cusp node). | | sharpness, when it could mean the interior angle |
+
 ## Revisions, artifacts, and state
 
 | Canonical term | Definition | Accepted aliases | Avoid or qualify |

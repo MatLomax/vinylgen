@@ -124,6 +124,13 @@ Palette flattening may fold tiny similar-colour anti-alias fragments, but must
 not delete high-contrast detail merely because it is small. Cutter-oriented
 area/width removal and widening remain explicit trace-stage operations.
 
+## Terminology
+
+Use the canonical terms defined in the glossary, including the path-node types
+(cusp, symmetric, smooth), whose names differ from Inkscape's.
+
+@GLOSSARY.md
+
 ## Reference map
 
 Read only the references relevant to the current task.
