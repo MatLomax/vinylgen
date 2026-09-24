@@ -231,7 +231,8 @@ describe('generation frame dimensions', () => {
     expect((screen.getByLabelText(/Number of colours/) as HTMLInputElement).value).toBe('8')
     expect((screen.getByLabelText(/Required motifs/) as HTMLInputElement).value).toBe('whale')
     expect((screen.getByLabelText(/Rejected motifs/) as HTMLInputElement).value).toBe('text')
-    expect((screen.getByLabelText(/Frame/) as HTMLSelectElement).value).toBe('square')
+    // The frame follows the generation in an effect, a render after the remounted form fields.
+    await vi.waitFor(() => expect((screen.getByLabelText(/Frame/) as HTMLSelectElement).value).toBe('square'))
   })
 })
 
