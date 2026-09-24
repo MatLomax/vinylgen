@@ -199,10 +199,18 @@ on the same preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its
 "Live preview" switch is remembered separately from the Trace canvas's; with it
 on, the canvas cleans whatever is zoomed into with the Cleanup form's current,
 unsaved values, physical size included (the thresholds are in mm), and draws the
-cleaned pixels over the image at that window. The changes sit on top, on the same
-raster grid, as a separate overlay a "Show changes" switch (also remembered)
-hides: the net change from the uncleaned raster, red where removal set the final
-colour, green where widening did, transparent where a pixel ends unchanged. The
+cleaned pixels over the image at that window. On top, on the same raster grid,
+it draws what a Cleanup run with those values would change on the raster the
+canvas shows (the active cleanup's result, if any): red would be removed, green
+would be widened, blue would return to its uncleaned colour; with the settings
+of the active cleanup that produced the shown raster it returns that raster and
+draws nothing. Separately, the
+canvas's "Show changes" switch (remembered) draws what the shown revision's
+Cleanup run has changed, over the whole image and with or without the preview,
+from the `cleanup-changes-overlay` artifact each Cleanup run that changed pixels
+records; it is disabled, with "Re-run Cleanup to record its changes", for a
+cleanup recorded before runs wrote it. A legend in the canvas controls names the
+colours of each overlay on view. The
 window, the 600 × 600 px limit with "Zoom in to preview", the 150 ms settle, the
 aborting of the request in flight, the checkpoints and the error conventions
 (404, 409 for an unflattened or stale revision or a superseded request, 422 for

@@ -398,7 +398,8 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(revision["settings"]["palette"]["initial_colours"], 2)
 
         own = await self.artifacts(cleaned_revision)
-        self.assertEqual(set(own), {"flattened", "segmentation", "palette", "report", "cleanup-audit"})
+        self.assertEqual(set(own), {"flattened", "segmentation", "palette", "report", "cleanup-audit",
+                                    "cleanup-changes-overlay"})
         before = await self.bundle((await self.artifacts(palette_revision))["segmentation"])
         after = await self.bundle(own["segmentation"])
         after.validate()
@@ -407,6 +408,15 @@ class WebCleanupStageTest(PipelineApiHarness):
         changed = after.labels != before.labels
         self.assertEqual(int(changed.sum()), 2)
         self.assertTrue(changed[3, 34:36].all())
+        # The changes overlay marks exactly the removed pixels, index 1 (opaque red),
+        # on a transparent background, one byte per pixel.
+        overlay = Image.open(io.BytesIO(await self.download(own["cleanup-changes-overlay"])))
+        self.assertEqual(overlay.mode, "P")
+        self.assertEqual(overlay.size, (40, 32))
+        np.testing.assert_array_equal(np.asarray(overlay), changed.astype(np.uint8))
+        self.assertEqual(overlay.getpalette()[:9], [0, 0, 0, 230, 40, 40, 40, 200, 70])
+        alpha = np.asarray(overlay.convert("RGBA"))[..., 3]
+        np.testing.assert_array_equal(alpha, np.where(changed, 255, 0))
         self.assertEqual(int(after.labels[3, 34]), int(before.labels[0, 0]))
         np.testing.assert_array_equal(after.palette_costs, before.palette_costs)
         # Automatic protection lapses where the cleanup changed labels; explicit
@@ -451,6 +461,46 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertIn('width="40mm"', svg)
         self.assertIn('height="32mm"', svg)
         self.assertEqual(trace_artifacts["segmentation"]["revision_id"], cleaned_revision)
+        # A trace of the cleanup keeps its changes overlay.
+        self.assertEqual(trace_artifacts["cleanup-changes-overlay"]["revision_id"], cleaned_revision)
+        # The export packages it with the rest of the cleanup's artifacts.
+        validated = await self.run_job("validate", project["id"], traced["result_revision_id"])
+        exported = await self.run_job("export", project["id"], validated["result_revision_id"])
+        archive_row = (await self.artifacts(exported["result_revision_id"]))["export"]
+        with zipfile.ZipFile(io.BytesIO(await self.download(archive_row))) as archive:
+            self.assertEqual(archive.read("cleanup-changes-overlay.png"),
+                             await self.download(own["cleanup-changes-overlay"]))
+
+    async def test_the_changes_overlay_is_replaced_by_a_newer_cleanup_and_hidden_by_an_edit(self) -> None:
+        project, palette_revision = await self.flattened()
+        removing = {"width_mm": 40, "cleanup": True, "min_region_area": 4}
+        cleaned = (await self.run_job("cleanup", project["id"], palette_revision,
+                                      cleanup=removing))["result_revision_id"]
+        self.assertIn("cleanup-changes-overlay", await self.artifacts(cleaned, effective=True))
+        # A newer cleanup that changes nothing records no overlay and hides the older one.
+        for settings in ({"width_mm": 40, "cleanup": False}, {"width_mm": 40, "cleanup": True}):
+            with self.subTest(settings=settings):
+                unchanged = (await self.run_job("cleanup", project["id"], cleaned,
+                                                cleanup=settings))["result_revision_id"]
+                self.assertNotIn("cleanup-changes-overlay", await self.artifacts(unchanged))
+                self.assertNotIn("cleanup-changes-overlay",
+                                 await self.artifacts(unchanged, effective=True))
+        # A newer cleanup that changes pixels replaces it with its own.
+        again = (await self.run_job("cleanup", project["id"], cleaned,
+                                    cleanup=removing))["result_revision_id"]
+        effective = await self.artifacts(again, effective=True)
+        self.assertEqual(effective["cleanup-changes-overlay"]["revision_id"], again)
+        # An edit after the cleanup makes it stale, and the overlay with it.
+        edited = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{again}/edits",
+            json={"operations": [{"tool": "paint_pixels", "target_label": 0, "pixels": [[1, 1]]}]})
+        self.assertEqual(edited.status_code, 201, edited.text)
+        self.assertNotIn("cleanup-changes-overlay",
+                         await self.artifacts(edited.json()["id"], effective=True))
+        # The raster a cleanup starts from never carries one.
+        before = (await self.client.get(
+            f"/api/revisions/{again}/effective-artifacts?before_cleanup=true")).json()
+        self.assertNotIn("cleanup-changes-overlay", {row["kind"] for row in before})
 
     async def test_explicitly_protected_detail_survives_cleanup_and_is_reported(self) -> None:
         imported = await self.client.post(

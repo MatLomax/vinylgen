@@ -210,6 +210,20 @@ def remove_then_widen_stages(settings: CleanupSettings) -> tuple[CleanupSettings
     return remove, widen
 
 
+def change_classes(original: np.ndarray, after_removal: np.ndarray, final: np.ndarray
+                   ) -> tuple[np.ndarray, np.ndarray]:
+    """The net change of a cleanup, split by the stage that made it.
+
+    A pixel whose final label differs from its ``original`` one is widened when the
+    widening set its final label (it differs from ``after_removal``), otherwise
+    removed. A pixel that ends with its original label (removed, then widened back)
+    is in neither mask. Returns ``(removed, widened)``.
+    """
+    changed = final != original
+    widened = changed & (final != after_removal)
+    return changed & ~widened, widened
+
+
 def resolve_physical_size(settings: CleanupSettings, width: int, height: int) -> CleanupSettings:
     """The settings with a one-sided physical size completed from the raster's
     proportions. Without a size both dimensions stay ``None`` (pixel units)."""
@@ -229,6 +243,7 @@ def pixel_scale(resolved: CleanupSettings, width: int) -> float:
 def apply_cleanup(labels: np.ndarray, palette: list[dict], settings: CleanupSettings,
                   omitted: int | None, *, protected_features: np.ndarray,
                   explicit_protected_features: np.ndarray,
+                  stages: dict | None = None,
                   ) -> tuple[np.ndarray, np.ndarray, dict, CleanupSettings]:
     """Run cutter cleanup on a label raster under its physical size.
 
@@ -243,14 +258,16 @@ def apply_cleanup(labels: np.ndarray, palette: list[dict], settings: CleanupSett
     Returns the cleaned labels, the updated automatic-plus-explicit protected mask,
     the cleanup summary (with the automatic protection it cleared) and the settings
     with the physical size resolved against the raster. This is the one cleanup
-    implementation shared by the cleanup stage and the trace CLI.
+    implementation shared by the cleanup stage and the trace CLI. ``stages`` is
+    passed to ``cleanup_labels``.
     """
     height, width = labels.shape
     resolved = resolve_physical_size(settings, width, height)
     included = [index for index in range(len(palette)) if index != omitted]
     explicit = explicit_protected_features.astype(bool)
     cleaned, summary = cleanup_labels(labels, included, palette, resolved,
-                                      pixel_scale(resolved, width), explicit=explicit)
+                                      pixel_scale(resolved, width), explicit=explicit,
+                                      stages=stages)
     changed = cleaned != labels
     automatic = protected_features.astype(bool) & ~explicit
     cleared = automatic & changed
@@ -267,7 +284,8 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                    settings: CleanupSettings, units_per_pixel: float,
                    *, explicit: np.ndarray | None = None,
                    regions: RegionMeasurements | None = None,
-                   checkpoint: Callable[[], None] | None = None) -> tuple[np.ndarray, dict]:
+                   checkpoint: Callable[[], None] | None = None,
+                   stages: dict | None = None) -> tuple[np.ndarray, dict]:
     """Remove or widen undersized regions of ``included`` colours.
 
     ``explicit`` marks the user's explicitly protected pixels, which are never
@@ -283,9 +301,17 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
 
     ``checkpoint`` runs before each colour, each removal group and each widened
     component, and may raise to abandon the cleanup; it never changes the result.
+
+    ``stages``, when given, receives ``"after_removal"``: the labels after the removal
+    stage (the input for ``widen`` or with cleanup off, the result for ``remove``),
+    from which ``change_classes`` tells removed pixels from widened ones.
     """
     check = checkpoint or (lambda: None)
     result = labels.copy()
+    if stages is not None:
+        # ``result`` is updated in place by a removal, so it ends as the removal's output.
+        stages["after_removal"] = (labels if settings.cleanup and settings.cleanup_action == "widen"
+                                   else result)
     summary = {"enabled": settings.cleanup, "action": settings.cleanup_action,
                "removed_regions": 0, "removed_pixels": 0, "widened_regions": 0,
                "widened_pixels": 0, "unchanged_regions": 0, "protected_kept_regions": 0,
@@ -299,6 +325,8 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
         removed, remove_summary = cleanup_labels(
             result, included, palette, remove_settings, units_per_pixel, explicit=explicit,
             regions=regions, checkpoint=checkpoint)
+        if stages is not None:
+            stages["after_removal"] = removed
         # The removal changed the raster, so the measurements no longer describe it.
         widened, widen_summary = cleanup_labels(
             removed, included, palette, widen_settings, units_per_pixel, explicit=explicit,

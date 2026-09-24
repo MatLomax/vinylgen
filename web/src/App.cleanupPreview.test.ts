@@ -15,7 +15,7 @@ vi.mock('./api', async importOriginal => {
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
 // The canvas gets the options at once, with a null grid (paused) until it is measured.
-type Captured = { canvasLabel?: string; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean }
+type Captured = { canvasLabel?: string; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; inspectionKinds?: readonly string[]; layers?: { kind?: string; role: string; name: string }[] }
 const workspaceProps = vi.hoisted(() => ({ current: null as Captured | null, history: [] as Captured[] }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: Captured) => { workspaceProps.current = props; workspaceProps.history.push(props); return null } }))
 
@@ -59,7 +59,7 @@ describe('Cleanup canvas live preview wiring', () => {
     await vi.waitFor(() => expect(workspaceProps.current?.livePreviewPaused).toBe(false))
     expect(workspaceProps.current?.canvasLabel).toBe('Cleanup canvas')
     expect(workspaceProps.current?.livePreview).toBeUndefined()
-    expect(workspaceProps.current?.cleanupPreview).toEqual({ revisionId: flattenRevision.id, settings: DEFAULT_CLEANUP_SETTINGS, tracedSize: { width: 1200, height: 900 } })
+    expect(workspaceProps.current?.cleanupPreview).toEqual({ revisionId: flattenRevision.id, settings: DEFAULT_CLEANUP_SETTINGS, tracedSize: { width: 1200, height: 900 }, changesUnavailable: 'No Cleanup changes to show' })
     const cleanupProps = workspaceProps.history.filter(props => props.cleanupPreview)
     // Never running without its grid.
     expect(cleanupProps.every(props => props.livePreviewPaused || props.cleanupPreview?.tracedSize)).toBe(true)
@@ -82,3 +82,31 @@ describe('Cleanup canvas live preview wiring', () => {
     expect(workspaceProps.current?.livePreview).toBeTruthy()
   })
 })
+
+describe('Cleanup canvas applied changes', () => {
+  const cleanupRevision: Revision = { id: 'cleanup-1', project_id: project.id, parent_revision_id: flattenRevision.id, kind: 'cleanup', message: null, settings: { cleanup: { ...DEFAULT_CLEANUP_SETTINGS, cleanup: true, min_region_area: 4 } }, created_at: '2026-01-02' }
+  const cleaned = (kind: string): Artifact => ({ ...artifact(kind), id: `${kind}-cleaned`, revision_id: cleanupRevision.id })
+
+  async function openCleanup() {
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(screen.getByRole('tab', { name: 'Cleanup' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.livePreviewPaused).toBe(false))
+  }
+
+  it('offers the cleanup run\'s changes overlay on the Cleanup canvas', async () => {
+    mocks.project.mockResolvedValue({ ...project, revisions: [cleanupRevision, flattenRevision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), cleaned('flattened'), cleaned('cleanup-changes-overlay')])
+    await openCleanup()
+    expect(workspaceProps.current?.inspectionKinds).toEqual(['cleanup-changes-overlay'])
+    expect(workspaceProps.current?.layers?.find(layer => layer.kind === 'cleanup-changes-overlay')).toMatchObject({ role: 'overlay', name: 'Cleanup changes (removed red, widened green)' })
+  })
+
+  it('asks for a re-run when the cleanup changed pixels but recorded no overlay', async () => {
+    mocks.project.mockResolvedValue({ ...project, revisions: [cleanupRevision, flattenRevision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), cleaned('flattened')])
+    await openCleanup()
+    await vi.waitFor(() => expect(workspaceProps.current?.cleanupPreview?.changesUnavailable).toBe('Re-run Cleanup to record its changes'))
+  })
+})
+

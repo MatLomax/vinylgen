@@ -3052,7 +3052,7 @@ describe('Flatten canvas preservation markers and overlays', () => {
     await vi.waitFor(() => expect(workspaceProps.current?.layers?.some(layer => layer.id === 'protected-areas-overlay-id')).toBe(true))
   }
 
-  it('offers each canvas only its own overlays: Protected areas on Flatten, the trace audits on Trace', async () => {
+  it('offers each canvas only its own overlays: Protected areas on Flatten, the trace audits on Trace, the cleanup changes on Cleanup', async () => {
     await openFlatten()
     expect(workspaceProps.current?.layers?.find(layer => layer.id === 'protected-areas-overlay-id')).toMatchObject({ role: 'overlay', name: 'Protected areas' })
     expect(workspaceProps.current?.inspectionKinds).toEqual(['protected-areas-overlay'])
@@ -3061,9 +3061,10 @@ describe('Flatten canvas preservation markers and overlays', () => {
     expect(workspaceProps.current?.inspectionKinds).toEqual(TRACE_KINDS)
     fireEvent.click(screen.getByRole('tab', { name: 'Cleanup' }))
     await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Cleanup canvas'))
-    expect(workspaceProps.current?.inspectionKinds).toEqual([])
+    expect(workspaceProps.current?.inspectionKinds).toEqual(['cleanup-changes-overlay'])
     expect(canvasOverlayKinds('flatten', true)).toEqual(['protected-areas-overlay'])
     expect(canvasOverlayKinds('trace', true)).toEqual([])
+    expect(canvasOverlayKinds('cleanup', true)).toEqual([])
     expect(canvasOverlayKinds('palette', false)).toEqual([])
   })
 

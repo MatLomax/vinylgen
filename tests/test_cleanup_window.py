@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
+from PIL import Image
 from scipy import ndimage
 
 from vinylgen import cleanup_window, cutter_cleanup
-from vinylgen.cleanup_window import CLEANUP_PREVIEW_MARGIN_PX, CleanupSource, clean_window
+from vinylgen.cleanup_window import (CLEANUP_PREVIEW_MARGIN_PX, CleanupSource, clean_window,
+                                     will_change)
 from vinylgen.contracts import CleanupSettings
-from vinylgen.cutter_cleanup import apply_cleanup, measure_colour_regions
+from vinylgen.cutter_cleanup import (apply_cleanup, cleanup_labels, measure_colour_regions,
+                                     remove_then_widen_stages)
+from vinylgen.web.cleanup import write_changes_overlay
 from vinylgen.trace_window import PREVIEW_MARGIN_PX, PreviewCancelled, Window
 
 PALETTE = [
@@ -172,12 +178,8 @@ class CleanWindowTest(unittest.TestCase):
         self.assertGreater(int((narrow.labels != window_of(full, WINDOW)).sum()), 100)
 
     def test_changes_are_the_net_change_from_the_uncleaned_raster(self) -> None:
-        labels = np.zeros((HEIGHT, WIDTH), dtype=np.int16)
-        # A long one-pixel Ember stroke and a 2 x 2 Ember speck just below it: the
-        # removal recolours the speck, then widening the stroke paints its top row
-        # back to Ember, so that row ends unchanged.
-        labels[200, 220:340] = 1
-        labels[202:204, 280:282] = 1
+        # The speck's top row is removed, then widened back, so it ends unchanged.
+        labels = stroke_and_speck()
         explicit = np.zeros_like(labels, dtype=bool)
         automatic = np.zeros_like(labels, dtype=bool)
         settings = CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
@@ -324,6 +326,120 @@ class RegionMeasurementCacheTest(unittest.TestCase):
                 expected = 2.0 * np.asarray(ndimage.maximum(field, whole, np.arange(1, count + 1)))
                 np.testing.assert_array_equal(width, expected)
                 np.testing.assert_array_equal(area, np.bincount(whole.ravel())[1:])
+
+
+def stroke_and_speck() -> np.ndarray:
+    """A long one-pixel Ember stroke and a 2 x 2 Ember speck just below it: a
+    remove-then-widen recolours the speck, then widening the stroke paints its top
+    row back to Ember."""
+    labels = np.zeros((HEIGHT, WIDTH), dtype=np.int16)
+    labels[200, 220:340] = 1
+    labels[202:204, 280:282] = 1
+    return labels
+
+
+class WillChangeTest(unittest.TestCase):
+    def full_run(self, labels, explicit, settings) -> np.ndarray:
+        cleaned, _, _, _ = apply_cleanup(labels, PALETTE, settings, None,
+                                         protected_features=np.zeros_like(explicit),
+                                         explicit_protected_features=explicit)
+        return cleaned
+
+    def test_each_pixel_is_classified_against_the_shown_raster(self) -> None:
+        # Columns: unchanged; would be removed; would be widened; would return to its
+        # uncleaned colour; the active cleanup's change kept; changed by the active
+        # cleanup and would change again by removal.
+        original = np.array([[0, 0, 0, 1, 1, 1]])
+        current = np.array([[0, 0, 0, 2, 2, 2]])
+        after_removal = np.array([[0, 3, 0, 1, 2, 3]])
+        final = np.array([[0, 3, 4, 1, 2, 3]])
+        removed, widened, returned = will_change(original, current, after_removal, final)
+        self.assertEqual(removed.tolist(), [[False, True, False, False, False, True]])
+        self.assertEqual(widened.tolist(), [[False, False, True, False, False, False]])
+        self.assertEqual(returned.tolist(), [[False, False, False, True, False, False]])
+
+    def test_nothing_will_change_after_a_run_with_the_same_settings(self) -> None:
+        labels, _, explicit = raster()
+        source = source_of(labels, explicit)
+        for settings in (CleanupSettings(cleanup=True, min_region_area=240.0),
+                         CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
+                                         min_detail_width=4.0, min_region_area=12.0)):
+            with self.subTest(action=settings.cleanup_action):
+                shown = self.full_run(labels, explicit, settings)
+                preview = clean_window(source, WINDOW, PALETTE, settings, None)
+                masks = will_change(preview.original, window_of(shown, WINDOW),
+                                    preview.after_removal, preview.labels)
+                self.assertTrue(window_of(shown != labels, WINDOW).any())
+                self.assertFalse(any(mask.any() for mask in masks))
+
+    def test_undoing_the_active_cleanup_returns_its_pixels(self) -> None:
+        labels, _, explicit = raster()
+        source = source_of(labels, explicit)
+        shown = self.full_run(labels, explicit, CleanupSettings(cleanup=True, min_region_area=240.0))
+        for settings in (CleanupSettings(cleanup=False),
+                         CleanupSettings(cleanup=True, min_region_area=1.0)):
+            with self.subTest(settings=settings):
+                preview = clean_window(source, WINDOW, PALETTE, settings, None)
+                removed, widened, returned = will_change(
+                    preview.original, window_of(shown, WINDOW), preview.after_removal,
+                    preview.labels)
+                np.testing.assert_array_equal(returned, window_of(shown != labels, WINDOW))
+                self.assertFalse(removed.any() or widened.any())
+
+
+class ChangesOverlayTest(unittest.TestCase):
+    def test_the_run_overlay_records_its_net_changes_by_stage(self) -> None:
+        labels = stroke_and_speck()
+        none = np.zeros_like(labels, dtype=bool)
+        stages: dict = {}
+        settings = CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
+                                   min_detail_width=4.0, min_region_area=12.0)
+        cleaned, _, _, _ = apply_cleanup(labels, PALETTE, settings, None, protected_features=none,
+                                         explicit_protected_features=none, stages=stages)
+        with tempfile.TemporaryDirectory(dir=".tmp") as name:
+            path = Path(name) / "cleanup-changes-overlay.png"
+            self.assertTrue(write_changes_overlay(path, labels, stages["after_removal"], cleaned))
+            indices = np.asarray(Image.open(path))
+            # Unchanged (removed, then widened back), removed, widened.
+            self.assertEqual([int(indices[202, 280]), int(indices[203, 280]),
+                              int(indices[201, 280])], [0, 1, 2])
+            np.testing.assert_array_equal(indices > 0, cleaned != labels)
+            # A run that changed nothing removes any earlier overlay.
+            self.assertFalse(write_changes_overlay(path, labels, labels, labels))
+            self.assertFalse(path.exists())
+
+    def test_the_run_overlay_is_pixel_exact_over_the_whole_image(self) -> None:
+        rng = np.random.default_rng(3)
+        labels = np.repeat(np.repeat(rng.integers(0, 4, size=(40, 50)), 3, axis=0), 3, axis=1)
+        labels = labels.astype(np.int16)
+        labels[30:31, 5:140] = 2
+        labels[60:100, 70:71] = 3
+        none = np.zeros_like(labels, dtype=bool)
+        included = list(range(len(PALETTE)))
+        for settings in (CleanupSettings(cleanup=True, cleanup_action="widen", min_detail_width=5.0,
+                                         min_region_area=20.0),
+                         CleanupSettings(cleanup=True, cleanup_action="remove_then_widen",
+                                         min_detail_width=5.0, remove_below_width=2.0,
+                                         min_region_area=20.0)):
+            with self.subTest(action=settings.cleanup_action):
+                stages: dict = {}
+                cleaned, _, _, _ = apply_cleanup(labels, PALETTE, settings, None, protected_features=none,
+                                                 explicit_protected_features=none, stages=stages)
+                # The stages run on their own, independently of ``stages``.
+                if settings.cleanup_action == "widen":
+                    after_removal = labels
+                else:
+                    remove, _ = remove_then_widen_stages(settings)
+                    after_removal, _ = cleanup_labels(labels, included, PALETTE, remove, 1.0,
+                                                      explicit=none)
+                changed = cleaned != labels
+                widened = changed & (cleaned != after_removal)
+                expected = np.where(widened, 2, np.where(changed, 1, 0))
+                self.assertTrue(widened.any())
+                with tempfile.TemporaryDirectory(dir=".tmp") as name:
+                    path = Path(name) / "cleanup-changes-overlay.png"
+                    write_changes_overlay(path, labels, stages["after_removal"], cleaned)
+                    np.testing.assert_array_equal(np.asarray(Image.open(path)), expected)
 
 if __name__ == "__main__":
     unittest.main()

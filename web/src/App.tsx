@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } f
 import { Download, Eraser, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
 import { api, followJob, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
+import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
 import { ArtworkPreview } from './ArtworkPreview'
 import { FlattenedEditor } from './FlattenedEditor'
 import { RegionEditor } from './RegionEditor'
@@ -15,15 +16,18 @@ import './styles.css'
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
 // Traced SVGs are drawn on the flattened pixel grid (their viewBox), whatever their physical size.
 const TRACED_SVG_KINDS = new Set(['traced-overlap', 'traced-edge'])
-// Transparent audit overlays, offered as labelled toggles on the canvas of their stage:
-// the trace audits on the traced grid, a flatten's protected areas on its flattened grid.
+// Transparent audit overlays, offered on the canvas of their stage: the trace audits on
+// the traced grid, a flatten's protected areas on its flattened grid, and what a Cleanup
+// run changed on its raster (drawn by the Cleanup canvas's "Show changes" switch).
 const OVERLAY_ARTIFACT_LABELS: Record<string, string> = {
   'trace-missed-details-overlay': 'Missed source details (red)',
   'trace-fallbacks-overlay': 'Tightened boundaries',
   'protected-areas-overlay': 'Protected areas',
+  [CLEANUP_CHANGES_OVERLAY_KIND]: 'Cleanup changes (removed red, widened green)',
 }
 const TRACE_OVERLAY_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
 const FLATTEN_OVERLAY_KINDS = ['protected-areas-overlay']
+const CLEANUP_OVERLAY_KINDS = [CLEANUP_CHANGES_OVERLAY_KIND]
 const NO_OVERLAY_KINDS: string[] = []
 // Standalone audit images that paint the whole faded source: kept as files, never layers.
 const OPAQUE_AUDIT_KINDS = new Set(['trace-fallbacks', 'trace-semantic-warnings'])
@@ -73,7 +77,8 @@ export function customRatioDimensions(width: number, height: number): Dimensions
 // The overlay kinds a stage's canvas offers: its own audits, and none while a preservation
 // point is picked on another stage's canvas.
 export function canvasOverlayKinds(stage: WorkflowStage, picking: boolean): string[] {
-  return stage === 'flatten' ? FLATTEN_OVERLAY_KINDS : stage === 'trace' && !picking ? TRACE_OVERLAY_KINDS : NO_OVERLAY_KINDS
+  return stage === 'flatten' ? FLATTEN_OVERLAY_KINDS : stage === 'trace' && !picking ? TRACE_OVERLAY_KINDS
+    : stage === 'cleanup' && !picking ? CLEANUP_OVERLAY_KINDS : NO_OVERLAY_KINDS
 }
 
 export function artifactToWorkspaceLayer(artifact: Artifact): WorkspaceLayer | null {
@@ -1325,7 +1330,8 @@ export default function App() {
           highlightedMarker={highlight?.lists === pointLists ? highlight.id : null}
           livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withoutMootLayerOrder(withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedColour)), tracedSize } : undefined}
           // The unsaved Cleanup form, physical size included; nothing is saved.
-          cleanupPreview={stage === 'cleanup' && !selectionMode && revision ? { revisionId: revision, settings: cleanupSettings, tracedSize } : undefined}
+          // A cleanup that changed pixels but has no changes overlay ran before runs recorded one.
+          cleanupPreview={stage === 'cleanup' && !selectionMode && revision ? { revisionId: revision, settings: cleanupSettings, tracedSize, changesUnavailable: hasCleanup ? 'Re-run Cleanup to record its changes' : 'No Cleanup changes to show' } : undefined}
           // Paused until the selected revision's own traced grid is known, so a preview is
           // never requested with another revision's size.
           livePreviewPaused={!artifactsCurrent || tracedGrid?.revision !== revision}

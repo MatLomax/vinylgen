@@ -20,7 +20,8 @@ from vinylgen.trace_window import PreviewCancelled
 from vinylgen.web import trace_preview
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
-from vinylgen.web.trace_preview import CleanupPreviewRequest, REMOVED_RGBA, WIDENED_RGBA
+from vinylgen.web.trace_preview import (CleanupPreviewRequest, REMOVED_RGBA, RETURNED_RGBA,
+                                        WIDENED_RGBA)
 
 WIDTH, HEIGHT = 620, 610
 # The visible window the tests preview; its crop (plus the 256 px margin) is
@@ -38,6 +39,20 @@ def source_png() -> bytes:
     for x, y in ((220, 260), (380, 420), (300, 330), (250, 400), (50, 320)):
         pixels[y:y + 6, x:x + 6] = (240, 225, 200)
     pixels[300:305, 40:600] = (240, 225, 200)
+    pixels[0:80, 0:80] = (240, 225, 200)
+    buffer = io.BytesIO()
+    Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def stroke_source_png() -> bytes:
+    """A three-pixel Bone stroke crossing the window on the Night background, whose far
+    end touches a large Ember block beyond the preview's crop. Ember is the stroke's
+    most similar touching colour, so a full widening grows it into Ember near the
+    block only; the crop never sees the block and widens it into Night instead."""
+    pixels = np.full((HEIGHT, WIDTH, 3), (15, 35, 60), dtype=np.uint8)
+    pixels[300:303, 20:400] = (240, 225, 200)
+    pixels[250:350, 400:600] = (225, 95, 45)
     pixels[0:80, 0:80] = (240, 225, 200)
     buffer = io.BytesIO()
     Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
@@ -78,10 +93,10 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["status"], "succeeded", job)
         return job["result_revision_id"]
 
-    async def flattened_project(self) -> tuple[str, str, str]:
+    async def flattened_project(self, source: bytes | None = None) -> tuple[str, str, str]:
         imported = await self.client.post(
             "/api/projects/import", data={"name": "Cleanup Preview Fixture"},
-            files={"source": ("fixture.png", source_png(), "image/png")})
+            files={"source": ("fixture.png", source or source_png(), "image/png")})
         self.assertEqual(imported.status_code, 201, imported.text)
         project = imported.json()
         source_revision = project["revisions"][0]["id"]
@@ -132,12 +147,143 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         # The bar survives: a full run judges it by its whole area.
         np.testing.assert_array_equal(pixels[52, :], self.window_of(uncleaned)[52, :])
         self.assertTrue((pixels[52, 40:, :] != pixels[40, 40:, :]).any(axis=1).all())
-        # From the cleanup revision the preview still cleans the uncleaned raster, so
-        # turning cleanup off shows it, not the stored cleanup.
+        # On the cleanup revision the changes are judged against the cleaned raster it
+        # shows: the same settings would change nothing.
+        same = await self.preview(cleanup_revision, WINDOW, cleanup)
+        self.assertEqual(same.status_code, 200, same.text)
+        np.testing.assert_array_equal(decode(same.json()["pixels"]), self.window_of(cleaned))
+        self.assertFalse(decode(same.json()["changes"]).any())
+        self.assertEqual([same.json()[key] for key in ("removed_pixels", "widened_pixels",
+                                                       "returned_pixels")], [0, 0, 0])
+        # The preview still cleans the uncleaned raster, so turning cleanup off shows
+        # it, and every pixel the stored cleanup changed would return (blue).
         off = await self.preview(cleanup_revision, WINDOW, {"cleanup": False})
         self.assertEqual(off.status_code, 200, off.text)
         np.testing.assert_array_equal(decode(off.json()["pixels"]), self.window_of(uncleaned))
-        self.assertFalse(decode(off.json()["changes"]).any())
+        returned = decode(off.json()["changes"])
+        np.testing.assert_array_equal(returned[changed], np.tile(RETURNED_RGBA, (int(changed.sum()), 1)))
+        self.assertFalse(returned[~changed].any())
+        self.assertEqual(off.json()["returned_pixels"], int(changed.sum()))
+
+    async def test_the_settings_of_the_shown_cleanup_change_nothing_even_where_widening_is_approximate(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project(stroke_source_png())
+        widen = {"cleanup": True, "cleanup_action": "widen", "min_detail_width": 8.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=widen)
+        cleaned = await self.flattened_pixels(cleanup_revision)
+        # From the uncleaned raster the windowed widening differs from the full run here.
+        approximate = await self.preview(palette_revision, WINDOW, widen)
+        self.assertEqual(approximate.status_code, 200, approximate.text)
+        self.assertTrue((decode(approximate.json()["pixels"]) != self.window_of(cleaned)).any())
+        # On the cleanup it previews, the answer is the shown raster: nothing would change.
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            same = await self.preview(cleanup_revision, WINDOW, widen)
+        self.assertEqual(same.status_code, 200, same.text)
+        np.testing.assert_array_equal(decode(same.json()["pixels"]), self.window_of(cleaned))
+        self.assertFalse(decode(same.json()["changes"]).any())
+        self.assertEqual(clean.call_count, 0)
+        # Any other setting runs the windowed clean again.
+        wider = await self.preview(cleanup_revision, WINDOW, {**widen, "min_detail_width": 9.0})
+        self.assertEqual(wider.status_code, 200, wider.text)
+        self.assertTrue(decode(wider.json()["changes"]).any())
+
+    async def palette_rows(self, revision_id: str) -> list[dict]:
+        artifacts = (await self.client.get(
+            f"/api/revisions/{revision_id}/effective-artifacts")).json()
+        row = next(row for row in artifacts if row["kind"] == "palette")
+        return (await self.client.get(row["download_url"])).json()["palette"]
+
+    async def test_a_colour_renamed_after_the_cleanup_is_not_the_same_removed_colour(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        rows = await self.palette_rows(palette_revision)
+        bone = next(row for row in rows if row["rgb"][0] > 200 and row["rgb"][2] > 150)
+        ember = next(row for row in rows if row["rgb"][0] > 200 and row["rgb"][2] < 100)
+        settings = {"cleanup": True, "min_region_area": 3000.0, "remove_colour": bone["name"]}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=settings)
+        # The trace swaps the two colours' names, so the same name now means Ember.
+        trace_revision = await self.run_job(
+            "trace", project_id, cleanup_revision,
+            colour_names={bone["hex"]: ember["name"], ember["hex"]: bone["name"]})
+        renamed = {row["hex"]: row["name"] for row in await self.palette_rows(trace_revision)}
+        self.assertEqual(renamed[ember["hex"]], bone["name"])
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            body = (await self.preview(trace_revision, WINDOW, settings)).json()
+        self.assertEqual(clean.call_count, 1)
+        # It previews what re-running Cleanup from the trace would do: remove Ember
+        # instead of Bone, so the Bone square and bar in the window go.
+        rerun = await self.run_job("cleanup", project_id, trace_revision, cleanup=settings)
+        rerun_pixels = self.window_of(await self.flattened_pixels(rerun))
+        shown = self.window_of(await self.flattened_pixels(trace_revision))
+        self.assertTrue((rerun_pixels != shown).any())
+        np.testing.assert_array_equal(decode(body["pixels"]), rerun_pixels)
+        self.assertGreater(body["removed_pixels"], 0)
+
+    async def test_a_size_given_by_the_other_dimension_is_the_same_size(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        # 300 mm wide makes 620 x 610 px 295.16129032258067 mm high, which gives back a
+        # width of 300.00000000000006 mm.
+        recorded = {"width_mm": 300.0, "cleanup": True, "min_region_area": 100.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=recorded)
+        by_height = {"height_mm": 300.0 * HEIGHT / WIDTH, "cleanup": True, "min_region_area": 100.0}
+        self.assertNotEqual(by_height["height_mm"] * WIDTH / HEIGHT, 300.0)
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            body = (await self.preview(cleanup_revision, WINDOW, by_height)).json()
+        self.assertEqual(clean.call_count, 0)
+        self.assertFalse(decode(body["changes"]).any())
+
+    async def test_a_trace_of_the_cleanup_compares_against_the_cleaned_raster(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        uncleaned = await self.flattened_pixels(palette_revision)
+        removing = {"cleanup": True, "min_region_area": 3000.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=removing)
+        trace_revision = await self.run_job("trace", project_id, cleanup_revision)
+        cleaned = await self.flattened_pixels(trace_revision)
+        changed = self.window_of((cleaned != uncleaned).any(axis=2))
+        self.assertTrue(changed.any())
+        same = await self.preview(trace_revision, WINDOW, removing)
+        self.assertFalse(decode(same.json()["changes"]).any())
+        off = (await self.preview(trace_revision, WINDOW, {"cleanup": False})).json()
+        self.assertEqual(off["returned_pixels"], int(changed.sum()))
+        np.testing.assert_array_equal((decode(off["changes"]) == RETURNED_RGBA).all(axis=2), changed)
+
+    async def test_after_an_edit_makes_the_cleanup_stale_the_edited_raster_is_the_reference(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        uncleaned = await self.flattened_pixels(palette_revision)
+        removing = {"cleanup": True, "min_region_area": 3000.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=removing)
+        # A cleaned raster is loaded as the shown one first.
+        self.assertEqual((await self.preview(cleanup_revision, WINDOW, {"cleanup": False})).status_code, 200)
+        self.assertIsNotNone(self.service._cleanup_source[1]._current)
+        edited = await self.client.post(
+            f"/api/projects/{project_id}/revisions/{cleanup_revision}/edits",
+            json={"operations": [{"tool": "paint_pixels", "target_label": 0, "pixels": [[600, 5]]}]})
+        self.assertEqual(edited.status_code, 201, edited.text)
+        body = (await self.preview(edited.json()["id"], WINDOW, removing)).json()
+        # The edit shows the uncleaned raster, so the same settings would remove again,
+        # nothing would return, and the cleaned raster is no longer held.
+        cleaned = await self.flattened_pixels(cleanup_revision)
+        changed = self.window_of((cleaned != uncleaned).any(axis=2))
+        self.assertEqual(body["removed_pixels"], int(changed.sum()))
+        self.assertEqual(body["returned_pixels"], 0)
+        self.assertIsNone(self.service._cleanup_source[1]._current)
+
+    async def test_two_cleanups_of_one_raster_each_compare_against_their_own_result(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        uncleaned = await self.flattened_pixels(palette_revision)
+        squares = await self.run_job("cleanup", project_id, palette_revision,
+                                     cleanup={"cleanup": True, "min_region_area": 50.0})
+        bar_too = await self.run_job("cleanup", project_id, palette_revision,
+                                     cleanup={"cleanup": True, "min_region_area": 3000.0})
+        results = []
+        for revision in (squares, bar_too, squares):
+            changed = self.window_of(((await self.flattened_pixels(revision)) != uncleaned).any(axis=2))
+            body = (await self.preview(revision, WINDOW, {"cleanup": False})).json()
+            np.testing.assert_array_equal((decode(body["changes"]) == RETURNED_RGBA).all(axis=2), changed)
+            results.append(int(changed.sum()))
+        self.assertLess(results[0], results[1])
+        # The uncleaned revision shows the held raster itself: the cleaned one is dropped.
+        self.assertIsNotNone(self.service._cleanup_source[1]._current)
+        self.assertEqual((await self.preview(palette_revision, WINDOW)).status_code, 200)
+        self.assertIsNone(self.service._cleanup_source[1]._current)
 
     async def test_widened_pixels_are_green(self) -> None:
         _, _, palette_revision = await self.flattened_project()

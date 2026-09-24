@@ -31,10 +31,12 @@ import base64
 import copy
 import io
 import json
+import math
 import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from typing import Callable, Hashable
 
 import numpy as np
@@ -43,9 +45,11 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from vinylgen.cleanup_window import (
+    CLEANUP_PREVIEW_MARGIN_PX,
     CLEANUP_PREVIEW_MAX_AREA_PX,
     CleanupSource,
     clean_window,
+    will_change,
 )
 from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import pixel_scale, resolve_physical_size
@@ -143,17 +147,21 @@ class CleanupPreview(BaseModel):
     window: PreviewBox
     crop: PreviewBox
     image: dict[str, int]
-    # PNG data URLs of the window at raster px: the cleaned pixels, and the changes
-    # (removed pixels red, widened pixels green, transparent elsewhere).
+    # PNG data URLs of the window at raster px: the cleaned pixels, and what a Cleanup
+    # run with these settings would change on the raster shown now (``will_change``):
+    # removed pixels red, widened green, returned to their uncleaned colour blue,
+    # transparent elsewhere.
     pixels: str
     changes: str
     removed_pixels: int
     widened_pixels: int
+    returned_pixels: int
     elapsed_ms: float
 
 
 REMOVED_RGBA = (230, 40, 40, 255)
 WIDENED_RGBA = (40, 200, 70, 255)
+RETURNED_RGBA = (50, 110, 240, 255)
 
 
 def _png_url(array: np.ndarray, mode: str) -> str:
@@ -428,10 +436,12 @@ class TracePreviewService:
             _require_fresh(self.store, revision_id, {"palette"})
         except ValueError as exc:
             raise PreviewUnavailable(str(exc)) from exc
-        # A Cleanup run cleans the raster from before any earlier cleanup.
+        # A Cleanup run cleans the raster from before any earlier cleanup; the changes
+        # are judged against the raster shown now, the active cleanup's if any.
         artifacts = self.store.effective_artifacts(revision_id, before_cleanup=True)
         if "segmentation" not in artifacts or "palette" not in artifacts:
             raise PreviewUnavailable("the revision has no flattened artwork to clean up yet")
+        shown_id = self.store.effective_artifacts(revision_id)["segmentation"]["id"]
         palette = self._stored_palette(artifacts["palette"])["palette"]
         settings = CleanupSettings(**request.cleanup.model_dump())
         segmentation_id = artifacts["segmentation"]["id"]
@@ -459,18 +469,78 @@ class TracePreviewService:
             raise PreviewRejected(str(exc)) from exc
         if omitted is not None and len(palette) == 1:
             raise PreviewRejected("cannot omit the only palette colour")
-        cleaned = clean_window(source, window, palette, settings, omitted, checkpoint)
+        # The shown raster is the uncleaned one unless a cleanup changed pixels; only
+        # then is a second label raster (2 bytes per pixel) held beside it. Its load
+        # cannot be split, so it runs before the windowed clean rather than after.
+        if shown_id == segmentation_id:
+            source.release_current()
+            shown = source.labels
+        else:
+            shown = source.current_labels(shown_id, self.store.artifact_path(shown_id))
         checkpoint()
+        current = shown[window.y:window.bottom, window.x:window.right]
+        if self._produced_by(revision_id, settings, omitted, width, height):
+            # The shown raster is these settings' full-run result, so it is the answer
+            # and nothing would change; the windowed clean would only approximate it.
+            nothing = np.zeros((window.height, window.width), dtype=bool)
+            removed = widened = returned = nothing
+            final = current
+            crop = margin_window(window, width, height, CLEANUP_PREVIEW_MARGIN_PX)
+        else:
+            cleaned = clean_window(source, window, palette, settings, omitted, checkpoint)
+            checkpoint()
+            removed, widened, returned = will_change(cleaned.original, current,
+                                                     cleaned.after_removal, cleaned.labels)
+            final = cleaned.labels
+            crop = cleaned.crop
         changes = np.zeros((window.height, window.width, 4), dtype=np.uint8)
-        changes[cleaned.removed] = REMOVED_RGBA
-        changes[cleaned.widened] = WIDENED_RGBA
-        return {"window": window.as_dict(), "crop": cleaned.crop.as_dict(),
+        changes[removed] = REMOVED_RGBA
+        changes[widened] = WIDENED_RGBA
+        changes[returned] = RETURNED_RGBA
+        return {"window": window.as_dict(), "crop": crop.as_dict(),
                 "image": {"width": width, "height": height},
-                "pixels": _png_url(source.palette_rgb[cleaned.labels], "RGB"),
+                "pixels": _png_url(source.palette_rgb[final], "RGB"),
                 "changes": _png_url(changes, "RGBA"),
-                "removed_pixels": int(cleaned.removed.sum()),
-                "widened_pixels": int(cleaned.widened.sum()),
+                "removed_pixels": int(removed.sum()),
+                "widened_pixels": int(widened.sum()),
+                "returned_pixels": int(returned.sum()),
                 "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1)}
+
+    def _produced_by(self, revision_id: str, settings: CleanupSettings, omitted: int | None,
+                     width: int, height: int) -> bool:
+        """Whether the raster shown for the revision is the result of a Cleanup run
+        with these settings: its active cleanup (not stale) recorded the same action
+        and thresholds, the same physical size once resolved (to a relative 1e-9, so
+        a size given by the other dimension still matches) and removed the same
+        palette colour. The recorded colour is resolved against the palette that run
+        cleaned with, ``omitted`` against the one this preview cleans with, so a
+        rename in between (a trace's colour names) is never mistaken for a match.
+        Any doubt answers no, and the preview runs the clean. Only settings are
+        compared, never the cleanup code that made the recorded result."""
+        cleanup_revision, stale = nearest_cleanup(self.store, revision_id)
+        if cleanup_revision is None or stale or cleanup_revision["parent_revision_id"] is None:
+            return False
+        try:
+            recorded = CleanupSettings(**cleanup_revision["settings"]["cleanup"])
+            ran_with = self.store.effective_artifacts(
+                cleanup_revision["parent_revision_id"], before_cleanup=True)["palette"]
+            recorded_omitted = resolve_colour(recorded.remove_colour,
+                                              self._stored_palette(ran_with)["palette"])
+        except (KeyError, TypeError, ValueError, PreviewDataFault):
+            return False
+        if recorded_omitted != omitted:
+            return False
+        ours = resolve_physical_size(settings, width, height)
+        theirs = resolve_physical_size(recorded, width, height)
+        for mine, other in ((ours.width_mm, theirs.width_mm), (ours.height_mm, theirs.height_mm)):
+            if (mine is None) != (other is None) or (
+                    mine is not None and not math.isclose(mine, other, rel_tol=1e-9)):
+                return False
+
+        def thresholds(values: CleanupSettings) -> CleanupSettings:
+            return replace(values, width_mm=None, height_mm=None, remove_colour=None)
+
+        return thresholds(ours) == thresholds(theirs)
 
     def _run(self, revision_id: str, request: TracePreviewRequest,
              checkpoint: Callable[[], None]) -> dict:

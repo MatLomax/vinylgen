@@ -244,10 +244,48 @@ those measurements. The result differs from a full run only as follows:
 - The automatic-protection audit numbers a run records (details and pixels
   cleared) are not computed, and nothing is saved.
 
-The changes overlay shows the net change from the uncleaned raster: a pixel that
-ends with its own colour is transparent (even one removed and then widened back),
-a changed pixel is green when the widening set its final colour and red
-otherwise.
+On top of the cleaned pixels the preview draws what a Cleanup run with the form's
+values would change on the raster the canvas shows now: the active cleanup's
+result when the revision has one, else the uncleaned raster. Per pixel, with
+`original` the uncleaned label, `current` the shown label, and `after_removal`
+and `final` the labels the run would reach after its removal stage and at its
+end (`will_change` in `vinylgen/cleanup_window.py`):
+
+- `final == current`: transparent, nothing would change;
+- otherwise, `final == original`: blue, the pixel would return to its uncleaned
+  colour (the active cleanup changed it and these settings would not);
+- otherwise, `final != after_removal`: green, the widening would set it;
+- otherwise: red, the removal would set it.
+
+When the form's settings are those of the active (not stale) cleanup that produced
+the shown raster, the full-run result is already known: the preview returns the
+shown raster's window and draws nothing, without running the windowed clean.
+"Those settings" means the same action and thresholds, the same physical size once
+resolved against the raster (to a relative 1e-9, so a size entered as the other
+dimension still matches), and the same removed palette colour: the recorded name
+is resolved against the palette that cleanup ran with and the form's against the
+palette the preview cleans with, so a colour renamed since (a trace's colour
+names) is not taken for the same one. Any doubt runs the clean. Only the settings
+are compared, not the cleanup code: after a change to the cleanup code, an older
+cleanup's own settings still preview as no change although re-running it could
+differ. With any other settings the windowed clean runs, and because its
+widening is an approximation (see above), green and blue highlights can include
+approximation noise near regions that continue beyond the crop.
+
+The highlights always compare against the revision's current raster, the cleaned
+one when a cleanup is active, whichever view the canvas shows: with the Flattened
+or Edited view selected (the raster before cleanup) they still describe changes
+from the cleaned raster.
+
+It is always drawn while the live preview is on. What the shown revision's
+Cleanup run has already changed is a separate whole-image overlay, the
+`cleanup-changes-overlay` artifact (see [files and outputs](files-and-outputs.md)),
+drawn while the canvas's "Show changes" switch is on, with or without the
+preview (the switch stays usable while the preview is paused). Both can be on
+together; since red and green then mean "would change" inside the live window and
+"changed" outside it, the canvas controls show a legend line for each overlay on
+view ("Live: red would be removed, green widened, blue restored"; "Show changes:
+red removed, green widened by the last Cleanup").
 
 With the crop covering the whole raster the preview equals a full run for every
 action. The whole-raster measurement runs once per revision, one colour at a
@@ -297,7 +335,11 @@ barely helps, because the 256 px margin dominates the crop: at 400 × 400,
 preview's 600 × 600 limit.
 
 The preview thread holds one raster at a time: the uncleaned raster with its
-measurements, or the traced segmentation of the Trace preview. Alternating
+measurements, or the traced segmentation of the Trace preview. While the revision
+shows a cleaned raster its labels are held beside the uncleaned one, 2 more bytes
+per pixel (about 50 MB on `sourceup`, 180 MB on 11264 × 7920), loaded before the
+windowed clean and dropped as soon as a previewed revision shows the uncleaned
+raster itself. Alternating
 between the Cleanup and Trace canvases with both previews on therefore reloads
 each time, and each return to Cleanup measures the whole raster again (about
 6.4 s on `sourceup`, 22 s on 11264 × 7920) before its first preview appears.

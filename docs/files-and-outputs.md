@@ -105,6 +105,22 @@ as the "Protected areas" toggle on both the Source and Flattened views. The CLI
 does not write it. A later flatten never inherits an earlier run's overlay (see
 [architecture](architecture.md)).
 
+### `cleanup-changes-overlay.png` (web cleanup)
+
+The web cleanup job writes this transparent overlay (artifact kind
+`cleanup-changes-overlay`) of the pixels the run changed, only when it changed a
+pixel. It compares the cleaned labels with the raster the run started from
+(before any earlier cleanup): a pixel whose final label differs from its
+uncleaned one is green `(40, 200, 70)` when the widening set its final label
+(it differs from the labels after the removal stage), otherwise red
+`(230, 40, 40)`; a pixel that ends with its uncleaned label (removed, then
+widened back) is transparent, as is every unchanged pixel. It is an 8-bit
+paletted PNG (index 0 transparent, 1 red, 2 green, both opaque), one byte per
+pixel in memory, on the segmentation grid. The Cleanup canvas draws it over the
+whole image while its "Show changes" switch is on, with or without the live
+preview; a cleanup recorded before runs wrote it has none, and the switch then
+reads "Re-run Cleanup to record its changes". The CLI does not write it.
+
 ### `contact.png`
 
 Convenience review sheet across all flattened outputs. It is generated outside
@@ -172,7 +188,12 @@ chain. Stale concerns accumulate along the walk: once any revision on the path
 marks a concern stale, artifacts of that concern's kinds from older revisions
 are excluded. A cleanup replaces any earlier cleanup, so an older `cleanup`
 revision's raster artifacts (`flattened`, `segmentation`, `palette`, `report`)
-are skipped once a newer cleanup has been passed. A `trace` run likewise
+and its `cleanup-changes-overlay` are skipped once a newer cleanup has been
+passed, even when the newer run changed nothing and so wrote neither. The
+overlay belongs to the cleanup concern with the `cleanup-audit`: a re-flatten,
+label edit or source upscale after the cleanup hides it with the rest of that
+cleanup, a trace of the cleanup keeps it, and the `before_cleanup` lookup never
+returns it. A `trace` run likewise
 writes its complete output set, so it hides every trace-kind artifact of an
 older run, including optional audits (fallbacks, semantic warnings and their
 overlays) it did not repeat, together with everything made of that older run:
@@ -184,10 +205,12 @@ hides every flatten-kind artifact of an older run (`flattened`,
 `segmentation`, `palette`, `report` and `protected-areas-overlay`), so a
 re-flatten that protected nothing never inherits an earlier run's
 protected-areas overlay; revisions derived from a flatten (edits, cleanup,
-trace) inherit it with the rest. An export packages the run's own
-validation: an export job is refused ("revision has stale prerequisite
-concerns: validation") until the current trace run has been validated, whether
-the parent marks validation stale itself or simply has no effective
+trace) inherit it with the rest. An export packages every effective artifact
+but an earlier export, so a run made from a cleanup includes its
+`cleanup-changes-overlay.png`. It packages the run's own validation: an export
+job is refused ("revision has stale prerequisite concerns: validation") until
+the current trace run has been validated, whether the parent marks validation
+stale itself or simply has no effective
 `validation` artifact. `GET
 /api/revisions/{id}/effective-artifacts?before_cleanup=true` skips every
 cleanup revision's raster, resolving the raster the cleanup stage starts from.
@@ -199,7 +222,7 @@ A `cleanup` revision records `settings.cleanup` (width and height in mm, removed
 colour, and the cleanup switch, action and thresholds) and marks trace,
 validation, and export stale. When it changed pixels its artifacts are the
 cleaned `flattened`, `segmentation`, `palette` and `report` plus the
-`cleanup-audit` (`cleanup.json`); a run that changed nothing (cleanup off, or
+`cleanup-audit` (`cleanup.json`) and the `cleanup-changes-overlay`; a run that changed nothing (cleanup off, or
 nothing under the thresholds) holds only `palette` (its raster's shares) and
 the `cleanup-audit`, and its effective raster is the uncleaned one. Palette and
 label edits read, and build on, the raster from before any cleanup (the

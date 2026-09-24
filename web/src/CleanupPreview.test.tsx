@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CleanupSettings } from './api'
-import { CLEANUP_CHANGES_STORAGE_KEY, CLEANUP_PREVIEW_STORAGE_KEY, type CleanupPreviewOptions } from './CleanupPreview'
+import { CLEANUP_CHANGES_OVERLAY_KIND, CLEANUP_CHANGES_STORAGE_KEY, CLEANUP_PREVIEW_STORAGE_KEY, type CleanupPreviewOptions } from './CleanupPreview'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
 import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
@@ -10,6 +10,16 @@ import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
 const layers: WorkspaceLayer[] = [
   { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
 ]
+
+// The shown revision's changes overlay, as App registers it.
+const APPLIED: WorkspaceLayer = { id: 'changes', name: 'Cleanup changes (removed red, widened green)', url: '/changes.png', mediaType: 'image/png', role: 'overlay', kind: CLEANUP_CHANGES_OVERLAY_KIND }
+
+function loadUrl(container: HTMLElement, suffix: string, width: number, height: number) {
+  for (const image of [...container.querySelectorAll('img')].filter(node => node.src.endsWith(suffix)) as HTMLImageElement[]) {
+    Object.defineProperties(image, { naturalWidth: { configurable: true, value: width }, naturalHeight: { configurable: true, value: height } })
+    fireEvent.load(image)
+  }
+}
 
 type Pending = { url: string; init: RequestInit; resolve: (response: unknown) => void }
 let pending: Pending[] = []
@@ -104,7 +114,7 @@ describe('Cleanup canvas live preview', () => {
     expect(screen.getByText('Updating live preview…')).toBeTruthy()
     await respond(pending[0], ok())
     const pixels = screen.getByAltText('Live cleanup preview') as HTMLImageElement
-    const changes = screen.getByAltText(/Cleanup changes/) as HTMLImageElement
+    const changes = screen.getByAltText(/What Cleanup would change/) as HTMLImageElement
     // Inside the transformed stage, on the same window, so both register exactly.
     for (const image of [pixels, changes]) {
       expect(image.parentElement?.classList.contains('image-stage')).toBe(true)
@@ -131,26 +141,21 @@ describe('Cleanup canvas live preview', () => {
     expect(parseFloat(pixels.style.width)).toBeCloseTo(window.width / 2)
   })
 
-  it('toggles the changes overlay without re-requesting and remembers the choice', async () => {
+  it('always draws what would change with Live preview on, whatever Show changes says', async () => {
     prepare(options())
     fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
     zoomTwice()
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
     await respond(pending[0], ok())
-    // A switch, marked up like the Live preview switch.
-    const toggle = screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement
-    expect(toggle.checked).toBe(true)
-    fireEvent.click(toggle)
-    expect(screen.queryByAltText(/Cleanup changes/)).toBeNull()
-    expect(screen.getByAltText('Live cleanup preview')).toBeTruthy()
-    expect(localStorage.getItem(CLEANUP_CHANGES_STORAGE_KEY)).toBe('off')
-    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
-    expect(pending).toHaveLength(1)
+    expect(screen.getByAltText(/What Cleanup would change/)).toBeTruthy()
+    localStorage.setItem(CLEANUP_CHANGES_STORAGE_KEY, 'off')
     cleanup()
     prepare(options())
+    zoomTwice()
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    await respond(pending[1], ok())
     expect((screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement).checked).toBe(false)
-    fireEvent.click(screen.getByRole('switch', { name: 'Show changes' }))
-    expect(localStorage.getItem(CLEANUP_CHANGES_STORAGE_KEY)).toBe('on')
+    expect(screen.getByAltText(/What Cleanup would change/)).toBeTruthy()
   })
 
   it('debounces setting changes, aborts the request in flight and ignores its late response', async () => {
@@ -206,6 +211,100 @@ describe('Cleanup canvas live preview', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
     expect(localStorage.getItem(CLEANUP_PREVIEW_STORAGE_KEY)).toBe('off')
     expect(localStorage.getItem(LIVE_PREVIEW_STORAGE_KEY)).toBe('on')
+  })
+
+  it('Show changes draws the cleanup run\'s changes over the whole image, with Live preview off, and is remembered', () => {
+    const withOverlay: WorkspaceLayer[] = [...layers, APPLIED]
+    const { container } = render(<ImageWorkspace layers={withOverlay} editorMode canvasLabel="Cleanup canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} cleanupPreview={options()} />)
+    loadUrl(container, '/flat.png', 1000, 700)
+    loadUrl(container, '/changes.png', 1000, 700)
+    expect((screen.getByRole('switch', { name: 'Live preview' }) as HTMLInputElement).checked).toBe(false)
+    const toggle = screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement
+    expect(toggle.disabled).toBe(false)
+    // On by default: the whole-image overlay, independent of any preview.
+    expect(toggle.checked).toBe(true)
+    const overlay = screen.getByAltText(APPLIED.name) as HTMLImageElement
+    expect(overlay.classList.contains('inspection-overlay')).toBe(true)
+    expect(overlay.getAttribute('src')).toBe('/changes.png')
+    // The switch is its only control: no second toggle among the inspection layers.
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    fireEvent.click(toggle)
+    expect(screen.queryByAltText(APPLIED.name)).toBeNull()
+    expect(localStorage.getItem(CLEANUP_CHANGES_STORAGE_KEY)).toBe('off')
+    expect(pending).toHaveLength(0)
+    cleanup()
+    const again = render(<ImageWorkspace layers={withOverlay} editorMode canvasLabel="Cleanup canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} cleanupPreview={options()} />)
+    loadUrl(again.container, '/flat.png', 1000, 700)
+    loadUrl(again.container, '/changes.png', 1000, 700)
+    expect((screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement).checked).toBe(false)
+    expect(screen.queryByAltText(APPLIED.name)).toBeNull()
+    fireEvent.click(screen.getByRole('switch', { name: 'Show changes' }))
+    expect(localStorage.getItem(CLEANUP_CHANGES_STORAGE_KEY)).toBe('on')
+    expect(screen.getByAltText(APPLIED.name)).toBeTruthy()
+  })
+
+  it('disables Show changes with the reason when the revision has no changes overlay', () => {
+    prepare(options({ changesUnavailable: 'Re-run Cleanup to record its changes' }))
+    const toggle = screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement
+    expect(toggle.disabled).toBe(true)
+    expect(toggle.checked).toBe(false)
+    const reason = document.getElementById(toggle.getAttribute('aria-describedby') ?? '')
+    expect(reason?.textContent).toBe('Re-run Cleanup to record its changes')
+  })
+
+  it('leaves the changes overlay to its own toggle on a canvas without the cleanup preview', () => {
+    const withOverlay: WorkspaceLayer[] = [...layers, APPLIED]
+    const { container } = render(<ImageWorkspace layers={withOverlay} editorMode canvasLabel="Trace canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} />)
+    loadUrl(container, '/flat.png', 1000, 700)
+    expect(screen.queryByRole('switch', { name: 'Show changes' })).toBeNull()
+    expect(within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText(APPLIED.name)).toBeTruthy()
+  })
+
+  it('labels the colours of each overlay on view, and only those', async () => {
+    const withOverlay: WorkspaceLayer[] = [...layers, APPLIED]
+    const LIVE = 'Live: red would be removed, green widened, blue restored'
+    const APPLIED_LINE = 'Show changes: red removed, green widened by the last Cleanup'
+    const legend = () => screen.queryByRole('list', { name: 'Overlay colours' })?.textContent ?? null
+    const { container } = render(<ImageWorkspace layers={withOverlay} editorMode canvasLabel="Cleanup canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} cleanupPreview={options()} />)
+    const viewport = within(container).getByLabelText('Image comparison viewport')
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
+    loadUrl(container, '/flat.png', 1000, 700)
+    loadUrl(container, '/changes.png', 1000, 700)
+    // Show changes alone.
+    expect(legend()).toBe(APPLIED_LINE)
+    // Both.
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    zoomTwice()
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    await respond(pending[0], ok())
+    expect(legend()).toBe(LIVE + APPLIED_LINE)
+    // The live preview alone.
+    fireEvent.click(screen.getByRole('switch', { name: 'Show changes' }))
+    expect(legend()).toBe(LIVE)
+    // Neither.
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    expect(legend()).toBeNull()
+  })
+
+  it('ignores the switch state saved when it meant the preview highlight', () => {
+    localStorage.setItem('vinylgen.cleanupPreviewChanges', 'off')
+    const { container } = render(<ImageWorkspace layers={[...layers, APPLIED]} editorMode canvasLabel="Cleanup canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} cleanupPreview={options()} />)
+    loadUrl(container, '/flat.png', 1000, 700)
+    loadUrl(container, '/changes.png', 1000, 700)
+    expect((screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByAltText(APPLIED.name)).toBeTruthy()
+  })
+
+  it('keeps Show changes operable while the live preview is paused', () => {
+    const { container } = render(<ImageWorkspace layers={[...layers, APPLIED]} editorMode canvasLabel="Cleanup canvas" inspectionKinds={[CLEANUP_CHANGES_OVERLAY_KIND]} cleanupPreview={{ ...options(), tracedSize: null }} livePreviewPaused livePreviewStatus="Preview unavailable: the selected revision failed to load." />)
+    loadUrl(container, '/flat.png', 1000, 700)
+    loadUrl(container, '/changes.png', 1000, 700)
+    const toggle = screen.getByRole('switch', { name: 'Show changes' }) as HTMLInputElement
+    expect(toggle.disabled).toBe(false)
+    expect(screen.getByAltText(APPLIED.name)).toBeTruthy()
+    fireEvent.click(toggle)
+    expect(screen.queryByAltText(APPLIED.name)).toBeNull()
+    expect(screen.getByText('Preview unavailable: the selected revision failed to load.')).toBeTruthy()
   })
 
   it('requests nothing while paused and says why', () => {

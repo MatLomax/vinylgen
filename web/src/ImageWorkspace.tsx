@@ -3,7 +3,7 @@ import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
-import { useCleanupPreview, type CleanupPreviewOptions } from './CleanupPreview'
+import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
@@ -92,6 +92,13 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // stage. The inspector offers every mask and overlay.
   const inspections = layers.filter(layer => (layer.role === 'mask' || layer.role === 'overlay')
     && (!editorMode || inspectionKinds.includes(inspectionKey(layer))))
+  // On the Cleanup canvas the "Show changes" switch, not a toggle of its own, draws the
+  // revision's changes overlay.
+  const [showChanges, setShowChanges] = useShowChangesSwitch()
+  const switchedKind = cleanupPreview ? CLEANUP_CHANGES_OVERLAY_KIND : null
+  const appliedChanges = inspections.find(layer => inspectionKey(layer) === switchedKind)
+  const toggledInspections = inspections.filter(layer => layer !== appliedChanges)
+  const inspectionOn = (layer: WorkspaceLayer) => layer === appliedChanges ? showChanges : Boolean(enabledInspections[inspectionKey(layer)])
   const beforeSize = before ? dimensions[before.id] : undefined
   const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
   const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
@@ -99,8 +106,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // An enabled overlay draws over the shown image when their grids register: the same
   // grid, or one an integer upscale of the other (a flattened grid with
   // `flatten_upscale` > 1 over its source), stretched over the same extent.
-  const compatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
-  const incompatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
+  const compatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
+  const incompatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -459,7 +466,9 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const cleanupOptions: CleanupPreviewOptions | undefined = cleanupPreview ? { ...cleanupPreview, tracedSize: cleanupPreview.tracedSize ?? pausedGrid } : undefined
   const previewViewport = previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }
   const tracePreview = useTracePreview(previewOptions, transform, previewViewport, size)
-  const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size)
+  const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size,
+    { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && compatibleInspections.includes(appliedChanges)) },
+    previewPaused, livePreviewStatus)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -538,9 +547,9 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {reducedMotion && blinkPaused && <p role="status">Blink is paused to respect your reduced-motion preference.</p>}
       </div>}
     </section>}
-    {!editorMode && inspections.length > 0 && <section className="control-section inspection-controls">
+    {!editorMode && toggledInspections.length > 0 && <section className="control-section inspection-controls">
       <h3>Masks &amp; inspection layers</h3>
-      {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
+      {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
       {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
     </section>}
   </>
@@ -579,14 +588,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {annotations}
       {aim && hoverPixel && <div ref={readout} className="pick-readout" aria-hidden="true" style={readoutPlacement}>x {hoverPixel[0]}, y {hoverPixel[1]}</div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
-      {editorMode && inspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
-        {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
+      {editorMode && toggledInspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
+        {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
         {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
       </div>}
       {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
       {tracePreview.controls}
       {cleanupLivePreview.controls}
-      {previewSource && <div className="trace-preview-paused" aria-live="polite">{previewPaused && livePreviewStatus && <p className="trace-preview-status error">{livePreviewStatus}</p>}</div>}
+      {livePreview && <div className="trace-preview-paused" aria-live="polite">{previewPaused && livePreviewStatus && <p className="trace-preview-status error">{livePreviewStatus}</p>}</div>}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>

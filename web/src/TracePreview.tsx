@@ -85,7 +85,7 @@ export type LivePreviewState<Result> = {
   shown: ShownPreview<Result> | null
   // The stage px per traced px, to place `shown.window` on the stage.
   kx: number; ky: number
-  // The on-canvas switch, badge and status, with `extra` controls after the switch.
+  // The on-canvas switch, badge and status, with `extra` controls (always shown) after the switch.
   controls: (extra?: ReactNode) => ReactNode
 }
 
@@ -156,7 +156,7 @@ export function useLivePreview<Settings, Result>(
   // errors, not every settle.
   const controls = (extra?: ReactNode) => options ? <div className="trace-preview-controls" role="group" aria-label={label}>
     <label className="trace-preview-switch" onPointerDown={event => event.stopPropagation()}><input type="checkbox" role="switch" checked={enabled} onChange={event => toggle(event.target.checked)} />Live preview</label>
-    {enabled && view && extra}
+    {extra}
     {enabled && !tooLarge && (visibleShown || busy) && <p className={`trace-preview-badge ${busy ? 'is-busy' : ''}`} aria-hidden="true">{busy && <LoaderCircle aria-hidden="true" />}{busy ? 'Updating live preview…' : 'Live preview'}</p>}
     <div className="trace-preview-announcer" role="status" aria-live="polite">
       {enabled && tooLarge && <p className="trace-preview-status">Zoom in to preview</p>}

@@ -38,6 +38,7 @@ import numpy as np
 from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import (
     RegionMeasurements,
+    change_classes,
     cleanup_labels,
     measure_colour_regions,
     pixel_scale,
@@ -76,6 +77,7 @@ class CleanupSource:
     _ids: np.ndarray | None = field(default=None, repr=False)
     _stats: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = field(default_factory=list, repr=False)
     _regions: RegionMeasurements | None = field(default=None, repr=False)
+    _current: tuple[str, np.ndarray] | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, path: Path, checkpoint: Checkpoint | None = None) -> "CleanupSource":
@@ -135,18 +137,55 @@ class CleanupSource:
     def measured(self) -> bool:
         return self._regions is not None
 
+    def release_current(self) -> None:
+        """Drop the shown raster's labels (the revision shows this raster itself)."""
+        self._current = None
+
+    def current_labels(self, artifact_id: str, path: Path) -> np.ndarray:
+        """The labels of the raster shown for a revision (segmentation ``artifact_id``),
+        held with this raster so a preview compares against them without reloading.
+        Only the labels member is read."""
+        if self._current is None or self._current[0] != artifact_id:
+            self._current = None
+            with np.load(path, allow_pickle=False) as data:
+                labels = data["labels"].astype(np.int16, copy=False)
+            if labels.shape != self.labels.shape:
+                raise ValueError("the shown raster and the uncleaned raster differ in size")
+            self._current = (artifact_id, labels)
+        return self._current[1]
+
 
 @dataclass(frozen=True)
 class CleanedWindow:
-    """The cleanup of one window: the cleaned labels of ``window`` and the net
-    change from the uncleaned raster, split by the stage that made it. A pixel
-    that ends as it started is in neither mask."""
+    """The cleanup of one window: the uncleaned labels of ``window``, its labels
+    after the removal stage and its final cleaned labels, and the net change from
+    the uncleaned raster split by the stage that made it (``change_classes``)."""
 
     window: Window
     crop: Window
+    original: np.ndarray
+    after_removal: np.ndarray
     labels: np.ndarray
     removed: np.ndarray
     widened: np.ndarray
+
+
+def will_change(original: np.ndarray, current: np.ndarray, after_removal: np.ndarray,
+                final: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """What a Cleanup run would change on the raster shown now, per pixel.
+
+    ``original`` is the uncleaned label, ``current`` the one shown (the active
+    cleanup's result, or ``original`` without one), ``after_removal`` and ``final``
+    the labels the run would reach after its removal stage and at its end. A pixel
+    changes when ``final`` differs from ``current``; it then *returns* when
+    ``final`` is its uncleaned label (the active cleanup changed it and the run would
+    not), else it is *widened* when the widening set ``final`` (it differs from
+    ``after_removal``), else *removed*. Returns ``(removed, widened, returned)``.
+    """
+    changes = final != current
+    returned = changes & (final == original)
+    widened = changes & ~returned & (final != after_removal)
+    return changes & ~returned & ~widened, widened, returned
 
 
 def clean_window(source: CleanupSource, window: Window, palette: list[dict],
@@ -155,9 +194,7 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
     """Clean ``window`` (plus the hidden margin) as a Cleanup run cleans the raster.
 
     ``omitted`` is the removed colour's palette index, excluded from cleanup as
-    ``apply_cleanup`` excludes it. A pixel whose final label differs from its
-    uncleaned one is ``widened`` when the widening set that label, else ``removed``;
-    a pixel removed and then widened back to its own colour is neither.
+    ``apply_cleanup`` excludes it.
     """
     check = checkpoint or (lambda: None)
     crop = margin_window(window, source.width, source.height, CLEANUP_PREVIEW_MARGIN_PX)
@@ -166,9 +203,10 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
     original = np.ascontiguousarray(source.labels[rows, columns])
     inner = (slice(window.y - crop.y, window.bottom - crop.y),
              slice(window.x - crop.x, window.right - crop.x))
-    unchanged = np.zeros((window.height, window.width), dtype=bool)
     if not settings.cleanup:
-        return CleanedWindow(window, crop, original[inner].copy(), unchanged, unchanged.copy())
+        same = original[inner].copy()
+        unchanged = np.zeros(same.shape, dtype=bool)
+        return CleanedWindow(window, crop, same, same, same, unchanged, unchanged.copy())
     regions = source.regions(checkpoint).crop(rows, columns)
     check()
     resolved = resolve_physical_size(settings, source.width, source.height)
@@ -194,6 +232,6 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
         cleaned, _ = cleanup_labels(original, included, palette, resolved, scale,
                                     explicit=explicit, regions=regions,
                                     checkpoint=check)
-    changed = (cleaned != original)[inner]
-    widened = changed & (cleaned != removed)[inner]
-    return CleanedWindow(window, crop, cleaned[inner].copy(), changed & ~widened, widened)
+    removed_window, widened_window = change_classes(original[inner], removed[inner], cleaned[inner])
+    return CleanedWindow(window, crop, original[inner].copy(), removed[inner].copy(),
+                         cleaned[inner].copy(), removed_window, widened_window)

@@ -49,7 +49,7 @@ CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_
 # a retrace replaces.
 STALE_ARTIFACT_KINDS = {
     "palette": {"flattened", "segmentation", "palette", "report", "protected-areas-overlay"},
-    "cleanup": {"cleanup-audit"},
+    "cleanup": {"cleanup-audit", "cleanup-changes-overlay"},
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
@@ -73,8 +73,10 @@ TRACE_RUN_SUPERSEDES = (
 PALETTE_RUN_SUPERSEDES = STALE_ARTIFACT_KINDS["palette"]
 
 
-# The raster a cleanup revision rewrites; a newer cleanup replaces them.
-CLEANUP_RASTER_KINDS = {"flattened", "segmentation", "palette", "report"}
+# The raster a cleanup revision rewrites, and the overlay of what it changed; a newer
+# cleanup replaces them, even one that changed nothing and so wrote neither.
+CLEANUP_RASTER_KINDS = {"flattened", "segmentation", "palette", "report",
+                        "cleanup-changes-overlay"}
 
 
 def _now() -> str:
@@ -464,9 +466,10 @@ class Store:
         The newest artifact of each kind wins. Stale concerns accumulate while walking:
         once a revision marks a concern stale, the artifacts of that concern's kinds
         from every older revision are excluded. A cleanup replaces any earlier cleanup,
-        so the raster artifacts of a ``cleanup`` revision are skipped once a newer
-        cleanup has been passed; with ``before_cleanup`` they are skipped from the
-        start, which resolves the raster that cleanup starts from. A ``trace`` run
+        so the raster artifacts and changes overlay of a ``cleanup`` revision
+        (``CLEANUP_RASTER_KINDS``) are skipped once a newer cleanup has been passed;
+        with ``before_cleanup`` they are skipped from the start, which resolves the
+        raster that cleanup starts from. A ``trace`` run
         writes its complete output set, so it supersedes every trace artifact of an
         older run, including optional audits that run did not repeat, and an older
         run's Inkscape edit, validation and export (``TRACE_RUN_SUPERSEDES``); this

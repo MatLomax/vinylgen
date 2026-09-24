@@ -125,6 +125,8 @@ TRACE_INPUT_KINDS = set(PALETTE_FILES) - {"protected-areas-overlay"}
 CLEANUP_FILES = {
     "flattened": "flattened.png", "segmentation": "segmentation.npz",
     "palette": "palette.json", "report": "report.png", "cleanup-audit": "cleanup.json",
+    # Written only when the run changed a pixel (web.cleanup.write_changes_overlay).
+    "cleanup-changes-overlay": "cleanup-changes-overlay.png",
 }
 TRACE_FILES = {
     "palette": "palette.json",
