@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, SegmentationBundle, TraceSettings
+from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
 from vinylgen.web.pipeline import active_cleanup_settings, run_worker
@@ -395,6 +396,7 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(revision["settings"]["cleanup"],
                          {**asdict(CleanupSettings()), **requested})
         self.assertEqual(revision["settings"]["stale_concerns"], ["trace", "validation", "export"])
+        self.assertEqual(revision["settings"]["cleanup_algorithm_version"], CLEANUP_ALGORITHM_VERSION)
         self.assertEqual(revision["settings"]["palette"]["initial_colours"], 2)
 
         own = await self.artifacts(cleaned_revision)
@@ -440,6 +442,7 @@ class WebCleanupStageTest(PipelineApiHarness):
             self.assertEqual(shares["#" + "".join(f"{v:02X}" for v in rgb)],
                              round(float(counts[index]) * 100 / after.labels.size, 4))
         audit = json.loads(await self.download(own["cleanup-audit"]))
+        self.assertEqual(audit["algorithm_version"], CLEANUP_ALGORITHM_VERSION)
         self.assertEqual(audit["physical_dimensions_mm"], [40.0, 32.0])
         self.assertEqual(audit["changed_pixels"], 2)
         self.assertEqual(audit["cleanup"]["removed_regions"], 1)

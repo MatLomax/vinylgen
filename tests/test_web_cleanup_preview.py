@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import tempfile
 import threading
 import time
@@ -15,7 +16,7 @@ import numpy as np
 from PIL import Image
 
 from vinylgen import cleanup_window
-from vinylgen.cutter_cleanup import measure_colour_regions
+from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION, measure_colour_regions
 from vinylgen.trace_window import PreviewCancelled
 from vinylgen.web import trace_preview
 from vinylgen.web.app import create_app
@@ -185,6 +186,30 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         wider = await self.preview(cleanup_revision, WINDOW, {**widen, "min_detail_width": 9.0})
         self.assertEqual(wider.status_code, 200, wider.text)
         self.assertTrue(decode(wider.json()["changes"]).any())
+
+    async def test_a_cleanup_recorded_under_older_cleanup_rules_previews_with_the_clean(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project(stroke_source_png())
+        widen = {"cleanup": True, "cleanup_action": "widen", "min_detail_width": 8.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=widen)
+        store = self.service.store
+        settings = store.get_revision(cleanup_revision)["settings"]
+        self.assertEqual(settings["cleanup_algorithm_version"], CLEANUP_ALGORITHM_VERSION)
+        # Recorded under the current rules, its own settings take the shortcut.
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            current = await self.preview(cleanup_revision, WINDOW, widen)
+        self.assertEqual(current.status_code, 200, current.text)
+        self.assertEqual(clean.call_count, 0)
+        # A cleanup recorded without a version ran under version 1: a re-run could now
+        # differ, so the preview runs the clean.
+        del settings["cleanup_algorithm_version"]
+        with store.connection() as db:
+            db.execute("UPDATE revisions SET settings_json=? WHERE id=?",
+                       (json.dumps(settings), cleanup_revision))
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            older = await self.preview(cleanup_revision, WINDOW, widen)
+        self.assertEqual(older.status_code, 200, older.text)
+        self.assertEqual(clean.call_count, 1)
+        self.assertTrue(decode(older.json()["changes"]).any())
 
     async def palette_rows(self, revision_id: str) -> list[dict]:
         artifacts = (await self.client.get(

@@ -19,7 +19,8 @@ import numpy as np
 from PIL import Image
 
 from vinylgen.contracts import CleanupSettings, SegmentationBundle
-from vinylgen.cutter_cleanup import apply_cleanup, change_classes, resolve_physical_size
+from vinylgen.cutter_cleanup import (CLEANUP_ALGORITHM_VERSION, apply_cleanup, change_classes,
+                                     resolve_physical_size)
 from vinylgen.palette import Progress, _noop
 from vinylgen.reporting import create_report
 from vinylgen.tracing import ensure_palette_names, resolve_colour
@@ -154,6 +155,7 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
         legend = sorted(palette, key=lambda row: -float(row["share_percent"]))
         create_report(flattened, legend).save(subject_dir / "report.png", compress_level=1)
     audit = {
+        "algorithm_version": CLEANUP_ALGORITHM_VERSION,
         "raster_dimensions": [width, height],
         "mode": "physical" if resolved.width_mm is not None else "pixels",
         "physical_dimensions_mm": ([resolved.width_mm, resolved.height_mm]

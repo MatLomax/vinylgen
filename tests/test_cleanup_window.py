@@ -43,6 +43,9 @@ def raster() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     labels[200:203, 300:303] = 3
     labels[250:253, 220:224] = 3
     labels[250:253, 224:227] = 2
+    # A Moss speck in the Ember body touching the Bone core on one side: Bone is the
+    # closer colour, but the speck shares most of its edge with Ember.
+    labels[200:203, 247:250] = 3
     # A thin Moss stripe crossing the window and running far outside the crop: its
     # part inside the crop is under the area threshold, the whole stripe is not.
     labels[215:218, 0:WIDTH] = 3
@@ -92,6 +95,7 @@ class CleanWindowTest(unittest.TestCase):
         # The stripe and the region protected outside the crop survive, as in the full run.
         self.assertTrue((window_of(full, WINDOW)[215 - WINDOW.y, :] == 3).all())
         self.assertEqual(int(full[191, 360]), 2)
+        self.assertTrue((full[200:203, 247:250] == 1).all())
         # A naive crop misjudges both: this fixture tells the two apart.
         crop = cleanup_window.margin_window(WINDOW, WIDTH, HEIGHT, CLEANUP_PREVIEW_MARGIN_PX)
         rows, columns = slice(crop.y, crop.bottom), slice(crop.x, crop.right)

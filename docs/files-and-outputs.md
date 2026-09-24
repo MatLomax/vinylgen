@@ -158,9 +158,9 @@ that summary.
 
 ### Cleanup artifacts
 
-The cleanup stage writes `cleanup.json`: the requested and resolved settings,
-the raster dimensions, pixel or physical mode with the physical size in mm,
-the omitted colour, the number of changed pixels, and the cleanup summary:
+The cleanup stage writes `cleanup.json`: the cleanup rules' `algorithm_version`,
+the requested and resolved settings, the raster dimensions, pixel or physical
+mode with the physical size in mm, the omitted colour, the number of changed pixels, and the cleanup summary:
 removed, widened and unchanged regions with warnings,
 `protected_kept_regions` (explicitly protected regions kept although under a
 threshold), and `auto_protected_components_cleared` /
@@ -219,8 +219,9 @@ downstream concerns; this makes retracing and export provenance explicit
 without mutating an earlier result.
 
 A `cleanup` revision records `settings.cleanup` (width and height in mm, removed
-colour, and the cleanup switch, action and thresholds) and marks trace,
-validation, and export stale. When it changed pixels its artifacts are the
+colour, and the cleanup switch, action and thresholds) and
+`settings.cleanup_algorithm_version` (the cleanup rules it ran under, absent for
+runs made under version 1), and marks trace, validation, and export stale. When it changed pixels its artifacts are the
 cleaned `flattened`, `segmentation`, `palette` and `report` plus the
 `cleanup-audit` (`cleanup.json`) and the `cleanup-changes-overlay`; a run that changed nothing (cleanup off, or
 nothing under the thresholds) holds only `palette` (its raster's shares) and

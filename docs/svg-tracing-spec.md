@@ -194,8 +194,14 @@ or vinyl/gap side.
 One global cleanup action applies across all colour layers:
 
 - `remove`: group touching undersized regions and reassign each group to the
-  perceptually nearest stable touching colour. An undersized group cannot use
-  one of its own members as the destination, preventing reciprocal colour swaps.
+  stable touching colour it shares the most edge with. A colour's shared edge is
+  the number of four-neighbour pixel pairs joining a group pixel to a pixel of
+  that colour outside every undersized region, so a pixel touching the group on
+  two sides counts twice. Colours whose shared edge is at least 90% of the
+  longest are a close call, settled by the smallest Lab distance to the group's
+  pixel-weighted average colour, then by the lower palette index. An undersized
+  group cannot use one of its own members as the destination, preventing
+  reciprocal colour swaps.
 - `widen`: expand a narrow or undersized region equally into its neighbours
   until it reaches the configured threshold.
 - `remove_then_widen`: first remove regions below the configured area threshold,
@@ -227,9 +233,9 @@ none depend on the settings) and the crop reads its regions' decisions from
 those measurements. The result differs from a full run only as follows:
 
 - `remove` is exact except for a group of touching undersized regions that
-  reaches the crop edge: it is split there and chooses its destination among the
-  neighbours inside the crop only. The margin keeps that outside the visible
-  window unless such a group spans it.
+  reaches the crop edge: it is split there and chooses its destination from the
+  edge it shares with neighbours inside the crop only. The margin keeps that
+  outside the visible window unless such a group spans it.
 - `widen`, and the widen half of `remove_then_widen`, is an approximation. It
   grows regions one after another on the crop, so the neighbour colour a region
   grows into, its thin ridges, and the residual-width and residual-area checks on
@@ -258,17 +264,21 @@ end (`will_change` in `vinylgen/cleanup_window.py`):
 - otherwise: red, the removal would set it.
 
 When the form's settings are those of the active (not stale) cleanup that produced
-the shown raster, the full-run result is already known: the preview returns the
-shown raster's window and draws nothing, without running the windowed clean.
-"Those settings" means the same action and thresholds, the same physical size once
-resolved against the raster (to a relative 1e-9, so a size entered as the other
-dimension still matches), and the same removed palette colour: the recorded name
-is resolved against the palette that cleanup ran with and the form's against the
-palette the preview cleans with, so a colour renamed since (a trace's colour
-names) is not taken for the same one. Any doubt runs the clean. Only the settings
-are compared, not the cleanup code: after a change to the cleanup code, an older
-cleanup's own settings still preview as no change although re-running it could
-differ. With any other settings the windowed clean runs, and because its
+the shown raster, and that cleanup ran under the current cleanup rules, the
+full-run result is already known: the preview returns the shown raster's window
+and draws nothing, without running the windowed clean. "Those settings" means the
+same action and thresholds, the same physical size once resolved against the
+raster (to a relative 1e-9, so a size entered as the other dimension still
+matches), and the same removed palette colour: the recorded name is resolved
+against the palette that cleanup ran with and the form's against the palette the
+preview cleans with, so a colour renamed since (a trace's colour names) is not
+taken for the same one. "The current cleanup rules" means the cleanup revision
+recorded `cleanup_algorithm_version` equal to `CLEANUP_ALGORITHM_VERSION` in
+`vinylgen/cutter_cleanup.py`, which increases whenever the same labels and
+settings can clean to a different result; a cleanup recorded without a version
+ran under version 1. An older cleanup's own settings therefore preview with the
+windowed clean, showing what a re-run would now change. Any doubt runs the
+clean. With any other settings the windowed clean runs, and because its
 widening is an approximation (see above), green and blue highlights can include
 approximation noise near regions that continue beyond the crop.
 

@@ -11,6 +11,11 @@ from scipy import ndimage
 from vinylgen.colour import srgb_to_lab
 from vinylgen.contracts import CleanupSettings
 
+# The version of the cleanup rules, recorded with every Cleanup run. It increases
+# whenever the same labels and settings can clean to a different result. A cleanup
+# recorded without one ran under version 1.
+CLEANUP_ALGORITHM_VERSION = 2
+
 
 def _padded_edt(mask: np.ndarray) -> np.ndarray:
     """Exact Euclidean distance from each True pixel to the nearest False pixel.
@@ -411,18 +416,40 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
             group_mask = groups[window] == group
             original_components = np.unique(small_component_ids[window][group_mask])
             original_components = original_components[original_components > 0]
-            border = ndimage.binary_dilation(group_mask, structure=structure) & ~group_mask
-            neighbours = [int(value)
-                          for value in np.unique(snapshot[window][border & ~small_mask[window]])
-                          if int(value) in included]
+            # Shared edge per stable included neighbour colour: the number of
+            # four-neighbour pairs of a group pixel and a pixel of that colour outside
+            # the small mask. A border pixel touching the group on two sides counts
+            # twice.
+            window_labels = snapshot[window]
+            stable = ~small_mask[window]
+            shared_edge: dict[int, int] = {}
+            for axis in (0, 1):
+                size = group_mask.shape[axis]
+                head = [slice(None), slice(None)]
+                tail = [slice(None), slice(None)]
+                head[axis] = slice(0, size - 1)
+                tail[axis] = slice(1, size)
+                head, tail = tuple(head), tuple(tail)
+                for inside, outside in ((head, tail), (tail, head)):
+                    pairs = group_mask[inside] & stable[outside]
+                    values, counts = np.unique(window_labels[outside][pairs], return_counts=True)
+                    for value, count in zip(values.tolist(), counts.tolist()):
+                        shared_edge[value] = shared_edge.get(value, 0) + count
+            neighbours = [value for value in shared_edge if value in included]
             if not neighbours:
                 summary["unchanged_regions"] += len(original_components)
                 summary["warnings"].append(
                     f"undersized component group {group}: no stable touching included colour")
                 continue
-            source_values, counts = np.unique(snapshot[window][group_mask], return_counts=True)
+            # The group takes the colour it shares the most edge with. Colours whose
+            # shared edge is at least 90% of the longest are a close call, settled by
+            # the smallest Lab distance to the group's pixel-weighted average colour,
+            # then by the lower palette index.
+            longest = max(shared_edge[value] for value in neighbours)
+            close = [value for value in neighbours if 10 * shared_edge[value] >= 9 * longest]
+            source_values, counts = np.unique(window_labels[group_mask], return_counts=True)
             source_lab = np.average(labs[source_values], axis=0, weights=counts)
-            target = min(neighbours,
+            target = min(close,
                          key=lambda value: (float(np.linalg.norm(labs[value] - source_lab)), value))
             result[window][group_mask] = target
             summary["removed_regions"] += len(original_components)

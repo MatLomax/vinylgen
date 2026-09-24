@@ -10,10 +10,10 @@ misjudge for every region it cuts, so those are measured once on the whole raste
 
 What still differs from a full run, by construction:
 
-- Remove: a group of touching undersized regions is recoloured to its most similar
-  touching neighbour. A group that reaches the crop edge is split there and sees
-  only its neighbours inside the crop, so its colour can differ; the margin keeps
-  that outside the visible window unless the group spans it.
+- Remove: a group of touching undersized regions is recoloured to the touching
+  neighbour it shares the most edge with. A group that reaches the crop edge is split
+  there and counts only the edge it shares inside the crop, so its colour can differ;
+  the margin keeps that outside the visible window unless the group spans it.
 - Widen grows regions one after another on the crop: the colour a region grows
   into, its thin ridges and the residual checks on the neighbour it thins are
   judged inside the crop, in the crop's order, and a widening decided differently

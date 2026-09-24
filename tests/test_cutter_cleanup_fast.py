@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage
 
+from vinylgen.cleanup_window import CleanupSource
 from vinylgen.contracts import CleanupSettings, SegmentationBundle
 from vinylgen.cutter_cleanup import apply_cleanup, cleanup_labels
 
@@ -105,6 +107,23 @@ def _thin_band_case():
     return labels
 
 
+def _remove_choice_shapes(choices) -> dict:
+    """Count the Remove choices the oracle made that exercise each close-call shape."""
+    shapes = dict.fromkeys(("several candidates", "shorter edge within 90% won",
+                            "closer colour outside 90% lost", "exact tie"), 0)
+    for shared_edge, distances in choices:
+        longest = max(shared_edge.values())
+        close = [value for value in shared_edge if 10 * shared_edge[value] >= 9 * longest]
+        target = min(close, key=lambda value: (distances[value], value))
+        shapes["several candidates"] += len(shared_edge) > 1
+        shapes["shorter edge within 90% won"] += shared_edge[target] < longest
+        shapes["closer colour outside 90% lost"] += any(
+            10 * shared_edge[value] < 9 * longest and distances[value] < distances[target]
+            for value in shared_edge)
+        shapes["exact tie"] += sum(distances[value] == distances[target] for value in close) > 1
+    return shapes
+
+
 class CutterCleanupFastTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -124,6 +143,7 @@ class CutterCleanupFastTests(unittest.TestCase):
         actions = ("remove", "widen", "remove_then_widen")
         refused_seen = 0
         cases = 0
+        self.reference.remove_choices.clear()
         for index in range(320):
             height = int(rng.integers(1, 49))
             width = int(rng.integers(1, 65))
@@ -157,6 +177,71 @@ class CutterCleanupFastTests(unittest.TestCase):
             cases += 1
         self.assertGreaterEqual(cases, 300)
         self.assertGreater(refused_seen, 0, "no widening-refusal case was exercised")
+        shapes = _remove_choice_shapes(self.reference.remove_choices)
+        for shape in ("several candidates", "shorter edge within 90% won",
+                      "closer colour outside 90% lost", "exact tie"):
+            self.assertGreater(shapes[shape], 0, f"no Remove choice with {shape} was exercised")
+
+    def test_remove_with_whole_raster_regions_matches_the_full_run_on_crops(self):
+        """``regions`` measured on the whole raster, with explicit protection: on the
+        whole-raster crop Remove equals the full run exactly, and on a random crop it
+        equals it at every pixel outside the groups that reach the crop's edge."""
+        rng = np.random.default_rng(20260924)
+        structure = ndimage.generate_binary_structure(2, 1)
+        protected_seen = partial_seen = 0
+        for index in range(150):
+            height = int(rng.integers(2, 41))
+            width = int(rng.integers(2, 49))
+            colours = int(rng.integers(2, 6))
+            labels = _random_labels(rng, height, width, colours)
+            palette = _random_palette(rng, colours)
+            explicit = rng.random(labels.shape) < float(rng.uniform(0.0, 0.03))
+            included = [c for c in range(colours) if not (index % 7 == 0 and c == 0)]
+            # Every third case uses whole-pixel thresholds, so regions exactly at a
+            # threshold occur.
+            exact = index % 3 == 0
+            upp = 1.0 if exact else float(rng.uniform(0.5, 2.0))
+            settings = CleanupSettings(
+                cleanup=True, cleanup_action="remove",
+                min_detail_width=(float(rng.integers(0, 6)) if exact
+                                  else float(rng.uniform(0.0, 5.0)) * upp),
+                min_region_area=(float(rng.integers(0, 21)) if exact
+                                 else float(rng.uniform(0.0, 20.0)) * upp * upp))
+            source = CleanupSource(labels=labels, explicit=explicit,
+                                   palette_rgb=np.asarray([row["rgb"] for row in palette],
+                                                          dtype=np.uint8))
+            regions = source.regions()
+            full, full_summary = cleanup_labels(labels, included, palette, settings, upp,
+                                                explicit=explicit)
+            whole, whole_summary = cleanup_labels(labels, included, palette, settings, upp,
+                                                  explicit=explicit, regions=regions)
+            y0, x0 = int(rng.integers(0, height)), int(rng.integers(0, width))
+            y1, x1 = int(rng.integers(y0 + 1, height + 1)), int(rng.integers(x0 + 1, width + 1))
+            rows, columns = slice(y0, y1), slice(x0, x1)
+            cropped, _ = cleanup_labels(np.ascontiguousarray(labels[rows, columns]), included,
+                                        palette, settings, upp,
+                                        explicit=np.ascontiguousarray(explicit[rows, columns]),
+                                        regions=regions.crop(rows, columns))
+            # The undersized, unprotected groups of the whole raster; a group with a
+            # four-neighbour outside the crop is split by it and may choose otherwise.
+            undersized = ((regions.area < settings.min_region_area / (upp * upp)) |
+                          (regions.width < settings.min_detail_width / upp))
+            small = (undersized & ~regions.explicit)[regions.ids] & np.isin(labels, included)
+            groups, _ = ndimage.label(small, structure=structure)
+            outside = np.ones(labels.shape, dtype=bool)
+            outside[rows, columns] = False
+            reaching = np.unique(groups[ndimage.binary_dilation(outside, structure=structure)
+                                        & ~outside & (groups > 0)])
+            compared = ~np.isin(groups, reaching[reaching > 0])[rows, columns]
+            with self.subTest(case=index, shape=(height, width), crop=(y0, y1, x0, x1)):
+                np.testing.assert_array_equal(whole, full)
+                self.assertEqual(whole_summary, full_summary)
+                np.testing.assert_array_equal(cropped[compared], full[rows, columns][compared])
+            protected_seen += full_summary["protected_kept_regions"] > 0
+            partial_seen += bool((groups[rows, columns] > 0)[compared].any() and
+                                 (y1 - y0, x1 - x0) != (height, width))
+        self.assertGreater(protected_seen, 0, "no explicitly protected region was kept")
+        self.assertGreater(partial_seen, 0, "no crop held a group clear of its edge")
 
     def test_a_checkpoint_never_changes_the_result(self):
         rng = np.random.default_rng(20260924)
@@ -327,6 +412,94 @@ class CleanupProtectionAuditTests(unittest.TestCase):
         self.assertFalse(protected.any())
         self.assertEqual(summary["auto_protected_components_cleared"], 1)
         self.assertEqual(summary["auto_protected_pixels_cleared"], 5)
+
+
+# Remove's target fixtures: the removed speck is Red; Rust is the closest-looking
+# candidate, Wine the next and Blue far off.
+_TARGET_PALETTE = [
+    {"rgb": [0, 0, 255], "name": "Blue"},
+    {"rgb": [200, 0, 40], "name": "Wine"},
+    {"rgb": [250, 10, 10], "name": "Rust"},
+    {"rgb": [255, 0, 0], "name": "Red"},
+]
+_BLUE, _WINE, _RUST, _RED = range(4)
+
+
+def _run_remove(labels: np.ndarray, min_region_area: float) -> tuple[np.ndarray, dict]:
+    settings = CleanupSettings(cleanup=True, cleanup_action="remove",
+                               min_region_area=min_region_area)
+    return cleanup_labels(labels, list(range(len(_TARGET_PALETTE))), _TARGET_PALETTE,
+                          settings, 1.0)
+
+
+def _striped_speck(length: int, wine_edge: int) -> np.ndarray:
+    """A one-pixel-high Red speck along row 5 from the left image edge: Blue above
+    all of it, Wine below its first ``wine_edge`` pixels, Rust below the rest and at
+    its right end."""
+    labels = np.full((12, length + 5), _WINE, dtype=np.int16)
+    labels[:5, :] = _BLUE
+    labels[5:, wine_edge:] = _RUST
+    labels[5, :length] = _RED
+    return labels
+
+
+class RemoveTargetTests(unittest.TestCase):
+    """A removed group takes the colour it shares the most edge with; colours within
+    90% of that edge are a close call settled by Lab distance, then palette index."""
+
+    def test_a_speck_mostly_enclosed_by_one_colour_takes_it_over_a_closer_colour(self):
+        labels = np.full((7, 7), _BLUE, dtype=np.int16)
+        labels[:, 4:] = _RUST
+        labels[3, 3] = _RED     # Blue on three sides, Rust on one
+        cleaned, summary = _run_remove(labels, 4)
+        self.assertEqual(int(cleaned[3, 3]), _BLUE)
+        self.assertEqual(summary["removed_regions"], 1)
+
+    def test_candidates_within_ten_percent_of_the_longest_edge_go_to_the_closer_colour(self):
+        # Blue shares 10 pairs, Wine 9 (90%), Rust 2: Wine is closer than Blue.
+        cleaned, _ = _run_remove(_striped_speck(10, 9), 20)
+        self.assertTrue((cleaned[5, :10] == _WINE).all())
+        # Exactly 90%: Blue 20, Wine 18.
+        cleaned, _ = _run_remove(_striped_speck(20, 18), 25)
+        self.assertTrue((cleaned[5, :20] == _WINE).all())
+
+    def test_a_candidate_just_outside_ten_percent_loses_to_the_longest_edge(self):
+        # Blue shares 20 pairs, Wine 17 (85%), Rust 4.
+        cleaned, _ = _run_remove(_striped_speck(20, 17), 25)
+        self.assertTrue((cleaned[5, :20] == _BLUE).all())
+
+    def test_an_exact_close_call_goes_to_the_lower_palette_index(self):
+        palette = [dict(_TARGET_PALETTE[_WINE], name="Wine2"), *_TARGET_PALETTE[1:]]
+        labels = _striped_speck(10, 10)     # palette 0 and 1 both Wine, 10 pairs each
+        labels[labels == _BLUE] = 0
+        settings = CleanupSettings(cleanup=True, cleanup_action="remove", min_region_area=20)
+        cleaned, _ = cleanup_labels(labels, [0, 1, 2, 3], palette, settings, 1.0)
+        self.assertTrue((cleaned[5, :10] == 0).all())
+
+    def test_a_multi_colour_group_counts_the_edge_of_the_whole_group(self):
+        labels = np.full((12, 12), _WINE, dtype=np.int16)
+        labels[:6, :] = _BLUE
+        labels[5, 0:2] = _RED       # alone: 2 Blue pairs, 2 Wine
+        labels[5, 2:6] = _RUST      # alone: 5 Blue pairs (4 above, 1 right), 4 Wine
+        # As one group: Blue 7 pairs, Wine 6 (86%). Wine is closer to its average colour.
+        cleaned, summary = _run_remove(labels, 5)
+        self.assertTrue((cleaned[5, :6] == _BLUE).all())
+        self.assertEqual(summary["removed_regions"], 2)
+        self.assertEqual(summary["removed_pixels"], 6)
+
+    def test_a_border_pixel_touching_the_group_on_two_sides_counts_twice(self):
+        labels = np.full((12, 12), _WINE, dtype=np.int16)
+        labels[6:, :5] = _RUST
+        labels[6:, 6:] = _BLUE
+        labels[5, 7:] = _BLUE
+        labels[7:, 5] = _BLUE
+        labels[5, 5:7] = _RED
+        labels[6, 5] = _RED
+        # The Red L's notch (6, 6) is Blue and touches it twice: Blue 4 pairs from 3
+        # border pixels, Wine 3 from 3, Rust 1. Counting border pixels would make
+        # Blue and Wine a close call that Wine wins.
+        cleaned, _ = _run_remove(labels, 4)
+        self.assertTrue((cleaned[[5, 5, 6], [5, 6, 5]] == _BLUE).all())
 
 
 if __name__ == "__main__":

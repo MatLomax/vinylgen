@@ -9,6 +9,11 @@ from scipy import ndimage
 from vinylgen.colour import srgb_to_lab
 from vinylgen.contracts import CleanupSettings
 
+# Every Remove choice as ``(shared_edge, distances)``: each candidate colour's shared
+# edge and its Lab distance to the group's average colour. Tests read it to confirm
+# which close-call shapes a fuzz run exercised; it never affects a result.
+remove_choices: list[tuple[dict, dict]] = []
+
 
 def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                    settings: CleanupSettings, units_per_pixel: float) -> tuple[np.ndarray, dict]:
@@ -75,18 +80,34 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
             group_mask = groups == group
             original_components = np.unique(small_component_ids[group_mask])
             original_components = original_components[original_components > 0]
-            border = ndimage.binary_dilation(group_mask, structure=structure) & ~group_mask
-            neighbours = [int(value) for value in np.unique(snapshot[border & ~small_mask])
-                          if int(value) in included]
+            # Count every (group pixel, four-neighbour) pair whose neighbour lies
+            # outside the small mask and has an included colour, per colour.
+            height, width_pixels = snapshot.shape
+            shared_edge = {}
+            for y, x in zip(*np.nonzero(group_mask)):
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ny, nx = int(y) + dy, int(x) + dx
+                    if not (0 <= ny < height and 0 <= nx < width_pixels):
+                        continue
+                    if small_mask[ny, nx]:
+                        continue
+                    value = int(snapshot[ny, nx])
+                    if value in included:
+                        shared_edge[value] = shared_edge.get(value, 0) + 1
+            neighbours = sorted(shared_edge)
             if not neighbours:
                 summary["unchanged_regions"] += len(original_components)
                 summary["warnings"].append(
                     f"undersized component group {group}: no stable touching included colour")
                 continue
+            longest = max(shared_edge.values())
+            close = [value for value in neighbours if 10 * shared_edge[value] >= 9 * longest]
             source_values, counts = np.unique(snapshot[group_mask], return_counts=True)
             source_lab = np.average(labs[source_values], axis=0, weights=counts)
-            target = min(neighbours,
-                         key=lambda value: (float(np.linalg.norm(labs[value] - source_lab)), value))
+            distances = {value: float(np.linalg.norm(labs[value] - source_lab))
+                         for value in neighbours}
+            remove_choices.append((shared_edge, distances))
+            target = min(close, key=lambda value: (distances[value], value))
             result[group_mask] = target
             summary["removed_regions"] += len(original_components)
             summary["removed_pixels"] += int(group_mask.sum())

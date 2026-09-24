@@ -52,7 +52,7 @@ from vinylgen.cleanup_window import (
     will_change,
 )
 from vinylgen.contracts import CleanupSettings
-from vinylgen.cutter_cleanup import pixel_scale, resolve_physical_size
+from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION, pixel_scale, resolve_physical_size
 from vinylgen.trace_window import (
     PREVIEW_MARGIN_PX,
     PREVIEW_MAX_AREA_PX,
@@ -509,16 +509,20 @@ class TracePreviewService:
     def _produced_by(self, revision_id: str, settings: CleanupSettings, omitted: int | None,
                      width: int, height: int) -> bool:
         """Whether the raster shown for the revision is the result of a Cleanup run
-        with these settings: its active cleanup (not stale) recorded the same action
-        and thresholds, the same physical size once resolved (to a relative 1e-9, so
-        a size given by the other dimension still matches) and removed the same
-        palette colour. The recorded colour is resolved against the palette that run
-        cleaned with, ``omitted`` against the one this preview cleans with, so a
-        rename in between (a trace's colour names) is never mistaken for a match.
-        Any doubt answers no, and the preview runs the clean. Only settings are
-        compared, never the cleanup code that made the recorded result."""
+        with these settings under the current cleanup rules: its active cleanup (not
+        stale) recorded ``CLEANUP_ALGORITHM_VERSION`` (a run recorded without a
+        version ran under version 1), the same action and thresholds, the same
+        physical size once resolved (to a relative 1e-9, so a size given by the other
+        dimension still matches) and removed the same palette colour. The recorded
+        colour is resolved against the palette that run cleaned with, ``omitted``
+        against the one this preview cleans with, so a rename in between (a trace's
+        colour names) is never mistaken for a match. Any doubt answers no, and the
+        preview runs the clean."""
         cleanup_revision, stale = nearest_cleanup(self.store, revision_id)
         if cleanup_revision is None or stale or cleanup_revision["parent_revision_id"] is None:
+            return False
+        if (cleanup_revision["settings"].get("cleanup_algorithm_version", 1)
+                != CLEANUP_ALGORITHM_VERSION):
             return False
         try:
             recorded = CleanupSettings(**cleanup_revision["settings"]["cleanup"])

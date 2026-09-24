@@ -31,6 +31,9 @@ The current tests cover:
   palette inference.
 - Deterministic palette, merge history, and count.
 - Small-region replacement selecting the closest touching colour.
+- Cutter cleanup's Remove giving each undersized group the colour it shares the
+  most edge with, close calls within 90% of that edge going to the closer Lab
+  colour and then the lower palette index.
 - Regions equal to the threshold surviving.
 - Adjacent tiny colours not swapping.
 - Corner-only contact not preserving an isolated pixel.

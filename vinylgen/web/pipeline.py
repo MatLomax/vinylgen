@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
+from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
@@ -161,6 +162,7 @@ def _provenance(stage: str, palette: dict | None, trace: dict | None,
     # nearest active cleanup ancestor (``active_cleanup_settings``).
     if cleanup is not None:
         provenance["cleanup"] = cleanup
+        provenance["cleanup_algorithm_version"] = CLEANUP_ALGORITHM_VERSION
     return provenance
 
 
