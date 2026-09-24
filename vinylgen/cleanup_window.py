@@ -178,19 +178,22 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
     if resolved.cleanup_action == "remove_then_widen":
         remove_settings, widen_settings = remove_then_widen_stages(resolved)
         removed, _ = cleanup_labels(original, included, palette, remove_settings, scale,
-                                    explicit=explicit, regions=regions)
+                                    explicit=explicit, regions=regions,
+                                    checkpoint=check)
         check()
         # The removal changed the raster, so the widening measures the crop itself.
         cleaned, _ = cleanup_labels(removed, included, palette, widen_settings, scale,
-                                    explicit=explicit)
+                                    explicit=explicit, checkpoint=check)
     elif resolved.cleanup_action == "remove":
         removed, _ = cleanup_labels(original, included, palette, resolved, scale,
-                                    explicit=explicit, regions=regions)
+                                    explicit=explicit, regions=regions,
+                                    checkpoint=check)
         cleaned = removed
     else:
         removed = original
         cleaned, _ = cleanup_labels(original, included, palette, resolved, scale,
-                                    explicit=explicit, regions=regions)
+                                    explicit=explicit, regions=regions,
+                                    checkpoint=check)
     changed = (cleaned != original)[inner]
     widened = changed & (cleaned != removed)[inner]
     return CleanedWindow(window, crop, cleaned[inner].copy(), changed & ~widened, widened)

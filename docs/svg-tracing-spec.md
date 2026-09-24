@@ -259,7 +259,15 @@ corpus subject). A newer request interrupts the measurement before a colour's
 feature transform or between colours, and the colours already finished are kept;
 the transform itself cannot be split without changing the distances, so one
 colour's transform (about 0.7 s on `sourceup`, about 2.5 s on 11264 × 7920) is
-the longest uninterruptible step.
+the longest uninterruptible step. The cleaning of the window is interrupted too:
+the remove and widen passes check before each colour, each removal group and each
+widened component, so a pan or setting change during a widening of up to about
+1.3 s stops it after the current component or colour setup instead of queueing
+the newer preview behind it. The longest stretch between checks measured on
+600 × 600 windows was about 60 ms on the corpus subjects and 70 ms on `sourceup`
+(bounded by the crop, not the raster), and the server notices a dropped request
+within 50 ms. The checks never change the result, and a full Cleanup run passes
+none.
 
 On the development machine the measurement takes about 0.35 s for a 1495 × 1052
 subject, about 6.4 s for the 5980 × 4208 `sourceup` subject (peak about 460 MB

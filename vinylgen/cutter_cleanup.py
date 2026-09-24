@@ -266,7 +266,8 @@ def apply_cleanup(labels: np.ndarray, palette: list[dict], settings: CleanupSett
 def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                    settings: CleanupSettings, units_per_pixel: float,
                    *, explicit: np.ndarray | None = None,
-                   regions: RegionMeasurements | None = None) -> tuple[np.ndarray, dict]:
+                   regions: RegionMeasurements | None = None,
+                   checkpoint: Callable[[], None] | None = None) -> tuple[np.ndarray, dict]:
     """Remove or widen undersized regions of ``included`` colours.
 
     ``explicit`` marks the user's explicitly protected pixels, which are never
@@ -279,7 +280,11 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
     width and explicit protection are then read from them rather than from its part
     inside the crop, so it is judged undersized exactly as a full run judges it.
     Only the first stage uses them: after it the raster differs from the measured one.
+
+    ``checkpoint`` runs before each colour, each removal group and each widened
+    component, and may raise to abandon the cleanup; it never changes the result.
     """
+    check = checkpoint or (lambda: None)
     result = labels.copy()
     summary = {"enabled": settings.cleanup, "action": settings.cleanup_action,
                "removed_regions": 0, "removed_pixels": 0, "widened_regions": 0,
@@ -293,10 +298,11 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
         remove_settings, widen_settings = remove_then_widen_stages(settings)
         removed, remove_summary = cleanup_labels(
             result, included, palette, remove_settings, units_per_pixel, explicit=explicit,
-            regions=regions)
+            regions=regions, checkpoint=checkpoint)
         # The removal changed the raster, so the measurements no longer describe it.
         widened, widen_summary = cleanup_labels(
-            removed, included, palette, widen_settings, units_per_pixel, explicit=explicit)
+            removed, included, palette, widen_settings, units_per_pixel, explicit=explicit,
+            checkpoint=checkpoint)
         combined = {"enabled": True, "action": "remove_then_widen",
                     "removed_regions": remove_summary["removed_regions"],
                     "removed_pixels": remove_summary["removed_pixels"],
@@ -348,6 +354,7 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
             small_mask = small_pixels & ~kept
             small_component_ids = np.where(small_mask, regions.ids + 1, 0).astype(np.int32)
         for source in (included if regions is None else ()):
+            check()
             components, count = ndimage.label(snapshot == source, structure=structure)
             objects = ndimage.find_objects(components)
             field = snapshot_field(source)
@@ -368,6 +375,7 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
         groups, group_count = ndimage.label(small_mask, structure=structure)
         group_objects = ndimage.find_objects(groups)
         for group in range(1, group_count + 1):
+            check()
             # A group's one-pixel four-connected border lies inside its bounding
             # box padded by one pixel, so every test runs on that window.
             window = tuple(slice(max(0, s.start - 1), min(result.shape[i], s.stop + 1))
@@ -415,10 +423,12 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
     generation = 0
 
     for source in included:
+        check()
         components, count = ndimage.label(snapshot == source, structure=structure)
         objects = ndimage.find_objects(components)
         source_field = snapshot_field(source)
         for component in range(1, count + 1):
+            check()
             bounds = objects[component - 1]
             local = components[bounds] == component
             # The component's padded-box EDT: the per-colour field on its pixels,

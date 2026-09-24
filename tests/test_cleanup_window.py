@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from dataclasses import replace
 from unittest import mock
@@ -268,6 +269,48 @@ class RegionMeasurementCacheTest(unittest.TestCase):
             clean_window(source, WINDOW, PALETTE, settings, None)
         self.assertEqual(measure.call_count, 2 + len(PALETTE) - 1)
         self.assertTrue(source.measured)
+
+    def test_a_newer_request_stops_a_running_widening_between_components(self) -> None:
+        labels, _, explicit = raster()
+        source = source_of(labels, explicit)
+        source.regions()
+        stopped_at = []
+
+        def checkpoint() -> None:
+            # Supersede the preview at the widening's first check between two
+            # components: the check inside its component loop, after a component
+            # has already been handled.
+            frame = sys._getframe(1)
+            if (frame.f_code.co_name == "cleanup_labels" and "source_field" in frame.f_locals
+                    and frame.f_locals.get("component", 0) >= 2):
+                stopped_at.append(frame.f_locals["component"])
+                raise PreviewCancelled
+
+        for action in ("widen", "remove_then_widen"):
+            with self.subTest(action=action):
+                stopped_at.clear()
+                settings = CleanupSettings(cleanup=True, cleanup_action=action,
+                                           min_detail_width=4.0, min_region_area=20.0)
+                with self.assertRaises(PreviewCancelled):
+                    clean_window(source, WINDOW, PALETTE, settings, None, checkpoint)
+                self.assertEqual(stopped_at, [2])
+
+    def test_the_checks_never_change_a_preview(self) -> None:
+        labels, _, explicit = raster()
+        source = source_of(labels, explicit)
+        for action in ("remove", "widen", "remove_then_widen"):
+            with self.subTest(action=action):
+                settings = CleanupSettings(cleanup=True, cleanup_action=action,
+                                           min_detail_width=4.0, min_region_area=240.0,
+                                           remove_below_width=2.0)
+                calls = []
+                plain = clean_window(source, WINDOW, PALETTE, settings, None)
+                checked = clean_window(source, WINDOW, PALETTE, settings, None,
+                                       lambda: calls.append(1))
+                np.testing.assert_array_equal(checked.labels, plain.labels)
+                np.testing.assert_array_equal(checked.removed, plain.removed)
+                np.testing.assert_array_equal(checked.widened, plain.widened)
+                self.assertGreater(len(calls), 1)
 
     def test_the_banded_distance_pass_equals_the_whole_field(self) -> None:
         labels, _, explicit = raster()

@@ -158,6 +158,35 @@ class CutterCleanupFastTests(unittest.TestCase):
         self.assertGreaterEqual(cases, 300)
         self.assertGreater(refused_seen, 0, "no widening-refusal case was exercised")
 
+    def test_a_checkpoint_never_changes_the_result(self):
+        rng = np.random.default_rng(20260924)
+        actions = ("remove", "widen", "remove_then_widen")
+        checked = 0
+        for index in range(60):
+            height = int(rng.integers(4, 49))
+            width = int(rng.integers(4, 65))
+            colours = int(rng.integers(2, 6))
+            labels = _random_labels(rng, height, width, colours)
+            palette = _random_palette(rng, max(colours, int(labels.max()) + 1))
+            included = list(range(len(palette)))
+            settings = CleanupSettings(
+                cleanup=True, cleanup_action=actions[index % len(actions)],
+                min_detail_width=float(rng.uniform(0.5, 6.0)),
+                min_region_area=float(rng.uniform(0.0, 20.0)),
+                remove_below_width=float(rng.uniform(0.0, 3.0)))
+            calls = []
+            with self.subTest(case=index, action=settings.cleanup_action):
+                want_labels, want_summary = cleanup_labels(
+                    labels.copy(), included, palette, settings, 1.0)
+                got_labels, got_summary = cleanup_labels(
+                    labels.copy(), included, palette, settings, 1.0,
+                    checkpoint=lambda: calls.append(1))
+                np.testing.assert_array_equal(got_labels, want_labels)
+                self.assertEqual(got_summary, want_summary)
+                self.assertGreater(len(calls), 0)
+            checked += 1
+        self.assertEqual(checked, 60)
+
     def test_corpus_subjects_match_reference(self):
         _require_slow_tests()
         subjects = ("desert-rocket", "kraken-lighthouse", "cosmic-jellyfish")
