@@ -71,7 +71,8 @@ def _run(spec: dict) -> None:
     elif op == "cleanup":
         from vinylgen.web.cleanup import clean_subject
 
-        clean_subject(Path(spec["subject"]), CleanupSettings(**spec["settings"]), progress=_emit)
+        clean_subject(Path(spec["subject"]), CleanupSettings(**spec["settings"]), progress=_emit,
+                      touch_ups=spec.get("touch_ups"))
     elif op == "trace":
         from vinylgen.tracing import trace_subject
 

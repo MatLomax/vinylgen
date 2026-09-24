@@ -183,10 +183,20 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after.status_code, 200, after.text)
         remaining = list(layer_paths(ET.fromstring(after.json()["svg"])))
         self.assertEqual(remaining, colours[:-1])
-        edited = await self.client.post(
+        # A touch-up keeps the cleanup current: the preview still omits its colour.
+        touched = await self.client.post(
             f"/api/projects/{project_id}/revisions/{cleanup_revision}/edits",
             json={"operations": [{"tool": "paint_pixels", "target_label": 0,
                                   "pixels": [[1, 1]]}]})
+        self.assertEqual(touched.status_code, 201, touched.text)
+        kept = await self.preview(touched.json()["id"], window)
+        self.assertEqual(kept.status_code, 200, kept.text)
+        self.assertEqual(list(layer_paths(ET.fromstring(kept.json()["svg"]))), colours[:-1])
+        # A merge makes it stale.
+        edited = await self.client.post(
+            f"/api/projects/{project_id}/revisions/{touched.json()['id']}/edits",
+            json={"operations": [{"tool": "merge_colour", "source_label": 0,
+                                  "target_label": 1}]})
         self.assertEqual(edited.status_code, 201, edited.text)
         stale = await self.preview(edited.json()["id"], window)
         self.assertEqual(stale.status_code, 409, stale.text)

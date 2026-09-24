@@ -1,11 +1,12 @@
 """The cleanup stage: cutter cleanup of a subject's labels under its physical size.
 
-It runs between Edit and Trace. It records the physical output size and the removed
+It runs between Palette and Edit. It records the physical output size and the removed
 colour that the trace then uses, and, with cleanup enabled, rewrites the labels with
 ``cutter_cleanup.apply_cleanup`` (the implementation the trace CLI also runs inline).
 Palette costs, explicit protection and the palette itself are carried unchanged;
 automatic protection is cleared where the cleanup changed labels, and explicitly
-protected detail is never removed.
+protected detail is never removed. The touch-ups made on the previous cleanup's raster
+are then replayed on the cleaned labels (``web.touch_ups``).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from vinylgen.reporting import create_report
 from vinylgen.tracing import ensure_palette_names, resolve_colour
 
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
+from .touch_ups import TOUCH_UPS_FILE, replay_message, replay_touch_ups, touch_ups_bytes
 
 CLEANUP_AUDIT = "cleanup.json"
 CLEANUP_CHANGES_OVERLAY = "cleanup-changes-overlay.png"
@@ -79,29 +81,37 @@ def _write_segmentation(path: Path, bundle: SegmentationBundle) -> None:
 
 
 def completion_message(audit: dict) -> str:
-    """The job result line for a cleanup run, stating what it did to protected detail."""
+    """The job result line for a cleanup run, stating what it did to protected detail
+    and to the touch-ups it replayed."""
     summary = audit["cleanup"]
     if not summary["enabled"]:
-        return "Cleanup off: recorded the size and removed colour"
-    return (f"Cleanup changed {audit['changed_pixels']} px; removed "
+        message = "Cleanup off: recorded the size and removed colour"
+    else:
+        message = (
+            f"Cleanup changed {audit['changed_pixels']} px; removed "
             f"{summary['auto_protected_components_cleared']} automatically protected details "
             f"({summary['auto_protected_pixels_cleared']} px); kept "
             f"{summary['protected_kept_regions']} explicitly protected regions under the threshold")
+    replay = audit.get("touch_ups")
+    return f"{message}. {replay['message']}" if replay else message
 
 
 def clean_subject(subject_dir: Path, settings: CleanupSettings,
-                  progress: Progress | None = None) -> dict:
+                  progress: Progress | None = None, touch_ups: list[dict] | None = None) -> dict:
     """Clean ``subject_dir``'s segmentation in place and write ``cleanup.json``.
 
     ``subject_dir`` holds the raster from before any earlier cleanup, so a run always
-    cleans the uncleaned labels and never stacks on another cleanup. When the run
-    changes pixels, ``segmentation.npz`` (labels and automatic protection),
-    ``flattened.png`` and ``report.png`` are rewritten and ``cleanup-changes-overlay.png``
-    records the changed pixels (``write_changes_overlay``); otherwise the raster is left
-    untouched and the run records the size and removed colour. ``palette.json`` is
-    always rewritten with the resulting raster's shares. The removed colour is
-    validated against the palette here, so a bad value fails the cleanup run rather
-    than the trace that follows it.
+    cleans the uncleaned labels and never stacks on another cleanup. ``touch_ups``
+    (``PendingTouchUp.spec`` form, oldest first) are then replayed on the cleaned
+    labels (``touch_ups.replay_touch_ups``); the audit's ``touch_ups`` records what was
+    replayed and skipped, and ``touch-ups.npz`` holds the replayed ones' pixels. When
+    the run changes pixels, ``segmentation.npz`` (labels and automatic protection),
+    ``flattened.png`` and ``report.png`` are rewritten; ``cleanup-changes-overlay.png``
+    records the pixels the cleanup changed (``write_changes_overlay``), never the
+    replayed touch-ups. Otherwise the raster is left untouched and the run records the
+    size and removed colour. ``palette.json`` is always rewritten with the resulting
+    raster's shares. The removed colour is validated against the palette here, so a
+    bad value fails the cleanup run rather than the trace that follows it.
     """
     tick = progress or _noop
     tick(0.02, "Reading segmentation")
@@ -133,23 +143,41 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
                    "protected_kept_regions": 0, "auto_protected_components_cleared": 0,
                    "auto_protected_pixels_cleared": 0}
         changed = 0
+    overlay_path = subject_dir / CLEANUP_CHANGES_OVERLAY
+    if not changed:
+        overlay_path.unlink(missing_ok=True)
+    else:
+        write_changes_overlay(overlay_path, bundle.labels, stages["after_removal"], cleaned)
+    # The touch-ups replay on the cleaned labels in place; the uncleaned labels stay
+    # as they were, to tell whether the run changed any pixel.
+    result = cleaned if changed else bundle.labels.copy() if touch_ups else bundle.labels
+    replay = None
+    (subject_dir / TOUCH_UPS_FILE).unlink(missing_ok=True)
+    if any(touch_up.get("replays", True) for touch_up in touch_ups or ()):
+        tick(0.75, "Replaying touch-ups")
+        entries, arrays, skipped, partly = replay_touch_ups(result, touch_ups, len(palette), omitted)
+        total = sum(1 for touch_up in touch_ups if touch_up.get("replays", True))
+        replayed = sum(1 for entry in entries if not entry.get("waiting"))
+        replay = {"total": total, "replayed": replayed, "skipped": skipped,
+                  "partly_superseded": partly, "records": entries,
+                  "message": replay_message(total, replayed, skipped, partly)}
+        if entries:
+            (subject_dir / TOUCH_UPS_FILE).write_bytes(touch_ups_bytes(arrays))
+    raster_changed = bool(changed) or (bool(touch_ups) and not np.array_equal(result, bundle.labels))
     # palette.json always states the shares of the raster this run results in, so a
     # later lookup never reads shares recorded for a different (cleaned) raster.
-    shares = np.bincount((cleaned if changed else bundle.labels).ravel(), minlength=len(palette))
+    shares = np.bincount(result.ravel(), minlength=len(palette))
     total = max(1, bundle.labels.size)
     for index, row in enumerate(palette):
         row["share_percent"] = round(float(shares[index]) * 100 / total, 4)
     palette_path.write_text(json.dumps(report, indent=2) + "\n")
-    overlay_path = subject_dir / CLEANUP_CHANGES_OVERLAY
-    if not changed:
-        overlay_path.unlink(missing_ok=True)
     if changed:
-        write_changes_overlay(overlay_path, bundle.labels, stages["after_removal"], cleaned)
-        bundle.labels = cleaned
         bundle.protected_features = protected
+    if raster_changed:
+        bundle.labels = result
         tick(0.8, "Writing cleaned segmentation")
         _write_segmentation(segmentation_path, bundle)
-        flattened = Image.fromarray(bundle.palette_rgb[cleaned].astype(np.uint8), "RGB")
+        flattened = Image.fromarray(bundle.palette_rgb[result].astype(np.uint8), "RGB")
         flattened.save(subject_dir / "flattened.png", compress_level=1)
         tick(0.9, "Rendering palette report")
         legend = sorted(palette, key=lambda row: -float(row["share_percent"]))
@@ -167,8 +195,12 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
         # name, which a trace's colour names may change (pipeline.cleanup_removed_index).
         "omitted_index": omitted,
         "changed_pixels": changed,
+        # Whether the run rewrote the raster: the cleanup or a replayed touch-up changed it.
+        "raster_changed": raster_changed,
         "cleanup": summary,
     }
+    if replay is not None:
+        audit["touch_ups"] = replay
     (subject_dir / CLEANUP_AUDIT).write_text(json.dumps(audit, indent=2) + "\n")
     tick(1.0, "Complete")
     return audit

@@ -158,8 +158,9 @@ class CleanupSource:
 @dataclass(frozen=True)
 class CleanedWindow:
     """The cleanup of one window: the uncleaned labels of ``window``, its labels
-    after the removal stage and its final cleaned labels, and the net change from
-    the uncleaned raster split by the stage that made it (``change_classes``)."""
+    after the removal stage and its final cleaned labels, the net change from the
+    uncleaned raster split by the stage that made it (``change_classes``), and the
+    final cleaned labels of the whole ``crop``."""
 
     window: Window
     crop: Window
@@ -168,6 +169,7 @@ class CleanedWindow:
     labels: np.ndarray
     removed: np.ndarray
     widened: np.ndarray
+    cleaned_crop: np.ndarray
 
 
 def will_change(original: np.ndarray, current: np.ndarray, after_removal: np.ndarray,
@@ -206,7 +208,8 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
     if not settings.cleanup:
         same = original[inner].copy()
         unchanged = np.zeros(same.shape, dtype=bool)
-        return CleanedWindow(window, crop, same, same, same, unchanged, unchanged.copy())
+        return CleanedWindow(window, crop, same, same, same, unchanged, unchanged.copy(),
+                             original)
     regions = source.regions(checkpoint).crop(rows, columns)
     check()
     resolved = resolve_physical_size(settings, source.width, source.height)
@@ -234,4 +237,4 @@ def clean_window(source: CleanupSource, window: Window, palette: list[dict],
                                     checkpoint=check)
     removed_window, widened_window = change_classes(original[inner], removed[inner], cleaned[inner])
     return CleanedWindow(window, crop, original[inner].copy(), removed[inner].copy(),
-                         cleaned[inner].copy(), removed_window, widened_window)
+                         cleaned[inner].copy(), removed_window, widened_window, cleaned)

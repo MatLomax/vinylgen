@@ -20,7 +20,7 @@ Vinylgen combines generative source creation with a deterministic, auditable ras
 
 ## Operating Context
 
-The core loop is `Generate → inspect → flatten → inspect/edit → trace → inspect/export`. Users may start with a short prompt or upload, work through immutable revisions in a responsive web interface, merge complete palette colours, compare each stage's result with its input by split or blink on the main canvas, and hand advanced path work to Inkscape. Durable generated artifacts live under subject-specific output or project revision storage. Cutter preparation is a separate, safety-gated workflow.
+The core loop is `Generate → inspect → flatten → clean up → inspect/touch up → trace → inspect/export`. Users may start with a short prompt or upload, work through immutable revisions in a responsive web interface, merge complete palette colours, compare each stage's result with its input by split or blink on the main canvas, and hand advanced path work to Inkscape. Durable generated artifacts live under subject-specific output or project revision storage. Cutter preparation is a separate, safety-gated workflow.
 
 ## Capabilities and Constraints
 

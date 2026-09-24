@@ -48,7 +48,9 @@ CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_
 # run's own outputs and an Inkscape edit of that run's SVG: both describe geometry
 # a retrace replaces.
 STALE_ARTIFACT_KINDS = {
-    "palette": {"flattened", "segmentation", "palette", "report", "protected-areas-overlay"},
+    "palette": {"flattened", "segmentation", "palette", "report", "protected-areas-overlay",
+                "before-cleanup-flattened", "before-cleanup-segmentation",
+                "before-cleanup-palette", "before-cleanup-report"},
     "cleanup": {"cleanup-audit", "cleanup-changes-overlay"},
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
@@ -74,9 +76,29 @@ PALETTE_RUN_SUPERSEDES = STALE_ARTIFACT_KINDS["palette"]
 
 
 # The raster a cleanup revision rewrites, and the overlay of what it changed; a newer
-# cleanup replaces them, even one that changed nothing and so wrote neither.
+# cleanup replaces them, even one that changed nothing and so wrote neither. A label edit
+# on the cleaned raster (``describes_cleaned_raster``) writes the same kinds.
 CLEANUP_RASTER_KINDS = {"flattened", "segmentation", "palette", "report",
                         "cleanup-changes-overlay"}
+
+# A rename or recolour on the cleaned raster also rewrites the raster a Cleanup run
+# starts from, stored under these kinds (and filenames, so the two rasters of one
+# revision never share a file); they resolve as the kind and filename they name only
+# where that revision's cleaned raster is skipped (``Store.effective_artifacts``).
+BEFORE_CLEANUP_KINDS = {"before-cleanup-flattened": ("flattened", "flattened.png"),
+                        "before-cleanup-segmentation": ("segmentation", "segmentation.npz"),
+                        "before-cleanup-palette": ("palette", "palette.json"),
+                        "before-cleanup-report": ("report", "report.png")}
+
+# Kinds that belong to their own revision only and never resolve through ancestry: the
+# touch-ups a revision records for a later Cleanup run to replay (``web.touch_ups``).
+REVISION_ONLY_KINDS = {"touch-ups"}
+
+
+def describes_cleaned_raster(revision: dict[str, Any]) -> bool:
+    """Whether ``revision``'s raster artifacts are a cleaned raster: a cleanup's, or a
+    label edit's made on the cleaned raster of a current cleanup."""
+    return revision["kind"] == "cleanup" or bool(revision["settings"].get("cleaned_raster"))
 
 
 def _now() -> str:
@@ -466,10 +488,14 @@ class Store:
         The newest artifact of each kind wins. Stale concerns accumulate while walking:
         once a revision marks a concern stale, the artifacts of that concern's kinds
         from every older revision are excluded. A cleanup replaces any earlier cleanup,
-        so the raster artifacts and changes overlay of a ``cleanup`` revision
-        (``CLEANUP_RASTER_KINDS``) are skipped once a newer cleanup has been passed;
+        so the raster artifacts and changes overlay of a cleaned raster (a ``cleanup``
+        revision, or a label edit on its cleaned raster: ``describes_cleaned_raster``,
+        ``CLEANUP_RASTER_KINDS``) are skipped once a newer cleanup has been passed;
         with ``before_cleanup`` they are skipped from the start, which resolves the
-        raster that cleanup starts from. A ``trace`` run
+        raster that cleanup starts from. Where a cleaned raster is skipped, its
+        revision's ``BEFORE_CLEANUP_KINDS`` (a rename or recolour of the raster before
+        cleanup) resolve as the kinds they name; elsewhere they are never returned, nor
+        are ``REVISION_ONLY_KINDS``. A ``trace`` run
         writes its complete output set, so it supersedes every trace artifact of an
         older run, including optional audits that run did not repeat, and an older
         run's Inkscape edit, validation and export (``TRACE_RUN_SUPERSEDES``); this
@@ -487,13 +513,19 @@ class Store:
                 raise ValueError("revision ancestry contains a cycle")
             seen.add(current)
             revision = self.get_revision(current)
-            skip_raster = revision["kind"] == "cleanup" and cleanup_superseded
+            skip_raster = describes_cleaned_raster(revision) and cleanup_superseded
             for row in self.list_artifacts(current):
-                if row["kind"] in stale_kinds:
+                kind = row["kind"]
+                if kind in stale_kinds or kind in REVISION_ONLY_KINDS:
                     continue
-                if skip_raster and row["kind"] in CLEANUP_RASTER_KINDS:
+                if skip_raster and kind in CLEANUP_RASTER_KINDS:
                     continue
-                result.setdefault(row["kind"], row)
+                if kind in BEFORE_CLEANUP_KINDS:
+                    if not skip_raster:
+                        continue
+                    kind, filename = BEFORE_CLEANUP_KINDS[kind]
+                    row = {**row, "kind": kind, "filename": filename}
+                result.setdefault(kind, row)
             stale_kinds.update(
                 kind
                 for concern in revision["settings"].get("stale_concerns", ())

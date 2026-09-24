@@ -206,14 +206,21 @@ revision and return its ID as `result_revision_id`. A revision's effective
 artifact set is the newest artifact of each kind found while walking its parent
 chain. Stale concerns accumulate along the walk: once any revision on the path
 marks a concern stale, artifacts of that concern's kinds from older revisions
-are excluded. A cleanup replaces any earlier cleanup, so an older `cleanup`
-revision's raster artifacts (`flattened`, `segmentation`, `palette`, `report`)
-and its `cleanup-changes-overlay` are skipped once a newer cleanup has been
-passed, even when the newer run changed nothing and so wrote neither. The
-overlay belongs to the cleanup concern with the `cleanup-audit`: a re-flatten,
-label edit or source upscale after the cleanup hides it with the rest of that
-cleanup, a trace of the cleanup keeps it, and the `before_cleanup` lookup never
-returns it. A `trace` run likewise
+are excluded. A cleanup replaces any earlier cleanup, so an older cleaned
+raster (a `cleanup` revision's, or a label edit's made on it, marked
+`settings.cleaned_raster`: its `flattened`, `segmentation`, `palette`, `report`)
+and the `cleanup-changes-overlay` are skipped once a newer cleanup has been
+passed, even when the newer run changed nothing and so wrote neither. Where such
+a label edit's cleaned raster is skipped, its `before-cleanup-flattened`,
+`before-cleanup-segmentation`, `before-cleanup-palette` and
+`before-cleanup-report` artifacts (the raster before cleanup as a rename or
+recolour on the cleaned raster left it) resolve as `flattened`, `segmentation`,
+`palette` and `report`; elsewhere they are never returned, so
+an export never packages them. A revision's `touch-ups` artifact is its own and
+never inherited. The overlay belongs to the cleanup concern with the
+`cleanup-audit`: a re-flatten, merge or source upscale after the cleanup hides
+it with the rest of that cleanup, a trace or touch-up of the cleanup keeps it,
+and the `before_cleanup` lookup never returns it. A `trace` run likewise
 writes its complete output set, so it hides every trace-kind artifact of an
 older run, including optional audits (fallbacks, semantic warnings and their
 overlays) it did not repeat, together with everything made of that older run:
@@ -233,7 +240,7 @@ the current trace run has been validated, whether the parent marks validation
 stale itself or simply has no effective
 `validation` artifact. `GET
 /api/revisions/{id}/effective-artifacts?before_cleanup=true` skips every
-cleanup revision's raster, resolving the raster the cleanup stage starts from.
+cleaned raster, resolving the raster the cleanup stage starts from.
 Revision settings retain the effective settings of their stage and list stale
 downstream concerns; this makes retracing and export provenance explicit
 without mutating an earlier result.
@@ -243,15 +250,50 @@ colour, and the cleanup switch, action and thresholds) and
 `settings.cleanup_algorithm_version` (the cleanup rules it ran under, absent for
 runs made under version 1), `settings.removed_colour_index` and
 `settings.removed_colour_hex` (the palette index and hex the removed colour
-resolved to when the run cleaned, both `null` when none was removed), and marks trace, validation, and export stale. When it changed pixels its artifacts are the
+resolved to when the run cleaned, both `null` when none was removed), `settings.changed_pixels` (the pixels the cleanup itself changed, which its changes overlay shows; absent on runs recorded before it), and marks trace, validation, and export stale. When it changed pixels its artifacts are the
 cleaned `flattened`, `segmentation`, `palette` and `report` plus the
-`cleanup-audit` (`cleanup.json`) and the `cleanup-changes-overlay`; a run that changed nothing (cleanup off, or
-nothing under the thresholds) holds only `palette` (its raster's shares) and
-the `cleanup-audit`, and its effective raster is the uncleaned one. Palette and
-label edits read, and build on, the raster from before any cleanup (the
-`before_cleanup` lookup), so an edit made after a cleanup never carries that
-cleanup's changes. Palette revisions, label edits and upscaled sources mark
-cleanup stale, so an earlier cleanup's audit and settings no longer apply
+`cleanup-audit` (`cleanup.json`) and the `cleanup-changes-overlay` (what the
+cleanup changed, never a replayed touch-up); a run that changed nothing (cleanup off, or
+nothing under the thresholds, and no touch-up replayed) holds only `palette` (its raster's shares) and
+the `cleanup-audit`, and its effective raster is the uncleaned one. After cleaning, the run
+replays the touch-ups made since the previous cleanup
+(`vinylgen/web/touch_ups.py`) and, when there were any, records
+`settings.touch_up_replay` (`{total, replayed, skipped, partly_superseded,
+message}`, each skipped one `{tool, point, reason, kept}` with `reason`
+`"resized"` (re-flattened at a different size), `"superseded"` (a later edit
+covers it), `"erase-unremoved"` (an erase, and the run removes no colour),
+`"colour-gone"` (the colour it paints is not in the palette),
+`"area-colour-gone"` (the colour of the area it recoloured is not) or
+`"area-changed"` (that area has changed since it was edited: Cleanup, an earlier
+touch-up it skipped, a later edit beside it or a re-flatten changed it), and each
+pencil stroke replayed only where no later edit painted as `{tool, point}`). A
+touch-up skipped as `"erase-unremoved"` or `"area-changed"` is kept (`kept` true;
+the message calls it still waiting): later runs judge it again and replay it once
+it applies. Any other skipped one is dropped for good. The run records its
+replayed and kept touch-ups, in their original order, as its own
+`settings.touch_ups` (a kept one marked `waiting`; an erase still marked `erase`,
+painted in the colour each run removes) and the pixels they paint in a
+`touch-ups` artifact (`touch-ups.npz`), and `cleanup.json` carries the same
+under `touch_ups`, with `raster_changed` saying whether the run rewrote the
+raster. While a cleanup is current, label edits read and build on its cleaned raster;
+otherwise the raster from before any cleanup (the `before_cleanup` lookup). A
+label edit on the cleaned raster records `settings.cleaned_raster`; each area
+recolour or pencil stroke in it is a touch-up, listed in `settings.touch_ups`
+(`{operation, tool, target_label, replays: true, erase}`, `erase` true when it
+paints the colour the current cleanup removes, plus `point` and `source_label`, the
+region's colour before it, for an area recolour) with its pixels in the
+revision's `touch-ups.npz`. An area or pencil edit made while a cleanup ancestor
+is stale is listed the same way with `replays: false`: its pixels are a footprint
+no older touch-up paints over. Each entry's pixels are member `<i>_pixels` (the stroke's `(x, y)` pixels,
+int32) or `<i>_origin`, `<i>_size` (the region's bounding box, x/y and
+width/height) and `<i>_mask` (the box's pixels, row-major, `numpy.packbits`),
+`<i>` the entry's index. A rename or recolour on the cleaned raster also writes
+the `before-cleanup-*` artifacts above: the palette alone for a rename, the
+palette, segmentation, flattened raster and report for a recolour. Every label
+edit that changes its raster's pixels or colours writes that raster's
+`report.png`. Palette revisions, merges, area or pencil edits made
+without a current cleanup, and upscaled sources mark cleanup stale (a rename,
+a recolour and a touch-up never do), so an earlier cleanup's audit and settings no longer apply
 beyond them, and a trace job is refused ("the artwork changed after Cleanup:
 re-run Cleanup before tracing") until Cleanup runs again. The web Trace panel
 offers a one-click re-run of that cleanup with its own recorded settings: a

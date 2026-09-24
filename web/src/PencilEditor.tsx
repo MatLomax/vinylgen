@@ -1,8 +1,10 @@
 import { useId } from 'react'
 import { type PaletteColour } from './api'
 
-export function PencilEditor({ palette, activeLabel, onPickColour, paintedCount, onApply, onDiscard, onUndo, canUndo, busy, error, disabled = false, disabledHint, lockedHint }: {
+export function PencilEditor({ palette, removedIndex = null, activeLabel, onPickColour, paintedCount, onApply, onDiscard, onUndo, canUndo, busy, error, disabled = false, disabledHint, lockedHint }: {
   palette: PaletteColour[]
+  // The palette index of the colour the current cleanup removes: painting it erases.
+  removedIndex?: number | null
   activeLabel: number | null
   onPickColour: (label: number) => void
   paintedCount: number
@@ -39,13 +41,14 @@ export function PencilEditor({ palette, activeLabel, onPickColour, paintedCount,
       <div className="region-swatch-grid" role="radiogroup" aria-label="Pencil colour">
         {palette.map(colour => {
           const active = activeLabel === colour.index
+          const erases = colour.index === removedIndex
           return <button key={colour.index} type="button" role="radio" aria-checked={active}
             className={`region-swatch ${active ? 'is-active' : ''}`} disabled={locked} aria-disabled={inert} aria-describedby={describedBy} onClick={inert ? undefined : () => onPickColour(colour.index)}
-            aria-label={`Paint with ${colour.name} ${colour.hex}`} title={`Paint with ${colour.name}`}>
+            aria-label={`Paint with ${colour.name} ${colour.hex}${erases ? ', removed in Cleanup: erases' : ''}`} title={erases ? `Paint with ${colour.name}: Cleanup removes it, so painting it erases` : `Paint with ${colour.name}`}>
             <span className="region-swatch-colour" style={{ background: colour.hex }} aria-hidden="true" />
             <span className="region-swatch-text">
               <strong>{colour.name}</strong>
-              <small>{active ? 'painting' : 'paint'} · {colour.share_percent}%</small>
+              <small>{erases ? (active ? 'erasing' : 'erase') : active ? 'painting' : 'paint'} · {colour.share_percent}%</small>
             </span>
           </button>
         })}

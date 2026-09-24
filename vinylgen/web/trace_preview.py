@@ -19,8 +19,10 @@ of its active cleanup, and the layer order that run would use. See
 The Cleanup canvas likewise asks for the cleaned pixels of its window under the
 current (unsaved) Cleanup form, on the same thread and under the same rules. It
 cleans the raster a Cleanup run starts from, with the whole raster's region
-measurements computed once per revision and held with it; see
-``vinylgen.cleanup_window`` for the documented differences from a full run. The
+measurements computed once per revision and held with it, and replays on it the
+touch-ups that run would replay (``touch_ups.replay_in_window``); see
+``vinylgen.cleanup_window`` and ``replay_in_window`` for the documented differences
+from a full run. The
 uncleaned raster and the traced segmentation are never resident together. A
 cheap state read, answered off the preview thread, tells the canvas whether those
 measurements are held for a revision and whether they are being built now, so it
@@ -76,6 +78,7 @@ from .models import CleanupJobSettings, TraceJobSettings
 from .pipeline import (STALE_CLEANUP_MESSAGE, _require_fresh, cleanup_removed_index,
                        nearest_cleanup)
 from .store import Store
+from .touch_ups import pending_touch_ups, replay_in_window
 
 BOUNDARY_CACHE_SIZE = 16
 # A loaded segmentation (and every cache derived from it) is released after this
@@ -540,9 +543,23 @@ class TracePreviewService:
                 checkpoint()
             cleaned = clean_window(source, window, palette, settings, omitted, checkpoint)
             checkpoint()
-            removed, widened, returned = will_change(cleaned.original, current,
-                                                     cleaned.after_removal, cleaned.labels)
             final = cleaned.labels
+            touch_ups = [touch_up.spec() for touch_up in pending_touch_ups(self.store, revision_id)]
+            if touch_ups:
+                # The run replays the touch-ups made since the last cleanup on its result.
+                replayed = cleaned.cleaned_crop.copy()
+                replay_in_window(replayed, (cleaned.crop.x, cleaned.crop.y), touch_ups,
+                                 len(palette), omitted)
+                final = replayed[window.y - cleaned.crop.y:window.bottom - cleaned.crop.y,
+                                 window.x - cleaned.crop.x:window.right - cleaned.crop.x]
+                checkpoint()
+            removed, widened, returned = will_change(cleaned.original, current,
+                                                     cleaned.after_removal, final)
+            # A replayed touch-up is the user's, not a change the cleanup makes: it shows
+            # in the pixels and is never marked removed, widened or returned.
+            replayed_here = final != cleaned.labels
+            removed, widened, returned = (removed & ~replayed_here, widened & ~replayed_here,
+                                          returned & ~replayed_here)
             crop = cleaned.crop
         changes = np.zeros((window.height, window.width, 4), dtype=np.uint8)
         changes[removed] = REMOVED_RGBA

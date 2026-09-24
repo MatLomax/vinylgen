@@ -24,6 +24,7 @@ from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
 from .store import Store
+from .touch_ups import TOUCH_UPS_FILE, TOUCH_UPS_KIND, pending_touch_ups
 
 
 Progress = Callable[[float, str], None]
@@ -131,6 +132,8 @@ CLEANUP_FILES = {
     "palette": "palette.json", "report": "report.png", "cleanup-audit": "cleanup.json",
     # Written only when the run changed a pixel (web.cleanup.write_changes_overlay).
     "cleanup-changes-overlay": "cleanup-changes-overlay.png",
+    # Written only when the run replayed a touch-up (web.touch_ups).
+    TOUCH_UPS_KIND: TOUCH_UPS_FILE,
 }
 TRACE_FILES = {
     "palette": "palette.json",
@@ -179,8 +182,9 @@ STALE_CLEANUP_MESSAGE = "the artwork changed after Cleanup: re-run Cleanup befor
 
 def nearest_cleanup(store: Store, revision_id: str) -> tuple[dict | None, bool]:
     """The nearest ``cleanup`` ancestor of ``revision_id`` (itself included) and
-    whether it is stale: a revision in between (a flatten, a label edit, a source
-    upscale) marked cleanup stale. ``(None, False)`` when there is no cleanup."""
+    whether it is stale: a revision in between (a flatten, a merge or another label
+    edit made without a current cleanup, a source upscale) marked cleanup stale.
+    ``(None, False)`` when there is no cleanup."""
     stale = False
     current: str | None = revision_id
     seen: set[str] = set()
@@ -551,30 +555,45 @@ class PipelineRunner:
         subject = work / self.store.get_project(project_id)["slug"]
         # Always clean the raster from before any earlier cleanup, so turning cleanup
         # off, or changing the size or thresholds, replaces that cleanup instead of
-        # stacking on it.
+        # stacking on it; the touch-ups made on the earlier cleanup's raster are
+        # replayed on the result.
         self._copy_inputs(parent_id, subject, {"segmentation", "palette"}, before_cleanup=True)
+        touch_ups = [touch_up.spec() for touch_up in pending_touch_ups(self.store, parent_id)]
         cleanup_settings = CleanupSettings(**values)
         effective = asdict(cleanup_settings)
         progress(0.05, "Cleaning up cutter geometry")
         run_worker(
-            {"op": "cleanup", "subject": str(subject), "settings": effective},
+            {"op": "cleanup", "subject": str(subject), "settings": effective,
+             "touch_ups": touch_ups},
             on_progress=lambda fraction, message: progress(0.05 + fraction * 0.85, message),
             cancelled=cancelled)
         progress(0.9, "Storing cleaned artifacts")
-        # A run that changed no pixel (cleanup off, or nothing under the thresholds)
-        # records only the audit and palette.json with its raster's shares; its
-        # effective raster is the uncleaned one, because a cleanup replaces the raster
-        # of any earlier cleanup (Store.effective_artifacts).
+        # A run that changed no pixel (cleanup off, or nothing under the thresholds,
+        # and no touch-up replayed) records only the audit and palette.json with its
+        # raster's shares; its effective raster is the uncleaned one, because a cleanup
+        # replaces the raster of any earlier cleanup (Store.effective_artifacts).
         audit = json.loads((subject / "cleanup.json").read_text())
-        changed = audit["changed_pixels"]
-        kinds = CLEANUP_FILES if changed else {
-            "palette": "palette.json", "cleanup-audit": "cleanup.json"}
+        kinds = CLEANUP_FILES if audit["raster_changed"] else {
+            "palette": "palette.json", "cleanup-audit": "cleanup.json",
+            TOUCH_UPS_KIND: TOUCH_UPS_FILE}
         files = {kind: subject / filename for kind, filename in kinds.items()}
         palette_settings, _ = _effective_settings(self.store, parent_id)
-        return self._commit(project_id, parent_id, "cleanup", files,
-                            _provenance("cleanup", palette_settings, None, effective,
-                                        {"index": audit["omitted_index"],
-                                         "hex": (audit["omitted_colour"] or {}).get("hex")}))
+        settings = _provenance("cleanup", palette_settings, None, effective,
+                               {"index": audit["omitted_index"],
+                                "hex": (audit["omitted_colour"] or {}).get("hex")})
+        # How many pixels the cleanup itself changed (never a replayed touch-up), which
+        # its changes overlay shows.
+        settings["changed_pixels"] = audit["changed_pixels"]
+        replay = audit.get("touch_ups")
+        if replay is not None:
+            # The touch-ups this run replayed, recorded as touch-ups of its own raster
+            # for the next run to replay (web.touch_ups), and what it skipped.
+            if replay["records"]:
+                settings["touch_ups"] = replay["records"]
+            settings["touch_up_replay"] = {key: replay[key] for key in
+                                           ("total", "replayed", "skipped",
+                                            "partly_superseded", "message")}
+        return self._commit(project_id, parent_id, "cleanup", files, settings)
 
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
                colour_names: dict[str, str], progress: Progress, cancelled: Cancelled) -> str:

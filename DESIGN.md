@@ -207,7 +207,7 @@ The workflow navigator is persistent and sequential. Desktop steps pair Lucide l
 
 ### Artwork Inspector
 
-The stage canvases (Upload, Flatten, Palette, Edit, Cleanup and Trace) are interactive: they own pan, zoom, their stage's overlays and editing tools, and the split/blink comparison described below. Only the passive previews on the remaining stages (Create, Export) open the full-screen inspector, through a 44px circular Search-icon trigger floating 14px from the artwork’s top-right corner. The inspector owns pan, zoom, single/split/blink comparison with free Before/After pickers, overlays, and responsive bottom-sheet controls; it restores focus when dismissed.
+The stage canvases (Upload, Flatten, Palette, Cleanup, Edit and Trace) are interactive: they own pan, zoom, their stage's overlays and editing tools, and the split/blink comparison described below. Only the passive previews on the remaining stages (Create, Export) open the full-screen inspector, through a 44px circular Search-icon trigger floating 14px from the artwork’s top-right corner. The inspector owns pan, zoom, single/split/blink comparison with free Before/After pickers, overlays, and responsive bottom-sheet controls; it restores focus when dismissed.
 
 ### Trace Nodes Overlay
 
@@ -223,7 +223,7 @@ The shown image is the After. The Before is the stage's natural input:
 - Flatten, on any result view: the source.
 - Cleanup, on the Cleaned view: the raster before cleanup.
 - Trace, on the Traced view: the raster traced.
-- Palette and Edit: a Before picker over every image, with the raster before the edits (else the source) first.
+- Palette and Edit: a Before picker over every image, with the raster before the edits first: while they edit the Cleaned image, the current cleanup's own result (else the raster before cleanup), so Cleanup's changes never read as edits; otherwise the flattened original (else the source).
 
 As in the inspector, split draws the After left of the divider and the Before right of it; the divider is dragged by pointer or moved with the arrow, Page and Home/End keys. Blink alternates the two, with pause and manual stepping, and starts paused under reduced motion. Both stay registered with the canvas's zoom and pan.
 

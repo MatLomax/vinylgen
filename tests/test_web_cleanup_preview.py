@@ -297,7 +297,7 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(off["returned_pixels"], int(changed.sum()))
         np.testing.assert_array_equal((decode(off["changes"]) == RETURNED_RGBA).all(axis=2), changed)
 
-    async def test_after_an_edit_makes_the_cleanup_stale_the_edited_raster_is_the_reference(self) -> None:
+    async def test_after_a_merge_makes_the_cleanup_stale_the_merged_raster_is_the_reference(self) -> None:
         project_id, _, palette_revision = await self.flattened_project()
         uncleaned = await self.flattened_pixels(palette_revision)
         removing = {"cleanup": True, "min_region_area": 3000.0}
@@ -305,18 +305,74 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         # A cleaned raster is loaded as the shown one first.
         self.assertEqual((await self.preview(cleanup_revision, WINDOW, {"cleanup": False})).status_code, 200)
         self.assertIsNotNone(self.service._cleanup_source[1]._current)
+        # Merge the disc's colour into the background: the disc lies outside the window.
+        state = (await self.client.get(f"/api/revisions/{cleanup_revision}/editor")).json()
+        hexes = [row["hex"] for row in state["palette"]]
+        disc, background = (hexes.index(value) for value in ("#E65A29", "#08213A"))
         edited = await self.client.post(
             f"/api/projects/{project_id}/revisions/{cleanup_revision}/edits",
-            json={"operations": [{"tool": "paint_pixels", "target_label": 0, "pixels": [[600, 5]]}]})
+            json={"operations": [{"tool": "merge_colour", "source_label": disc,
+                                  "target_label": background}]})
         self.assertEqual(edited.status_code, 201, edited.text)
         body = (await self.preview(edited.json()["id"], WINDOW, removing)).json()
-        # The edit shows the uncleaned raster, so the same settings would remove again,
+        # The merge shows the uncleaned raster, so the same settings would remove again,
         # nothing would return, and the cleaned raster is no longer held.
         cleaned = await self.flattened_pixels(cleanup_revision)
         changed = self.window_of((cleaned != uncleaned).any(axis=2))
         self.assertEqual(body["removed_pixels"], int(changed.sum()))
         self.assertEqual(body["returned_pixels"], 0)
         self.assertIsNone(self.service._cleanup_source[1]._current)
+
+    async def test_the_preview_replays_the_touch_ups_a_run_replays(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        removing = {"cleanup": True, "min_region_area": 3000.0}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=removing)
+        shown = await self.flattened_pixels(cleanup_revision)
+        state = (await self.client.get(f"/api/revisions/{cleanup_revision}/editor")).json()
+        corner = next(row["index"] for row in state["palette"] if row["rgb"] == shown[0, 0].tolist())
+        # Two pencil pixels in the corner block's colour inside the window, on the background.
+        edited = await self.client.post(
+            f"/api/projects/{project_id}/revisions/{cleanup_revision}/edits",
+            json={"operations": [{"tool": "paint_pixels", "target_label": corner,
+                                  "pixels": [[90, 260], [91, 260]]}]})
+        self.assertEqual(edited.status_code, 201, edited.text)
+        touched = edited.json()["id"]
+        painted = np.zeros((HEIGHT, WIDTH), dtype=bool)
+        painted[260, 90:92] = True
+        for settings in ({"cleanup": False}, removing):
+            with self.subTest(settings=settings):
+                body = (await self.preview(touched, WINDOW, settings)).json()
+                run = await self.run_job("cleanup", project_id, touched, cleanup=settings)
+                result = await self.flattened_pixels(run)
+                np.testing.assert_array_equal(decode(body["pixels"]), self.window_of(result))
+                self.assertTrue((self.window_of(result)[self.window_of(painted)] == shown[0, 0]).all())
+                # The touch-up is the user's: never marked as a change the cleanup makes.
+                self.assertFalse(decode(body["changes"])[self.window_of(painted)].any())
+
+    async def test_the_preview_paints_an_erase_in_the_colour_the_run_removes(self) -> None:
+        project_id, _, palette_revision = await self.flattened_project()
+        shown = await self.flattened_pixels(palette_revision)
+        state = (await self.client.get(f"/api/revisions/{palette_revision}/editor")).json()
+        by_rgb = {tuple(row["rgb"]): row for row in state["palette"]}
+        navy, disc = by_rgb[tuple(shown[100, 100].tolist())], by_rgb[tuple(shown[330, 300].tolist())]
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision,
+                                              cleanup={"remove_colour": navy["hex"]})
+        # Erase two pixels of the bar crossing the window with the removed colour.
+        edited = await self.client.post(
+            f"/api/projects/{project_id}/revisions/{cleanup_revision}/edits",
+            json={"operations": [{"tool": "paint_pixels", "target_label": navy["index"],
+                                  "pixels": [[50, 302], [51, 302]]}]})
+        self.assertEqual(edited.status_code, 201, edited.text)
+        touched = edited.json()["id"]
+        for settings, colour in (({"remove_colour": disc["hex"]}, disc["rgb"]),
+                                 ({"remove_colour": None}, None)):
+            with self.subTest(settings=settings):
+                body = (await self.preview(touched, WINDOW, settings)).json()
+                run = await self.run_job("cleanup", project_id, touched, cleanup=settings)
+                result = await self.flattened_pixels(run)
+                np.testing.assert_array_equal(decode(body["pixels"]), self.window_of(result))
+                expected = colour if colour is not None else shown[302, 52].tolist()
+                self.assertEqual(result[302, 50].tolist(), expected)
 
     async def test_two_cleanups_of_one_raster_each_compare_against_their_own_result(self) -> None:
         project_id, _, palette_revision = await self.flattened_project()

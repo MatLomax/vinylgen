@@ -70,7 +70,8 @@ class WebEditorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         edited = response.json()
         self.assertEqual(edited["parent_revision_id"], parent)
-        self.assertEqual(edited["settings"]["stale_concerns"], ["cleanup", "trace", "validation", "export"])
+        # A rename changes no pixel, so it never makes a cleanup stale.
+        self.assertEqual(edited["settings"]["stale_concerns"], ["trace", "validation", "export"])
 
         state = (await self.client.get(f"/api/revisions/{edited['id']}/editor")).json()
         self.assertEqual(state["palette"][0]["name"], "Midnight")

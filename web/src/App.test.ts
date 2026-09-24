@@ -1218,10 +1218,10 @@ describe('cleanup stage', () => {
     mocks.editor.mockResolvedValue({ width: 600, height: 400, protected_pixels: 0, palette: [] })
   }
 
-  it('sits between Edit and Trace with the Lucide eraser icon', async () => {
+  it('sits between Palette and Edit with the Lucide eraser icon', async () => {
     render(createElement((await import('./App')).default))
     const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label'))
-    expect(tabs.slice(tabs.indexOf('Edit'), tabs.indexOf('Edit') + 3)).toEqual(['Edit', 'Cleanup', 'Trace'])
+    expect(tabs).toEqual(['Create', 'Upload', 'Flatten', 'Palette', 'Cleanup', 'Edit', 'Trace', 'Export'])
     expect(screen.getByRole('tab', { name: 'Cleanup' }).querySelector('svg.lucide-eraser')).toBeTruthy()
   })
 
@@ -1511,7 +1511,7 @@ describe('cleanup stage', () => {
     expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').cleanup).toEqual(draft)
   })
 
-  it('edits the raster from before the cleanup, never the Cleaned image', async () => {
+  it('edits the Cleaned image while its cleanup is current, never the raster before it', async () => {
     // Record which raster the editor decodes into its pixel buffer.
     const decoded: string[] = []
     const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!
@@ -1520,17 +1520,146 @@ describe('cleanup stage', () => {
     window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=cleanup-1`)
     render(createElement((await import('./App')).default))
     const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
-    expect(within(group).getByRole('button', { name: 'Cleaned' })).toBeTruthy()
-    await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
-    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id'))
+    expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
+    await vi.waitFor(() => expect(pressedView('Cleaned')).toBe('true'))
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('flattened-cleaned'))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
-    // On the Cleaned image, editing is disabled and points back to the editable one.
-    fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+    // On the raster from before cleanup, editing is disabled and points back to the Cleaned one.
+    fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
-    expect(screen.getByText(/Switch to the Flattened image to select and edit areas\./)).toBeTruthy()
-    expect(decoded.some(url => url.endsWith('/artifacts/flattened'))).toBe(true)
-    expect(decoded.some(url => url.endsWith('/artifacts/flattened-cleaned'))).toBe(false)
+    expect(screen.getByText(/Switch to the Cleaned image to select and edit areas\./)).toBeTruthy()
+    expect(decoded.some(url => url.endsWith('/artifacts/flattened-cleaned'))).toBe(true)
+    expect(decoded.some(url => url.endsWith('/artifacts/flattened'))).toBe(false)
     vi.restoreAllMocks()
+  })
+
+  describe('touch-ups on the Cleaned image', () => {
+    const colour = (index: number, name: string, hex: string, rgb: [number, number, number]) => ({ index, name, hex, rgb, share_percent: 50 })
+    const palette = [colour(0, 'Navy', '#0F233C', [15, 35, 60]), colour(1, 'Sand', '#F0E1C8', [240, 225, 200])]
+    const touched: Revision = { ...revision, id: 'touch-1', parent_revision_id: 'cleanup-1', kind: 'label-edit', created_at: '2026-01-03',
+      settings: { pipeline_stage: 'label-edit', operations: [{ tool: 'paint_pixels', target_label: 1, pixels: [[1, 0]] }], cleaned_raster: true,
+        touch_ups: [{ operation: 0, tool: 'paint_pixels', target_label: 1 }], stale_concerns: ['trace', 'validation', 'export'] } }
+    const recoloured: Revision = { ...touched, id: 'recolour-1', parent_revision_id: 'touch-1', created_at: '2026-01-04',
+      settings: { ...touched.settings, operations: [{ tool: 'recolour_colour', label: 0, rgb: [1, 2, 3] }], touch_ups: undefined } }
+    const merged: Revision = { ...touched, id: 'merge-1', created_at: '2026-01-04',
+      settings: { pipeline_stage: 'label-edit', operations: [{ tool: 'merge_colour', source_label: 1, target_label: 0 }], stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
+    const flattenedOf = (id: string) => ({ ...artifact('flattened'), id: `flattened-${id}`, revision_id: id, download_url: `/artifacts/flattened-${id}` })
+    const workspace = () => workspaceProps.current as (CapturedWorkspace & { onPaint?: (x: number, y: number) => void }) | null
+    const panel = (name: string) => screen.getByRole('tabpanel', { name })
+    class DecodedImage {
+      onload: (() => void) | null = null
+      naturalWidth = 2
+      naturalHeight = 1
+      set src(_value: string) { queueMicrotask(() => this.onload?.()) }
+    }
+
+    // Each revision shows its own flattened raster; a before-cleanup lookup resolves the
+    // raster that revision's cleanup started from (a recolour on the cleaned raster
+    // recoloured that one too).
+    function serveTouchUps(revisions: Revision[]) {
+      mocks.projects.mockResolvedValue([project])
+      mocks.project.mockResolvedValue({ ...project, revisions })
+      mocks.effectiveArtifacts.mockImplementation(async (id: string, _signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
+        [artifact('source'), segmentation(), options?.beforeCleanup ? (id === 'recolour-1' ? flattenedOf('recolour-1-before') : artifact('flattened')) : flattenedOf(id)])
+      mocks.editor.mockImplementation(async (id: string) => ({ width: 2, height: 1, protected_pixels: 0, palette, removed_colour_index: id === 'merge-1' ? null : 1 }))
+    }
+    function decodePixels() {
+      vi.stubGlobal('Image', DecodedImage)
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray([15, 35, 60, 255, 15, 35, 60, 255]) }),
+      } as unknown as CanvasRenderingContext2D)
+    }
+    afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+    it('paints a touch-up on the Cleaned image and keeps the cleanup current for Trace', async () => {
+      decodePixels()
+      const { api } = await import('./api')
+      const applyEdits = vi.spyOn(api, 'applyEdits').mockImplementation(async () => {
+        serveTouchUps([touched, cleanupRevision, paletteRevision, revision])
+        return touched
+      })
+      serveTouchUps([cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=cleanup-1`)
+      render(createElement((await import('./App')).default))
+      await vi.waitFor(() => expect(pressedView('Cleaned')).toBe('true'))
+      fireEvent.click(within(panel('Edit')).getByRole('button', { name: 'Pencil' }))
+      await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+      // The colour Cleanup removes is offered as an eraser.
+      expect(within(panel('Edit')).getByRole('radio', { name: 'Paint with Sand #F0E1C8, removed in Cleanup: erases' })).toBeTruthy()
+      fireEvent.click(within(panel('Edit')).getByRole('radio', { name: /Paint with Sand/ }))
+      act(() => workspace()!.onPaint!(1, 0))
+      fireEvent.click(within(panel('Edit')).getByRole('button', { name: 'Apply pencil edits' }))
+      await vi.waitFor(() => expect(applyEdits).toHaveBeenCalledWith(project.id, 'cleanup-1', [{ tool: 'paint_pixels', target_label: 1, pixels: [[1, 0]] }]))
+      await vi.waitFor(() => expect(window.location.hash).toContain('revision=touch-1'))
+      // The touched-up raster is the Cleaned view, and the edited one.
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-touch-1'))
+      expect(pressedView('Cleaned')).toBe('true')
+      expect(within((await screen.findAllByRole('group', { name: 'Artwork view' }))[0]).queryByRole('button', { name: 'Edited' })).toBeNull()
+      // The cleanup stays current: Trace is not blocked, and the raster before cleanup is
+      // still the cleanup's own lookup.
+      expect(within(panel('Trace')).queryByText(/re-run Cleanup/)).toBeNull()
+      expect(mocks.effectiveArtifacts.mock.calls.filter(call => call[2]?.beforeCleanup).map(call => call[0])).toEqual(['cleanup-1'])
+    })
+
+    it('looks up the raster before cleanup again after a recolour on the Cleaned image', async () => {
+      serveTouchUps([recoloured, touched, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=recolour-1`)
+      render(createElement((await import('./App')).default))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      await vi.waitFor(() => expect(within(group).getByRole('button', { name: 'Edited' })).toBeTruthy())
+      fireEvent.click(within(group).getByRole('button', { name: 'Edited' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-1-before'))
+      expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('recolour-1', expect.anything(), { beforeCleanup: true })
+    })
+
+    it('edits the raster before cleanup once a merge makes the cleanup stale', async () => {
+      serveTouchUps([merged, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=merge-1`)
+      render(createElement((await import('./App')).default))
+      await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      expect(within(group).queryByRole('button', { name: 'Cleaned' })).toBeNull()
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-merge-1'))
+      expect(await within(panel('Trace')).findByText('The artwork changed after Cleanup: re-run Cleanup')).toBeTruthy()
+    })
+
+    it('says how many touch-ups a stale cleanup will replay, since the raster before cleanup hides them', async () => {
+      const mergedAfterTouch: Revision = { ...merged, parent_revision_id: 'touch-1' }
+      serveTouchUps([mergedAfterTouch, touched, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=merge-1`)
+      render(createElement((await import('./App')).default))
+      const pending = '1 touch-up made on the Cleaned image is not shown while Cleanup is out of date; re-running Cleanup replays it where it still applies.'
+      expect(await within(panel('Edit')).findByText(pending)).toBeTruthy()
+      expect(within(panel('Cleanup')).getByText(pending)).toBeTruthy()
+    })
+
+    it('compares touch-ups with the cleanup\'s own result, not the raster before cleanup', async () => {
+      serveTouchUps([touched, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=touch-1`)
+      render(createElement((await import('./App')).default))
+      const compared = () => (workspace() as { compareBefore?: string[] } | null)?.compareBefore
+      await vi.waitFor(() => expect(compared()?.[0]).toBe('flattened-cleanup-1'))
+      expect(workspace()?.layers?.find(layer => layer.id === 'flattened-cleanup-1')?.name).toMatch(/before touch-ups/)
+      expect(pressedView('Cleaned')).toBe('true')
+    })
+
+    it('says which touch-ups the last Cleanup run replayed and where the skipped ones are', async () => {
+      const message = 'Replayed 1 of 2 touch-ups; 1 area edit is still waiting because that area has changed since it was edited: an area at (120, 45)'
+      const replayed: Revision = { ...cleanupRevision, settings: { ...cleanupRevision.settings, touch_up_replay: { total: 2, replayed: 1, message,
+        skipped: [{ tool: 'reassign_region', point: [120, 45], reason: 'area-changed' }] } } }
+      serveTouchUps([replayed, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=cleanup-1`)
+      render(createElement((await import('./App')).default))
+      expect(await within(panel('Edit')).findByText(`Last Cleanup run: ${message}`)).toBeTruthy()
+      expect(within(panel('Cleanup')).getByText(`Last Cleanup run: ${message}`)).toBeTruthy()
+      cleanup()
+      // A stale cleanup's record no longer describes the artwork.
+      serveTouchUps([merged, replayed, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=merge-1`)
+      render(createElement((await import('./App')).default))
+      await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+      expect(screen.queryByText(/Last Cleanup run/)).toBeNull()
+    })
   })
 
   it('leaves tracing allowed in pixels when no cleanup was ever run', async () => {

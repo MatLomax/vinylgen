@@ -1,8 +1,10 @@
 import { useId } from 'react'
 import { type PaletteColour } from './api'
 
-export function RegionEditor({ palette, selectionLabels, neighbourLabels, onPick, onClear, onUndo, canUndo, busy, error, disabled = false, disabledHint, lockedHint }: {
+export function RegionEditor({ palette, removedIndex = null, selectionLabels, neighbourLabels, onPick, onClear, onUndo, canUndo, busy, error, disabled = false, disabledHint, lockedHint }: {
   palette: PaletteColour[]
+  // The palette index of the colour the current cleanup removes: recolouring to it erases.
+  removedIndex?: number | null
   selectionLabels: number[]
   neighbourLabels: number[]
   onPick: (label: number) => void
@@ -45,13 +47,14 @@ export function RegionEditor({ palette, selectionLabels, neighbourLabels, onPick
           const noop = count > 0 && selectionLabels.every(label => label === colour.index)
           const swatchDisabled = locked || count === 0 || noop
           const verb = dissolves ? 'Dissolve selection into' : 'Recolour selection to'
+          const erases = colour.index === removedIndex
           return <button key={colour.index} type="button" className={`region-swatch ${dissolves ? 'is-neighbour' : ''}`}
             disabled={swatchDisabled} aria-disabled={inert} aria-describedby={describedBy} onClick={inert ? undefined : () => onPick(colour.index)}
-            aria-label={`${verb} ${colour.name} ${colour.hex}`} title={`${verb} ${colour.name}`}>
+            aria-label={`${verb} ${colour.name} ${colour.hex}${erases ? ', removed in Cleanup: erases' : ''}`} title={erases ? `${verb} ${colour.name}: Cleanup removes it, so this erases` : `${verb} ${colour.name}`}>
             <span className="region-swatch-colour" style={{ background: colour.hex }} aria-hidden="true" />
             <span className="region-swatch-text">
               <strong>{colour.name}</strong>
-              <small>{dissolves ? 'dissolve' : 'recolour'} · {colour.share_percent}%</small>
+              <small>{erases ? 'erase' : dissolves ? 'dissolve' : 'recolour'} · {colour.share_percent}%</small>
             </span>
           </button>
         })}

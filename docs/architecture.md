@@ -40,7 +40,7 @@ concern a source upscale marks stale. Revisions derived from the flatten
 (palette and pencil edits, cleanup, trace) inherit the overlay with the rest of
 the flatten, since they carry its explicit protection unchanged.
 
-The web workflow is Flatten, Palette, Edit, Cleanup, Trace. Cleanup
+The web workflow is Flatten, Palette, Cleanup, Edit, Trace. Cleanup
 (`vinylgen/web/cleanup.py`) owns the physical output size, the removed colour
 and the cutter cleanup. A `cleanup` revision records them under
 `settings.cleanup`. A cleanup always starts from the raster before any
@@ -53,12 +53,16 @@ automatic protection is cleared where labels changed (palette costs, explicit
 protection and palette carried unchanged), refreshed palette shares and a
 re-rendered `report.png`. A run that changed nothing records only the size,
 removed colour and its raster's palette shares, and its effective raster is
-the uncleaned one. The trace job never
+the uncleaned one. A run then replays the touch-ups made on the previous
+cleanup's raster (`vinylgen/web/touch_ups.py`, see the editors below) on its
+cleaned labels, and records the ones it replayed as touch-ups of its own raster,
+so the run after it replays them again. The trace job never
 cleans: it traces the segmentation it inherits and reads the size and removed
 colour from the nearest `cleanup` ancestor, the removed colour by the palette
 index that cleanup resolved it to (`pipeline.cleanup_removed_index`), since the
 trace's colour names may rename it. When a revision in between marks
-cleanup stale (a flatten, a label edit or a source upscale), the trace is
+cleanup stale (a flatten, a merge, an area or pencil edit made while no cleanup
+was current, or a source upscale), the trace is
 blocked until Cleanup is run again (the Trace panel's one-click re-run has the
 server rebuild that cleanup's settings, naming its removed colour by hex:
 `pipeline.rerun_cleanup_settings`); with no cleanup ancestor at all it traces
@@ -77,12 +81,48 @@ offer no fill, lasso, protection-painting, or manual RGB tools. Whole-colour
 merges, name metadata, point-selected four-way connected region reassignment,
 and a per-pixel pencil that repaints individual pixels to an existing palette
 colour create new parent-linked revisions; `segmentation.labels` remains
-authoritative and `flattened.png` is derived mechanically. Editors always act on
-the raster from before any cleanup: the Cleaned image is shown but never
-edited, and an edit after a cleanup marks that cleanup stale. Because connectivity
-is recomputed from the label grid, a pencil stroke that severs a region splits
-it into separate components with no extra bookkeeping. Undo and redo navigate
-revision ancestry.
+authoritative and `flattened.png` is derived mechanically. While a revision's
+cleanup is current the editors act on its cleaned raster, which is what Trace
+traces; otherwise on the raster from before any cleanup
+(`editor.edits_cleaned_raster`). On the cleaned raster an area recolour or a
+pencil stroke is a touch-up: the cleanup stays current, the revision records
+`settings.cleaned_raster` (its raster artifacts are a cleaned raster, skipped by
+the `before_cleanup` lookup like a cleanup's) and the touch-up itself
+(`settings.touch_ups` and a `touch-ups.npz` artifact holding the stroke's pixels
+or the exact region the recolour changed). Painting with the colour the cleanup
+removed erases, since Trace omits that palette index. A rename or recolour
+changes no structure, so it keeps the cleanup current and applies to both
+rasters: the cleaned raster's artifacts and `before-cleanup-*` artifacts for the
+raster a Cleanup run starts from. A merge changes structure: it applies to the
+raster from before cleanup and marks the cleanup stale. The next Cleanup run
+replays the touch-ups made since the last cleanup, oldest first, in one
+revision: a pencil stroke always, an area recolour only when the region under its
+click point in the new result is exactly the recorded region in the same colour.
+Newer edits win: an area or pencil edit made while the cleanup is stale applies to
+the raster from before cleanup and is recorded too, as a footprint (`replays`
+false), so an older touch-up replays only on pixels no later footprint covers, and
+an area touch-up any later footprint overlaps is skipped. A touch-up painted in
+the colour the cleanup removes is recorded as an erase (`erase`): a run paints it
+in the colour that run removes (by its removed palette index), and skips it, saying
+so, when the run removes none; the live preview does the same. Any other touch-up
+paints its own colour, so one whose colour a later run removes is simply erased.
+Colours are followed
+through later merges by identity and across a re-flatten by exact hex, so a
+touch-up whose colour was merged away or is not in the new palette is dropped, as
+is every touch-up after a re-flatten at a different size and one a later edit
+covers. An erase while the run removes no colour, and an area recolour whose area
+has changed since it was edited, are kept, recorded on the run as waiting, and
+replayed by a later run once they apply again. The run's result line and
+`settings.touch_up_replay` say how many replayed and where each waiting, dropped
+or partly superseded one is. While the cleanup is stale, the Edit and Cleanup panels
+say how many touch-ups the next run will replay, since the raster before cleanup
+does not show them. Every edit that changes the raster or its colours rewrites
+`report.png` too.
+Edits recorded before touch-ups existed applied to the raster from before
+cleanup and are part of it, so they are cleaned with it rather than replayed.
+Because connectivity is recomputed from the label grid, a pencil stroke that
+severs a region splits it into separate components with no extra bookkeeping.
+Undo and redo navigate revision ancestry.
 
 The Flatten stage's preservation tools (protect a connected detail, preserve a
 colour family, keep two colours separate) pick source pixels on the same
@@ -227,7 +267,10 @@ server cleans the window plus a hidden 256 px margin (wider than the trace
 preview's 64 px floor, since widening depends on neighbours well beyond the window) of
 the raster a Cleanup run of that revision starts from (before any earlier
 cleanup), measuring every region of the whole raster once per revision so a
-region the window cuts is judged by its whole area and width. The thread
+region the window cuts is judged by its whole area and width. It then replays
+on the cleaned window the touch-ups a run would replay
+(`touch_ups.replay_in_window`), judging an area recolour by its part inside the
+cleaned crop, and never marks a replayed pixel as a change. The thread
 holds either that raster (with its measurements) or a traced segmentation, never
 both, and releases it after the same idle period, so alternating between the
 Cleanup and Trace canvases reloads each time and re-measures on each return to
