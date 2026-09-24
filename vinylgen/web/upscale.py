@@ -521,9 +521,15 @@ class UpscaleRunner:
         if cancelled():
             raise asyncio.CancelledError
         progress(.9, "Persisting immutable upscaled source")
+        # Both pixel grids are recorded so settings picked in source-pixel coordinates
+        # on either side of this revision (the Flatten form's preservation points) can
+        # be mapped onto the other grid; the output size is the decoded image's own,
+        # never the nominal factor, since the node rounds it to a multiple of 8.
+        grids = {"parent_source_size": list(_source_dimensions(source)),
+                 "source_size": list(_source_dimensions(result.content))}
         revision_id = commit(lambda: self.store.create_upscaled_source(
             parent_revision_id, message="Tiled generative upscale",
-            settings=resolved.model_dump(), checkpoint=resolved.checkpoint,
+            settings={**resolved.model_dump(), **grids}, checkpoint=resolved.checkpoint,
             seed=seed, source=BytesIO(result.content)))
         progress(.98, "Upscaled source revision committed")
         return revision_id

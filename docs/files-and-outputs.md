@@ -160,7 +160,8 @@ that summary.
 
 The cleanup stage writes `cleanup.json`: the cleanup rules' `algorithm_version`,
 the requested and resolved settings, the raster dimensions, pixel or physical
-mode with the physical size in mm, the omitted colour, the number of changed pixels, and the cleanup summary:
+mode with the physical size in mm, the omitted colour (`omitted_colour`, its palette row as the run
+named it, and `omitted_index`, its palette index), the number of changed pixels, and the cleanup summary:
 removed, widened and unchanged regions with warnings,
 `protected_kept_regions` (explicitly protected regions kept although under a
 threshold), and `auto_protected_components_cleared` /
@@ -221,7 +222,9 @@ without mutating an earlier result.
 A `cleanup` revision records `settings.cleanup` (width and height in mm, removed
 colour, and the cleanup switch, action and thresholds) and
 `settings.cleanup_algorithm_version` (the cleanup rules it ran under, absent for
-runs made under version 1), and marks trace, validation, and export stale. When it changed pixels its artifacts are the
+runs made under version 1), `settings.removed_colour_index` and
+`settings.removed_colour_hex` (the palette index and hex the removed colour
+resolved to when the run cleaned, both `null` when none was removed), and marks trace, validation, and export stale. When it changed pixels its artifacts are the
 cleaned `flattened`, `segmentation`, `palette` and `report` plus the
 `cleanup-audit` (`cleanup.json`) and the `cleanup-changes-overlay`; a run that changed nothing (cleanup off, or
 nothing under the thresholds) holds only `palette` (its raster's shares) and
@@ -232,8 +235,67 @@ cleanup's changes. Palette revisions, label edits and upscaled sources mark
 cleanup stale, so an earlier cleanup's audit and settings no longer apply
 beyond them, and a trace job is refused ("the artwork changed after Cleanup:
 re-run Cleanup before tracing") until Cleanup runs again. The web Trace panel
-offers a one-click re-run of that cleanup with its own recorded settings. Trace revisions record only trace settings; the size
-and removed colour they used come from their nearest cleanup ancestor.
+offers a one-click re-run of that cleanup with its own recorded settings: a
+cleanup job with `rerun_last_cleanup: true` and no `cleanup` settings, whose
+settings the server reads from the nearest cleanup ancestor
+(`pipeline.rerun_cleanup_settings`). Neither that cleanup's recorded name nor
+its index identifies the removed colour in the palette the re-run starts from
+(a trace's colour names may have renamed it, a merge may have shifted it), so
+the re-run names it as the Cleanup form inherits it
+(`pipeline.inherited_remove_colour`, below), checked against the re-run's
+starting palette exactly as the cleanup job resolves it (by name or hex): when
+no colour has the cleanup's hex (a re-flatten, recolour or merge) the request
+fails with 409 ("the colour the last Cleanup removed (#RRGGBB) is not in this
+artwork's palette any more (it was re-flattened, recoloured or merged) ..."),
+and when it matches
+more than one colour (another colour is named like that hex) with 409 ("... now
+matches more than one colour of this artwork's palette, by hex or by name
+..."); no job starts and it never removes a different colour. A stale cleanup
+follows its removed colour's hex and never a name across the palette change, so
+if a recolour has since given another colour that hex, that colour is what the
+re-run (and the inherited form value) removes. The Cleanup form
+inherits the nearest cleanup's settings (stale or not) with the removed colour
+as the editor state's `inherited_remove_colour` (`{value, unresolved, hex,
+problem}`, `null` when no cleanup ancestor removed a colour; `hex` is the
+cleanup's own, `problem` is `"missing"` or `"ambiguous"` when unresolved), resolved against the palette a
+Cleanup of the revision starts from: the cleanup's `removed_colour_hex` when
+that resolves to exactly that colour; else, while the cleanup is not stale (its
+index still addresses the same colour), that colour's current name when that
+resolves to exactly it (a recolour can give two colours one hex); else `null`
+with `unresolved`. Unresolved, the form keeps that hex with an alert that says
+which problem it is (not in the palette any more, or more than one colour), and
+while the field is unedited Run Cleanup is disabled
+with the alert as its reason and the live Cleanup preview is paused with it
+instead of requested; choosing a colour that resolves, or clearing the field to
+remove nothing, unblocks both. Until that read arrives for the shown revision
+the form holds the hex and, when a colour is inherited, Run Cleanup is disabled
+with "Checking the colour to remove…" as its reason. So the form, its live preview and a Run Cleanup of the
+inherited values remove the colour that cleanup removed. A Cleanup draft whose
+removed colour is the inherited cleanup's value exactly as recorded is dropped
+on load (it was saved from the recorded name, which may now be another
+colour's); a different draft value is kept. So re-typing that exact recorded
+name after a trace gave it to another colour reverts to the recorded colour, as
+the note beside the field shows: an accepted limitation. A saved Cleanup draft
+holds only the user's own removed colour: a value equal to the inherited one is
+left out of it, so a value the server chose (such as a current name) is
+resolved afresh on the next load rather than frozen. Beside the field the form states
+the colour its value resolves to, matched exactly as the server's
+`resolve_colour` matches (name or hex, case-folded; more than one match is
+ambiguous), and judges it only against the shown revision's own palette. The project and revision
+list endpoints report `removed_colour_hex` on every cleanup revision; for a
+cleanup recorded before the hex was, it is resolved from the colour at
+`removed_colour_index` in that cleanup's own `palette.json` (reported, not
+stored). Trace revisions record only trace settings; the size
+and removed colour they used come from their nearest cleanup ancestor. The
+removed colour is identified by that cleanup's `removed_colour_index`, never by
+resolving its recorded `remove_colour` name against a later palette: a trace's
+colour names rename colours in the `palette.json` it writes, so a rename (for
+example two colours swapping names) would otherwise make a trace, its preview,
+the automatic layer order or the layer-order list omit a different colour than
+the cleanup removed. The editor state (`GET /api/revisions/{id}/editor`)
+reports it as `removed_colour_index`. A cleanup recorded before the index was
+has its `remove_colour` resolved against the palette it ran with: its own
+`palette.json`, else the palette it started from.
 Trace revisions recorded before the cleanup stage keep the size, removed colour
 and cleanup settings embedded in `settings.trace` as they were traced.
 
@@ -243,7 +305,28 @@ artifact is a fresh full-frame `source.png` (the ComfyUI tiled-regen redraw of
 the parent's source), and it marks palette, cleanup, trace, validation, and export stale
 so the deterministic pipeline reruns on the higher-detail image. Its settings
 record the effective upscale configuration, the resolved checkpoint, and the
-seed for auditability; the parent source revision is left untouched.
+seed for auditability, plus the pixel grids on both sides of the upscale:
+`parent_source_size` (the parent's source) and `source_size` (its own
+`source.png`, as decoded, since the node rounds the output to a multiple of 8),
+each `[width, height]`. The parent source revision is left untouched.
+
+Flatten preservation points (`protected_component_points`,
+`preserved_colour_points`, and both ends of each `distinct_colour_point_pairs`
+pair) are source-pixel coordinates, so they follow the source they were picked
+on. Wherever the web app carries palette settings onto a revision with a
+different source grid (the form filled from an ancestor's recorded settings,
+the Flatten iterations stepped back to, and the project's un-run palette draft,
+which records the revision it was picked on as `palette_revision`; a draft
+saved before drafts recorded one is given the revision shown when it is first
+loaded), each point
+moves to the pixel holding the same relative position on the new grid:
+`x' = floor((x + 0.5) * new_width / old_width)`, clamped to
+`[0, new_width - 1]`, and likewise for `y`. The change between two revisions is
+every upscale up from the first to their nearest common ancestor (undone) and
+then down to the second (applied), from those recorded grids
+(`web/src/sourceGrid.ts`). Points are left as they are when that change is
+unknown: the revisions share no ancestor, or an upscale on the way recorded no
+grids.
 
 An `inkscape-edit` revision preserves an arbitrary reimport as the neutral
 `inkscape-svg` artifact and adds its freshly rendered `inkscape-preview` plus

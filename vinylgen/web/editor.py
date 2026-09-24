@@ -10,12 +10,12 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-from vinylgen.contracts import CleanupSettings, SegmentationBundle
-from vinylgen.tracing import infer_order, resolve_colour
+from vinylgen.contracts import SegmentationBundle
+from vinylgen.tracing import infer_order
 
 from .models import LabelEditOperation
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
-from .pipeline import nearest_cleanup
+from .pipeline import cleanup_removed_index, inherited_remove_colour, nearest_cleanup
 from .store import Store
 
 # Four-way connectivity: the authoritative rule for what one physical vinyl region is.
@@ -56,7 +56,44 @@ def editor_state(store: Store, revision_id: str) -> dict[str, Any]:
     return {"width": bundle.labels.shape[1], "height": bundle.labels.shape[0],
             "palette": report["palette"],
             "requested_colour_count": report.get("fixed_colour_count", {}).get("requested"),
-            "protected_pixels": int(bundle.explicit_protected_features.sum())}
+            "protected_pixels": int(bundle.explicit_protected_features.sum()),
+            "removed_colour_index": removed_colour_index(store, revision_id,
+                                                         len(report["palette"])),
+            "inherited_remove_colour": _inherited_remove_colour(store, revision_id,
+                                                                report["palette"])}
+
+
+def _inherited_remove_colour(store: Store, revision_id: str,
+                             palette: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The removed colour the Cleanup form inherits for ``revision_id``
+    (``pipeline.inherited_remove_colour``, against the palette the editor shows, which
+    is the one a Cleanup run of it starts from): ``{"value", "unresolved", "hex", "problem"}``,
+    ``value`` ``None`` with ``unresolved`` when the last cleanup's colour is not
+    exactly one colour of it (``problem``: ``"missing"`` or ``"ambiguous"``), ``hex``
+    the cleanup's own. ``None`` when no cleanup ancestor removed a colour."""
+    try:
+        inherited = inherited_remove_colour(store, revision_id, palette)
+    except (KeyError, ValueError):
+        return None
+    if inherited is None:
+        return None
+    return {"value": inherited["value"], "unresolved": inherited["value"] is None,
+            "hex": inherited["hex"], "problem": inherited["problem"]}
+
+
+def removed_colour_index(store: Store, revision_id: str, palette_size: int) -> int | None:
+    """The palette index of the colour a trace of ``revision_id`` leaves out: the one
+    its active (not stale) cleanup removed, by index rather than by name, since a
+    trace's colour names may have renamed the palette this revision shows. ``None``
+    when nothing is removed or the record identifies no colour of the palette."""
+    cleanup_revision, stale = nearest_cleanup(store, revision_id)
+    if cleanup_revision is None or stale:
+        return None
+    try:
+        index = cleanup_removed_index(store, cleanup_revision)
+    except ValueError:
+        return None
+    return index if index is not None and index < palette_size else None
 
 
 def automatic_layer_order(store: Store, revision_id: str) -> list[str] | None:
@@ -76,11 +113,14 @@ def automatic_layer_order(store: Store, revision_id: str) -> list[str] | None:
     labels = SegmentationBundle.load(store.artifact_path(artifacts["segmentation"]["id"]),
                                      with_costs=False).labels
     palette = json.loads(store.artifact_path(artifacts["palette"]["id"]).read_text())["palette"]
-    cleanup = CleanupSettings(**(cleanup_revision["settings"]["cleanup"]
-                                 if cleanup_revision is not None else {}))
+    # By palette index: a trace's colour names may have renamed the colours in the
+    # palette.json read here, so the cleanup's recorded name may now be another's.
     try:
-        omitted = resolve_colour(cleanup.remove_colour, palette)
+        omitted = (cleanup_removed_index(store, cleanup_revision)
+                   if cleanup_revision is not None else None)
     except ValueError:
+        return None
+    if omitted is not None and omitted >= len(palette):
         return None
     included = [index for index in range(len(palette)) if index != omitted]
     inferred, _ = infer_order(labels, included, palette)

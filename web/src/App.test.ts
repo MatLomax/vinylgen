@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
+import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 import { activeCleanupRevision, ancestorCleanupIterations, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
@@ -257,6 +257,7 @@ describe('pipeline setting provenance', () => {
     expect(inheritedPipelineSettings(revisions, 'legacy')).toEqual({
       palette: { initial_colours: 9 }, trace: { overlap: 1 },
       cleanup: { width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 },
+      recordedRemoveColour: 'Sand',
     })
     expect(inheritedPipelineSettings(revisions, 'trace')).toEqual({
       palette: { initial_colours: 9 }, trace: { overlap: 3 }, cleanup: { width_mm: 250, cleanup: false },
@@ -304,6 +305,25 @@ describe('pipeline setting provenance', () => {
     // iteration is a complete settings object the form can load.
     expect(palettes[0].protect_intentional_lines).toBe(true)
     expect(palettes[0].final_colours).toBeNull()
+  })
+
+  it('maps inherited preservation points onto the grid of an upscaled source', () => {
+    const picked = { protected_component_points: [[10, 20]], preserved_colour_points: [[63, 47]], distinct_colour_point_pairs: [[[0, 0], [31, 23]]] }
+    const older = { ...revision, id: 'p1', kind: 'palette', settings: { palette: { ...picked, initial_colours: 8 } } }
+    const upscaled = { ...revision, id: 'u1', parent_revision_id: 'p1', kind: 'upscaled-source', settings: { parent_source_size: [64, 48], source_size: [136, 104], stale_concerns: ['palette', 'cleanup', 'trace', 'validation', 'export'] } }
+    const newer = { ...revision, id: 'p2', parent_revision_id: 'u1', kind: 'palette', settings: { palette: { initial_colours: 20, protected_component_points: [[100, 90]] } } }
+    const revisions = [newer, upscaled, older]
+    // On the upscaled source, the flatten picked on its parent lands on the same features:
+    // floor((x + .5) * 136 / 64), floor((y + .5) * 104 / 48).
+    const mapped = { protected_component_points: [[22, 44]], preserved_colour_points: [[134, 102]], distinct_colour_point_pairs: [[[1, 1], [66, 50]]] }
+    expect(inheritedPipelineSettings(revisions, 'u1').palette).toEqual({ ...mapped, initial_colours: 8 })
+    // The parent's own form keeps the points it was picked with.
+    expect(inheritedPipelineSettings(revisions, 'p1').palette).toEqual({ ...picked, initial_colours: 8 })
+    // Stepping back from a flatten of the upscaled source reaches the older run mapped
+    // onto the grid it shows; the newer run was picked there and is unchanged.
+    const iterations = ancestorPaletteIterations(revisions, 'p2')
+    expect(iterations.map(item => item.protected_component_points)).toEqual([[[100, 90]], mapped.protected_component_points])
+    expect(iterations[1].distinct_colour_point_pairs).toEqual(mapped.distinct_colour_point_pairs)
   })
 
   it('steps the flatten form through prior iterations and restores un-run edits, image unchanged', async () => {
@@ -443,6 +463,103 @@ describe('pipeline setting provenance', () => {
       expect(stored.palette).toBeUndefined()
       expect(stored.trace).toEqual({ overlap: 4 })
     })
+  })
+
+  it('carries a draft picked before a source upscale onto the upscaled grid, in the markers and the run', async () => {
+    const flattened = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: { protected_component_points: [[10, 20]] } } }
+    const upscaled = { ...revision, id: 'upscaled-1', parent_revision_id: 'palette-1', kind: 'upscaled-source', created_at: '2026-01-02', settings: { parent_source_size: [64, 48], source_size: [136, 104], stale_concerns: ['palette', 'cleanup', 'trace', 'validation', 'export'] } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [upscaled, flattened] })
+    // The un-run draft was picked on the flattened revision's (pre-upscale) source.
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({
+      palette: { protected_component_points: [[10, 20]], preserved_colour_points: [[63, 47]], distinct_colour_point_pairs: [[[0, 0], [31, 23]]] },
+      palette_revision: 'palette-1' }))
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => [marker.kind, marker.points])).toEqual([
+      ['protect', [[22, 44]]], ['preserve', [[134, 102]]], ['pair', [[1, 1], [66, 50]]]]))
+    const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
+    const [, , startedFrom, settings] = mocks.startPipeline.mock.calls[0]
+    expect(startedFrom).toBe('upscaled-1')
+    expect(settings.palette).toMatchObject({
+      protected_component_points: [[22, 44]], preserved_colour_points: [[134, 102]], distinct_colour_point_pairs: [[[1, 1], [66, 50]]] })
+  })
+
+  // A flattened revision and the upscale made from it; the draft a test leaves is read back.
+  const upscaleLineage = () => {
+    const flattened = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
+    const upscaled = { ...revision, id: 'upscaled-1', parent_revision_id: 'palette-1', kind: 'upscaled-source', created_at: '2026-01-02', settings: { parent_source_size: [64, 48], source_size: [136, 104], stale_concerns: ['palette', 'cleanup', 'trace', 'validation', 'export'] } }
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [upscaled, flattened] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source')])
+  }
+  const storedPaletteDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
+  const showRevision = (id: string) => act(() => {
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=${id}`)
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+  })
+  async function expectUpscaledRunMapped() {
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => [marker.kind, marker.points])).toEqual([['protect', [[22, 44]]]]))
+    const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
+    const [, , startedFrom, settings] = mocks.startPipeline.mock.calls[0]
+    expect(startedFrom).toBe('upscaled-1')
+    expect(settings.palette.protected_component_points).toEqual([[22, 44]])
+  }
+
+  it('maps a point picked on the parent, and saved as the draft, onto the upscaled child', async () => {
+    upscaleLineage()
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const panel = await screen.findByRole('tabpanel', { name: 'Flatten' })
+    fireEvent.click(await within(panel).findByRole('button', { name: /Protect connected detail/ }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+    act(() => workspaceProps.current?.onSelectPoint?.([10, 20]))
+    // Leaving the Flatten settings saves the draft, named for the revision it was picked on.
+    fireEvent.blur(within(panel).getByLabelText(/Initial candidates/))
+    expect(storedPaletteDraft().palette.protected_component_points).toEqual([[10, 20]])
+    expect(storedPaletteDraft().palette_revision).toBe('palette-1')
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => marker.points)).toEqual([[[10, 20]]]))
+
+    showRevision('upscaled-1')
+    await expectUpscaledRunMapped()
+  })
+
+  it('names the shown revision on a palette draft saved before drafts named one, then maps it', async () => {
+    upscaleLineage()
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ palette: { protected_component_points: [[10, 20]] } }))
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(storedPaletteDraft().palette_revision).toBe('palette-1'))
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => marker.points)).toEqual([[[10, 20]]]))
+
+    showRevision('upscaled-1')
+    await expectUpscaledRunMapped()
+  })
+
+  it('draws preservation markers only once the shown artifacts are the selected revision\'s', async () => {
+    upscaleLineage()
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ palette: { protected_component_points: [[10, 20]] }, palette_revision: 'palette-1' }))
+    let releaseChild: (rows: Artifact[]) => void = () => undefined
+    mocks.effectiveArtifacts.mockImplementation((id: string) => id === 'upscaled-1'
+      ? new Promise<Artifact[]>(resolve => { releaseChild = resolve }) : Promise.resolve([artifact('source')]))
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => marker.points)).toEqual([[[10, 20]]]))
+
+    showRevision('upscaled-1')
+    // The points are already on the child's grid while the parent's source is still shown.
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('upscaled-1', expect.anything()))
+    expect(workspaceProps.current?.markers).toBeUndefined()
+    await act(async () => releaseChild([artifact('source')]))
+    await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => marker.points)).toEqual([[[22, 44]]]))
   })
 })
 
@@ -1175,6 +1292,153 @@ describe('cleanup stage', () => {
     expect(width.closest('label')?.querySelector('.field-dirty')).toBeNull()
   })
 
+  describe('the removed colour after a trace renamed it', () => {
+    // Cleanup removed Orange (#E15F2D), recorded by its then name 'Sand'; a trace then
+    // swapped the names, so this palette calls Navy 'Sand' and #E15F2D 'Orange'.
+    const renamedCleanup: Revision = { ...cleanupRevision, settings: { ...cleanupRevision.settings,
+      cleanup: { ...(cleanupRevision.settings.cleanup as object), remove_colour: 'Sand' }, removed_colour_index: 1, removed_colour_hex: '#E15F2D' } }
+    const renamedTrace: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'cleanup-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: {}, stale_concerns: ['validation', 'export'] } }
+    type Colour = { index: number; name: string; hex: string; rgb: [number, number, number]; share_percent: number }
+    const swapped: Colour[] = [
+      { index: 0, name: 'Sand', hex: '#0F233C', rgb: [15, 35, 60], share_percent: 60 },
+      { index: 1, name: 'Orange', hex: '#E15F2D', rgb: [225, 95, 45], share_percent: 40 },
+    ]
+    const draftOf = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
+    const preview = () => (workspaceProps.current as { cleanupPreview?: { settings: { remove_colour: string | null } } } | null)?.cleanupPreview
+    // `inherited` is the server's resolution for trace-1 (EditorState.inherited_remove_colour).
+    async function openCleanup(palette: Colour[], inherited: { value: string | null; unresolved: boolean; hex?: string; problem?: 'missing' | 'ambiguous' | null } | null = { value: '#E15F2D', unresolved: false, hex: '#E15F2D', problem: null }) {
+      serve([renamedTrace, renamedCleanup, paletteRevision, revision])
+      mocks.editor.mockResolvedValue({ width: 600, height: 400, protected_pixels: 0, palette, inherited_remove_colour: inherited })
+      window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=trace-1`)
+      render(createElement((await import('./App')).default))
+      return screen.getByRole('tabpanel', { name: 'Cleanup' })
+    }
+    async function runsWith(panel: HTMLElement, value: string) {
+      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-cleanup', kind: 'cleanup' })
+      await vi.waitFor(() => expect(preview()?.settings.remove_colour).toBe(value))
+      const run = within(panel).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
+      await vi.waitFor(() => expect(run.disabled).toBe(false))
+      fireEvent.click(run)
+      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'trace-1', { cleanup: expect.objectContaining({ remove_colour: value }) }))
+    }
+
+    it('shows the colour Cleanup removed under its current name, and previews and runs it by hex', async () => {
+      const panel = await openCleanup(swapped)
+      const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(colour.value).toBe('#E15F2D'))
+      await vi.waitFor(() => expect(panel.textContent).toContain('Removes Orange (#E15F2D)'))
+      // The note sits outside the field's label and describes the input.
+      const note = panel.querySelector('#remove-colour-status')!
+      expect(note.closest('label')).toBeNull()
+      expect(colour.getAttribute('aria-describedby')).toBe('remove-colour-status')
+      // The inherited value is the recorded cleanup's, so it is not a pending edit.
+      expect(colour.closest('label')?.querySelector('.field-dirty')).toBeNull()
+      await runsWith(panel, '#E15F2D')
+    })
+
+    it('takes the name the server resolves when the removed colour\'s hex is two colours\' now', async () => {
+      // A recolour gave Navy the removed colour's RGB before this (fresh) cleanup, so the
+      // hex is ambiguous and the server names the colour by its current name instead.
+      const duplicate: Colour[] = [{ ...swapped[0], hex: '#E15F2D', rgb: [225, 95, 45] }, swapped[1]]
+      const panel = await openCleanup(duplicate, { value: 'Orange', unresolved: false })
+      const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(colour.value).toBe('Orange'))
+      expect(panel.textContent).toContain('Removes Orange (#E15F2D)')
+      expect(colour.closest('label')?.querySelector('.field-dirty')).toBeNull()
+      expect(within(panel).queryByRole('alert')).toBeNull()
+      await runsWith(panel, 'Orange')
+    })
+
+    it('blocks Cleanup on the unresolved inherited colour until the field is edited', async () => {
+      // The last cleanup's colour was recoloured away: the server resolves no colour, so
+      // the form keeps its hex, and neither a Run nor a preview removes nothing silently.
+      const recoloured: Colour[] = [swapped[0], { ...swapped[1], hex: '#0CC85A', rgb: [12, 200, 90] }]
+      const panel = await openCleanup(recoloured, { value: null, unresolved: true, hex: '#E15F2D', problem: 'missing' })
+      const reason = "The colour the last Cleanup removed (#E15F2D) is not in this artwork's palette any more (it was re-flattened, recoloured or merged). Choose the colour to remove, or clear the field to remove none."
+      const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(within(panel).getByRole('alert').textContent).toBe(reason))
+      expect(colour.value).toBe('#E15F2D')
+      expect(colour.getAttribute('aria-invalid')).toBe('true')
+      expect(colour.closest('label')?.querySelector('.field-dirty')).toBeNull()
+      const run = within(panel).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
+      expect(run.disabled).toBe(true)
+      expect(document.getElementById(run.getAttribute('aria-describedby')!.split(' ').at(-1)!)?.textContent).toBe(reason)
+      // The live preview is paused with the reason, so the canvas requests nothing.
+      const canvas = () => workspaceProps.current as { livePreviewPaused?: boolean; livePreviewStatus?: string } | null
+      expect(canvas()?.livePreviewPaused).toBe(true)
+      expect(canvas()?.livePreviewStatus).toBe(reason)
+      // Choosing a colour that resolves unblocks both.
+      fireEvent.change(colour, { target: { value: 'Orange' } })
+      await vi.waitFor(() => expect(run.disabled).toBe(false))
+      expect(within(panel).queryByRole('alert')).toBeNull()
+      expect(canvas()?.livePreviewPaused).toBe(false)
+      expect(preview()?.settings.remove_colour).toBe('Orange')
+      // Clearing it removes nothing, deliberately: that runs too.
+      fireEvent.change(colour, { target: { value: '' } })
+      await vi.waitFor(() => expect(preview()?.settings.remove_colour).toBeNull())
+      expect(run.disabled).toBe(false)
+      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-cleanup', kind: 'cleanup' })
+      fireEvent.click(run)
+      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'trace-1', { cleanup: expect.objectContaining({ remove_colour: null }) }))
+    })
+
+    it('says an ambiguous inherited colour matches more than one colour', async () => {
+      const panel = await openCleanup(swapped, { value: null, unresolved: true, hex: '#E15F2D', problem: 'ambiguous' })
+      await vi.waitFor(() => expect(within(panel).getByRole('alert').textContent).toBe(
+        "The colour the last Cleanup removed (#E15F2D) now matches more than one colour of this artwork's palette, by hex or by name. Choose the colour to remove, or clear the field to remove none."))
+      expect((within(panel).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('holds Run until this revision\'s inherited colour is checked', async () => {
+      let answer: (() => void) | undefined
+      serve([renamedTrace, renamedCleanup, paletteRevision, revision])
+      mocks.editor.mockImplementation(() => new Promise(resolve => { answer = () => resolve({ width: 600, height: 400, protected_pixels: 0, palette: swapped, inherited_remove_colour: { value: '#E15F2D', unresolved: false, hex: '#E15F2D', problem: null } }) }))
+      window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=trace-1`)
+      render(createElement((await import('./App')).default))
+      const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
+      const run = within(panel).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
+      await vi.waitFor(() => expect(answer).toBeDefined())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+      expect(run.disabled).toBe(true)
+      expect(document.getElementById(run.getAttribute('aria-describedby')!.split(' ').at(-1)!)?.textContent).toBe('Checking the colour to remove…')
+      await act(async () => answer!())
+      await vi.waitFor(() => expect(run.disabled).toBe(false))
+      expect(document.getElementById('cleanup-remove-reason')).toBeNull()
+    })
+
+    it('never saves the inherited removed colour into the draft, only a choice of the user\'s', async () => {
+      // The server named the colour by its current name (a shared hex): a blur saves the
+      // draft without it, so it is resolved afresh next time rather than frozen.
+      const duplicate: Colour[] = [{ ...swapped[0], hex: '#E15F2D', rgb: [225, 95, 45] }, swapped[1]]
+      const panel = await openCleanup(duplicate, { value: 'Orange', unresolved: false, hex: '#E15F2D', problem: null })
+      const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(colour.value).toBe('Orange'))
+      const width = within(panel).getByLabelText(/Width \(mm\)/) as HTMLInputElement
+      fireEvent.focus(width); fireEvent.change(width, { target: { value: '90' } }); fireEvent.blur(width)
+      await vi.waitFor(() => expect(draftOf().cleanup?.width_mm).toBe(90))
+      expect(draftOf().cleanup).not.toHaveProperty('remove_colour')
+      fireEvent.change(colour, { target: { value: 'Sand' } }); fireEvent.blur(colour)
+      expect(draftOf().cleanup.remove_colour).toBe('Sand')
+    })
+
+    it('drops a draft holding the recorded name, which now names the other colour, but keeps a chosen one', async () => {
+      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ cleanup: { remove_colour: 'Sand', width_mm: 120 } }))
+      const panel = await openCleanup(swapped)
+      const colour = within(panel).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(colour.value).toBe('#E15F2D'))
+      expect(draftOf().cleanup).toEqual({ width_mm: 120 })
+      expect((within(panel).getByLabelText(/Width \(mm\)/) as HTMLInputElement).value).toBe('120')
+      await runsWith(panel, '#E15F2D')
+      cleanup(); mocks.startPipeline.mockClear()
+      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ cleanup: { remove_colour: 'Orange' } }))
+      const chosen = await openCleanup(swapped)
+      const typed = within(chosen).getByLabelText(/Remove colour/) as HTMLInputElement
+      await vi.waitFor(() => expect(chosen.textContent).toContain('Removes Orange (#E15F2D)'))
+      expect(typed.value).toBe('Orange')
+      expect(draftOf().cleanup).toEqual({ remove_colour: 'Orange' })
+    })
+  })
+
   it('saves a pending cleanup draft when a field loses focus', async () => {
     serve([paletteRevision, revision])
     window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
@@ -1238,9 +1502,10 @@ describe('cleanup stage', () => {
     expect(trace.disabled).toBe(true)
     const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
     expect(within(group).queryByRole('button', { name: 'Cleaned' })).toBeNull()
-    // The re-run uses the stale cleanup revision's recorded settings on the current revision.
+    // The re-run asks the server for the stale cleanup's recorded settings on the current
+    // revision (it names the removed colour by hex); it sends no settings of its own.
     fireEvent.click(rerun)
-    expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'palette-2', { cleanup: { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupRevision.settings.cleanup as object) } })
+    expect(mocks.startPipeline).toHaveBeenCalledWith('cleanup', project.id, 'palette-2', { rerun_last_cleanup: true })
     await vi.waitFor(() => expect(update).toBeDefined())
     await act(async () => update?.({ ...queuedJob, id: 'job-rerun', kind: 'cleanup', status: 'succeeded', progress: 1, result_revision_id: 'palette-2' }))
     expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').cleanup).toEqual(draft)
@@ -2609,6 +2874,8 @@ describe('stepping trace runs while their artifacts load', () => {
       ],
     }
     let failEditor: Set<string>, holdEditor: Set<string>, releaseEditor: (() => void)[]
+    // The palette index of the colour each run's active cleanup removes (EditorState.removed_colour_index).
+    const removedIndex: Record<string, number> = {}
     beforeEach(() => {
       failEditor = new Set(); holdEditor = new Set(); releaseEditor = []
       mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true } } }, solid, paletteRevision, revision] })
@@ -2619,7 +2886,7 @@ describe('stepping trace runs while their artifacts load', () => {
           signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
         })
         if (failEditor.has(id)) throw new Error('editor unavailable')
-        return { width: 40, height: 30, protected_pixels: 0, palette: palettes[id] ?? [] }
+        return { width: 40, height: 30, protected_pixels: 0, palette: palettes[id] ?? [], removed_colour_index: removedIndex[id] ?? null }
       })
       // A traceable run's automatic order is palette order unless a test sets one.
       mocks.automaticLayerOrder.mockImplementation(async (id: string) => ({ automatic_layer_order: automatic[id] ?? palettes[id]?.map(row => row.hex) ?? null }))
@@ -2705,8 +2972,11 @@ describe('stepping trace runs while their artifacts load', () => {
 
     it('leaves the colour Cleanup removes out of the list, the preview and the job', async () => {
       palettes['trace-9'].push({ index: 2, name: 'Teal', hex: '#1A7F7A', rgb: [26, 127, 122], share_percent: 10 })
+      // The run's palette says which colour the cleanup removed by index, not by the name
+      // it recorded: a trace's colour names gave that name ('navy') to another colour since.
+      removedIndex['trace-9'] = 1
       try {
-        const cleanupRun: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02', settings: { cleanup: { remove_colour: 'orange' }, stale_concerns: ['trace', 'validation', 'export'] } }
+        const cleanupRun: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02', settings: { cleanup: { remove_colour: 'navy' }, removed_colour_index: 1, stale_concerns: ['trace', 'validation', 'export'] } }
         const newest: Revision = { ...edge, parent_revision_id: 'cleanup-1', settings: { trace: { overlap: 0, solid_underlayers: true } } }
         mocks.project.mockResolvedValue({ ...project, revisions: [newest, cleanupRun, paletteRevision, revision] })
         // A stored order still naming the removed colour.
@@ -2727,7 +2997,7 @@ describe('stepping trace runs while their artifacts load', () => {
         fireEvent.click(run)
         await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
         expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(['#1A7F7A', '#0F233C'])
-      } finally { palettes['trace-9'].pop() }
+      } finally { palettes['trace-9'].pop(); delete removedIndex['trace-9'] }
     })
 
     it('starts one job from a double click while it reads the palette, and none if the revision changes meanwhile', async () => {

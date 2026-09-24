@@ -13,6 +13,9 @@ import type { ImageSize, ViewTransform } from './workspace'
 export const PREVIEW_MAX_AREA = 600 * 600
 // A view or setting change re-previews once it has been still this long.
 export const PREVIEW_DEBOUNCE_MS = 150
+// While a preview is in flight, the canvas's busy note (why it is slow) is re-read this often.
+export const BUSY_NOTE_POLL_MS = 250
+export const BUSY_BADGE_TEXT = 'Updating live preview…'
 
 export type PreviewWindow = { x: number; y: number; width: number; height: number }
 export type TracePreviewResponse = {
@@ -89,20 +92,30 @@ export type LivePreviewState<Result> = {
   controls: (extra?: ReactNode) => ReactNode
 }
 
+// Reads, from the server, what the badge says while a preview of the revision is in
+// flight: a note on why it is slow, or null for the plain "Updating live preview…".
+export type BusyNote = (revisionId: string, signal: AbortSignal) => Promise<string | null>
+
 /**
  * The shared driver of a canvas's live preview: it previews whatever is zoomed into,
  * ~150 ms after the view or the settings settle, aborting the request in flight when
  * a newer change arrives, and renders the switch (saved under `storageKey`), the
- * "Live preview" badge, "Zoom in to preview" and errors. Without `options` it
- * requests and renders nothing.
+ * "Live preview" badge, "Zoom in to preview" and errors. With `busyNote`, the busy
+ * badge reads the note it returns, read when the request starts and every
+ * `BUSY_NOTE_POLL_MS` until it settles. Without `options` it requests and renders
+ * nothing.
  */
 export function useLivePreview<Settings, Result>(
   options: PreviewSource<Settings> | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize,
-  { storageKey, label, request }: { storageKey: string; label: string; request: (revisionId: string, window: PreviewWindow, settings: Settings, signal: AbortSignal) => Promise<{ window: PreviewWindow; result: Result }> },
+  { storageKey, label, request, busyNote }: { storageKey: string; label: string; request: (revisionId: string, window: PreviewWindow, settings: Settings, signal: AbortSignal) => Promise<{ window: PreviewWindow; result: Result }>; busyNote?: BusyNote },
 ): LivePreviewState<Result> {
   const [enabled, setEnabled] = useState(() => storedSwitch(storageKey))
   const [shown, setShown] = useState<ShownPreview<Result> | null>(null)
   const [busy, setBusy] = useState(false)
+  // The server's latest note on the request in flight, for the revision it was read for.
+  // A superseded request leaves it standing (the server may still be doing that work)
+  // until the next request's first read replaces it.
+  const [note, setNote] = useState<{ revisionId: string; text: string } | null>(null)
   const [error, setError] = useState('')
   const view = options ? visibleTraceWindow(transform, viewport, stage, options.tracedSize) : null
   const tooLarge = Boolean(view && view.width * view.height > PREVIEW_MAX_AREA)
@@ -114,16 +127,28 @@ export function useLivePreview<Settings, Result>(
   useEffect(() => {
     if (!requestKey || !options || !view) {
       setBusy(false)
+      setNote(null)
       // "Zoom in to preview", or a view off the image, replaces any earlier failure:
       // it belonged to another view.
       if (tooLarge || (options && !view)) setError('')
       return
     }
     const controller = new AbortController()
+    let settled = false
+    let noteTimer: ReturnType<typeof setTimeout> | undefined
+    const readNote = () => {
+      if (!busyNote) return
+      const revision = options.revisionId
+      busyNote(revision, controller.signal)
+        .then(text => { if (!settled && !controller.signal.aborted) setNote(text ? { revisionId: revision, text } : null) })
+        .catch(() => { /* an unreadable note leaves the badge as it is */ })
+        .finally(() => { if (!settled && !controller.signal.aborted) noteTimer = setTimeout(readNote, BUSY_NOTE_POLL_MS) })
+    }
     const timer = setTimeout(() => {
       // A new request supersedes the failure of the last one.
       setBusy(true)
       setError('')
+      readNote()
       request(options.revisionId, view, options.settings, controller.signal)
         .then(body => {
           if (controller.signal.aborted) return
@@ -137,9 +162,15 @@ export function useLivePreview<Settings, Result>(
           setShown(null)
           setError(cause instanceof Error ? cause.message : String(cause))
         })
-        .finally(() => { if (!controller.signal.aborted) setBusy(false) })
+        .finally(() => {
+          if (controller.signal.aborted) return
+          settled = true
+          clearTimeout(noteTimer)
+          setBusy(false)
+          setNote(null)
+        })
     }, PREVIEW_DEBOUNCE_MS)
-    return () => { clearTimeout(timer); controller.abort() }
+    return () => { clearTimeout(timer); clearTimeout(noteTimer); controller.abort() }
     // requestKey captures options.revisionId, options.settings and view by value.
   }, [requestKey, tooLarge, view === null])
 
@@ -152,13 +183,17 @@ export function useLivePreview<Settings, Result>(
     storeSwitch(storageKey, on)
   }
   // Only the switches take pointer input; everywhere else a pan can start. The badge
-  // is visual only; the polite status region announces "Zoom in to preview" and
-  // errors, not every settle.
+  // is visual only while idle; the polite status region announces it ("Updating live
+  // preview…" or the server's note) while busy, plus "Zoom in to preview" and errors —
+  // not the idle "Live preview" label, which would otherwise be announced after every
+  // settle with nothing meaningful to say.
+  const busyText = note && note.revisionId === revisionId ? note.text : BUSY_BADGE_TEXT
   const controls = (extra?: ReactNode) => options ? <div className="trace-preview-controls" role="group" aria-label={label}>
     <label className="trace-preview-switch" onPointerDown={event => event.stopPropagation()}><input type="checkbox" role="switch" checked={enabled} onChange={event => toggle(event.target.checked)} />Live preview</label>
     {extra}
-    {enabled && !tooLarge && (visibleShown || busy) && <p className={`trace-preview-badge ${busy ? 'is-busy' : ''}`} aria-hidden="true">{busy && <LoaderCircle aria-hidden="true" />}{busy ? 'Updating live preview…' : 'Live preview'}</p>}
+    {enabled && !tooLarge && !busy && visibleShown && <p className="trace-preview-badge" aria-hidden="true">Live preview</p>}
     <div className="trace-preview-announcer" role="status" aria-live="polite">
+      {enabled && !tooLarge && busy && <p className="trace-preview-badge is-busy"><LoaderCircle aria-hidden="true" />{busyText}</p>}
       {enabled && tooLarge && <p className="trace-preview-status">Zoom in to preview</p>}
       {enabled && !tooLarge && error && <p className="trace-preview-status error">Preview failed: {error}</p>}
     </div>

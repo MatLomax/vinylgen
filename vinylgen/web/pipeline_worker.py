@@ -78,7 +78,8 @@ def _run(spec: dict) -> None:
         cleanup = spec.get("cleanup")
         trace_subject(Path(spec["subject"]), TraceSettings(**spec["settings"]),
                       spec["colour_names"], progress=_emit,
-                      cleanup=CleanupSettings(**cleanup) if cleanup is not None else None)
+                      cleanup=CleanupSettings(**cleanup) if cleanup is not None else None,
+                      removed_index=spec.get("removed_index"))
     else:
         raise ValueError(f"unknown pipeline worker op: {op}")
 

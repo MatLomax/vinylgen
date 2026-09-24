@@ -21,7 +21,10 @@ current (unsaved) Cleanup form, on the same thread and under the same rules. It
 cleans the raster a Cleanup run starts from, with the whole raster's region
 measurements computed once per revision and held with it; see
 ``vinylgen.cleanup_window`` for the documented differences from a full run. The
-uncleaned raster and the traced segmentation are never resident together.
+uncleaned raster and the traced segmentation are never resident together. A
+cheap state read, answered off the preview thread, tells the canvas whether those
+measurements are held for a revision and whether they are being built now, so it
+can say why a first preview is slow.
 """
 
 from __future__ import annotations
@@ -70,7 +73,8 @@ from vinylgen.trace_window import (
 from vinylgen.tracing import apply_order_override, ensure_palette_names, resolve_colour
 
 from .models import CleanupJobSettings, TraceJobSettings
-from .pipeline import STALE_CLEANUP_MESSAGE, _require_fresh, nearest_cleanup
+from .pipeline import (STALE_CLEANUP_MESSAGE, _require_fresh, cleanup_removed_index,
+                       nearest_cleanup)
 from .store import Store
 
 BOUNDARY_CACHE_SIZE = 16
@@ -159,6 +163,14 @@ class CleanupPreview(BaseModel):
     elapsed_ms: float
 
 
+class CleanupRegionsState(BaseModel):
+    """Whether the preview thread holds, or is building now, the whole-raster region
+    measurements a cleanup preview of the revision cleans with."""
+
+    measured: bool
+    measuring: bool
+
+
 REMOVED_RGBA = (230, 40, 40, 255)
 WIDENED_RGBA = (40, 200, 70, 255)
 RETURNED_RGBA = (50, 110, 240, 255)
@@ -227,6 +239,10 @@ class TracePreviewService:
         # (segmentation artifact id, uncleaned raster with its region measurements),
         # or None; never resident together with ``_segmentation``.
         self._cleanup_source: tuple[str, CleanupSource] | None = None
+        # The segmentation artifact id whose regions the preview thread is measuring
+        # now, or None. Written only by the preview thread; read by ``regions_state``
+        # on the event loop.
+        self._measuring: str | None = None
         self._boundaries = _Lru(BOUNDARY_CACHE_SIZE)
         self._palettes = _Lru(8)
         self._last_used = clock()
@@ -308,6 +324,35 @@ class TracePreviewService:
         source = load()
         self._cleanup_source = (artifact_id, source)
         return source
+
+    def _measure(self, artifact_id: str, source: CleanupSource,
+                 checkpoint: Callable[[], None]) -> None:
+        """Build ``source``'s whole-raster region measurements, if not already held,
+        reporting the measuring through ``regions_state`` while it runs."""
+        if source.measured:
+            return
+        self._measuring = artifact_id
+        try:
+            source.regions(checkpoint)
+        finally:
+            self._measuring = None
+
+    def regions_state(self, revision_id: str) -> dict:
+        """Whether the preview thread holds the region measurements a cleanup preview
+        of the revision cleans with, and whether it is measuring them now. It reads
+        the thread's state without queueing behind the preview it reports on."""
+        try:
+            self.store.get_revision(revision_id)
+        except KeyError as exc:
+            raise PreviewNotFound(revision_id) from exc
+        segmentation = self.store.effective_artifacts(
+            revision_id, before_cleanup=True).get("segmentation")
+        if segmentation is None:
+            return {"measured": False, "measuring": False}
+        resident = self._cleanup_source
+        return {"measured": (resident is not None and resident[0] == segmentation["id"]
+                             and resident[1].measured),
+                "measuring": self._measuring == segmentation["id"]}
 
     def release_if_idle(self) -> bool:
         """Drop the loaded segmentation and derived caches when no preview has run
@@ -487,6 +532,9 @@ class TracePreviewService:
             final = current
             crop = margin_window(window, width, height, CLEANUP_PREVIEW_MARGIN_PX)
         else:
+            if settings.cleanup:
+                self._measure(segmentation_id, source, checkpoint)
+                checkpoint()
             cleaned = clean_window(source, window, palette, settings, omitted, checkpoint)
             checkpoint()
             removed, widened, returned = will_change(cleaned.original, current,
@@ -514,10 +562,11 @@ class TracePreviewService:
         version ran under version 1), the same action and thresholds, the same
         physical size once resolved (to a relative 1e-9, so a size given by the other
         dimension still matches) and removed the same palette colour. The recorded
-        colour is resolved against the palette that run cleaned with, ``omitted``
-        against the one this preview cleans with, so a rename in between (a trace's
-        colour names) is never mistaken for a match. Any doubt answers no, and the
-        preview runs the clean."""
+        colour is the palette index that run removed (``cleanup_removed_index``, never
+        its name read against a later palette), ``omitted`` resolved against the
+        palette this preview cleans with, so a rename in between (a trace's colour
+        names) is never mistaken for a match. Any doubt answers no, and the preview
+        runs the clean."""
         cleanup_revision, stale = nearest_cleanup(self.store, revision_id)
         if cleanup_revision is None or stale or cleanup_revision["parent_revision_id"] is None:
             return False
@@ -526,10 +575,7 @@ class TracePreviewService:
             return False
         try:
             recorded = CleanupSettings(**cleanup_revision["settings"]["cleanup"])
-            ran_with = self.store.effective_artifacts(
-                cleanup_revision["parent_revision_id"], before_cleanup=True)["palette"]
-            recorded_omitted = resolve_colour(recorded.remove_colour,
-                                              self._stored_palette(ran_with)["palette"])
+            recorded_omitted = cleanup_removed_index(self.store, cleanup_revision)
         except (KeyError, TypeError, ValueError, PreviewDataFault):
             return False
         if recorded_omitted != omitted:
@@ -590,16 +636,16 @@ class TracePreviewService:
                 f"more than the {PREVIEW_MAX_AREA_PX} px preview limit")
         cleanup = CleanupSettings(**(cleanup_revision["settings"]["cleanup"]
                                      if cleanup_revision is not None else {}))
+        # The colour the cleanup removed, by palette index: the request's renames (and
+        # a trace run's, in the stored palette) may since have given its name to
+        # another colour. A record that identifies no colour is the server's data.
         try:
-            omitted = resolve_colour(cleanup.remove_colour, palette)
-        except ValueError as exc:
-            # The stored removed colour names a colour the stored palette lacks (a data
-            # fault), unless the request's renames are what hid it.
-            try:
-                resolve_colour(cleanup.remove_colour, self._stored_palette(artifacts["palette"])["palette"])
-            except ValueError:
-                raise PreviewDataFault(f"the active cleanup's removed colour: {exc}") from exc
-            raise PreviewRejected(str(exc)) from exc
+            omitted = (cleanup_removed_index(self.store, cleanup_revision)
+                       if cleanup_revision is not None else None)
+            if omitted is not None and omitted >= len(palette):
+                raise ValueError(f"index {omitted} is not a palette colour")
+        except (KeyError, ValueError) as exc:
+            raise PreviewDataFault(f"the active cleanup's removed colour: {exc}") from exc
         included = [index for index in range(len(palette)) if index != omitted]
         try:
             order, _ = apply_order_override(
@@ -669,5 +715,13 @@ def trace_preview_router(service: TracePreviewService) -> APIRouter:
     async def cleanup_preview(revision_id: str, payload: CleanupPreviewRequest,
                               request: Request) -> dict:
         return await _serve(request, service.cleanup_preview, revision_id, payload)
+
+    @router.get("/api/revisions/{revision_id}/cleanup-preview/regions",
+                response_model=CleanupRegionsState)
+    async def cleanup_preview_regions(revision_id: str) -> dict:
+        try:
+            return service.regions_state(revision_id)
+        except PreviewNotFound as exc:
+            raise HTTPException(404, f"Resource not found: {exc.args[0]}") from exc
 
     return router

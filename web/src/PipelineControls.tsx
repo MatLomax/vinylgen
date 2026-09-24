@@ -131,10 +131,28 @@ function PointList({ title, kind, points, onRemove, onHighlight }: { title: stri
 // The palette colour a layer-order entry (or a removed colour) names, resolved as the
 // tracer's resolve_colour does: the name, the hex or the hex without '#', ignoring case,
 // naming exactly one colour. Anything else names none.
+// Python's str.casefold, closely enough for colour names: upper- then lower-casing also
+// folds characters such as "ß" to "ss", which toLowerCase alone keeps.
+const casefold = (text: string) => text.toUpperCase().toLowerCase()
+// Every colour of `palette` the entry names, exactly as the server's resolve_colour
+// (vinylgen/tracing.py) matches: the trimmed, case-folded entry against each colour's
+// name, its hex, and its hex without "#". It resolves only when this is one colour.
+export function paletteColourMatches(entry: string, palette: PaletteColour[]): PaletteColour[] {
+  const folded = casefold(entry.trim())
+  return palette.filter(colour => [casefold(String(colour.name)), casefold(colour.hex), casefold(colour.hex.slice(1))].includes(folded))
+}
 export function resolvePaletteColour(entry: string, palette: PaletteColour[]): PaletteColour | undefined {
-  const folded = entry.trim().toLowerCase()
-  const matches = palette.filter(colour => [colour.name.toLowerCase(), colour.hex.toLowerCase(), colour.hex.replace(/^#/, '').toLowerCase()].includes(folded))
+  const matches = paletteColourMatches(entry, palette)
   return matches.length === 1 ? matches[0] : undefined
+}
+
+// What the Cleanup form's removed colour resolves to in `palette`, as a Cleanup run
+// resolves it (paletteColourMatches): 'none' (nothing removed, or no palette to judge
+// against), 'match' with the one colour, 'missing' or 'ambiguous'.
+export function removedColourChoice(value: string | null, palette: PaletteColour[]): { status: 'none' | 'match' | 'missing' | 'ambiguous'; colour?: PaletteColour } {
+  if (!value || !palette.length) return { status: 'none' }
+  const matches = paletteColourMatches(value, palette)
+  return matches.length === 1 ? { status: 'match', colour: matches[0] } : { status: matches.length ? 'ambiguous' : 'missing' }
 }
 
 // Whether layer stacking order can change the traced geometry (layer_order_matters in
@@ -165,14 +183,15 @@ function orderColours(colours: PaletteColour[], order: string[] | null, palette:
 // keyboard, since native HTML5 drag does not fire on touch screens.
 // `locked` (a reason) keeps the list shown but not reorderable: the colours listed are not
 // the selected revision's own yet, so an order written from them would name stale colours.
-// `removedColour` (the active cleanup's) gets no layer, so it is neither listed nor written.
+// `removedIndex` (the palette index of the colour the active cleanup removes) gets no layer,
+// so it is neither listed nor written.
 // `onRetry`, when given, offers to re-read what `locked` says failed to load.
-function LayerOrderList({ colours: palette, order, onChange, dirty, locked, removedColour, automaticOrder, onRetry }: {
-  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean; locked?: string | null; removedColour?: string | null; automaticOrder?: string[] | null; onRetry?: (() => void) | null
+function LayerOrderList({ colours: palette, order, onChange, dirty, locked, removedIndex, automaticOrder, onRetry }: {
+  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean; locked?: string | null; removedIndex?: number | null; automaticOrder?: string[] | null; onRetry?: (() => void) | null
 }) {
   const [dragging, setDragging] = useState<number | null>(null)
-  const removed = removedColour ? resolvePaletteColour(removedColour, palette) : undefined
-  const colours = palette.filter(colour => colour.index !== removed?.index)
+  const removed = palette.find(colour => colour.index === removedIndex)
+  const colours = palette.filter(colour => colour.index !== removedIndex)
   // Display top-down (top of the list is the top layer); the stored order is bottom-to-top,
   // so serialise the reversed display back to hex on every move.
   const display = orderColours(colours, order, palette, automaticOrder ?? null).reverse()
@@ -209,7 +228,7 @@ function LayerOrderList({ colours: palette, order, onChange, dirty, locked, remo
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedColour = null, automaticOrder = null, onRetryLayerOrder = null, onHighlightPoint = () => undefined }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedIndex = null, removalPaletteCurrent = true, removalBlocked = null, automaticOrder = null, onRetryLayerOrder = null, onHighlightPoint = () => undefined }: {
   stage: 'flatten' | 'cleanup' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
   cleanup?: CleanupSettings; setCleanup?: (value: CleanupSettings) => void; baseCleanup?: CleanupSettings
   paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
@@ -219,8 +238,14 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   // Why the layer order cannot be rewritten now: its colours are not the selected revision's,
   // or the automatic order unnamed colours follow is still loading or failed to load.
   layerOrderLocked?: string | null
-  // The colour the active cleanup removes (as it names it); it gets no layer.
-  removedColour?: string | null
+  // The palette index of the colour the active cleanup removes; it gets no layer.
+  removedIndex?: number | null
+  // Whether `paletteColours` is the shown revision's own (not the last one's, still
+  // listed while it loads); the Cleanup form judges its removed colour only then.
+  removalPaletteCurrent?: boolean
+  // Why Cleanup is blocked: the form still holds the last cleanup's removed colour, which
+  // is not exactly one colour of this palette (EditorState.inherited_remove_colour).
+  removalBlocked?: string | null
   // The tracer's automatic bottom-to-top order (hex), which unnamed colours follow.
   automaticOrder?: string[] | null
   // Re-reads the automatic order after a failed read (shown with `layerOrderLocked`).
@@ -234,6 +259,15 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   const pd = (key: keyof PaletteSettings) => !sameSetting(palette[key], basePalette[key])
   const td = (key: keyof TraceSettings) => !sameSetting(trace[key], baseTrace[key])
   const cd = (key: keyof CleanupSettings) => !sameSetting(cleanup[key], baseCleanup[key])
+  // Judged only against the palette of the shown revision, so a load never flashes a
+  // false alert against the previous revision's palette.
+  const removal = removedColourChoice(cleanup.remove_colour, removalPaletteCurrent ? paletteColours : [])
+  const removalProblem = removalBlocked ? removalBlocked
+    : removal.status === 'missing' ? `No colour of this artwork's palette is ${cleanup.remove_colour}: choose the colour to remove.`
+    : removal.status === 'ambiguous' ? `${cleanup.remove_colour} names more than one colour of this artwork's palette, by name or hex: choose the colour to remove.`
+      : null
+  const removalNote = removal.colour && !removalBlocked ? <small id="remove-colour-status" className="remove-colour-match"><span className="swatch" style={{ background: removal.colour.hex }} /> Removes {removal.colour.name || removal.colour.hex} ({removal.colour.hex})</small>
+    : removalProblem ? <small id="remove-colour-status" className="remove-colour-missing" role="alert">{removalProblem}</small> : null
   // Fitting settings are always pixels of the traced image; physical settings follow
   // the output size: the Cleanup form's own, and for Trace the size its cleanup set.
   const physical = stage === 'cleanup' ? cleanup.width_mm !== null || cleanup.height_mm !== null : traceSize !== null
@@ -303,7 +337,8 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       <section className="settings-group"><h3>Physical output</h3><p>Set the vinyl size and the colour left uncut. Trace uses both; changing them means running Cleanup again.</p><div className="settings-grid">
         <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches overlap and cleanup to mm; it never changes the curves." value={cleanup.width_mm} optional dirty={cd('width_mm')} onChange={value => c('width_mm', value)} />
         <NumberField label="Height (mm)" help="Cut height of the whole design in mm, as an alternative to width. Blank both to keep overlap and cleanup in px." value={cleanup.height_mm} optional dirty={cd('height_mm')} onChange={value => c('height_mm', value)} />
-        <Field label="Remove colour" help="Leave one colour out of the cut, by name or hex, usually the colour of the backing material. Blank cuts every colour." dirty={cd('remove_colour')}><input value={cleanup.remove_colour ?? ''} placeholder="None" onChange={event => c('remove_colour', event.target.value || null)} /></Field>
+        <div className="remove-colour-field"><Field label="Remove colour" help="Leave one colour out of the cut, by name or hex, usually the colour of the backing material. Blank cuts every colour." dirty={cd('remove_colour')}><input value={cleanup.remove_colour ?? ''} placeholder="None" aria-invalid={removalProblem ? true : undefined} aria-describedby={removalNote ? 'remove-colour-status' : undefined} onChange={event => c('remove_colour', event.target.value || null)} /></Field>
+          {removalNote}</div>
       </div></section>
       <section className="settings-group"><h3>Cutter cleanup</h3><p>Optionally remove or widen geometry that is difficult to cut.</p><div className="settings-grid">
         <label className="check-field"><input type="checkbox" checked={cleanup.cleanup} onChange={event => c('cleanup', event.target.checked)} /><span><strong>Enable cutter cleanup<DirtyDot dirty={cd('cleanup')} /></strong><small>On: remove or widen parts too small or thin to cut and weed, using the rules below, before tracing. Off: the run only records the size and removed colour, and the traced shapes follow the flattened image exactly.</small></span></label>
@@ -317,7 +352,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <div className="settings-grid">
         <NumberField label={`Layer overlap (${length})`} help={`How far each lower layer extends under the layers above it, in ${length}. 0: colours meet edge to edge. Higher: more forgiving of misaligned layers, uses more vinyl.`} value={trace.overlap} dirty={td('overlap')} onChange={value => t('overlap', value!)} />
         <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>On: each lower layer is cut as a solid shape under everything above it, so no edges are shared and alignment is easiest; uses the most vinyl. Replaces the overlap distance.</small></span></label>
-        {layerOrderMatters(trace) && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedColour={removedColour} automaticOrder={automaticOrder} onRetry={onRetryLayerOrder} />}
+        {layerOrderMatters(trace) && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedIndex={removedIndex} automaticOrder={automaticOrder} onRetry={onRetryLayerOrder} />}
       </div></section>
       <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Distances here are pixels of the traced image, whatever the physical size.</p><div className="settings-grid">
         <NumberField label="Corner threshold" help="How sharp a bend, in degrees, must be to become a hard corner. Lower: more bends become sharp points. Higher: gentle bends stay smooth curves." value={trace.corner_threshold} max={180} dirty={td('corner_threshold')} onChange={value => t('corner_threshold', value!)} /><NumberField label="Corner analysis span (px)" help="Length of edge, in px, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored." value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Corner straightness (px)" help="How far, in px, the edges beside a corner may wobble and still confirm it. Lower: only clean straight edges make sharp corners. Higher: rougher edges still get sharp corners." value={trace.corner_straightness} dirty={td('corner_straightness')} onChange={value => t('corner_straightness', value!)} /><NumberField label="Curve-fit tolerance (px)" help="How far, in px, a curve may stray from the pixel edge. Lower: follows the pixels more closely, more nodes. Higher: smoother, fewer nodes." value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (px)" help="How far, in px, an edge may bend and still be drawn as one straight line. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved." value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (px)" help="Shortest edge, in px, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved." value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (px)" help="In px (Automatic: 2): caps the curve-fit tolerance, limits how far a corner may shift, and sets how much drift the check after tracing allows. Lower than the curve-fit tolerance: tighter curves, more nodes, stricter check; higher: only relaxes the check. Does not limit straight lines." value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />

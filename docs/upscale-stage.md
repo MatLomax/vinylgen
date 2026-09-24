@@ -115,7 +115,9 @@ Mirrors the `vinylgen/web/generation.py` provider pattern:
 - `UpscaleRunner` — resolves the parent revision's `source.png`, runs the
   provider, commits a new `upscaled-source` revision via
   `Store.create_upscaled_source(...)` with
-  `stale_concerns = ["palette", "trace", "validation", "export"]`.
+  `stale_concerns = ["palette", "cleanup", "trace", "validation", "export"]`,
+  recording `parent_source_size` and `source_size` (`[width, height]` of the
+  parent's and the decoded output's source pixels).
 
 The fixed prompt reuses the reference's tuned "improve, do not change" positive
 and negative text, which is well suited to flat limited-colour art.
@@ -184,6 +186,16 @@ ControlNet toggle + strength. Options fetched from `/api/upscale/options`; live
 tile progress via the existing SSE channel. The single-tile "test one tile"
 preview from the ComfyUI form is out of scope for the first version.
 
+The Flatten form's preservation points are source-pixel coordinates. On an
+upscaled source (and anything below it) the points it inherits from a flatten
+before the upscale, the older Flatten iterations it steps back to, and a
+palette draft picked before the upscale are mapped onto the new grid from the
+revision's recorded `parent_source_size`/`source_size`: each point moves to the
+pixel holding the same relative position, `x' = floor((x + 0.5) * new_width /
+old_width)` clamped to the grid (likewise `y`), so its canvas marker and the
+flatten run land on the same feature. See `docs/files-and-outputs.md` for the
+full rule.
+
 ## 8. Failure modes (all surfaced as job errors, none silent)
 
 - ComfyUI unreachable -> the user sees exactly "ComfyUI is not running." and
@@ -208,7 +220,11 @@ preview from the ComfyUI form is out of scope for the first version.
 - `comfy_client` against a mock HTTP server (upload -> prompt -> history -> view
   happy path; error status; timeout). No live ComfyUI in the suite.
 - `UpscaleRunner` with a fake provider: commits an `upscaled-source` revision,
-  sets `stale_concerns`, honours cancellation at the commit boundary.
+  sets `stale_concerns`, records both source grids from the decoded images,
+  honours cancellation at the commit boundary.
+- Frontend: the point mapping (edges, non-integer ratios, chained upscales),
+  and a draft picked before an upscale landing mapped in the canvas markers and
+  the flatten run's settings.
 - One optional, skipped-by-default live smoke test against `:8188`.
 - Adversarial review by a non-implementer before the task is marked done.
 

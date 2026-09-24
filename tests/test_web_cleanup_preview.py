@@ -242,6 +242,33 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         np.testing.assert_array_equal(decode(body["pixels"]), rerun_pixels)
         self.assertGreater(body["removed_pixels"], 0)
 
+    async def test_the_inherited_form_previews_removing_the_colour_the_cleanup_removed(self) -> None:
+        # Cleanup removes Bone by name, then a trace swaps Bone's and Ember's names. The
+        # Cleanup form inherits the removed colour as the hex the API reports for that
+        # cleanup, so its preview (and a run of it) keeps Bone removed: the cleanup
+        # already shown, with nothing to change, never a removal of Ember.
+        project_id, _, palette_revision = await self.flattened_project()
+        rows = await self.palette_rows(palette_revision)
+        bone = next(row for row in rows if row["rgb"][0] > 200 and row["rgb"][2] > 150)
+        ember = next(row for row in rows if row["rgb"][0] > 200 and row["rgb"][2] < 100)
+        settings = {"cleanup": True, "min_region_area": 3000.0, "remove_colour": bone["name"]}
+        cleanup_revision = await self.run_job("cleanup", project_id, palette_revision, cleanup=settings)
+        trace_revision = await self.run_job(
+            "trace", project_id, cleanup_revision,
+            colour_names={bone["hex"]: ember["name"], ember["hex"]: bone["name"]})
+        revisions = (await self.client.get(f"/api/projects/{project_id}/revisions")).json()
+        reported = next(row for row in revisions if row["id"] == cleanup_revision)["settings"]
+        form = {**settings, "remove_colour": reported["removed_colour_hex"]}
+        self.assertEqual(form["remove_colour"], bone["hex"])
+        with mock.patch.object(trace_preview, "clean_window", wraps=cleanup_window.clean_window) as clean:
+            body = (await self.preview(trace_revision, WINDOW, form)).json()
+        self.assertEqual(clean.call_count, 0)
+        self.assertFalse(decode(body["changes"]).any())
+        shown = self.window_of(await self.flattened_pixels(trace_revision))
+        np.testing.assert_array_equal(decode(body["pixels"]), shown)
+        rerun = await self.run_job("cleanup", project_id, trace_revision, cleanup=form)
+        np.testing.assert_array_equal(self.window_of(await self.flattened_pixels(rerun)), shown)
+
     async def test_a_size_given_by_the_other_dimension_is_the_same_size(self) -> None:
         project_id, _, palette_revision = await self.flattened_project()
         # 300 mm wide makes 620 x 610 px 295.16129032258067 mm high, which gives back a
@@ -337,6 +364,76 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(panned.status_code, 200, panned.text)
         colours = len(self.service._cleanup_source[1].palette_rgb)
         self.assertEqual(measure.call_count, colours)
+
+    async def regions_state(self, revision_id: str) -> dict:
+        response = await self.client.get(f"/api/revisions/{revision_id}/cleanup-preview/regions")
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    async def test_the_regions_state_reports_measuring_while_the_preview_thread_measures(self) -> None:
+        _, source_revision, palette_revision = await self.flattened_project()
+        missing = await self.client.get("/api/revisions/missing/cleanup-preview/regions")
+        self.assertEqual(missing.status_code, 404, missing.text)
+        self.assertEqual(await self.regions_state(source_revision),
+                         {"measured": False, "measuring": False})
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": False, "measuring": False})
+        # Cleanup off cleans nothing, so it loads the raster without measuring it.
+        off = await self.preview(palette_revision, WINDOW, {"cleanup": False})
+        self.assertEqual(off.status_code, 200, off.text)
+        self.assertIsNotNone(self.service._cleanup_source)
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": False, "measuring": False})
+        # Hold the preview thread inside its first colour's measurement.
+        entered, release = threading.Event(), threading.Event()
+
+        def held(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return measure_colour_regions(*args, **kwargs)
+
+        with mock.patch.object(cleanup_window, "measure_colour_regions", held):
+            request = asyncio.create_task(
+                self.preview(palette_revision, WINDOW, {"cleanup": True, "min_region_area": 20.0}))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 10))
+                # Answered while the preview thread is busy measuring, not queued behind it.
+                state = await asyncio.wait_for(self.regions_state(palette_revision), 5)
+                self.assertEqual(state, {"measured": False, "measuring": True})
+            finally:
+                release.set()
+            response = await request
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": True, "measuring": False})
+        # A trace preview evicts the raster and its measurements.
+        traced = await self.client.post(f"/api/revisions/{palette_revision}/trace-preview",
+                                        json={"window": WINDOW})
+        self.assertEqual(traced.status_code, 200, traced.text)
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": False, "measuring": False})
+
+    async def test_a_measurement_stopped_part_way_is_no_longer_reported_as_measuring(self) -> None:
+        _, _, palette_revision = await self.flattened_project()
+        request = CleanupPreviewRequest(window=WINDOW, cleanup={"cleanup": True})
+        seen = []
+
+        def measuring_then_superseded(*args, **kwargs):
+            seen.append(self.service._measuring)
+            raise PreviewCancelled
+
+        with mock.patch.object(cleanup_window, "measure_colour_regions",
+                               measuring_then_superseded):
+            response = await self.preview(palette_revision, WINDOW, {"cleanup": True})
+        self.assertEqual(response.status_code, 409, response.text)
+        segmentation_id = self.service._cleanup_source[0]
+        self.assertEqual(seen, [segmentation_id])
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": False, "measuring": False})
+        # The next preview measures and completes.
+        self.service.run_cleanup(palette_revision, request)
+        self.assertEqual(await self.regions_state(palette_revision),
+                         {"measured": True, "measuring": False})
 
     async def test_request_validation_and_missing_resources(self) -> None:
         _, source_revision, palette_revision = await self.flattened_project()

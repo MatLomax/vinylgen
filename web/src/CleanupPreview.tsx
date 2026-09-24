@@ -42,6 +42,25 @@ export async function fetchCleanupPreview(revisionId: string, window: PreviewWin
   return response.json() as Promise<CleanupPreviewResponse>
 }
 
+// Whether the preview thread holds the whole raster's region measurements a cleanup
+// preview of the revision cleans with, and whether it is measuring them now.
+export type CleanupRegionsState = { measured: boolean; measuring: boolean }
+export const MEASURING_BADGE_TEXT = 'Measuring regions of the whole image…'
+
+export async function fetchCleanupRegionsState(revisionId: string, signal: AbortSignal): Promise<CleanupRegionsState> {
+  const response = await fetch(`/api/revisions/${revisionId}/cleanup-preview/regions`, { signal })
+  if (!response.ok) throw new Error(errorMessage(response.status, response.statusText, await response.text()))
+  return response.json() as Promise<CleanupRegionsState>
+}
+
+// The busy badge says so while the server measures the revision's regions, the slow
+// first step of a revision's first preview (and of every return from the Trace canvas,
+// whose preview releases them).
+async function measuringNote(revisionId: string, signal: AbortSignal) {
+  const state = await fetchCleanupRegionsState(revisionId, signal)
+  return state.measuring ? MEASURING_BADGE_TEXT : null
+}
+
 async function requestCleanupPreview(revisionId: string, window: PreviewWindow, cleanup: CleanupSettings, signal: AbortSignal) {
   const body = await fetchCleanupPreview(revisionId, window, cleanup, signal)
   return { window: body.window, result: { pixels: body.pixels, changes: body.changes } }
@@ -59,12 +78,13 @@ export type ShowChanges = { on: boolean; set: (on: boolean) => void; available: 
  * "Show changes" switch (`showChanges`, which the canvas applies to the revision's
  * changes overlay; disabled with the reason when there is none, and shown while the
  * preview is paused too, with `pausedStatus` below it), a legend line for each
- * overlay on view, and the badge, busy and error states. Without `options` (any
+ * overlay on view, and the badge (which reads "Measuring regions…" while the server
+ * measures the revision's regions), busy and error states. Without `options` (any
  * canvas but Cleanup) it renders nothing and requests nothing.
  */
 export function useCleanupPreview(options: CleanupPreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize, showChanges: ShowChanges, paused: boolean, pausedStatus?: string): { stageLayer: ReactNode; controls: ReactNode } {
   const preview = useLivePreview(options, transform, viewport, stage,
-    { storageKey: CLEANUP_PREVIEW_STORAGE_KEY, label: 'Live cleanup preview', request: requestCleanupPreview })
+    { storageKey: CLEANUP_PREVIEW_STORAGE_KEY, label: 'Live cleanup preview', request: requestCleanupPreview, busyNote: measuringNote })
   const reasonId = useId()
   const { shown } = preview
   const placement = shown ? stagePlacement(shown.window, preview.kx, preview.ky) : undefined

@@ -1,6 +1,6 @@
 import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
-import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
+import { LoaderCircle, Maximize, Pause, Play, ZoomIn, ZoomOut } from 'lucide-react'
+import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, lineageRegisters, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type UpscaleLineage, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
@@ -20,6 +20,13 @@ export type CanvasCleanupPreview = Omit<CleanupPreviewOptions, 'tracedSize'> & {
 // of the `markerGridFrom` layer (one point, or both points of a pair), `label` is the
 // number of its row in the side-panel list, and `pending` marks a pair's first pick
 // while its second is still to come.
+// Why the main canvas's comparison images could not be loaded, shown in its Compare
+// control with a Retry.
+export type CanvasCompareStatus = { message: string; onRetry: () => void }
+// The layer `id` is the source the upscaled source `upscaledId` was made from, with the
+// upscale's recorded grids when the revision has them; without, the two images' own
+// sizes stand in (the revision's kind and parent already prove the lineage).
+export type CanvasCompareLineage = Partial<UpscaleLineage> & { id: string; upscaledId: string }
 export type CanvasMarkerKind = 'protect' | 'preserve' | 'pair'
 export type CanvasMarker = { id: string; kind: CanvasMarkerKind; label: string; points: [number, number][]; pending?: boolean }
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
@@ -30,8 +37,23 @@ const AIM_ARM = 10
 // The absolute URL an <img> resolves a layer's (possibly relative) URL to.
 const absoluteUrl = (url: string) => new URL(url, document.baseURI).href
 type CompareMode = 'single' | 'split' | 'blink'
+const COMPARE_MODES: CompareMode[] = ['single', 'split', 'blink']
+// The main canvas's comparison mode, remembered across stage changes and reloads.
+export const CANVAS_COMPARE_STORAGE_KEY = 'vinylgen.canvasCompare'
+function storedCompareMode(): CompareMode {
+  try {
+    const value = localStorage.getItem(CANVAS_COMPARE_STORAGE_KEY)
+    return value === 'split' || value === 'blink' ? value : 'single'
+  } catch { return 'single' }
+}
+// The widths at which the canvas's Compare control is a toolbar button opening a popover.
+const NARROW_CANVAS_QUERY = '(max-width: 1024px)'
+const narrowCanvasNow = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(NARROW_CANVAS_QUERY).matches
+function storeCompareMode(mode: CompareMode) {
+  try { localStorage.setItem(CANVAS_COMPARE_STORAGE_KEY, mode) } catch { /* storage unavailable */ }
+}
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, livePreview, cleanupPreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint: selectPointRequested, paintMode: paintRequested = false, onPaint: paintHandler, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim: aimRequested = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, livePreview, cleanupPreview, livePreviewPaused = false, livePreviewStatus, compareBefore = [], compareLineage, compareStatus, compareRemembered = true, compareKey, compareLocksEditing = false, onComparingChange, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; compareBefore?: readonly string[]; compareLineage?: CanvasCompareLineage; compareStatus?: CanvasCompareStatus; compareRemembered?: boolean; compareKey?: string; compareLocksEditing?: boolean; onComparingChange?: (comparing: boolean) => void; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -54,8 +76,22 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const [afterId, setAfterId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).afterId)
   const previousPreferredLayerId = useRef(preferredLayerId)
   const [mode, setMode] = useState<CompareMode>('single')
+  // The main canvas's comparison: its remembered mode ('single' is Off) and the Before
+  // chosen from `compareBefore`.
+  const [canvasMode, setCanvasMode] = useState<CompareMode>(storedCompareMode)
+  // A canvas that does not remember the mode (`compareRemembered` false) opens with it Off
+  // and keeps its choice only while it stays that canvas, the workflow stage `compareKey`.
+  const [sessionMode, setSessionMode] = useState<CompareMode>('single')
+  useEffect(() => { setSessionMode('single') }, [compareRemembered, compareKey])
+  const chosenMode = compareRemembered ? canvasMode : sessionMode
+  const [narrowCanvas, setNarrowCanvas] = useState(narrowCanvasNow)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const comparePanel = useRef<HTMLDivElement>(null)
+  const compareToggle = useRef<HTMLButtonElement>(null)
+  const comparePanelId = useId()
+  const [canvasBeforeId, setCanvasBeforeId] = useState<string | null>(null)
   const [split, setSplit] = useState(50)
-  const [blinkAfter, setBlinkAfter] = useState(false)
+  const [blinkOverlay, setBlinkOverlay] = useState(false)
   const [reducedMotion, setReducedMotion] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const [blinkPaused, setBlinkPaused] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -103,11 +139,46 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
   const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
   const comparisonAvailable = comparableImages.length > 0
+  // The main canvas compares the image it shows (the After; `before` above names the
+  // layer that sizes the stage) with a Before from `compareBefore`, natural input first:
+  // a distinct image whose grid registers with the shown one (`gridsRegister`), or the
+  // pre-upscale source through its recorded upscale (`compareLineage`); either covers
+  // the same extent and is stretched over it. With none, it offers no comparison.
+  const upscaleBefore = compareLineage?.before ?? (compareLineage ? dimensions[compareLineage.id] : undefined)
+  const upscaleAfter = compareLineage?.after ?? (compareLineage ? dimensions[compareLineage.upscaledId] : undefined)
+  const upscaleLineage = upscaleBefore && upscaleAfter ? { before: upscaleBefore, after: upscaleAfter } : undefined
+  const canvasCandidates = editorMode && before && beforeSize
+    ? [...new Set(compareBefore)].flatMap(id => {
+      const layer = visible.find(item => item.id === id)
+      const registers = layer && (gridsRegister(beforeSize, dimensions[layer.id])
+        || (layer.id === compareLineage?.id && lineageRegisters(beforeSize, dimensions[layer.id], upscaleLineage)))
+      return layer && layer.id !== before.id && registers ? [layer] : []
+    }) : []
+  const canvasBefore = canvasCandidates.find(layer => layer.id === canvasBeforeId) ?? canvasCandidates[0]
+  // The layer split and blink draw over the stage's own image: the inspector's After, or
+  // the main canvas's Before.
+  const compareLayer = editorMode ? canvasBefore : compatibleAfter
+  const activeMode: CompareMode = editorMode ? (canvasBefore ? chosenMode : 'single') : mode
+  // While the main canvas compares, its Before may be what is on screen, so nothing edits
+  // it (area selection, pencil, preservation picking) and nothing is drawn over the pair
+  // (inspection overlays, live previews, the recolour preview); each returns, with its
+  // switch as it was, once Compare is Off.
+  const comparing = editorMode && activeMode !== 'single'
+  const onSelectPoint = comparing ? undefined : selectPointRequested
+  const paintMode = !comparing && paintRequested
+  const onPaint = comparing ? undefined : paintHandler
+  const pickAim = !comparing && aimRequested
+  const editingRequested = Boolean(selectPointRequested || paintRequested || aimRequested)
+  useEffect(() => {
+    onComparingChange?.(comparing)
+    return () => onComparingChange?.(false)
+  }, [comparing])
   // An enabled overlay draws over the shown image when their grids register: the same
   // grid, or one an integer upscale of the other (a flattened grid with
   // `flatten_upscale` > 1 over its source), stretched over the same extent.
   const compatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
   const incompatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
+  const drawnInspections = comparing ? [] : compatibleInspections
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -144,10 +215,10 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   }, [])
 
   useEffect(() => {
-    if (mode !== 'blink' || blinkPaused) return
-    const timer = window.setInterval(() => setBlinkAfter(value => !value), 550)
+    if (activeMode !== 'blink' || blinkPaused) return
+    const timer = window.setInterval(() => setBlinkOverlay(value => !value), 550)
     return () => window.clearInterval(timer)
-  }, [mode, blinkPaused])
+  }, [activeMode, blinkPaused])
 
   useEffect(() => {
     if (!sheetOpen) return
@@ -272,7 +343,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
                          dpr * transform.x, dpr * transform.y)
     context.imageSmoothingEnabled = false
     context.drawImage(patch.canvas, patch.bounds.x, patch.bounds.y)
-  }, [overlay, transform])
+  }, [overlay, transform, comparing])
 
   useEffect(() => {
     const element = viewport.current
@@ -418,6 +489,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     return () => element.removeEventListener('wheel', wheel)
   }, [hasImages])
 
+  function chooseMode(value: CompareMode) {
+    if (!editorMode) setMode(value)
+    else if (compareRemembered) { setCanvasMode(value); storeCompareMode(value) } else setSessionMode(value)
+    if (value === 'blink') setBlinkOverlay(false)
+  }
+
   function dividerPointerDown(event: PointerEvent<HTMLDivElement>) {
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -452,7 +529,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     }
   }
 
-  const showAfter = mode === 'split' || (mode === 'blink' && blinkAfter)
+  const showOverlay = activeMode === 'split' || (activeMode === 'blink' && blinkOverlay)
+  // The compared layer is drawn crisp while it is enlarged on screen: its own
+  // magnification (displayed over natural size), not the shown image's, since a Before
+  // on a smaller grid is stretched further.
+  const compareSize = compareLayer ? dimensions[compareLayer.id] : undefined
+  const compareMagnified = Boolean(compareSize?.width) && size.width * transform.scale / compareSize!.width >= 1
   const transformStyle = { width: size.width, height: size.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }
   // The Trace or Cleanup canvas's live preview of the zoomed-in area (inert without
   // `livePreview` / `cleanupPreview`). Paused (while the revision's grid is unknown),
@@ -464,11 +546,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const pausedGrid = { width: 1, height: 1 }
   const previewOptions: LivePreviewOptions | undefined = livePreview ? { ...livePreview, tracedSize: livePreview.tracedSize ?? pausedGrid } : undefined
   const cleanupOptions: CleanupPreviewOptions | undefined = cleanupPreview ? { ...cleanupPreview, tracedSize: cleanupPreview.tracedSize ?? pausedGrid } : undefined
-  const previewViewport = previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }
+  // Comparing holds the live preview exactly as a pause does: nothing in view, so no
+  // request (the one in flight is aborted), no badge and no live legend, until Off.
+  const previewHeld = previewPaused || comparing
+  const previewViewport = previewHeld ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }
   const tracePreview = useTracePreview(previewOptions, transform, previewViewport, size)
   const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size,
-    { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && compatibleInspections.includes(appliedChanges)) },
-    previewPaused, livePreviewStatus)
+    { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && drawnInspections.includes(appliedChanges)) },
+    previewHeld, livePreviewStatus)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -531,9 +616,9 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     {!editorMode && <section className="control-section">
       <h3>Compare</h3>
       <div className="segmented" aria-label="Comparison mode">
-        {(['single', 'split', 'blink'] as CompareMode[]).map(value => {
+        {COMPARE_MODES.map(value => {
           const locked = value !== 'single' && !comparisonAvailable
-          return <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} disabled={locked} aria-disabled={locked} title={locked ? 'Comparison needs a second image with matching pixel dimensions.' : undefined} onClick={() => { setMode(value); if (value === 'blink') setBlinkAfter(false) }}>{value}</button>
+          return <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} disabled={locked} aria-disabled={locked} title={locked ? 'Comparison needs a second image with matching pixel dimensions.' : undefined} onClick={() => chooseMode(value)}>{value}</button>
         })}
       </div>
       {!comparisonAvailable && <p className="layer-warning" role="status">Comparison needs a second image with matching pixel dimensions.</p>}
@@ -543,7 +628,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {mode === 'split' && <label>Split · {split}%<input aria-label="Split position" type="range" min="0" max="100" value={split} onChange={event => setSplit(Number(event.target.value))} /></label>}
       {mode === 'blink' && <div className="view-actions">
         <button onClick={() => setBlinkPaused(value => !value)}>{blinkPaused ? 'Resume blink' : 'Pause blink'}</button>
-        <button onClick={() => setBlinkAfter(value => !value)}>Show {blinkAfter ? 'before' : 'after'} image</button>
+        <button onClick={() => setBlinkOverlay(value => !value)}>Show {blinkOverlay ? 'before' : 'after'} image</button>
         {reducedMotion && blinkPaused && <p role="status">Blink is paused to respect your reduced-motion preference.</p>}
       </div>}
     </section>}
@@ -554,21 +639,75 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     </section>}
   </>
 
+  // The main canvas's Compare control, offered where a Before image covers the shown
+  // one's extent, or to report (with a Retry) that its images could not be loaded. As in
+  // the inspector, split draws the After (the shown image) left of the divider and the
+  // Before right of it; blink alternates the two.
+  const hiddenWhileComparing = inspections.some(inspectionOn) || Boolean(overlay) || Boolean(tracePreview.stageLayer || cleanupLivePreview.stageLayer)
+  // At 1024px and below the control is one toolbar button opening it as a popover
+  // positioned from the canvas (outside the toolbar row, which clips), so the toolbar
+  // stays one row; above, it sits inline in the toolbar.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(NARROW_CANVAS_QUERY)
+    const changed = (event: MediaQueryListEvent) => setNarrowCanvas(event.matches)
+    query.addEventListener?.('change', changed)
+    return () => query.removeEventListener?.('change', changed)
+  }, [])
+  const popover = editorMode && narrowCanvas
+  const compareWord = !canvasBefore ? 'Unavailable' : chosenMode === 'single' ? 'Off' : chosenMode === 'split' ? 'Split' : 'Blink'
+  const insideCompare = (node: EventTarget | null) => node instanceof Node && Boolean(comparePanel.current?.contains(node) || compareToggle.current?.contains(node))
+  function compareKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Escape' || !compareOpen) return
+    event.preventDefault()
+    setCompareOpen(false)
+    compareToggle.current?.focus()
+  }
+  // Focus moving on to anything but the toggle or the popover (Tab past its last
+  // control) closes it; a press inside that focuses nothing leaves it open.
+  function compareBlur(event: React.FocusEvent<HTMLElement>) {
+    if (event.relatedTarget && !insideCompare(event.relatedTarget)) setCompareOpen(false)
+  }
+  const compareToggleButton = popover && (canvasBefore || compareStatus) && <button ref={compareToggle} type="button" className="canvas-compare-toggle" aria-label={`Compare: ${compareWord}${compareStatus ? ' (failed)' : ''}`} aria-expanded={compareOpen} aria-controls={comparePanelId} onClick={() => setCompareOpen(open => !open)} onKeyDown={compareKeyDown} onBlur={compareBlur}><span className="canvas-compare-toggle-prefix" aria-hidden="true">Compare: </span>{compareWord}{compareStatus ? ' !' : ''}</button>
+  const canvasCompare = editorMode && (canvasBefore || compareStatus) && <div ref={comparePanel} id={comparePanelId} className={`canvas-compare${popover ? ' popover' : ''}`} role="group" aria-label="Compare" hidden={popover && !compareOpen} onKeyDown={popover ? compareKeyDown : undefined} onBlur={popover ? compareBlur : undefined}>
+    <span className="canvas-compare-title" aria-hidden="true">Compare</span>
+    {compareStatus && <p className="canvas-compare-note error" role="alert">{compareStatus.message} <button type="button" className="canvas-compare-action" onClick={compareStatus.onRetry}>Retry</button></p>}
+    {canvasBefore && <><div className="segmented" role="group" aria-label="Comparison mode">
+      {COMPARE_MODES.map(value => <button key={value} type="button" className={chosenMode === value ? 'active' : ''} aria-pressed={chosenMode === value} onClick={() => chooseMode(value)}>{value === 'single' ? 'Off' : value}</button>)}
+    </div>
+    {activeMode !== 'single' && (canvasCandidates.length > 1
+      ? <label className="canvas-compare-before">Before<select value={canvasBefore.id} onChange={event => setCanvasBeforeId(event.target.value)}>{canvasCandidates.map(layer => <option key={layer.id} value={layer.id}>{layer.name}</option>)}</select></label>
+      : <span className="canvas-compare-before" title={canvasBefore.name}>Before: {canvasBefore.name}</span>)}
+    {activeMode === 'blink' && <>
+      <button type="button" className="canvas-compare-action" aria-label={blinkPaused ? 'Resume blink' : 'Pause blink'} title={blinkPaused ? 'Resume blink' : 'Pause blink'} onClick={() => setBlinkPaused(value => !value)}>{blinkPaused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}</button>
+      <button type="button" className="canvas-compare-action" onClick={() => setBlinkOverlay(value => !value)}>Show {blinkOverlay ? 'after' : 'before'}</button>
+    </>}
+    {comparing && (editingRequested || compareLocksEditing) && <p className="canvas-compare-note">Turn Compare off to edit</p>}
+    {comparing && hiddenWhileComparing && <p className="canvas-compare-note">Overlays and live preview hidden while comparing</p>}
+    </>}
+    <p className="visually-hidden" role="status">{activeMode === 'blink' && reducedMotion && blinkPaused ? 'Blink is paused to respect your reduced-motion preference.' : ''}</p>
+  </div>
+
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
   return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
     <p className="visually-hidden" aria-live="polite">{announcement}</p>
-    <div className="viewport-toolbar" inert={sheetOpen}><span>{loading ? 'Loading…' : before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
-    <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)}>
+    <div className="viewport-toolbar" inert={sheetOpen}><span>{loading ? 'Loading…' : before?.name}</span>{popover ? compareToggleButton : canvasCompare}<strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
+    {/* While the popover is open a transparent backdrop covers the page beneath it: a
+        press there closes the popover on its click (the whole press, touch included, lands
+        on the backdrop), so it reaches nothing underneath. */}
+    {popover && compareOpen && <div className="canvas-compare-backdrop" aria-hidden="true" onClick={() => setCompareOpen(false)} />}
+    {popover && canvasCompare}
+    <div ref={viewport} className={`viewport ${comparing ? 'comparing' : ''} ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)}>
       <div className={`image-stage ${transform.scale >= 1 ? 'magnified' : ''}`} style={transformStyle}>
         {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => beforeSettled(event, true)} onError={event => beforeSettled(event, false)} />}
-        {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
-        {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
-        {!previewPaused && tracePreview.stageLayer}
-        {!previewPaused && cleanupLivePreview.stageLayer}
+        {showOverlay && compareLayer && <div className="compare-layer" style={activeMode === 'split' ? { clipPath: editorMode ? `inset(0 0 0 ${splitPosition}px)` : `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={[compareLayer.mediaType === 'image/svg+xml' ? 'vector' : '', compareMagnified ? 'magnified' : ''].filter(Boolean).join(' ') || undefined} src={compareLayer.url} alt={compareLayer.name} draggable={false} /></div>}
+        {drawnInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
+        {!previewHeld && tracePreview.stageLayer}
+        {!previewHeld && cleanupLivePreview.stageLayer}
       </div>
-      {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
-      {mode === 'split' && compatibleAfter && <div
+      {overlay && !comparing && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
+      {activeMode === 'split' && compareLayer && <div
         className="split-divider"
         role="slider"
         tabIndex={0}

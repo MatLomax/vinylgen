@@ -225,7 +225,7 @@ describe('Trace canvas live preview', () => {
     expect(status.textContent).toBe('')
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
     expect(pending).toHaveLength(2)
-    expect(status.textContent).toBe('')
+    expect(status.textContent).toBe('Updating live preview…')
   })
 
   it('drops an earlier error once the view leaves the image', async () => {
@@ -258,8 +258,7 @@ describe('Trace canvas live preview', () => {
     expect(screen.getByRole('status').textContent).toBe('Preview failed: bad value')
     rerender(workspace(options({ settings: { ...DEFAULT_TRACE_SETTINGS, curve_fit_tolerance: 0.5 } })))
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
-    expect(screen.getByRole('status').textContent).toBe('')
-    expect(screen.getByText('Updating live preview…')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('Updating live preview…')
   })
 
   it('lets a pan start over the badge but not over the switch', async () => {
@@ -297,20 +296,30 @@ describe('Trace canvas live preview', () => {
     expect(localStorage.getItem(LIVE_PREVIEW_STORAGE_KEY)).toBe('off')
   })
 
-  it('announces only meaningful states, not every update', async () => {
+  it('announces only meaningful states, not the idle label', async () => {
     const { container } = prepare(options())
     fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
     const status = screen.getByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
     expect(status.textContent).toBe('Zoom in to preview')
     zoomTwice()
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
-    expect(status.textContent).toBe('')
+    expect(status.textContent).toBe('Updating live preview…')
     const badge = container.querySelector('.trace-preview-badge') as HTMLElement
-    expect(badge.getAttribute('aria-hidden')).toBe('true')
-    expect(badge.getAttribute('role')).toBeNull()
+    expect(status.contains(badge)).toBe(true)
+    expect(badge.closest('[aria-hidden="true"]')).toBeNull()
+    // Only the spinner is decorative.
+    expect(badge.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+    // The trace preview has no busy note to read: its only request is the preview.
+    expect(pending).toHaveLength(1)
     const window = requestBody(pending[0]).window
     await respond(pending[0], { window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg: '<svg/>', elapsed_ms: 1 })
     expect(screen.getByRole('status')).toBe(status)
+    // Idle: the "Live preview" label stays visible but is not announced.
     expect(status.textContent).toBe('')
+    const idleBadge = container.querySelector('.trace-preview-badge') as HTMLElement
+    expect(idleBadge.textContent).toBe('Live preview')
+    expect(status.contains(idleBadge)).toBe(false)
+    expect(idleBadge.getAttribute('aria-hidden')).toBe('true')
   })
 })

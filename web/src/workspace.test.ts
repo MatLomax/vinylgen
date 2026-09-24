@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultComparePair, fitTransform, gridsRegister, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
+import { defaultComparePair, fitTransform, lineageRegisters, gridsRegister, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
 
 describe('shared workspace transform', () => {
   it('keeps the pixel under the pointer registered while zooming', () => {
@@ -104,5 +104,24 @@ describe('shared workspace transform', () => {
     expect(pixelLine(0, 0, 4, 0)).toEqual([[1, 0], [2, 0], [3, 0], [4, 0]])
     // The starting pixel is omitted (the previous move already painted it).
     expect(pixelLine(0, 0, 3, 3)).not.toContainEqual([0, 0])
+  })
+})
+
+describe('lineageRegisters', () => {
+  const size = (width: number, height: number) => ({ width, height })
+  it('registers the pre-upscale source with the upscaled grid and its whole multiples only', () => {
+    // 1496 x 1051 upscaled 2x, each side rounded to a multiple of 8: 2992 x 2104.
+    const lineage = { before: size(1496, 1051), after: size(2992, 2104) }
+    for (const flatten of [1, 2, 4]) expect(lineageRegisters(size(2992 * flatten, 2104 * flatten), size(1496, 1051), lineage)).toBe(true)
+    // 1001 x 751 upscaled 4x is 4000 x 3008; flattened at 2x, 8000 x 6016.
+    const quadruple = { before: size(1001, 751), after: size(4000, 3008) }
+    expect(lineageRegisters(size(4000, 3008), size(1001, 751), quadruple)).toBe(true)
+    expect(lineageRegisters(size(8000, 6016), size(1001, 751), quadruple)).toBe(true)
+    // Anything else: another Before, a shown grid off the multiples, a fractional multiple, no lineage.
+    expect(lineageRegisters(size(2992, 2104), size(1496, 1052), lineage)).toBe(false)
+    expect(lineageRegisters(size(2992, 2105), size(1496, 1051), lineage)).toBe(false)
+    expect(lineageRegisters(size(4488, 3156), size(1496, 1051), lineage)).toBe(false)
+    expect(lineageRegisters(size(1496, 1052), size(1496, 1051), lineage)).toBe(false)
+    expect(lineageRegisters(size(2992, 2104), size(1496, 1051), undefined)).toBe(false)
   })
 })

@@ -655,6 +655,310 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(trace_audit["colours"]["omitted"]["hex"], background["hex"])
         self.assertEqual(len(trace_audit["colours"]["included"]), 1)
 
+    async def swapped_names_trace(self) -> tuple[dict, dict, dict, str, str]:
+        """A cleanup removing the background by name, then a trace whose colour names
+        swap the two colours' names: (project, background, other, cleanup, trace)."""
+        project, palette_revision = await self.flattened()
+        palette = json.loads(await self.download(
+            (await self.artifacts(palette_revision))["palette"]))["palette"]
+        background = max(palette, key=lambda row: row["share_percent"])
+        other = next(row for row in palette if row["hex"] != background["hex"])
+        cleaned = (await self.run_job("cleanup", project["id"], palette_revision, cleanup={
+            "width_mm": 40, "remove_colour": background["name"]}))["result_revision_id"]
+        swapped = {background["hex"].upper(): other["name"], other["hex"].upper(): background["name"]}
+        traced = (await self.run_job("trace", project["id"], cleaned,
+                                     colour_names=swapped))["result_revision_id"]
+        return project, background, other, cleaned, traced
+
+    async def omitted_hex(self, trace_revision: str) -> str:
+        audit = json.loads(await self.download(
+            (await self.artifacts(trace_revision))["trace-audit"]))
+        included = {row["hex"] for row in audit["colours"]["included"]}
+        self.assertNotIn(audit["colours"]["omitted"]["hex"], included)
+        return audit["colours"]["omitted"]["hex"]
+
+    async def test_a_trace_renaming_colours_omits_the_colour_the_cleanup_removed(self) -> None:
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        cleaned_palette = json.loads(await self.download(
+            (await self.artifacts(cleaned))["palette"]))["palette"]
+        self.assertEqual(
+            self.revision(cleaned)["settings"]["removed_colour_index"],
+            [row["hex"] for row in cleaned_palette].index(background["hex"]))
+        self.assertEqual(await self.omitted_hex(traced), background["hex"])
+        # Resolving the recorded name against the trace's renamed palette would have
+        # omitted the other colour: the removed one now carries the other's name.
+        audit = json.loads(await self.download((await self.artifacts(traced))["trace-audit"]))
+        self.assertEqual(audit["colours"]["omitted"]["name"], other["name"])
+        # The trace's palette.json now gives the removed colour's name to the other
+        # colour; a trace from it (no renames of its own) still omits the removed one,
+        # and the editor state and automatic order name the same colour.
+        renamed = json.loads(await self.download((await self.artifacts(traced))["palette"]))
+        self.assertEqual(next(row["name"] for row in renamed["palette"]
+                              if row["hex"] == other["hex"]), background["name"])
+        retraced = (await self.run_job("trace", project["id"], traced))["result_revision_id"]
+        self.assertEqual(await self.omitted_hex(retraced), background["hex"])
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        self.assertEqual(state["palette"][state["removed_colour_index"]]["hex"], background["hex"])
+        order = (await self.client.get(
+            f"/api/revisions/{traced}/automatic-layer-order")).json()["automatic_layer_order"]
+        self.assertEqual(order, [other["hex"]])
+
+    async def test_a_cleanup_recorded_without_the_index_resolves_its_own_palette(self) -> None:
+        # A cleanup recorded before the removed colour's index was: its name is resolved
+        # against the palette.json that cleanup wrote, never a trace's renamed one.
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        store = self.app.state.store
+        settings = self.revision(cleaned)["settings"]
+        del settings["removed_colour_index"]
+        with store.connection() as db:
+            db.execute("UPDATE revisions SET settings_json=? WHERE id=?",
+                       (json.dumps(settings, sort_keys=True, separators=(",", ":")), cleaned))
+        self.assertNotIn("removed_colour_index", self.revision(cleaned)["settings"])
+        retraced = (await self.run_job("trace", project["id"], traced))["result_revision_id"]
+        self.assertEqual(await self.omitted_hex(retraced), background["hex"])
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        self.assertEqual(state["palette"][state["removed_colour_index"]]["hex"], background["hex"])
+
+    async def reported_removed_hex(self, project: dict, cleanup_revision: str) -> str | None:
+        """The removed colour's hex the API reports on ``cleanup_revision``, from both the
+        project and the revision list the app reads."""
+        reported = []
+        for path in (f"/api/projects/{project['id']}", f"/api/projects/{project['id']}/revisions"):
+            body = (await self.client.get(path)).json()
+            rows = body["revisions"] if isinstance(body, dict) else body
+            reported.append(next(row for row in rows if row["id"] == cleanup_revision)
+                            ["settings"]["removed_colour_hex"])
+        self.assertEqual(reported[0], reported[1])
+        return reported[0]
+
+    async def test_a_cleanup_recorded_without_its_hex_reports_it_from_its_own_palette(self) -> None:
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        self.assertEqual(self.revision(cleaned)["settings"]["removed_colour_hex"], background["hex"])
+        store = self.app.state.store
+        settings = self.revision(cleaned)["settings"]
+        del settings["removed_colour_hex"], settings["removed_colour_index"]
+        with store.connection() as db:
+            db.execute("UPDATE revisions SET settings_json=? WHERE id=?",
+                       (json.dumps(settings, sort_keys=True, separators=(",", ":")), cleaned))
+        # Resolved from the palette.json that cleanup wrote, not the trace's renamed one,
+        # and reported only: the stored record is unchanged.
+        self.assertEqual(await self.reported_removed_hex(project, cleaned), background["hex"])
+        self.assertNotIn("removed_colour_hex", self.revision(cleaned)["settings"])
+
+    async def test_rerunning_the_last_cleanup_refuses_a_hex_another_colour_is_named(self) -> None:
+        # The other colour is renamed to the removed colour's hex, so the hex matches two
+        # colours as the cleanup job resolves it (by name or hex): a 409, and no job.
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        label = [row["hex"] for row in state["palette"]].index(other["hex"])
+        renamed = await self.edit(project, traced, [
+            {"tool": "rename_colour", "label": label, "name": background["hex"]}])
+        self.assertIn("cleanup", self.revision(renamed)["settings"]["stale_concerns"])
+        with self.app.state.store.connection() as db:
+            jobs_before = int(db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+        response = await self.rerun_last_cleanup(project, renamed)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"],
+                         f"the colour the last Cleanup removed ({background['hex']}) now matches "
+                         "more than one colour of this artwork's palette, by hex or by name. "
+                         "Choose the colour to remove in the Cleanup form and run Cleanup")
+        with self.app.state.store.connection() as db:
+            self.assertEqual(int(db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]), jobs_before)
+        # The job itself refuses the same settings: the check is the job's own.
+        response = await self.client.post("/api/jobs", json={
+            "kind": "cleanup", "project_id": project["id"], "revision_id": renamed,
+            "cleanup": {**self.revision(cleaned)["settings"]["cleanup"],
+                        "remove_colour": background["hex"]}})
+        job = await self.wait_for_job(response.json()["id"])
+        self.assertEqual(job["status"], "failed", job)
+        self.assertIn("does not uniquely match", job["error"] or job.get("message", ""))
+
+    async def test_a_hex_two_colours_share_is_inherited_as_the_removed_colour_s_name(self) -> None:
+        # A recolour gives the two colours one RGB; a cleanup then removes the first by
+        # its unique name, so its recorded hex matches both. The form inherits that
+        # colour's current name instead, and its preview, a Run of it and a Re-run all
+        # remove that colour.
+        project, palette_revision = await self.flattened()
+        state = (await self.client.get(f"/api/revisions/{palette_revision}/editor")).json()
+        first, second = state["palette"]
+        recoloured = await self.edit(project, palette_revision, [
+            {"tool": "recolour_colour", "label": 0, "rgb": second["rgb"]}])
+        state = (await self.client.get(f"/api/revisions/{recoloured}/editor")).json()
+        self.assertEqual(state["palette"][0]["hex"], state["palette"][1]["hex"])
+        name = state["palette"][0]["name"]
+        settings = {"width_mm": 40, "remove_colour": name}
+        cleaned = (await self.run_job("cleanup", project["id"], recoloured,
+                                      cleanup=settings))["result_revision_id"]
+        self.assertEqual(await self.reported_removed_hex(project, cleaned), second["hex"])
+        state = (await self.client.get(f"/api/revisions/{cleaned}/editor")).json()
+        self.assertEqual(state["inherited_remove_colour"],
+                         {"value": name, "unresolved": False, "hex": second["hex"], "problem": None})
+        form = {**settings, "remove_colour": state["inherited_remove_colour"]["value"]}
+        preview = await self.client.post(f"/api/revisions/{cleaned}/cleanup-preview", json={
+            "window": {"x": 0, "y": 0, "width": 40, "height": 32}, "cleanup": form})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        # The shown raster is this cleanup's own result, so nothing would change.
+        self.assertEqual((preview.json()["removed_pixels"], preview.json()["widened_pixels"],
+                          preview.json()["returned_pixels"]), (0, 0, 0))
+        run = (await self.run_job("cleanup", project["id"], cleaned, cleanup=form))["result_revision_id"]
+        self.assertEqual((await self.cleanup_audit(run))["omitted_index"], 0)
+        response = await self.rerun_last_cleanup(project, cleaned)
+        self.assertEqual(response.status_code, 202, response.text)
+        job = await self.wait_for_job(response.json()["id"])
+        self.assertEqual(job["status"], "succeeded", job)
+        self.assertEqual((await self.cleanup_audit(job["result_revision_id"]))["omitted_index"], 0)
+        self.assertEqual(self.revision(job["result_revision_id"])["settings"]["cleanup"]["remove_colour"], name)
+
+    async def test_the_inherited_removed_colour_after_a_rename_is_the_cleanup_s_hex(self) -> None:
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        self.assertEqual(state["inherited_remove_colour"],
+                         {"value": background["hex"], "unresolved": False, "hex": background["hex"],
+                          "problem": None})
+        # No cleanup, or one that removed nothing: nothing is inherited.
+        _, palette_revision = await self.flattened()
+        self.assertIsNone((await self.client.get(
+            f"/api/revisions/{palette_revision}/editor")).json()["inherited_remove_colour"])
+
+    async def test_a_recoloured_removed_colour_after_a_stale_cleanup_is_unresolved(self) -> None:
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        label = [row["hex"] for row in state["palette"]].index(background["hex"])
+        recoloured = await self.edit(project, traced, [
+            {"tool": "recolour_colour", "label": label, "rgb": [12, 200, 90]}])
+        state = (await self.client.get(f"/api/revisions/{recoloured}/editor")).json()
+        # The hex the form keeps (blocking Cleanup until edited) and the re-run's 409.
+        self.assertEqual(state["inherited_remove_colour"],
+                         {"value": None, "unresolved": True, "hex": background["hex"],
+                          "problem": "missing"})
+        response = await self.rerun_last_cleanup(project, recoloured)
+        self.assertEqual(response.status_code, 409, response.text)
+
+    async def test_a_reflatten_leaves_the_removed_colour_unresolved_and_says_so(self) -> None:
+        # A re-flatten after the cleanup makes a new palette; the cleanup's hex is not in
+        # it, and no name is carried across the palette change.
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        reflattened = (await self.run_job(
+            "palette", project["id"], traced,
+            palette={"initial_colours": 2, "min_colour_share": 0, "min_region_pixels": 0,
+                     "dither_radius": 0, "histogram_bits": 3}))["result_revision_id"]
+        state = (await self.client.get(f"/api/revisions/{reflattened}/editor")).json()
+        self.assertNotIn(background["hex"], [row["hex"] for row in state["palette"]])
+        self.assertEqual(state["inherited_remove_colour"],
+                         {"value": None, "unresolved": True, "hex": background["hex"],
+                          "problem": "missing"})
+        response = await self.rerun_last_cleanup(project, reflattened)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("is not in this artwork's palette any more (it was re-flattened, "
+                      "recoloured or merged)", response.json()["detail"])
+
+    async def rerun_last_cleanup(self, project: dict, revision_id: str) -> httpx.Response:
+        """Start the Trace panel's "Re-run Cleanup with its last settings" job."""
+        return await self.client.post("/api/jobs", json={
+            "kind": "cleanup", "project_id": project["id"], "revision_id": revision_id,
+            "rerun_last_cleanup": True})
+
+    async def test_rerunning_the_last_cleanup_removes_the_colour_it_removed_after_a_rename(self) -> None:
+        # Cleanup removes the background by name, a trace swaps the two colours' names,
+        # and a label edit on that trace marks the cleanup stale.
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        edited = await self.edit(project, traced, [
+            {"tool": "paint_pixels", "target_label": 0, "pixels": [[1, 1]]}])
+        self.assertIn("cleanup", self.revision(edited)["settings"]["stale_concerns"])
+        # The palette the re-run starts from gives the removed colour's recorded name to
+        # the other colour: re-running with the recorded name would remove the other.
+        state = (await self.client.get(f"/api/revisions/{edited}/editor")).json()
+        renamed = next(row for row in state["palette"] if row["name"] == background["name"])
+        self.assertEqual(renamed["hex"], other["hex"])
+        recorded = self.revision(cleaned)["settings"]["cleanup"]
+        # The Cleanup form inherits the recorded settings with the removed colour named
+        # by the hex the API reports for that cleanup, so running them as the form sends
+        # them removes the same colour, not the one that took its name.
+        form = {**recorded, "remove_colour": await self.reported_removed_hex(project, cleaned)}
+        self.assertEqual(form["remove_colour"], background["hex"])
+        by_form = (await self.run_job("cleanup", project["id"], edited,
+                                      cleanup=form))["result_revision_id"]
+        self.assertEqual((await self.cleanup_audit(by_form))["omitted_colour"]["rgb"],
+                         background["rgb"])
+
+        response = await self.rerun_last_cleanup(project, edited)
+        self.assertEqual(response.status_code, 202, response.text)
+        job = await self.wait_for_job(response.json()["id"])
+        self.assertEqual(job["status"], "succeeded", job)
+        rerun = job["result_revision_id"]
+        audit = await self.cleanup_audit(rerun)
+        self.assertEqual(audit["omitted_colour"]["rgb"], background["rgb"])
+        # The re-run keeps the last cleanup's other settings and names the colour by hex.
+        settings = self.revision(rerun)["settings"]
+        self.assertEqual(settings["cleanup"], {**recorded, "remove_colour": background["hex"]})
+        self.assertEqual(state["palette"][settings["removed_colour_index"]]["hex"], background["hex"])
+        retraced = (await self.run_job("trace", project["id"], rerun))["result_revision_id"]
+        self.assertEqual(await self.omitted_hex(retraced), background["hex"])
+
+    async def test_rerunning_the_last_cleanup_fails_when_its_colour_was_recoloured(self) -> None:
+        project, background, other, cleaned, traced = await self.swapped_names_trace()
+        state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
+        label = [row["hex"] for row in state["palette"]].index(background["hex"])
+        recoloured = await self.edit(project, traced, [
+            {"tool": "recolour_colour", "label": label, "rgb": [12, 200, 90]}])
+        def job_count() -> int:
+            with self.app.state.store.connection() as db:
+                return int(db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+        jobs_before = job_count()
+        response = await self.rerun_last_cleanup(project, recoloured)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"],
+                         f"the colour the last Cleanup removed ({background['hex']}) is not in "
+                         "this artwork's palette any more (it was re-flattened, recoloured or "
+                         "merged). Choose the colour to remove in the Cleanup form and run Cleanup")
+        self.assertEqual(job_count(), jobs_before)
+
+    async def test_rerunning_the_last_cleanup_follows_its_colour_across_a_merge(self) -> None:
+        # Three colours; the cleanup removes the last. Merging the first colour away
+        # shifts the removed colour's palette index down by one.
+        pixels = np.full((32, 40, 3), (15, 35, 60), dtype=np.uint8)
+        pixels[4:28, 4:18] = (225, 95, 45)
+        pixels[4:28, 22:36] = (40, 200, 90)
+        buffer = io.BytesIO()
+        Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": "Merge Fixture"},
+            files={"source": ("fixture.png", buffer.getvalue(), "image/png")})
+        project = imported.json()
+        flattened = (await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 3, "min_colour_share": 0, "min_region_pixels": 0,
+                     "dither_radius": 0}))["result_revision_id"]
+        palette = json.loads(await self.download(
+            (await self.artifacts(flattened))["palette"]))["palette"]
+        self.assertEqual(len(palette), 3)
+        removed = palette[2]
+        cleaned = (await self.run_job("cleanup", project["id"], flattened, cleanup={
+            "width_mm": 40, "remove_colour": removed["name"]}))["result_revision_id"]
+        merged = await self.edit(project, cleaned, [
+            {"tool": "merge_colour", "source_label": 0, "target_label": 1}])
+        state = (await self.client.get(f"/api/revisions/{merged}/editor")).json()
+        self.assertEqual([row["hex"] for row in state["palette"]].index(removed["hex"]), 1)
+        response = await self.rerun_last_cleanup(project, merged)
+        self.assertEqual(response.status_code, 202, response.text)
+        job = await self.wait_for_job(response.json()["id"])
+        self.assertEqual(job["status"], "succeeded", job)
+        audit = await self.cleanup_audit(job["result_revision_id"])
+        self.assertEqual((audit["omitted_colour"]["rgb"], audit["omitted_index"]),
+                         (removed["rgb"], 1))
+
+    async def test_rerunning_the_last_cleanup_needs_a_cleanup_and_no_settings(self) -> None:
+        project, palette_revision = await self.flattened()
+        response = await self.rerun_last_cleanup(project, palette_revision)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"], "there is no earlier Cleanup run to re-run")
+        for extra in ({"cleanup": {"width_mm": 40}}, {"kind": "trace"}):
+            response = await self.client.post("/api/jobs", json={
+                "kind": "cleanup", "project_id": project["id"], "revision_id": palette_revision,
+                "rerun_last_cleanup": True, **extra})
+            self.assertEqual(response.status_code, 422, response.text)
+
     async def test_trace_without_a_cleanup_is_in_pixels_cutting_every_colour(self) -> None:
         project, palette_revision = await self.flattened()
         traced = await self.run_job("trace", project["id"], palette_revision)

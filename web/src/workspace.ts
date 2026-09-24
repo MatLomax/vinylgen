@@ -81,6 +81,23 @@ export function gridsRegister(a?: ImageSize, b?: ImageSize) {
   return Number.isInteger(factor) && large.height === small.height * factor
 }
 
+// The recorded grids of an upscaled source: `before`, the source it was made from, and
+// `after`, its own (the upscaler rounds each side, so `after` is rarely an exact multiple).
+export type UpscaleLineage = { before: ImageSize; after: ImageSize }
+
+/**
+ * Whether an image on the grid `before` registers with one on `shown` through a recorded
+ * upscale: `before` is exactly the upscale's input grid and `shown` its output grid or a
+ * whole-number multiple of it (a flattened raster with `flatten_upscale` > 1). Both
+ * cover the same extent, so the Before stretches over the shown image; no pixel
+ * tolerance is involved.
+ */
+export function lineageRegisters(shown?: ImageSize, before?: ImageSize, lineage?: UpscaleLineage) {
+  if (!shown || !before || !lineage || !sameImageSize(before, lineage.before)) return false
+  const factor = shown.width / lineage.after.width
+  return Number.isInteger(factor) && factor >= 1 && shown.height === lineage.after.height * factor
+}
+
 /**
  * The integer pixels a pencil stroke covers moving to (toX, toY). With no prior
  * point it is just the destination; otherwise it is every step along the line

@@ -3,7 +3,7 @@ export type Revision = { id: string; project_id: string; parent_revision_id: str
 export type Artifact = { id: string; revision_id: string; kind: string; filename: string; media_type: string; byte_size: number; download_url: string }
 export type Job = { id: string; project_id: string | null; revision_id: string | null; result_revision_id: string | null; kind: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress: number; message: string | null; error: string | null }
 export type PaletteColour = { index: number; name: string; hex: string; rgb: [number, number, number]; share_percent: number }
-export type EditorState = { width: number; height: number; palette: PaletteColour[]; requested_colour_count: number | null; protected_pixels: number }
+export type EditorState = { width: number; height: number; palette: PaletteColour[]; requested_colour_count: number | null; protected_pixels: number; removed_colour_index?: number | null; inherited_remove_colour?: { value: string | null; unresolved: boolean; hex?: string | null; problem?: 'missing' | 'ambiguous' | null } | null }
 // The bottom-to-top hex order a trace infers before any override (null: not traceable).
 // Read on its own, and only when layer order can matter (layerOrderMatters).
 export type AutomaticLayerOrder = { automatic_layer_order: string[] | null }
@@ -141,7 +141,7 @@ export const api = {
     body: JSON.stringify({ kind: 'foundation-demo', project_id: projectId }),
   }).then(result<Job>),
   startPipeline: (kind: 'palette' | 'cleanup' | 'trace' | 'validate' | 'export', projectId: string, revisionId: string,
-    settings?: { palette?: PaletteSettings; cleanup?: CleanupSettings; trace?: TraceSettings; colour_names?: Record<string, string> }) => fetch('/api/jobs', {
+    settings?: { palette?: PaletteSettings; cleanup?: CleanupSettings; rerun_last_cleanup?: boolean; trace?: TraceSettings; colour_names?: Record<string, string> }) => fetch('/api/jobs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, project_id: projectId, revision_id: revisionId, ...settings }),
   }).then(result<Job>),

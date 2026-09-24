@@ -370,11 +370,15 @@ def tightened_boundary_overlay(chains: list[list[tuple[float, float]]], width: i
 
 def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
                   progress: Progress | None = None, *, cleanup: CleanupSettings | None = None,
-                  clean_inline: bool = False) -> dict:
+                  clean_inline: bool = False, removed_index: int | None = None) -> dict:
     """Trace a subject's segmentation into layered SVGs.
 
     ``cleanup`` supplies the physical size and the removed colour; without it the
-    trace is in pixels and cuts every colour. The segmentation is traced as it is
+    trace is in pixels and cuts every colour. ``removed_index``, when given, is the
+    palette index of the removed colour as the caller already resolved it: the web
+    pipeline resolves the cleanup's ``remove_colour`` against the palette that cleanup
+    ran with, because ``name_overrides`` may since have renamed its colours. Without
+    it ``cleanup.remove_colour`` is resolved against this trace's (renamed) palette. The segmentation is traced as it is
     stored, which in the web pipeline is the cleanup stage's cleaned labels. With
     ``clean_inline`` (the trace CLI) the cutter cleanup in ``cleanup`` is first
     applied to the labels in memory, through the same function the cleanup stage uses.
@@ -412,7 +416,12 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     if segmentation.labels.shape != (height, width):
         raise ValueError("segmentation dimensions do not match flattened.png")
     labels = segmentation.labels.copy()
-    omitted = resolve_colour(cleanup.remove_colour, palette)
+    if removed_index is None:
+        omitted = resolve_colour(cleanup.remove_colour, palette)
+    elif isinstance(removed_index, bool) or not 0 <= removed_index < len(palette):
+        raise ValueError(f"removed colour index {removed_index!r} is not a palette colour")
+    else:
+        omitted = removed_index
     included = [i for i in range(len(palette)) if i != omitted]
     if not included:
         raise ValueError("cannot omit the only palette colour")

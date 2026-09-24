@@ -17,6 +17,7 @@ from typing import Callable
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
+from vinylgen.tracing import ensure_palette_names, resolve_colour
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
@@ -143,7 +144,7 @@ MEDIA_TYPES = {".png": "image/png", ".svg": "image/svg+xml", ".json": "applicati
 
 
 def _provenance(stage: str, palette: dict | None, trace: dict | None,
-                cleanup: dict | None = None) -> dict:
+                cleanup: dict | None = None, removed_colour: dict | None = None) -> dict:
     stale_after = {
         "palette": ["cleanup", "trace", "validation", "export"],
         "cleanup": ["trace", "validation", "export"],
@@ -163,6 +164,11 @@ def _provenance(stage: str, palette: dict | None, trace: dict | None,
     if cleanup is not None:
         provenance["cleanup"] = cleanup
         provenance["cleanup_algorithm_version"] = CLEANUP_ALGORITHM_VERSION
+        # The colour ``cleanup["remove_colour"]`` named when the run resolved it, as its
+        # palette index (``cleanup_removed_index``) and hex (``cleanup_removed_hex``);
+        # both ``None`` when none was removed.
+        provenance["removed_colour_index"] = (removed_colour or {}).get("index")
+        provenance["removed_colour_hex"] = (removed_colour or {}).get("hex")
     return provenance
 
 
@@ -188,6 +194,180 @@ def nearest_cleanup(store: Store, revision_id: str) -> tuple[dict | None, bool]:
             stale = True
         current = revision["parent_revision_id"]
     return None, False
+
+
+def cleanup_removed_index(store: Store, cleanup_revision: dict) -> int | None:
+    """The palette index of the colour ``cleanup_revision`` removed; ``None`` when it
+    removed none.
+
+    A colour keeps its palette index from the flatten on, but not its name: a trace's
+    colour names rename colours in the palette.json that trace writes, so resolving
+    ``remove_colour`` (a name or hex) against a later palette could pick a different
+    colour than the cleanup removed. A cleanup records the index it resolved
+    (``removed_colour_index``). One recorded without it has ``remove_colour`` resolved
+    against the palette it ran with: its own palette.json (the palette it cleaned,
+    names included), else, with no such artifact, the palette it started from. Raises
+    ``ValueError`` when the record does not identify one palette colour."""
+    settings = cleanup_revision["settings"]
+    if "removed_colour_index" in settings:
+        index = settings["removed_colour_index"]
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int)
+                                  or index < 0):
+            raise ValueError(f"recorded removed colour index {index!r} is not a palette index")
+        return index
+    remove_colour = (settings.get("cleanup") or {}).get("remove_colour")
+    if remove_colour is None:
+        return None
+    return resolve_colour(remove_colour, _cleanup_palette(store, cleanup_revision))
+
+
+def cleanup_removed_hex(store: Store, cleanup_revision: dict) -> str | None:
+    """The hex of the colour ``cleanup_revision`` removed, in the palette it ran with;
+    ``None`` when it removed none. It holds whether or not that cleanup is stale now,
+    and, unlike the recorded ``remove_colour`` name, a later rename never changes the
+    colour it identifies. A cleanup records it (``removed_colour_hex``); one recorded
+    without it takes the colour at ``cleanup_removed_index`` in its own palette.json.
+    Raises ``ValueError`` when the record does not identify one palette colour."""
+    settings = cleanup_revision["settings"]
+    if "removed_colour_hex" in settings:
+        return settings["removed_colour_hex"]
+    removed = cleanup_removed_index(store, cleanup_revision)
+    if removed is None:
+        return None
+    ran_with = _cleanup_palette(store, cleanup_revision)
+    if removed >= len(ran_with):
+        raise ValueError("the Cleanup's removed colour is not in the palette it ran with")
+    return str(ran_with[removed]["hex"])
+
+
+def with_removed_colour_hex(store: Store, revisions: list[dict]) -> list[dict]:
+    """``revisions`` as the API reports them: each cleanup revision's settings carry
+    ``removed_colour_hex`` (``cleanup_removed_hex``), which the Cleanup form inherits in
+    place of the recorded name. A cleanup recorded before the hex was has it resolved
+    here; one whose record identifies no colour is left without it."""
+    for revision in revisions:
+        settings = revision["settings"]
+        if (revision["kind"] != "cleanup" or settings.get("cleanup") is None
+                or "removed_colour_hex" in settings):
+            continue
+        try:
+            settings["removed_colour_hex"] = cleanup_removed_hex(store, revision)
+        except (KeyError, ValueError):
+            continue
+    return revisions
+
+
+def _cleanup_palette(store: Store, cleanup_revision: dict) -> list[dict]:
+    """The palette ``cleanup_revision`` ran with, names included: its own palette.json
+    (the palette it cleaned), else, with no such artifact, the palette it started from.
+    Raises ``ValueError`` when there is neither."""
+    ran_with = next((row for row in store.list_artifacts(cleanup_revision["id"])
+                     if row["kind"] == "palette"), None)
+    if ran_with is None and cleanup_revision["parent_revision_id"] is not None:
+        ran_with = store.effective_artifacts(cleanup_revision["parent_revision_id"],
+                                             before_cleanup=True).get("palette")
+    if ran_with is None:
+        raise ValueError("the cleanup's removed colour has no palette to resolve against")
+    report = json.loads(store.artifact_path(ran_with["id"]).read_text())
+    ensure_palette_names(report, {})
+    return report["palette"]
+
+
+def inherited_remove_colour(store: Store, revision_id: str,
+                            palette: list[dict] | None = None) -> dict | None:
+    """The removed colour a Cleanup run of ``revision_id`` inherits from the nearest
+    ``cleanup`` ancestor (stale or not), as a value the run resolves (``resolve_colour``,
+    by name or hex) to that cleanup's colour in ``palette``: the palette the run starts
+    from (``revision_id``'s from before cleanup, read when not given).
+
+    ``None`` when there is no cleanup ancestor or it removed no colour. Otherwise
+    ``{"value", "problem", "hex"}``, ``hex`` being the cleanup's (``None`` when its
+    record identifies none): ``value`` is the cleanup's hex (``cleanup_removed_hex``)
+    when that resolves to exactly one colour. Failing that, when the cleanup is not
+    stale its palette index still addresses the same colour, so ``value`` is that
+    colour's current name when that resolves to exactly it (a recolour can give two
+    colours one hex, and a trace's colour names can move a name). Otherwise ``value``
+    is ``None`` and ``problem`` says why: ``"missing"`` (no colour has the hex: it was
+    re-flattened, recoloured or merged) or ``"ambiguous"`` (the hex matches more than one colour
+    by hex or name)."""
+    cleanup_revision, stale = nearest_cleanup(store, revision_id)
+    if cleanup_revision is None or (cleanup_revision["settings"]["cleanup"] or {}).get(
+            "remove_colour") is None:
+        return None
+    if palette is None:
+        start = store.effective_artifacts(revision_id, before_cleanup=True).get("palette")
+        if start is None:
+            raise ValueError("revision is missing required artifacts: palette")
+        palette = json.loads(store.artifact_path(start["id"]).read_text())["palette"]
+    report = {"palette": [dict(row) for row in palette]}
+    ensure_palette_names(report, {})
+    palette = report["palette"]
+    try:
+        removed_hex = cleanup_removed_hex(store, cleanup_revision)
+    except ValueError:
+        removed_hex = None
+    if removed_hex is not None:
+        # The one colour it resolves to must be that hex's, not one named like it.
+        try:
+            resolved = resolve_colour(removed_hex, palette)
+            if str(palette[resolved]["hex"]).casefold() == removed_hex.casefold():
+                return {"value": removed_hex, "problem": None, "hex": removed_hex}
+        except ValueError:
+            pass
+    if not stale:
+        try:
+            index = cleanup_removed_index(store, cleanup_revision)
+        except ValueError:
+            index = None
+        if index is not None and index < len(palette):
+            name = str(palette[index]["name"])
+            try:
+                if resolve_colour(name, palette) == index:
+                    return {"value": name, "problem": None, "hex": removed_hex}
+            except ValueError:
+                pass
+    missing = removed_hex is None or not any(
+        str(row["hex"]).casefold() == removed_hex.casefold() for row in palette)
+    return {"value": None, "problem": "missing" if missing else "ambiguous",
+            "hex": removed_hex}
+
+
+def rerun_cleanup_settings(store: Store, revision_id: str) -> dict:
+    """The settings that re-run the last cleanup (the nearest ``cleanup`` ancestor of
+    ``revision_id``, usually a stale one) on ``revision_id``: that cleanup's recorded
+    settings, with its removed colour as the Cleanup form inherits it
+    (``inherited_remove_colour``): its hex, or while it is not stale the current name
+    of the colour at its index, whichever resolves to exactly that colour.
+
+    The re-run starts from ``revision_id``'s palette from before cleanup, whose colour
+    names a trace's colour names may have changed, and whose indices a merge may have
+    shifted, so the recorded name does not identify the colour there. Raises
+    ``ValueError`` when there is no cleanup to re-run, or when neither identifies
+    exactly one colour of the palette the re-run starts from, checked as the cleanup
+    job resolves it, rather than removing a different colour or failing the job."""
+    cleanup_revision, _ = nearest_cleanup(store, revision_id)
+    if cleanup_revision is None:
+        raise ValueError("there is no earlier Cleanup run to re-run")
+    settings = dict(cleanup_revision["settings"]["cleanup"])
+    inherited = inherited_remove_colour(store, revision_id)
+    if inherited is None:
+        settings["remove_colour"] = None
+        return settings
+    if inherited["value"] is None:
+        described = inherited["hex"] or "its colour"
+        if inherited["problem"] == "missing":
+            # A re-flatten, a recolour or a merge: its hex is gone, and a name is never
+            # carried across a palette change.
+            raise ValueError(
+                f"the colour the last Cleanup removed ({described}) is not in this artwork's "
+                "palette any more (it was re-flattened, recoloured or merged). Choose the "
+                "colour to remove in the Cleanup form and run Cleanup")
+        raise ValueError(
+            f"the colour the last Cleanup removed ({described}) now matches more than "
+            "one colour of this artwork's palette, by hex or by name. Choose the colour "
+            "to remove in the Cleanup form and run Cleanup")
+    settings["remove_colour"] = inherited["value"]
+    return settings
 
 
 def active_cleanup_settings(store: Store, revision_id: str) -> dict | None:
@@ -332,13 +512,16 @@ class PipelineRunner:
         # records only the audit and palette.json with its raster's shares; its
         # effective raster is the uncleaned one, because a cleanup replaces the raster
         # of any earlier cleanup (Store.effective_artifacts).
-        changed = json.loads((subject / "cleanup.json").read_text())["changed_pixels"]
+        audit = json.loads((subject / "cleanup.json").read_text())
+        changed = audit["changed_pixels"]
         kinds = CLEANUP_FILES if changed else {
             "palette": "palette.json", "cleanup-audit": "cleanup.json"}
         files = {kind: subject / filename for kind, filename in kinds.items()}
         palette_settings, _ = _effective_settings(self.store, parent_id)
         return self._commit(project_id, parent_id, "cleanup", files,
-                            _provenance("cleanup", palette_settings, None, effective))
+                            _provenance("cleanup", palette_settings, None, effective,
+                                        {"index": audit["omitted_index"],
+                                         "hex": (audit["omitted_colour"] or {}).get("hex")}))
 
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
                colour_names: dict[str, str], progress: Progress, cancelled: Cancelled) -> str:
@@ -351,11 +534,15 @@ class PipelineRunner:
         trace_settings = TraceSettings(**values)
         cleanup_settings = (cleanup_revision["settings"]["cleanup"]
                             if cleanup_revision is not None else None)
+        # The colour the cleanup removed, by index: ``colour_names`` rename the palette
+        # this trace writes, so its names may no longer identify that colour.
+        removed_index = (cleanup_removed_index(self.store, cleanup_revision)
+                         if cleanup_revision is not None else None)
         progress(0.1, "Tracing shared boundaries")
         run_worker(
             {"op": "trace", "subject": str(subject),
              "settings": asdict(trace_settings), "colour_names": colour_names,
-             "cleanup": cleanup_settings},
+             "cleanup": cleanup_settings, "removed_index": removed_index},
             on_progress=lambda fraction, message: progress(0.1 + fraction * 0.8, message),
             cancelled=cancelled)
         effective = asdict(trace_settings)

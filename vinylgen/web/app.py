@@ -18,11 +18,12 @@ from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
 from .editor import apply_edits, automatic_layer_order, editor_state
-from .models import (ApplyLabelEdits, Artifact, AutomaticLayerOrder, CreateProject,
-                     CreateRevision, EditorState, GenerationStarted, Health, Job,
+from .models import (ApplyLabelEdits, Artifact, AutomaticLayerOrder, CleanupJobSettings,
+                     CreateProject, CreateRevision, EditorState, GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob, StartUpscale, UpscaleOptions,
                      UpscaleSettings)
+from .pipeline import rerun_cleanup_settings, with_removed_colour_hex
 from .store import Store
 from .trace_preview import TracePreviewService, trace_preview_router
 from .upscale import (DEFAULT_CONTROLNET_MODEL, SAMPLE_SIZE_MAX, UPSCALER_LANCZOS,
@@ -228,7 +229,8 @@ def create_app(config: WebConfig | None = None,
     @app.get("/api/projects/{project_id}", response_model=ProjectDetail)
     async def get_project(project_id: str) -> dict:
         try:
-            return {**store.get_project(project_id), "revisions": store.list_revisions(project_id)}
+            return {**store.get_project(project_id), "revisions": await asyncio.to_thread(
+                with_removed_colour_hex, store, store.list_revisions(project_id))}
         except KeyError as exc:
             raise missing(exc) from exc
 
@@ -257,7 +259,8 @@ def create_app(config: WebConfig | None = None,
     @app.get("/api/projects/{project_id}/revisions", response_model=list[Revision])
     async def list_revisions(project_id: str) -> list[dict]:
         try:
-            return store.list_revisions(project_id)
+            return await asyncio.to_thread(
+                with_removed_colour_hex, store, store.list_revisions(project_id))
         except KeyError as exc:
             raise missing(exc) from exc
 
@@ -398,6 +401,11 @@ def create_app(config: WebConfig | None = None,
         try:
             if payload.kind != "foundation-demo" and (not payload.project_id or not payload.revision_id):
                 raise HTTPException(422, "Pipeline jobs require project_id and revision_id")
+            cleanup = payload.cleanup.model_dump() if payload.cleanup else None
+            if payload.rerun_last_cleanup:
+                recorded = await asyncio.to_thread(
+                    rerun_cleanup_settings, store, payload.revision_id)
+                cleanup = CleanupJobSettings(**recorded).model_dump()
             job = await admit_job(kind=payload.kind, project_id=payload.project_id,
                                   revision_id=payload.revision_id)
             if payload.kind == "foundation-demo":
@@ -408,7 +416,7 @@ def create_app(config: WebConfig | None = None,
                     revision_id=payload.revision_id or "",
                     palette=payload.palette.model_dump() if payload.palette else None,
                     trace=payload.trace.model_dump() if payload.trace else None,
-                    cleanup=payload.cleanup.model_dump() if payload.cleanup else None,
+                    cleanup=cleanup,
                     colour_names=payload.colour_names)
             return job
         except KeyError as exc:

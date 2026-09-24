@@ -2,10 +2,10 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CleanupSettings } from './api'
-import { CLEANUP_CHANGES_OVERLAY_KIND, CLEANUP_CHANGES_STORAGE_KEY, CLEANUP_PREVIEW_STORAGE_KEY, type CleanupPreviewOptions } from './CleanupPreview'
+import { CLEANUP_CHANGES_OVERLAY_KIND, CLEANUP_CHANGES_STORAGE_KEY, CLEANUP_PREVIEW_STORAGE_KEY, MEASURING_BADGE_TEXT, type CleanupPreviewOptions } from './CleanupPreview'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
-import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
+import { BUSY_NOTE_POLL_MS, LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
 
 const layers: WorkspaceLayer[] = [
   { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
@@ -22,14 +22,18 @@ function loadUrl(container: HTMLElement, suffix: string, width: number, height: 
 }
 
 type Pending = { url: string; init: RequestInit; resolve: (response: unknown) => void }
+// Preview requests; the reads of the regions state go to `stateReads`.
 let pending: Pending[] = []
+let stateReads: Pending[] = []
 
 beforeEach(() => {
   pending = []
+  stateReads = []
   localStorage.clear()
   vi.useFakeTimers()
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
-  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit) => new Promise(resolve => pending.push({ url, init, resolve }))))
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => new Promise(resolve =>
+    (url.endsWith('/cleanup-preview/regions') ? stateReads : pending).push({ url, init, resolve }))))
 })
 
 afterEach(() => {
@@ -193,7 +197,7 @@ describe('Cleanup canvas live preview', () => {
     expect(screen.queryByAltText('Live cleanup preview')).toBeNull()
     rerender(workspace(options({ settings: { ...SIZED, remove_colour: 'Nonexistent' } })))
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
-    expect(screen.getByRole('status').textContent).toBe('')
+    expect(screen.getByRole('status').textContent).toBe('Updating live preview…')
     await respond(pending[2], { detail: "unknown colour 'Nonexistent'" }, false)
     expect(screen.getByRole('status').textContent).toBe("Preview failed: unknown colour 'Nonexistent'")
   })
@@ -305,6 +309,80 @@ describe('Cleanup canvas live preview', () => {
     fireEvent.click(toggle)
     expect(screen.queryByAltText(APPLIED.name)).toBeNull()
     expect(screen.getByText('Preview unavailable: the selected revision failed to load.')).toBeTruthy()
+  })
+
+  it('says it is measuring regions only while the server reports measuring the revision', async () => {
+    const { container, rerender } = prepare(options())
+    const badge = () => container.querySelector('.trace-preview-badge')?.textContent
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    zoomTwice()
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    // The state is read as the request starts, without waiting for it.
+    expect(pending).toHaveLength(1)
+    expect(stateReads).toHaveLength(1)
+    expect(stateReads[0].url).toBe('/api/revisions/rev-1/cleanup-preview/regions')
+    expect(stateReads[0].init.method ?? 'GET').toBe('GET')
+    expect(badge()).toBe('Updating live preview…')
+    await respond(stateReads[0], { measured: false, measuring: false })
+    expect(badge()).toBe('Updating live preview…')
+    // Re-read while the request is in flight: the server has started measuring.
+    expect(stateReads).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(BUSY_NOTE_POLL_MS) })
+    expect(stateReads).toHaveLength(2)
+    await respond(stateReads[1], { measured: false, measuring: true })
+    expect(badge()).toBe(MEASURING_BADGE_TEXT)
+    // A polite live region announces it; nothing hides it from assistive technology.
+    const status = screen.getByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.textContent).toBe(MEASURING_BADGE_TEXT)
+    expect(status.querySelector('[aria-hidden="true"]')?.tagName.toLowerCase()).toBe('svg')
+    expect(container.querySelector('.trace-preview-badge')?.closest('[aria-hidden="true"]')).toBeNull()
+    // Measured: the window's own clean continues under the ordinary badge.
+    act(() => { vi.advanceTimersByTime(BUSY_NOTE_POLL_MS) })
+    await respond(stateReads[2], { measured: true, measuring: false })
+    expect(badge()).toBe('Updating live preview…')
+    await respond(pending[0], ok())
+    expect(badge()).toBe('Live preview')
+    // Idle: the label stays visible but is not announced, unlike the states above.
+    expect(status.textContent).toBe('')
+    expect(container.querySelector('.trace-preview-badge')?.getAttribute('aria-hidden')).toBe('true')
+    // Settled: no more reads.
+    act(() => { vi.advanceTimersByTime(BUSY_NOTE_POLL_MS * 4) })
+    expect(stateReads).toHaveLength(3)
+    // A superseded request keeps the note until the next request's first read, since
+    // the server may still be measuring for it.
+    rerender(workspace(options({ settings: { ...SIZED, min_region_area: 5 } })))
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    await respond(stateReads[3], { measured: false, measuring: true })
+    expect(badge()).toBe(MEASURING_BADGE_TEXT)
+    rerender(workspace(options({ settings: { ...SIZED, min_region_area: 6 } })))
+    expect(pending[1].init.signal?.aborted).toBe(true)
+    expect(stateReads[3].init.signal?.aborted).toBe(true)
+    expect(badge()).toBe(MEASURING_BADGE_TEXT)
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    await respond(stateReads[4], { measured: true, measuring: false })
+    expect(badge()).toBe('Updating live preview…')
+    // A note read for another revision is never shown for this one.
+    act(() => { vi.advanceTimersByTime(BUSY_NOTE_POLL_MS) })
+    await respond(stateReads[5], { measured: false, measuring: true })
+    expect(badge()).toBe(MEASURING_BADGE_TEXT)
+    rerender(workspace(options({ revisionId: 'rev-2' })))
+    expect(badge()).toBe('Updating live preview…')
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    expect(stateReads[6].url).toBe('/api/revisions/rev-2/cleanup-preview/regions')
+  })
+
+  it('keeps the ordinary badge when the regions state cannot be read', async () => {
+    const { container } = prepare(options())
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    zoomTwice()
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    await respond(stateReads[0], { detail: 'Resource not found: rev-1' }, false)
+    expect(container.querySelector('.trace-preview-badge')?.textContent).toBe('Updating live preview…')
+    expect(screen.getByRole('status').textContent).toBe('Updating live preview…')
+    // It is read again while the request is in flight.
+    act(() => { vi.advanceTimersByTime(BUSY_NOTE_POLL_MS) })
+    expect(stateReads).toHaveLength(2)
   })
 
   it('requests nothing while paused and says why', () => {

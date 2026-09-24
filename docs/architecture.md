@@ -55,9 +55,13 @@ re-rendered `report.png`. A run that changed nothing records only the size,
 removed colour and its raster's palette shares, and its effective raster is
 the uncleaned one. The trace job never
 cleans: it traces the segmentation it inherits and reads the size and removed
-colour from the nearest `cleanup` ancestor. When a revision in between marks
+colour from the nearest `cleanup` ancestor, the removed colour by the palette
+index that cleanup resolved it to (`pipeline.cleanup_removed_index`), since the
+trace's colour names may rename it. When a revision in between marks
 cleanup stale (a flatten, a label edit or a source upscale), the trace is
-blocked until Cleanup is run again; with no cleanup ancestor at all it traces
+blocked until Cleanup is run again (the Trace panel's one-click re-run has the
+server rebuild that cleanup's settings, naming its removed colour by hex:
+`pipeline.rerun_cleanup_settings`); with no cleanup ancestor at all it traces
 in pixels and cuts every colour. Trace revisions recorded before the cleanup
 stage embed those values in `settings.trace`; they are left as recorded, the
 web form shows them in Cleanup, and a new trace from one has no cleanup
@@ -153,7 +157,10 @@ The Trace canvas has a live preview (`vinylgen/trace_window.py`, served by
 `vinylgen/web/trace_preview.py` at `POST /api/revisions/{id}/trace-preview`).
 With its "Live preview" switch on, the canvas traces whatever is zoomed into,
 with the trace form's current, unsaved settings, and draws the shapes over the
-image at that window, badged "Live preview". The window is the visible part of
+image at that window, badged "Live preview" ("Updating live preview…" while a
+request is in flight). The badge sits in the canvas controls' polite status
+region (`role="status"`), with "Zoom in to preview" and errors, so assistive
+technology announces it. The window is the visible part of
 the image in traced-image px (the flattened grid, including any flatten
 upscale); it is previewed only while it covers at most 600 × 600 px, otherwise
 the canvas reads "Zoom in to preview". A pan, a zoom or any setting change
@@ -223,7 +230,11 @@ region the window cuts is judged by its whole area and width. The thread
 holds either that raster (with its measurements) or a traced segmentation, never
 both, and releases it after the same idle period, so alternating between the
 Cleanup and Trace canvases reloads each time and re-measures on each return to
-Cleanup (about 6.4 s on `sourceup`). Nothing is saved; "Run
+Cleanup (about 6.4 s on `sourceup`). While the server is measuring, the badge
+reads "Measuring regions of the whole image…"; the canvas learns
+it from `GET /api/revisions/{id}/cleanup-preview/regions`, polled while the
+request is in flight (see the [tracing specification](svg-tracing-spec.md)).
+Nothing is saved; "Run
 cleanup" still creates the revision. The differences from a full run (a removal
 group split at the crop edge, the widen approximation, no protection-clearing
 audit numbers), how often they showed in testing, and the per-update times (up

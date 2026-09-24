@@ -28,7 +28,7 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **art detail** | Semantic or compositional complexity changed through generation or generative editing. | generation detail | cut detail, trace fidelity |
 | **cut detail** | The minimum physical feature retained, removed, or widened for practical cutting and weeding. | cleanup detail | art detail, trace fidelity |
 | **trace fidelity** | How closely fitted vector geometry follows the authoritative flattened raster. | tracing accuracy | art detail, cut detail |
-| **inspector** | The explicitly opened closer-look surface where pan, zoom, comparison, preservation-point overlays, and inspection overlays may capture gestures. | full image viewer, closer look | viewer when it could mean an inline preview; protection painting |
+| **inspector** | The explicitly opened closer-look surface where pan, zoom, comparison, preservation-point overlays, and inspection overlays may capture gestures. The main stage canvases carry their own split/blink comparison (see DESIGN.md, Canvas Comparison). | full image viewer, closer look | viewer when it could mean an inline preview; protection painting |
 | **inline preview** | A passive image embedded in the workflow that preserves ordinary page scrolling and native touch behavior. | image preview, thumbnail | canvas, interactive viewer |
 
 ## Source generation and masks

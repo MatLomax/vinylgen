@@ -177,6 +177,18 @@ class UpscaleRunnerTest(unittest.TestCase):
         self.assertEqual(provider.calls[0]["settings"].seed, 4242)
         self.assertTrue(events)
 
+    def test_records_the_parent_and_upscaled_source_pixel_grids(self) -> None:
+        # The node rounds its output to a multiple of 8, so the recorded grid is the
+        # decoded image's size, not the nominal factor times the parent's size.
+        provider = FakeProvider()
+        provider.content = _png((200, 10, 10), size=(136, 104))
+        revision_id = UpscaleRunner(self.store, provider).run(
+            self.parent_id, UpscaleSettings(upscale_factor=2.0, seed=1),
+            progress=lambda *_: None)
+        settings = self.store.get_revision(revision_id)["settings"]
+        self.assertEqual(settings["parent_source_size"], [64, 48])
+        self.assertEqual(settings["source_size"], [136, 104])
+
     def test_random_seed_resolved_when_unset_and_recorded(self) -> None:
         provider = FakeProvider()
         runner = UpscaleRunner(self.store, provider)

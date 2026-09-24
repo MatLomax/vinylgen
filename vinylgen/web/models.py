@@ -157,8 +157,17 @@ class StartJob(BaseModel):
     step_delay_ms: int = Field(default=100, ge=10, le=2000)
     palette: PaletteJobSettings | None = None
     cleanup: CleanupJobSettings | None = None
+    # Re-run the last cleanup with its own recorded settings (pipeline.rerun_cleanup_settings)
+    # instead of ``cleanup``; the server names its removed colour by hex.
+    rerun_last_cleanup: bool = False
     trace: TraceJobSettings | None = None
     colour_names: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def rerun_is_a_settingless_cleanup(self) -> "StartJob":
+        if self.rerun_last_cleanup and (self.kind != "cleanup" or self.cleanup is not None):
+            raise ValueError("rerun_last_cleanup is a cleanup job without cleanup settings")
+        return self
 
 
 class GenerationSettings(BaseModel):
@@ -245,11 +254,26 @@ class ApplyLabelEdits(BaseModel):
     message: str | None = Field(default=None, max_length=500)
 
 
+class InheritedRemoveColour(BaseModel):
+    # A value a Cleanup run resolves to the last cleanup's removed colour, or None with
+    # ``unresolved`` when no single colour of the current palette is that colour.
+    value: str | None
+    unresolved: bool
+    # The last cleanup's removed colour's hex, which the form shows while unresolved.
+    hex: str | None = None
+    # Why it is unresolved: "missing" (no colour has the hex) or "ambiguous".
+    problem: Literal["missing", "ambiguous"] | None = None
+
+
 class EditorState(BaseModel):
     width: int
     height: int
     palette: list[dict[str, Any]]
     protected_pixels: int
+    # The palette index of the colour the active cleanup removes (editor.removed_colour_index).
+    removed_colour_index: int | None = None
+    # The removed colour the Cleanup form inherits (editor._inherited_remove_colour).
+    inherited_remove_colour: InheritedRemoveColour | None = None
 
 
 class AutomaticLayerOrder(BaseModel):

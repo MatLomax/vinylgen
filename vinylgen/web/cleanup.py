@@ -163,6 +163,9 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
         "settings": asdict(settings),
         "resolved_settings": asdict(resolved),
         "omitted_colour": palette[omitted] if omitted is not None else None,
+        # The removed colour's palette index: fixed from the flatten on, unlike its
+        # name, which a trace's colour names may change (pipeline.cleanup_removed_index).
+        "omitted_index": omitted,
         "changed_pixels": changed,
         "cleanup": summary,
     }

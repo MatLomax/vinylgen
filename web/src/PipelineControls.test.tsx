@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CleanupSettings, PaletteColour, TraceSettings } from './api'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, formatPhysicalSize, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type PhysicalSize } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, formatPhysicalSize, paletteColourMatches, removedColourChoice, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type PhysicalSize } from './PipelineControls'
 
 afterEach(cleanup)
 
@@ -36,9 +36,9 @@ function renderTrace(trace: TraceSettings, setTrace: (value: TraceSettings) => v
   render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={trace} setTrace={setTrace} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={colours}
     selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} traceSize={traceSize} />)
 }
-function renderCleanup(cleanup: CleanupSettings, setCleanup: (value: CleanupSettings) => void, baseCleanup = DEFAULT_CLEANUP_SETTINGS) {
+function renderCleanup(cleanup: CleanupSettings, setCleanup: (value: CleanupSettings) => void, baseCleanup = DEFAULT_CLEANUP_SETTINGS, colours = COLOURS, removalPaletteCurrent = true) {
   render(<PipelineControls stage="cleanup" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={DEFAULT_TRACE_SETTINGS} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS}
-    cleanup={cleanup} setCleanup={setCleanup} baseCleanup={baseCleanup} paletteColours={COLOURS}
+    cleanup={cleanup} setCleanup={setCleanup} baseCleanup={baseCleanup} paletteColours={colours} removalPaletteCurrent={removalPaletteCurrent}
     selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} />)
 }
 
@@ -200,6 +200,46 @@ describe('cleanup settings form', () => {
     expect(setCleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanup: true, remove_colour: 'Red' }))
     fireEvent.change(screen.getByLabelText(/Cleanup action/), { target: { value: 'widen' } })
     expect(setCleanup).toHaveBeenCalledWith(expect.objectContaining({ cleanup_action: 'widen' }))
+  })
+
+  describe('removed colour, resolved as the server resolves it', () => {
+    const colour = (index: number, name: string, hex: string): PaletteColour => ({ index, name, hex, rgb: [0, 0, 0], share_percent: 10 })
+    const note = () => document.querySelector('#remove-colour-status')?.textContent ?? null
+
+    it('matches by name or hex, case-insensitively, and reports more than one match as ambiguous', () => {
+      // "Facade" is a name that reads as hex: it matches the colour so named and #FACADE.
+      const palette = [colour(0, 'Facade', '#112233'), colour(1, 'Stone', '#FACADE'), colour(2, '#E15F2D', '#445566'), colour(3, 'Ember', '#E15F2D')]
+      expect(paletteColourMatches('facade', palette).map(row => row.index)).toEqual([0, 1])
+      expect(removedColourChoice('Facade', palette).status).toBe('ambiguous')
+      // A colour named like another's hex makes that hex ambiguous too.
+      expect(removedColourChoice('#e15f2d', palette).status).toBe('ambiguous')
+      expect(removedColourChoice('  stone ', palette)).toEqual({ status: 'match', colour: palette[1] })
+      expect(removedColourChoice('fACADE', [colour(0, 'Stone', '#FACADE')])).toEqual({ status: 'match', colour: expect.objectContaining({ name: 'Stone' }) })
+      expect(removedColourChoice('Facade', [colour(0, 'Facade', '#112233')]).colour?.hex).toBe('#112233')
+      expect(removedColourChoice('Nope', palette).status).toBe('missing')
+      // Case folding as Python's casefold: "ß" folds to "ss".
+      expect(removedColourChoice('STRASSE', [colour(0, 'Straße', '#010203')]).status).toBe('match')
+    })
+
+    it('shows the ambiguity as an alert beside, not inside, the field', () => {
+      renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, remove_colour: 'Facade' }, () => undefined, DEFAULT_CLEANUP_SETTINGS, [colour(0, 'Facade', '#112233'), colour(1, 'Stone', '#FACADE')])
+      const alert = screen.getByRole('alert')
+      expect(alert.textContent).toBe("Facade names more than one colour of this artwork's palette, by name or hex: choose the colour to remove.")
+      expect(alert.closest('label')).toBeNull()
+      const input = screen.getByLabelText(/Remove colour/)
+      expect(input.getAttribute('aria-describedby')).toBe('remove-colour-status')
+      expect(input.getAttribute('aria-invalid')).toBe('true')
+    })
+
+    it('judges nothing until the palette listed is the shown revision\'s', () => {
+      renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, remove_colour: '#E15F2D' }, () => undefined, DEFAULT_CLEANUP_SETTINGS, COLOURS, false)
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(note()).toBeNull()
+      expect(screen.getByLabelText(/Remove colour/).getAttribute('aria-invalid')).toBeNull()
+      cleanup()
+      renderCleanup({ ...DEFAULT_CLEANUP_SETTINGS, remove_colour: '#E15F2D' }, () => undefined)
+      expect(screen.getByRole('alert').textContent).toBe("No colour of this artwork's palette is #E15F2D: choose the colour to remove.")
+    })
   })
 
   it('steps its settings history like Flatten', () => {

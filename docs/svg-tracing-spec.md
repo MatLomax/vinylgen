@@ -113,7 +113,10 @@ Tracing can optionally omit one palette colour: it gets no vinyl layer and its
 pixels stay in the raster as uncut background. The removed colour is a cleanup
 stage setting that the trace applies; the CLI accepts it as a trace flag.
 Input accepts either its human-readable name or hex value. When no colour is
-configured, all colours are included.
+configured, all colours are included. The name or hex is resolved once, against
+the palette the cleanup runs with, and the web pipeline carries the resulting
+palette index to the trace (`removed_colour_index` on the cleanup revision), so
+colour names a trace later applies never change which colour is omitted.
 
 ## Size, units, and cropping
 
@@ -353,6 +356,23 @@ raster itself. Alternating
 between the Cleanup and Trace canvases with both previews on therefore reloads
 each time, and each return to Cleanup measures the whole raster again (about
 6.4 s on `sourceup`, 22 s on 11264 × 7920) before its first preview appears.
+
+So that the wait is explained, the server reports the measuring at
+`GET /api/revisions/{id}/cleanup-preview/regions` as `{"measured", "measuring"}`:
+whether the preview thread holds the measurements of the raster a cleanup
+preview of that revision cleans, and whether it is building them now. The read
+is answered on the event loop from the thread's state, never queued behind the
+preview it reports on, so it adds nothing to the preview's time. A trace preview
+that evicts the raster turns `measured` false again, and a measurement stopped
+by a superseded request stops reporting `measuring`. While a cleanup preview is
+in flight the canvas reads this state as the request starts and every 250 ms
+until it settles; while the server reports `measuring` for the revision, the
+badge reads "Measuring regions of the whole image…" instead of
+"Updating live preview…". A superseded request leaves that text standing until
+the next request's first read, since its measuring may still be running (a
+colour's distance transform always runs to its end). With cleanup off, or with
+the shown cleanup's own settings, nothing is measured and the badge keeps
+"Updating live preview…".
 
 ## Trace accuracy and complexity
 

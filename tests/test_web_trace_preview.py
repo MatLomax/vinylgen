@@ -186,6 +186,26 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale.status_code, 409, stale.text)
         self.assertIn("re-run Cleanup", stale.text)
 
+    async def test_request_renames_swapping_names_still_omit_the_removed_colour(self) -> None:
+        # The cleanup removes a colour by name; the request then swaps that name with
+        # another colour's. The preview omits the colour the cleanup removed, as the
+        # trace run does, never the one that now carries its name.
+        project_id, _, palette_revision = await self.flattened_project()
+        window = {"x": 150, "y": 130, "width": 300, "height": 300}
+        before = await self.preview(palette_revision, window)
+        named = [re.fullmatch(r"(.*) \((#[0-9A-F]{6})\)", label).groups()
+                 for label in layer_paths(ET.fromstring(before.json()["svg"]))]
+        (removed_name, removed_hex), (kept_name, kept_hex) = named[-1], named[0]
+        cleanup_revision = await self.run_job(
+            "cleanup", project_id, palette_revision, cleanup={"remove_colour": removed_name})
+        swapped = await self.preview(cleanup_revision, window, colour_names={
+            removed_hex: kept_name, kept_hex: removed_name})
+        self.assertEqual(swapped.status_code, 200, swapped.text)
+        layers = list(layer_paths(ET.fromstring(swapped.json()["svg"])))
+        self.assertEqual(len(layers), len(named) - 1)
+        self.assertFalse(any(removed_hex in label for label in layers), layers)
+        self.assertIn(f"{removed_name} ({kept_hex})", layers)
+
     async def test_request_validation_and_missing_resources(self) -> None:
         _, source_revision, palette_revision = await self.flattened_project()
         window = {"x": 0, "y": 0, "width": 100, "height": 100}
@@ -401,11 +421,11 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         plain = await self.preview(legacy, window)
         self.assertEqual(plain.status_code, 200, plain.text)
         self.assertEqual(list(layer_paths(ET.fromstring(plain.json()["svg"]))), labels[:-1])
-        # Renaming the removed colour in the request hides the stored removed-colour
-        # name: that is the request's doing, so a 422, not a server fault.
+        # Renaming the removed colour in the request does not un-remove it: the cleanup's
+        # removed colour is its palette index, as a trace run with these renames omits it.
         renamed = await self.preview(legacy, window, colour_names={removed_hex: "Renamed"})
-        self.assertEqual(renamed.status_code, 422, renamed.text)
-        self.assertIn(removed_name, renamed.text)
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(list(layer_paths(ET.fromstring(renamed.json()["svg"]))), labels[:-1])
 
 
 class SegmentationResidencyTest(unittest.TestCase):
