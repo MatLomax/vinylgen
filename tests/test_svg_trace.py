@@ -365,6 +365,98 @@ class SvgTraceTests(unittest.TestCase):
             self.assertGreaterEqual(overlap["#0F233C"]["holes"], 1)
             self.assertTrue(report["validation"]["overlap"]["passed"])
 
+    def palette_first_fixture(self, root: Path) -> Path:
+        """The nested fixture with its palette listed orange, green, navy: palette order
+        then differs from the inferred order, which puts the canvas-touching navy lowest."""
+        root.mkdir(parents=True, exist_ok=True)
+        subject = self.nested_fixture(root)
+        permutation = [1, 2, 0]
+        report = json.loads((subject / "palette.json").read_text())
+        report["palette"] = [dict(report["palette"][old], index=new)
+                             for new, old in enumerate(permutation)]
+        (subject / "palette.json").write_text(json.dumps(report))
+        bundle = SegmentationBundle.load(subject / "segmentation.npz")
+        remap = np.argsort(permutation).astype(np.int16)
+        SegmentationBundle(
+            labels=remap[bundle.labels],
+            protected_features=bundle.protected_features,
+            explicit_protected_features=bundle.explicit_protected_features,
+            palette_rgb=bundle.palette_rgb[permutation],
+            palette_costs=bundle.palette_costs[..., permutation],
+        ).save(subject / "segmentation.npz")
+        return subject
+
+    def layer_shapes(self, svg_path: Path) -> tuple[list[str], dict[str, list[str]]]:
+        """The SVG's layer fills bottom to top, and each fill's sorted path data."""
+        layers = ET.parse(svg_path).getroot().findall(f"{{{SVG}}}g")
+        return ([layer.attrib["fill"] for layer in layers],
+                {layer.attrib["fill"]: sorted(path.attrib["d"]
+                                              for path in layer.iter(f"{{{SVG}}}path"))
+                 for layer in layers})
+
+    def test_edge_to_edge_trace_skips_order_inference_with_identical_geometry(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            root = Path(name)
+            skipped = self.palette_first_fixture(root / "skipped")
+            with mock.patch.object(tracing, "infer_order",
+                                   side_effect=AssertionError("infer_order ran")):
+                report = trace_subject(skipped, TraceSettings(), {})
+            order = report["layer_order"]
+            self.assertIsNone(order["inferred_bottom_to_top"])
+            self.assertEqual(order["not_inferred"], tracing.ORDER_NOT_INFERRED)
+            self.assertEqual(order["warnings"], [])
+            names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
+            self.assertEqual(order["effective_bottom_to_top"],
+                             [names[value] for value in ("#E15F2D", "#3CB45A", "#0F233C")])
+
+            # The same subject traced in the order inference would have chosen.
+            inferred_subject = self.palette_first_fixture(root / "inferred")
+            palette = json.loads((inferred_subject / "palette.json").read_text())["palette"]
+            labels = SegmentationBundle.load(inferred_subject / "segmentation.npz").labels
+            inferred, _ = tracing.infer_order(labels, [0, 1, 2], palette)
+            inferred_hex = [palette[index]["hex"] for index in inferred]
+            self.assertEqual(inferred_hex, ["#0F233C", "#E15F2D", "#3CB45A"])
+            trace_subject(inferred_subject, TraceSettings(layer_order=inferred_hex), {})
+            for variant in ("edge", "overlap"):
+                skipped_fills, skipped_shapes = self.layer_shapes(skipped / f"traced-{variant}.svg")
+                inferred_fills, inferred_shapes = self.layer_shapes(
+                    inferred_subject / f"traced-{variant}.svg")
+                self.assertEqual(skipped_fills, ["#E15F2D", "#3CB45A", "#0F233C"])
+                self.assertEqual(inferred_fills, inferred_hex)
+                # Only the stacking differs: every colour's shapes are the same.
+                self.assertEqual(skipped_shapes, inferred_shapes, variant)
+
+    def test_edge_to_edge_trace_honours_an_explicit_layer_order(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
+            subject = self.palette_first_fixture(Path(name))
+            with mock.patch.object(tracing, "infer_order",
+                                   side_effect=AssertionError("infer_order ran")):
+                report = trace_subject(subject, TraceSettings(layer_order=["#0F233C"]), {})
+            names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
+            # The named colour first, then the rest in palette order.
+            self.assertEqual(report["layer_order"]["effective_bottom_to_top"],
+                             [names[value] for value in ("#0F233C", "#E15F2D", "#3CB45A")])
+            self.assertEqual(report["layer_order"]["override"], [names["#0F233C"]])
+            self.assertEqual(self.layer_shapes(subject / "traced-edge.svg")[0],
+                             ["#0F233C", "#E15F2D", "#3CB45A"])
+
+    def test_order_is_inferred_when_underlayers_or_overlap_make_it_matter(self):
+        for settings in (TraceSettings(solid_underlayers=True), TraceSettings(overlap=1.0)):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory(
+                    dir=Path(__file__).parents[1] / ".tmp") as name:
+                subject = self.palette_first_fixture(Path(name))
+                with mock.patch.object(tracing, "infer_order",
+                                       wraps=tracing.infer_order) as spy:
+                    report = trace_subject(subject, settings, {})
+                spy.assert_called_once()
+                names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
+                inferred = [names[value] for value in ("#0F233C", "#E15F2D", "#3CB45A")]
+                self.assertEqual(report["layer_order"]["inferred_bottom_to_top"], inferred)
+                self.assertIsNone(report["layer_order"]["not_inferred"])
+                self.assertEqual(report["layer_order"]["effective_bottom_to_top"], inferred)
+                self.assertEqual(self.layer_shapes(subject / "traced-overlap.svg")[0],
+                                 ["#0F233C", "#E15F2D", "#3CB45A"])
+
     def drawing_commands(self, svg_path: Path) -> list[str]:
         # Every line/curve command in the file; the M start is excluded because a ring's
         # start vertex depends on assembly order, not on the fitted geometry.

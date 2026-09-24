@@ -17,9 +17,9 @@ from .comfy_client import COMFY_NOT_RUNNING, ComfyClient, ComfyUIError, ComfyUna
 from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
-from .editor import apply_edits, editor_state
-from .models import (ApplyLabelEdits, Artifact, CreateProject, CreateRevision, EditorState,
-                     GenerationStarted, Health, Job,
+from .editor import apply_edits, automatic_layer_order, editor_state
+from .models import (ApplyLabelEdits, Artifact, AutomaticLayerOrder, CreateProject,
+                     CreateRevision, EditorState, GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob, StartUpscale, UpscaleOptions,
                      UpscaleSettings)
@@ -353,6 +353,15 @@ def create_app(config: WebConfig | None = None,
             raise missing(exc) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/revisions/{revision_id}/automatic-layer-order",
+             response_model=AutomaticLayerOrder)
+    async def get_automatic_layer_order(revision_id: str) -> dict:
+        try:
+            return {"automatic_layer_order": await asyncio.to_thread(
+                automatic_layer_order, store, revision_id)}
+        except KeyError as exc:
+            raise missing(exc) from exc
 
     @app.post("/api/projects/{project_id}/revisions/{revision_id}/edits",
               response_model=Revision, status_code=201)

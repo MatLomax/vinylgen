@@ -137,6 +137,14 @@ export function resolvePaletteColour(entry: string, palette: PaletteColour[]): P
   return matches.length === 1 ? matches[0] : undefined
 }
 
+// Whether layer stacking order can change the traced geometry (layer_order_matters in
+// vinylgen/tracing.py): only solid underlayers or a positive overlap extend lower layers
+// under upper ones. Otherwise colours meet edge to edge, the tracer infers no order, and
+// the automatic order is neither fetched nor offered for reordering.
+export function layerOrderMatters(trace: Pick<TraceSettings, 'solid_underlayers' | 'overlap'>): boolean {
+  return trace.solid_underlayers || trace.overlap > 0
+}
+
 // Arrange the palette colours in the bottom-to-top order a trace stacks them: the stored
 // order's colours first (matched exactly as the trace request is, resolvePaletteColour),
 // then the rest as the tracer's automatic order (`automatic`, hex bottom-to-top) places
@@ -158,8 +166,9 @@ function orderColours(colours: PaletteColour[], order: string[] | null, palette:
 // `locked` (a reason) keeps the list shown but not reorderable: the colours listed are not
 // the selected revision's own yet, so an order written from them would name stale colours.
 // `removedColour` (the active cleanup's) gets no layer, so it is neither listed nor written.
-function LayerOrderList({ colours: palette, order, onChange, dirty, locked, removedColour, automaticOrder }: {
-  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean; locked?: string | null; removedColour?: string | null; automaticOrder?: string[] | null
+// `onRetry`, when given, offers to re-read what `locked` says failed to load.
+function LayerOrderList({ colours: palette, order, onChange, dirty, locked, removedColour, automaticOrder, onRetry }: {
+  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean; locked?: string | null; removedColour?: string | null; automaticOrder?: string[] | null; onRetry?: (() => void) | null
 }) {
   const [dragging, setDragging] = useState<number | null>(null)
   const removed = removedColour ? resolvePaletteColour(removedColour, palette) : undefined
@@ -174,7 +183,7 @@ function LayerOrderList({ colours: palette, order, onChange, dirty, locked, remo
     next.splice(to, 0, item)
     onChange([...next].reverse().map(colour => colour.hex))
   }
-  if (!colours.length) return <Field label="Layer order" help="Stacking order of the solid layers, bottom to top. Available once the image is flattened." dirty={dirty}><p className="stage-guidance">{locked ?? 'Flatten this revision to choose a layer order.'}</p></Field>
+  if (!colours.length) return <Field label="Layer order" help="Stacking order of the layers, bottom to top. Available once the image is flattened." dirty={dirty}><p className="stage-guidance">{locked ?? 'Flatten this revision to choose a layer order.'}</p></Field>
   return <div className="setting-field layer-order-field">
     <span>Layer order (top layer first)<DirtyDot dirty={dirty} /></span>
     <ul className="layer-order-list" role="list">
@@ -195,24 +204,27 @@ function LayerOrderList({ colours: palette, order, onChange, dirty, locked, remo
       </li>)}
     </ul>
     {removed && <small className="layer-order-removed">{removed.name || removed.hex} is removed in Cleanup and gets no layer.</small>}
-    {locked ? <small id="layer-order-lock">{locked}</small>
-      : <small>Stacking order of the solid layers: the top of the list is cut as the top layer. Drag or use the arrows to reorder. {order ? <button type="button" className="link-button" onClick={() => onChange(null)}>Reset to automatic</button> : 'Automatic order until you reorder.'}</small>}
+    {locked ? <small id="layer-order-lock">{locked}{onRetry && <> <button type="button" className="link-button" onClick={onRetry}>Retry</button></>}</small>
+      : <small>Stacking order of the layers: the top of the list is cut as the top layer. Drag or use the arrows to reorder. {order ? <button type="button" className="link-button" onClick={() => onChange(null)}>Reset to automatic</button> : 'Automatic order until you reorder.'}</small>}
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedColour = null, automaticOrder = null, onHighlightPoint = () => undefined }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedColour = null, automaticOrder = null, onRetryLayerOrder = null, onHighlightPoint = () => undefined }: {
   stage: 'flatten' | 'cleanup' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
   cleanup?: CleanupSettings; setCleanup?: (value: CleanupSettings) => void; baseCleanup?: CleanupSettings
   paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
   tracedSize?: { width: number; height: number } | null
   // The physical size the trace uses, set by the nearest cleanup; null traces in px.
   traceSize?: PhysicalSize | null
-  // Why the layer order cannot be rewritten now (its colours are not the selected revision's).
+  // Why the layer order cannot be rewritten now: its colours are not the selected revision's,
+  // or the automatic order unnamed colours follow is still loading or failed to load.
   layerOrderLocked?: string | null
   // The colour the active cleanup removes (as it names it); it gets no layer.
   removedColour?: string | null
   // The tracer's automatic bottom-to-top order (hex), which unnamed colours follow.
   automaticOrder?: string[] | null
+  // Re-reads the automatic order after a failed read (shown with `layerOrderLocked`).
+  onRetryLayerOrder?: (() => void) | null
   // The canvas marker id of the preservation row hovered or focused, or null.
   onHighlightPoint?: (id: string | null) => void
 }) {
@@ -305,7 +317,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <div className="settings-grid">
         <NumberField label={`Layer overlap (${length})`} help={`How far each lower layer extends under the layers above it, in ${length}. 0: colours meet edge to edge. Higher: more forgiving of misaligned layers, uses more vinyl.`} value={trace.overlap} dirty={td('overlap')} onChange={value => t('overlap', value!)} />
         <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>On: each lower layer is cut as a solid shape under everything above it, so no edges are shared and alignment is easiest; uses the most vinyl. Replaces the overlap distance.</small></span></label>
-        {trace.solid_underlayers && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedColour={removedColour} automaticOrder={automaticOrder} />}
+        {layerOrderMatters(trace) && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedColour={removedColour} automaticOrder={automaticOrder} onRetry={onRetryLayerOrder} />}
       </div></section>
       <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Distances here are pixels of the traced image, whatever the physical size.</p><div className="settings-grid">
         <NumberField label="Corner threshold" help="How sharp a bend, in degrees, must be to become a hard corner. Lower: more bends become sharp points. Higher: gentle bends stay smooth curves." value={trace.corner_threshold} max={180} dirty={td('corner_threshold')} onChange={value => t('corner_threshold', value!)} /><NumberField label="Corner analysis span (px)" help="Length of edge, in px, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored." value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Corner straightness (px)" help="How far, in px, the edges beside a corner may wobble and still confirm it. Lower: only clean straight edges make sharp corners. Higher: rougher edges still get sharp corners." value={trace.corner_straightness} dirty={td('corner_straightness')} onChange={value => t('corner_straightness', value!)} /><NumberField label="Curve-fit tolerance (px)" help="How far, in px, a curve may stray from the pixel edge. Lower: follows the pixels more closely, more nodes. Higher: smoother, fewer nodes." value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (px)" help="How far, in px, an edge may bend and still be drawn as one straight line. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved." value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (px)" help="Shortest edge, in px, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved." value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (px)" help="In px (Automatic: 2): caps the curve-fit tolerance, limits how far a corner may shift, and sets how much drift the check after tracing allows. Lower than the curve-fit tolerance: tighter curves, more nodes, stricter check; higher: only relaxes the check. Does not limit straight lines." value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />

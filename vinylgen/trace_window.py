@@ -7,8 +7,9 @@ layer writer. Only three things differ from a full trace, all by construction:
 
 - Boundaries crossing the crop edge are split there, so their fit can differ near
   the edge. The margin keeps most of that outside the visible window.
-- Layer order is inferred from the whole image (it is a whole-image decision), but
-  underlayer adjacency and overlap buffers only see the crop.
+- Layer order, when it can matter, is inferred from the whole image (it is a
+  whole-image decision), but underlayer adjacency and overlap buffers only see the
+  crop.
 - Validation and protected-feature recovery are skipped, and nothing is saved.
 """
 
@@ -30,6 +31,7 @@ from vinylgen.svg_writer import SVG, add_layer
 from vinylgen.tracing import (
     DEFAULT_MAX_DEVIATION_PX,
     infer_order,
+    layer_order_matters,
     overlap_layer_components,
     partition_watertight_fault,
     underlayer_geometry,
@@ -111,7 +113,7 @@ def preview_trace_settings(values: dict) -> TraceSettings:
 def preview_variant(settings: TraceSettings) -> str:
     """The SVG variant a trace with ``settings`` would show: the overlap file only
     differs from the edge-to-edge one with solid underlayers or a positive overlap."""
-    return "overlap" if settings.solid_underlayers or settings.overlap > 0 else "edge"
+    return "overlap" if layer_order_matters(settings) else "edge"
 
 
 @dataclass
@@ -165,6 +167,15 @@ class PreviewSegmentation:
         if key not in self._orders:
             self._orders[key] = infer_order(self.labels, included, palette)
         return list(self._orders[key][0])
+
+    def automatic_order(self, included: list[int], palette: list[dict],
+                        settings: TraceSettings) -> list[int]:
+        """The order colours an override leaves unnamed follow, as a full trace takes
+        it: the inferred order when stacking can matter, otherwise palette order
+        without running the inference."""
+        if layer_order_matters(settings):
+            return self.layer_order(included, palette)
+        return list(included)
 
 
 @dataclass

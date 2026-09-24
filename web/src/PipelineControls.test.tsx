@@ -43,9 +43,15 @@ function renderCleanup(cleanup: CleanupSettings, setCleanup: (value: CleanupSett
 }
 
 describe('layer order control', () => {
-  it('hides the layer order control when solid underlayers is off', () => {
-    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: false }, () => undefined)
+  it('hides the layer order control while colours meet edge to edge (no solid underlayers, no overlap)', () => {
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: false, overlap: 0 }, () => undefined)
     expect(screen.queryByText(/Layer order/)).toBeNull()
+  })
+
+  it('shows the layer order control with an overlap and no solid underlayers', () => {
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, solid_underlayers: false, overlap: 0.5 }, () => undefined)
+    expect(screen.getByText(/Layer order/)).toBeTruthy()
+    expect(screen.getByText('Red')).toBeTruthy()
   })
 
   it('shows a reorderable palette list when solid underlayers is on', () => {

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 from PIL import Image
 
+from vinylgen import trace_window
 from vinylgen.svg_writer import INKSCAPE, SVG
 from vinylgen.trace_window import PREVIEW_MARGIN_PX, PreviewCancelled
 from vinylgen.web.app import create_app
@@ -112,6 +113,27 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
                 traced_svg = next(row for row in artifacts if row["kind"] == variant)
                 traced = await self.client.get(traced_svg["download_url"])
                 self.assertEqual(layer_paths(svg), layer_paths(ET.fromstring(traced.content)))
+
+    async def test_the_preview_infers_layer_order_only_when_it_can_matter(self) -> None:
+        _, _, palette_revision = await self.flattened_project()
+        window = {"x": 10, "y": 8, "width": WIDTH - 20, "height": HEIGHT - 16}
+        palette = (await self.client.get(f"/api/revisions/{palette_revision}/editor")).json()["palette"]
+        with mock.patch("vinylgen.trace_window.infer_order",
+                        side_effect=AssertionError("infer_order ran")):
+            response = await self.preview(palette_revision, window, {})
+        self.assertEqual(response.status_code, 200, response.text)
+        fills = [layer.attrib["fill"] for layer in ET.fromstring(response.json()["svg"]).iter(f"{{{SVG}}}g")
+                 if "fill" in layer.attrib]
+        self.assertEqual(fills, [row["hex"] for row in palette])
+        # Either setting makes order matter; the whole-image order is inferred once and
+        # cached for the loaded segmentation.
+        with mock.patch("vinylgen.trace_window.infer_order",
+                        wraps=trace_window.infer_order) as spy:
+            for trace in ({"solid_underlayers": True}, {"overlap": 0.5}):
+                with self.subTest(trace=trace):
+                    response = await self.preview(palette_revision, window, trace)
+                    self.assertEqual(response.status_code, 200, response.text)
+        spy.assert_called_once()
 
     async def test_window_is_clamped_margined_and_its_boundaries_cached(self) -> None:
         _, _, palette_revision = await self.flattened_project()

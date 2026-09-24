@@ -1,4 +1,4 @@
-"""Live trace preview of the zoomed-in canvas area.
+"""Live trace and cleanup previews of the zoomed-in canvas area.
 
 The Trace canvas asks for the vector shapes of the window the user is looking at,
 traced with the current (unsaved) form settings. Requests run one at a time on a
@@ -13,14 +13,23 @@ re-fits cached boundaries.
 
 What is traced is what a "Trace and validate" run from the same revision would
 trace: its effective (cleaned) segmentation, the removed colour and physical size
-of its active cleanup, and the whole image's layer order. See
+of its active cleanup, and the layer order that run would use. See
 ``vinylgen.trace_window`` for the documented differences from a full run.
+
+The Cleanup canvas likewise asks for the cleaned pixels of its window under the
+current (unsaved) Cleanup form, on the same thread and under the same rules. It
+cleans the raster a Cleanup run starts from, with the whole raster's region
+measurements computed once per revision and held with it; see
+``vinylgen.cleanup_window`` for the documented differences from a full run. The
+uncleaned raster and the traced segmentation are never resident together.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
+import io
 import json
 import threading
 import time
@@ -30,8 +39,14 @@ from typing import Callable, Hashable
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
+from vinylgen.cleanup_window import (
+    CLEANUP_PREVIEW_MAX_AREA_PX,
+    CleanupSource,
+    clean_window,
+)
 from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import pixel_scale, resolve_physical_size
 from vinylgen.trace_window import (
@@ -50,7 +65,7 @@ from vinylgen.trace_window import (
 )
 from vinylgen.tracing import apply_order_override, ensure_palette_names, resolve_colour
 
-from .models import TraceJobSettings
+from .models import CleanupJobSettings, TraceJobSettings
 from .pipeline import STALE_CLEANUP_MESSAGE, _require_fresh, nearest_cleanup
 from .store import Store
 
@@ -117,6 +132,36 @@ class TracePreview(BaseModel):
     elapsed_ms: float
 
 
+class CleanupPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    window: PreviewWindow
+    cleanup: CleanupJobSettings = Field(default_factory=CleanupJobSettings)
+
+
+class CleanupPreview(BaseModel):
+    window: PreviewBox
+    crop: PreviewBox
+    image: dict[str, int]
+    # PNG data URLs of the window at raster px: the cleaned pixels, and the changes
+    # (removed pixels red, widened pixels green, transparent elsewhere).
+    pixels: str
+    changes: str
+    removed_pixels: int
+    widened_pixels: int
+    elapsed_ms: float
+
+
+REMOVED_RGBA = (230, 40, 40, 255)
+WIDENED_RGBA = (40, 200, 70, 255)
+
+
+def _png_url(array: np.ndarray, mode: str) -> str:
+    buffer = io.BytesIO()
+    Image.fromarray(array, mode).save(buffer, format="PNG", compress_level=1)
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
 class _Lru:
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
@@ -171,6 +216,9 @@ class TracePreviewService:
         # (segmentation artifact id, loaded segmentation), or None. Only the preview
         # thread reads or writes the caches below.
         self._segmentation: tuple[str, PreviewSegmentation] | None = None
+        # (segmentation artifact id, uncleaned raster with its region measurements),
+        # or None; never resident together with ``_segmentation``.
+        self._cleanup_source: tuple[str, CleanupSource] | None = None
         self._boundaries = _Lru(BOUNDARY_CACHE_SIZE)
         self._palettes = _Lru(8)
         self._last_used = clock()
@@ -206,6 +254,14 @@ class TracePreviewService:
         boundaries = window_boundaries(segmentation, [0, 1, 2], crop, self._closing)
         render_window_svg(boundaries, Window(8, 8, 32, 32), [0, 1, 2], palette,
                           preview_trace_settings({}), 0.0, self._closing)
+        # The cleanup preview's widening kernel.
+        source = CleanupSource(labels=segmentation.labels,
+                               explicit=np.zeros_like(segmentation.labels, dtype=bool),
+                               palette_rgb=segmentation.palette_rgb)
+        clean_window(source, Window(8, 8, 32, 32),
+                     [{**row, "rgb": rgb.tolist()} for row, rgb in zip(palette, source.palette_rgb)],
+                     CleanupSettings(cleanup=True, cleanup_action="widen", min_detail_width=6.0),
+                     None, self._closing)
 
     def shutdown(self) -> None:
         """Stop taking previews and stop the running one (or the warm-up) at its next
@@ -226,18 +282,34 @@ class TracePreviewService:
         if self._segmentation is not None and self._segmentation[0] == artifact_id:
             return self._segmentation[1]
         self._segmentation = None
+        self._cleanup_source = None
         self._boundaries.clear()
         segmentation = load()
         self._segmentation = (artifact_id, segmentation)
         return segmentation
+
+    def _cleanup_source_for(self, artifact_id: str,
+                            load: Callable[[], CleanupSource]) -> CleanupSource:
+        """The loaded uncleaned raster of ``artifact_id``; anything else resident (the
+        traced segmentation included) is released before loading."""
+        if self._cleanup_source is not None and self._cleanup_source[0] == artifact_id:
+            return self._cleanup_source[1]
+        self._cleanup_source = None
+        self._segmentation = None
+        self._boundaries.clear()
+        source = load()
+        self._cleanup_source = (artifact_id, source)
+        return source
 
     def release_if_idle(self) -> bool:
         """Drop the loaded segmentation and derived caches when no preview has run
         for the idle period; returns whether anything was released."""
         if self._clock() - self._last_used < self._idle_seconds:
             return False
-        released = self._segmentation is not None or bool(self._boundaries.keys())
+        released = (self._segmentation is not None or self._cleanup_source is not None
+                    or bool(self._boundaries.keys()))
         self._segmentation = None
+        self._cleanup_source = None
         self._boundaries.clear()
         self._palettes.clear()
         return released
@@ -265,10 +337,18 @@ class TracePreviewService:
 
     async def preview(self, revision_id: str, request: TracePreviewRequest,
                       cancelled: threading.Event) -> dict:
+        return await self._on_thread(self.run, revision_id, request, cancelled)
+
+    async def cleanup_preview(self, revision_id: str, request: CleanupPreviewRequest,
+                              cancelled: threading.Event) -> dict:
+        return await self._on_thread(self.run_cleanup, revision_id, request, cancelled)
+
+    async def _on_thread(self, work: Callable, revision_id: str, request: BaseModel,
+                         cancelled: threading.Event) -> dict:
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(
-                self._pool(), self.run, revision_id, request, cancelled.is_set)
+                self._pool(), work, revision_id, request, cancelled.is_set)
         except RuntimeError as exc:
             # Shutdown raced this request: the pool closed between lookup and submit.
             if "shutdown" in str(exc) or self._closed.is_set():
@@ -314,6 +394,15 @@ class TracePreviewService:
     def run(self, revision_id: str, request: TracePreviewRequest,
             cancelled: Callable[[], bool] = lambda: False) -> dict:
         """Trace ``request.window`` of the revision a trace run would start from."""
+        return self._guarded(self._run, revision_id, request, cancelled)
+
+    def run_cleanup(self, revision_id: str, request: CleanupPreviewRequest,
+                    cancelled: Callable[[], bool] = lambda: False) -> dict:
+        """Clean ``request.window`` of the raster a Cleanup run of the revision cleans."""
+        return self._guarded(self._run_cleanup, revision_id, request, cancelled)
+
+    def _guarded(self, work: Callable, revision_id: str, request: BaseModel,
+                 cancelled: Callable[[], bool]) -> dict:
         def checkpoint() -> None:
             if self._closed.is_set():
                 raise PreviewShutDown(SHUTTING_DOWN_MESSAGE)
@@ -323,10 +412,65 @@ class TracePreviewService:
         # A request superseded while it waited in the queue exits before any work.
         checkpoint()
         try:
-            return self._run(revision_id, request, checkpoint)
+            return work(revision_id, request, checkpoint)
         finally:
             self._last_used = self._clock()
             self._schedule_release()
+
+    def _run_cleanup(self, revision_id: str, request: CleanupPreviewRequest,
+                     checkpoint: Callable[[], None]) -> dict:
+        started = time.perf_counter()
+        try:
+            self.store.get_revision(revision_id)
+        except KeyError as exc:
+            raise PreviewNotFound(revision_id) from exc
+        try:
+            _require_fresh(self.store, revision_id, {"palette"})
+        except ValueError as exc:
+            raise PreviewUnavailable(str(exc)) from exc
+        # A Cleanup run cleans the raster from before any earlier cleanup.
+        artifacts = self.store.effective_artifacts(revision_id, before_cleanup=True)
+        if "segmentation" not in artifacts or "palette" not in artifacts:
+            raise PreviewUnavailable("the revision has no flattened artwork to clean up yet")
+        palette = self._stored_palette(artifacts["palette"])["palette"]
+        settings = CleanupSettings(**request.cleanup.model_dump())
+        segmentation_id = artifacts["segmentation"]["id"]
+        source = self._cleanup_source_for(
+            segmentation_id,
+            lambda: CleanupSource.load(self.store.artifact_path(segmentation_id), checkpoint))
+        checkpoint()
+        expected_rgb = np.asarray([row["rgb"] for row in palette], dtype=np.uint8)
+        if not np.array_equal(source.palette_rgb, expected_rgb):
+            raise PreviewUnavailable("segmentation palette does not match palette.json")
+        width, height = source.width, source.height
+        window_request = request.window
+        try:
+            window = clamp_window(window_request.x, window_request.y, window_request.width,
+                                  window_request.height, width, height)
+        except ValueError as exc:
+            raise PreviewRejected(str(exc)) from exc
+        if window.width * window.height > CLEANUP_PREVIEW_MAX_AREA_PX:
+            raise PreviewRejected(
+                f"zoom in to preview: the window covers {window.width} x {window.height} px, "
+                f"more than the {CLEANUP_PREVIEW_MAX_AREA_PX} px preview limit")
+        try:
+            omitted = resolve_colour(settings.remove_colour, palette)
+        except ValueError as exc:
+            raise PreviewRejected(str(exc)) from exc
+        if omitted is not None and len(palette) == 1:
+            raise PreviewRejected("cannot omit the only palette colour")
+        cleaned = clean_window(source, window, palette, settings, omitted, checkpoint)
+        checkpoint()
+        changes = np.zeros((window.height, window.width, 4), dtype=np.uint8)
+        changes[cleaned.removed] = REMOVED_RGBA
+        changes[cleaned.widened] = WIDENED_RGBA
+        return {"window": window.as_dict(), "crop": cleaned.crop.as_dict(),
+                "image": {"width": width, "height": height},
+                "pixels": _png_url(source.palette_rgb[cleaned.labels], "RGB"),
+                "changes": _png_url(changes, "RGBA"),
+                "removed_pixels": int(cleaned.removed.sum()),
+                "widened_pixels": int(cleaned.widened.sum()),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1)}
 
     def _run(self, revision_id: str, request: TracePreviewRequest,
              checkpoint: Callable[[], None]) -> dict:
@@ -385,7 +529,8 @@ class TracePreviewService:
         included = [index for index in range(len(palette)) if index != omitted]
         try:
             order, _ = apply_order_override(
-                segmentation.layer_order(included, palette), settings.layer_order, palette)
+                segmentation.automatic_order(included, palette, settings), settings.layer_order,
+                palette)
         except ValueError as exc:
             raise PreviewRejected(str(exc)) from exc
         if any(index not in included for index in order):
@@ -409,14 +554,13 @@ class TracePreviewService:
 def trace_preview_router(service: TracePreviewService) -> APIRouter:
     router = APIRouter()
 
-    @router.post("/api/revisions/{revision_id}/trace-preview", response_model=TracePreview)
-    async def trace_preview(revision_id: str, payload: TracePreviewRequest,
-                            request: Request) -> dict:
+    async def _serve(request: Request, preview: Callable, revision_id: str,
+                     payload: BaseModel) -> dict:
         cancelled = threading.Event()
 
         async def watch_disconnect() -> None:
             # A client that aborted (a newer view or setting superseded it) stops
-            # the work at its next phase boundary instead of tracing for nobody.
+            # the work at its next phase boundary instead of working for nobody.
             while not cancelled.is_set():
                 if await request.is_disconnected():
                     cancelled.set()
@@ -425,7 +569,7 @@ def trace_preview_router(service: TracePreviewService) -> APIRouter:
 
         watcher = asyncio.create_task(watch_disconnect())
         try:
-            return await service.preview(revision_id, payload, cancelled)
+            return await preview(revision_id, payload, cancelled)
         except PreviewNotFound as exc:
             raise HTTPException(404, f"Resource not found: {exc.args[0]}") from exc
         except PreviewShutDown as exc:
@@ -436,10 +580,20 @@ def trace_preview_router(service: TracePreviewService) -> APIRouter:
             raise HTTPException(409, str(exc)) from exc
         except PreviewRejected as exc:
             raise HTTPException(422, str(exc)) from exc
-        except Exception as exc:  # a tracing fault, reported rather than hidden
+        except Exception as exc:  # a tracing or cleanup fault, reported rather than hidden
             raise HTTPException(500, f"preview failed: {exc}") from exc
         finally:
             cancelled.set()
             watcher.cancel()
+
+    @router.post("/api/revisions/{revision_id}/trace-preview", response_model=TracePreview)
+    async def trace_preview(revision_id: str, payload: TracePreviewRequest,
+                            request: Request) -> dict:
+        return await _serve(request, service.preview, revision_id, payload)
+
+    @router.post("/api/revisions/{revision_id}/cleanup-preview", response_model=CleanupPreview)
+    async def cleanup_preview(revision_id: str, payload: CleanupPreviewRequest,
+                              request: Request) -> dict:
+        return await _serve(request, service.cleanup_preview, revision_id, payload)
 
     return router

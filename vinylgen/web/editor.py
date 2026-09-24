@@ -56,16 +56,16 @@ def editor_state(store: Store, revision_id: str) -> dict[str, Any]:
     return {"width": bundle.labels.shape[1], "height": bundle.labels.shape[0],
             "palette": report["palette"],
             "requested_colour_count": report.get("fixed_colour_count", {}).get("requested"),
-            "protected_pixels": int(bundle.explicit_protected_features.sum()),
-            "automatic_layer_order": automatic_layer_order(store, revision_id, bundle)}
+            "protected_pixels": int(bundle.explicit_protected_features.sum())}
 
 
-def automatic_layer_order(store: Store, revision_id: str,
-                          uncleaned: SegmentationBundle | None = None) -> list[str] | None:
+def automatic_layer_order(store: Store, revision_id: str) -> list[str] | None:
     """The bottom-to-top colour order (hex) a trace of ``revision_id`` infers before any
     layer-order override: the tracer's own ``infer_order`` over the labels it traces
     (the active cleanup's raster) without the colour that cleanup removes. Colours an
-    override leaves unnamed stack in this order. ``None`` when the revision cannot be
+    override leaves unnamed stack in this order when layer order can matter (solid
+    underlayers or a positive overlap); the tracer only infers it then, so it is read
+    on its own rather than with the editor state. ``None`` when the revision cannot be
     traced as it stands (no flatten, a stale cleanup, an unresolvable removed colour)."""
     cleanup_revision, stale = nearest_cleanup(store, revision_id)
     if stale:
@@ -73,11 +73,8 @@ def automatic_layer_order(store: Store, revision_id: str,
     artifacts = store.effective_artifacts(revision_id)
     if "segmentation" not in artifacts or "palette" not in artifacts:
         return None
-    before = store.effective_artifacts(revision_id, before_cleanup=True).get("segmentation")
-    labels = (uncleaned.labels if uncleaned is not None and before is not None
-              and before["id"] == artifacts["segmentation"]["id"]
-              else SegmentationBundle.load(store.artifact_path(artifacts["segmentation"]["id"]),
-                                           with_costs=False).labels)
+    labels = SegmentationBundle.load(store.artifact_path(artifacts["segmentation"]["id"]),
+                                     with_costs=False).labels
     palette = json.loads(store.artifact_path(artifacts["palette"]["id"]).read_text())["palette"]
     cleanup = CleanupSettings(**(cleanup_revision["settings"]["cleanup"]
                                  if cleanup_revision is not None else {}))

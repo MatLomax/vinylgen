@@ -58,12 +58,48 @@ cut geometry.
 
 ## Layer order
 
-The tracer infers a deterministic best-guess stacking order. Containment,
-adjacency, and geometry may inform the inference. Ambiguity does not stop the
-run: the chosen order and a warning are written to `trace.json`.
+Layer order matters only when lower layers extend beneath upper ones: with
+solid underlayers or a positive overlap (`layer_order_matters` in
+`vinylgen/tracing.py`). Then the tracer infers a deterministic best-guess
+stacking order (`infer_order`): colours touching more of the canvas edge, then
+larger colours, sit lower. Ambiguity does not stop the run: the chosen order
+and a warning are written to `trace.json`. Layer ordering is independent of the
+palette's descending area order.
 
-Users can override the complete or partial order. Layer ordering is independent
-of the palette's descending area order.
+Without solid underlayers and with zero overlap, every colour meets its
+neighbours edge to edge and each layer is exactly its own partition region, so
+no stacking changes any cut geometry. The tracer then does not run
+`infer_order` and emits none of its warnings; the layers stack in palette
+order. `trace.json` records `inferred_bottom_to_top: null` and the reason under
+`layer_order.not_inferred`. Across the nine-image corpus, tracing in palette
+order instead of the inferred order gave identical path data for every
+colour in both SVG variants. The only order-dependent outputs are rendered
+rasters: the renderer anti-aliases a shared edge differently depending on which
+colour is painted last, so `traced.png` and the semantic-validation render
+(and the audit counts derived from it) differ along boundaries by a few
+channel levels. Both describe the SVG as written, so they stay consistent with
+the delivered file. Because protected-feature recovery reads that render, a
+subject with explicit protections could in principle take a different recovery
+path in a different stacking; no corpus subject did.
+
+Users can override the complete or partial order in either case; an override is
+always honoured, and colours it leaves unnamed follow the automatic order
+(inferred, or palette order when order cannot matter). The web Trace form lists
+the layer order only when it can matter, and reads the inferred order
+(`GET /api/revisions/{id}/automatic-layer-order`, once per revision) only then;
+the list stays locked until that order has arrived, a failed read is shown on
+the list with a Retry, and a revision with no automatic order (it cannot be
+traced as it stands, e.g. its cleanup is stale) keeps the list locked with that
+reason. While order cannot matter the web app sends no `layer_order` with a
+trace run or live preview, so a hidden override never changes the stacking. The
+override stays in the form, and before such a run starts it is written into the
+project's persisted trace draft, so it survives a reload and a run from an older
+trace, and applies again once solid underlayers or an overlap are set. The user's
+own pending draft wins: when the draft already names a layer order, the run does
+not overwrite it. When the run succeeds and spends the draft, the order is kept
+only if the draft still holds it; an order the user saved while the run was going
+is left as the user saved it. A failed or cancelled run leaves the draft as
+written. A run where order matters does not touch the draft.
 
 ## Palette names and optional colour removal
 
@@ -126,8 +162,8 @@ on the cleaned raster. A cleanup always starts from the raster before any
 earlier cleanup, so cleanups never stack. After a flatten or edit that follows
 a cleanup, tracing waits until Cleanup is run again. The trace CLI applies the
 same cleanup function to an in-memory copy of the labels before tracing and
-leaves the subject's files unchanged. Web and CLI both infer layer order,
-validate, and draw fallback and warning images against the cleaned labels and
+leaves the subject's files unchanged. Web and CLI both infer layer order
+(when it can matter), validate, and draw fallback and warning images against the cleaned labels and
 the raster derived from them, which is what was traced. The removed colour is
 excluded from the cleanup regions and its pixels are never changed.
 
@@ -175,6 +211,88 @@ the requested widening is impossible, the original geometry remains unchanged
 and the cleanup summary (`cleanup.json`, or `trace.json` for the CLI) records a
 warning. A request to widen must never silently fall
 back to removal.
+
+### Live cleanup preview
+
+`vinylgen/cleanup_window.py` cleans one window for the web Cleanup canvas's live
+preview (see [architecture](architecture.md)). It runs `cleanup_labels` on the
+window plus a 256 px margin of the raster a Cleanup run starts from (before any
+earlier cleanup), under the physical size resolved against the whole raster,
+with the removed colour excluded and explicit protection honoured as
+`apply_cleanup` honours them. Whether a region is undersized depends on its
+whole four-connected area and width, which a crop would misjudge for every
+region it cuts, so every region of every colour is measured once on the whole
+raster (area, feature width and whether it holds an explicitly protected pixel;
+none depend on the settings) and the crop reads its regions' decisions from
+those measurements. The result differs from a full run only as follows:
+
+- `remove` is exact except for a group of touching undersized regions that
+  reaches the crop edge: it is split there and chooses its destination among the
+  neighbours inside the crop only. The margin keeps that outside the visible
+  window unless such a group spans it.
+- `widen`, and the widen half of `remove_then_widen`, is an approximation. It
+  grows regions one after another on the crop, so the neighbour colour a region
+  grows into, its thin ridges, and the residual-width and residual-area checks on
+  the neighbour it would thin are all judged inside the crop, and the order of
+  widenings follows the crop. Large background neighbours almost always reach the
+  crop edge, and a widening decided differently there changes what every later
+  widening sees, so a difference can propagate inward. After a removal the
+  regions differ from the measured ones, so the widen half judges regions by their
+  part inside the crop. The 256 px margin (the trace preview keeps 64 px) is what
+  keeps most of this out of view; it is still a crop, so a match is what testing
+  showed, not a guarantee (figures below).
+- The automatic-protection audit numbers a run records (details and pixels
+  cleared) are not computed, and nothing is saved.
+
+The changes overlay shows the net change from the uncleaned raster: a pixel that
+ends with its own colour is transparent (even one removed and then widened back),
+a changed pixel is green when the widening set its final colour and red
+otherwise.
+
+With the crop covering the whole raster the preview equals a full run for every
+action. The whole-raster measurement runs once per revision, one colour at a
+time: each colour's regions are labelled on the colour's bounding box, then its
+distances are formed from one exact nearest-background feature transform, a band
+of rows at a time, so no whole-raster float64 distance field is ever held. The
+widths are bit-identical to the padded EDT a full run uses (checked on every
+corpus subject). A newer request interrupts the measurement before a colour's
+feature transform or between colours, and the colours already finished are kept;
+the transform itself cannot be split without changing the distances, so one
+colour's transform (about 0.7 s on `sourceup`, about 2.5 s on 11264 × 7920) is
+the longest uninterruptible step.
+
+On the development machine the measurement takes about 0.35 s for a 1495 × 1052
+subject, about 6.4 s for the 5980 × 4208 `sourceup` subject (peak about 460 MB
+above the loaded raster, 650 MB process total) and about 22 s for an 11264 × 7920
+subject (peak about 1.6 GB above the loaded raster, 2 GB process total, with
+about 740 MB held afterwards for the raster and its region numbering).
+
+Measured against a full run (`apply_cleanup` on the whole raster) with minimum
+detail width 4 px, minimum area 60 px² and remove below 2 px, over eight random
+600 × 600 windows (the zoom limit) on each of `griffin-castle`, `sky-whale-city`,
+`source-chest-v1-registered`, `griffin-sourceup-2x` and `sourceup`:
+
+| Action | Windows differing, 256 px margin | Largest difference | Deepest inside the window | With a 64 px margin |
+|---|---|---|---|---|
+| `remove` | 0 of 40 | – | – | 0 of 40 |
+| `widen` | 7 of 40 (0, 1, 0, 3, 3 per subject) | 307 px | 214 px | 30 of 40 |
+| `remove_then_widen` | 12 of 40 (0, 1, 4, 4, 3) | 1071 px | 241 px | 31 of 40 |
+
+For scale, a full run changed a median of 120 to 14 000 px per window,
+depending on the subject and action. Per-update time for a 600 × 600 window (cleaning plus
+PNG encoding, measured alone) is 22 to 47 ms for `remove`; `widen` takes a median
+of 0.55 to 1.18 s per subject, up to 1.33 s (`sky-whale-city`), and
+`remove_then_widen` a median of 0.58 to 0.87 s, up to 0.98 s. Widen therefore
+exceeds the 0.9 s target on the 1.5-megapixel subjects. A smaller zoom limit
+barely helps, because the 256 px margin dominates the crop: at 400 × 400,
+`widen` still took up to 0.98 s on `sky-whale-city`. The preview keeps the trace
+preview's 600 × 600 limit.
+
+The preview thread holds one raster at a time: the uncleaned raster with its
+measurements, or the traced segmentation of the Trace preview. Alternating
+between the Cleanup and Trace canvases with both previews on therefore reloads
+each time, and each return to Cleanup measures the whole raster again (about
+6.4 s on `sourceup`, 22 s on 11264 × 7920) before its first preview appears.
 
 ## Trace accuracy and complexity
 
@@ -301,8 +419,9 @@ labels, palette costs and protected evidence to the window plus a 64 px margin
 and runs the unmodified vector stage on the crop: the shared-boundary graph,
 the canonical chain fit, the overlap/solid-underlayer layer construction and
 the SVG layer writer, with settings normalized as a trace run normalizes them
-(an unset maximum deviation is 2 px). Layer order is inferred once from the
-whole image. The result is only a preview:
+(an unset maximum deviation is 2 px). Layer order, when it can matter, is
+inferred once from the whole image; otherwise the layers stack in palette order
+as in a full trace. The result is only a preview:
 
 - Boundaries crossing the crop edge end there, so their fit near that edge can
   differ from a full run's; the margin keeps most of that outside the visible
@@ -340,7 +459,8 @@ symmetric detail controls.
 - Tracing backend and version.
 - Physical size or pixel-mode status.
 - Included and omitted palette colours and their names.
-- Inferred layer order, user overrides, and ordering warnings.
+- Inferred layer order (or why it was not inferred), the effective order, user
+  overrides, and ordering warnings.
 - Path and node counts per component, layer, and document.
 - Compound-path and hole counts.
 - Regions removed, widened, or left unchanged with warnings, when the CLI

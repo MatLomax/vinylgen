@@ -199,6 +199,32 @@ def infer_order(labels: np.ndarray, included: list[int], palette: list[dict]) ->
     return order, warnings
 
 
+def layer_order_matters(settings: TraceSettings) -> bool:
+    """Whether bottom-to-top layer order can change any traced geometry.
+
+    Only solid underlayers or a positive overlap extend a lower layer beneath the
+    layers above it. Without either, every colour meets its neighbours edge to edge
+    and each layer is its own partition region, whatever the stacking.
+    """
+    return bool(settings.solid_underlayers or settings.overlap > 0)
+
+
+# Why the automatic order is not inferred when stacking cannot change geometry.
+ORDER_NOT_INFERRED = ("no solid underlayers and no overlap: layers meet edge to edge, "
+                      "so stacking order changes no geometry; palette order is used")
+
+
+def automatic_order(labels: np.ndarray, included: list[int], palette: list[dict],
+                    settings: TraceSettings) -> tuple[list[int], list[str], bool]:
+    """The bottom-to-top order colours an override leaves unnamed follow, its warnings,
+    and whether it was inferred. ``infer_order`` runs only when order can matter;
+    otherwise the included colours stack in palette order."""
+    if layer_order_matters(settings):
+        order, warnings = infer_order(labels, included, palette)
+        return order, warnings, True
+    return list(included), [], False
+
+
 def apply_order_override(inferred: list[int], requested: list[str] | None,
                          palette: list[dict]) -> tuple[list[int], list[int]]:
     if not requested:
@@ -404,8 +430,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     else:
         cleanup_summary = None
     working = labels
-    inferred, order_warnings = infer_order(labels, included, palette)
-    order, override = apply_order_override(inferred, settings.layer_order, palette)
+    automatic, order_warnings, inferred = automatic_order(labels, included, palette, settings)
+    order, override = apply_order_override(automatic, settings.layer_order, palette)
     if any(i not in included for i in order):
         raise ValueError("omitted colour cannot occur in layer order")
     physical = resolve_physical_size(cleanup, width, height)
@@ -676,7 +702,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "backend": {"tracer": "shared raster boundary graph",
                          "planar_geometry": f"Shapely {shapely.__version__}"},
              "colours": {"included": [palette[i] for i in order], "omitted": palette[omitted] if omitted is not None else None},
-             "layer_order": {"inferred_bottom_to_top": [palette[i]["name"] for i in inferred],
+             "layer_order": {"inferred_bottom_to_top": ([palette[i]["name"] for i in automatic]
+                                                        if inferred else None),
+                             "not_inferred": None if inferred else ORDER_NOT_INFERRED,
                              "effective_bottom_to_top": [palette[i]["name"] for i in order],
                              "override": [palette[i]["name"] for i in override], "warnings": order_warnings},
              "cleanup": cleanup_summary, "geometry": variant_stats, "topology": topology,

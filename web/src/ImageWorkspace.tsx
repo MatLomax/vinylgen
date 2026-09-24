@@ -3,6 +3,7 @@ import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
+import { useCleanupPreview, type CleanupPreviewOptions } from './CleanupPreview'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
@@ -13,6 +14,8 @@ export type WorkspaceLayer = { id: string; name: string; url: string; mediaType:
 // The Trace canvas's live preview; `tracedSize` is null while the revision's traced grid
 // is unknown, which pauses it.
 export type CanvasLivePreview = Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: ImageSize | null }
+// The Cleanup canvas's live preview, paused the same way.
+export type CanvasCleanupPreview = Omit<CleanupPreviewOptions, 'tracedSize'> & { tracedSize: ImageSize | null }
 // A chosen point drawn over the canvas at a constant on-screen size: `points` are pixels
 // of the `markerGridFrom` layer (one point, or both points of a pair), `label` is the
 // number of its row in the side-panel list, and `pending` marks a pair's first pick
@@ -28,7 +31,7 @@ const AIM_ARM = 10
 const absoluteUrl = (url: string) => new URL(url, document.baseURI).href
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, livePreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; livePreview?: CanvasLivePreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, livePreview, cleanupPreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -444,13 +447,19 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   const showAfter = mode === 'split' || (mode === 'blink' && blinkAfter)
   const transformStyle = { width: size.width, height: size.height, transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})` }
-  // The Trace canvas's live preview of the zoomed-in area (inert without `livePreview`).
-  // Paused (while the revision's traced grid is unknown), the switch stays but nothing
-  // is in view to preview, so no request is made, and no shapes are drawn.
-  const previewPaused = livePreviewPaused || !livePreview?.tracedSize
+  // The Trace or Cleanup canvas's live preview of the zoomed-in area (inert without
+  // `livePreview` / `cleanupPreview`). Paused (while the revision's grid is unknown),
+  // the switch stays but nothing is in view to preview, so no request is made, and
+  // nothing is drawn.
+  const previewSource = livePreview ?? cleanupPreview
+  const previewPaused = livePreviewPaused || !previewSource?.tracedSize
   // While paused nothing is in view, so the grid given here is never read.
-  const previewOptions: LivePreviewOptions | undefined = livePreview ? { ...livePreview, tracedSize: livePreview.tracedSize ?? { width: 1, height: 1 } } : undefined
-  const tracePreview = useTracePreview(previewOptions, transform, previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }, size)
+  const pausedGrid = { width: 1, height: 1 }
+  const previewOptions: LivePreviewOptions | undefined = livePreview ? { ...livePreview, tracedSize: livePreview.tracedSize ?? pausedGrid } : undefined
+  const cleanupOptions: CleanupPreviewOptions | undefined = cleanupPreview ? { ...cleanupPreview, tracedSize: cleanupPreview.tracedSize ?? pausedGrid } : undefined
+  const previewViewport = previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }
+  const tracePreview = useTracePreview(previewOptions, transform, previewViewport, size)
+  const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -547,6 +556,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}
         {!previewPaused && tracePreview.stageLayer}
+        {!previewPaused && cleanupLivePreview.stageLayer}
       </div>
       {overlay && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
       {mode === 'split' && compatibleAfter && <div
@@ -575,7 +585,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       </div>}
       {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
       {tracePreview.controls}
-      {livePreview && <div className="trace-preview-paused" aria-live="polite">{previewPaused && livePreviewStatus && <p className="trace-preview-status error">{livePreviewStatus}</p>}</div>}
+      {cleanupLivePreview.controls}
+      {previewSource && <div className="trace-preview-paused" aria-live="polite">{previewPaused && livePreviewStatus && <p className="trace-preview-status error">{livePreviewStatus}</p>}</div>}
       <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>

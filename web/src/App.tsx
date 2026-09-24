@@ -9,7 +9,7 @@ import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, layerOrderMatters, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -232,6 +232,18 @@ export function withPaletteLayerOrder(trace: TraceSettings, palette: PaletteColo
   if (kept.length === trace.layer_order.length && kept.every((hex, at) => hex === trace.layer_order![at])) return trace
   return { ...trace, layer_order: kept.length ? kept : null }
 }
+// The trace settings a run or preview sends: without solid underlayers or overlap the
+// stacking changes no geometry, so a stored layer order is left out (kept in the form) and
+// the layers stack as the tracer's default.
+export function withoutMootLayerOrder(trace: TraceSettings): TraceSettings {
+  return trace.layer_order && !layerOrderMatters(trace) ? { ...trace, layer_order: null } : trace
+}
+// Whether two stored layer orders name the same colours in the same order.
+function sameOrder(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  return a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((entry, at) => entry === b[at]))
+}
+// The number of revisions whose automatic layer order is kept once read.
+const AUTOMATIC_ORDER_CACHE = 16
 // The trace runs made on the shown artwork, newest first, and the shown run's index.
 // A run is a `trace` revision; validate/export records only copy a run's settings, so
 // they are passed through without counting. Forward, the chain follows the newest
@@ -438,9 +450,19 @@ export default function App() {
   // The revision `editorPalette` was read from. A load keeps the last palette listed, but
   // only the selected revision's own may be used to write a layer order.
   const [paletteRevision, setPaletteRevision] = useState<string | null>(null)
-  // That revision's automatic bottom-to-top order (the tracer's own inference), which
-  // colours an override leaves unnamed follow.
-  const [automaticOrder, setAutomaticOrder] = useState<string[] | null>(null)
+  // Each revision's automatic bottom-to-top order (the tracer's own inference), which
+  // colours an override leaves unnamed follow, keyed by revision (a revision's order never
+  // changes; the AUTOMATIC_ORDER_CACHE most recent are kept). Read only while layer order
+  // can matter: otherwise the tracer infers none and no order is listed.
+  const [automaticOrders, setAutomaticOrders] = useState<ReadonlyMap<string, string[] | null>>(new Map())
+  // The last failed read of a revision's automatic order, shown as the list's lock reason.
+  const [automaticOrderError, setAutomaticOrderError] = useState<{ revision: string; message: string } | null>(null)
+  const [automaticOrderAttempt, setAutomaticOrderAttempt] = useState(0)
+  // The layer order a trace run leaves out because order cannot matter. Before the run
+  // starts it is written into the persisted trace draft unless that draft already names one
+  // (so a reload or a run from an older trace keeps it); this remembers the draft's order
+  // then, for the run that spends that draft on success.
+  const traceOrderHeld = useRef<{ jobId: string; order: string[] } | null>(null)
   // A trace job whose start is reading the revision's palette first; the job buttons wait.
   const [startingJob, setStartingJob] = useState(false)
   const startRead = useRef<AbortController | null>(null)
@@ -612,7 +634,13 @@ export default function App() {
       // settings effect reloads (baseline alone then equals the applied values).
       if (next.kind === 'palette' && next.project_id) clearDraft(next.project_id, 'palette')
       if (next.kind === 'cleanup' && next.project_id && cleanupDraftSpent.current === next.id) clearDraft(next.project_id, 'cleanup')
-      if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) clearDraft(next.project_id, 'trace')
+      if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) {
+        const held = traceOrderHeld.current?.jobId === next.id ? traceOrderHeld.current.order : null
+        const pending = held ? draftTraceOrder(next.project_id) : undefined
+        clearDraft(next.project_id, 'trace')
+        // The withheld order survives the spend; an order the user saved during the run wins.
+        if (held) keepTraceDraftOrder(next.project_id, sameOrder(pending, held) ? held : pending ?? null)
+      }
       // The result lands only in its own project; one that finishes after the user
       // switched away leaves the now-selected project's revision, view and stage alone.
       if (!stillSelected(next.project_id)) return
@@ -758,7 +786,7 @@ export default function App() {
     // keeps the last one shown until the new revision's arrives.
     if (!revision || (!editableFlattened && !patched)) { setFlattenedPixels(null); setPixelsRevision(null); return }
     const controller = new AbortController()
-    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) { setEditorPalette(state.palette); setAutomaticOrder(state.automatic_layer_order ?? null); setPaletteRevision(revision) } })
+    requestEditor(revision, controller.signal).then(state => { if (!controller.signal.aborted) { setEditorPalette(state.palette); setPaletteRevision(revision) } })
       .catch(cause => { if (!controller.signal.aborted) setRegionError(String(cause)) })
     if (patched) {
       setFlattenedPixels(patched.pixels); setPixelsRevision(revision)
@@ -786,14 +814,14 @@ export default function App() {
     // raster; measured once that revision's artifacts are current.
     // No flatten behind the shown revision (or a project switch cleared its artifacts):
     // no grid and no palette. A same-project load keeps both until the new ones arrive.
-    if (!revision || !flattened) { setTracedGrid(null); setEditorPalette([]); setAutomaticOrder(null); setPaletteRevision(null); return }
+    if (!revision || !flattened) { setTracedGrid(null); setEditorPalette([]); setPaletteRevision(null); return }
     if (!artifactsCurrent) return
     // A new measurement supersedes the last failure: the preview says only "paused" meanwhile.
     setTracedGridError(null)
     const controller = new AbortController()
     requestEditor(revision, controller.signal).then(state => {
       if (controller.signal.aborted) return
-      setTracedGrid({ revision, width: state.width, height: state.height }); setEditorPalette(state.palette); setAutomaticOrder(state.automatic_layer_order ?? null); setPaletteRevision(revision)
+      setTracedGrid({ revision, width: state.width, height: state.height }); setEditorPalette(state.palette); setPaletteRevision(revision)
     }).catch(cause => {
       if (controller.signal.aborted) return
       // Unmeasured: the preview pauses on this revision, saying why. The palette is left as
@@ -803,6 +831,37 @@ export default function App() {
     })
     return () => controller.abort()
   }, [revision, artifactsCurrent, flattened?.id])
+  const orderMatters = layerOrderMatters(traceSettings)
+  const automaticOrderCached = Boolean(revision && automaticOrders.has(revision))
+  useEffect(() => {
+    // A revision's automatic order never changes, so it is read once per revision, and only
+    // once the trace settings make layer order matter. A failed read is retried by the
+    // list's Retry, or on the next revision or setting change that needs it.
+    if (!revision || !flattened || !artifactsCurrent || !orderMatters || automaticOrderCached) return
+    const controller = new AbortController()
+    setAutomaticOrderError(failure => failure?.revision === revision ? null : failure)
+    api.automaticLayerOrder(revision, controller.signal)
+      .then(result => {
+        if (controller.signal.aborted) return
+        setAutomaticOrders(orders => {
+          const next = new Map(orders)
+          next.delete(revision)
+          next.set(revision, result.automatic_layer_order)
+          while (next.size > AUTOMATIC_ORDER_CACHE) next.delete(next.keys().next().value!)
+          return next
+        })
+      })
+      .catch(cause => { if (!controller.signal.aborted) setAutomaticOrderError({ revision, message: String(cause) }) })
+    return () => controller.abort()
+  }, [revision, artifactsCurrent, flattened?.id, orderMatters, automaticOrderCached, automaticOrderAttempt])
+  const automaticOrder = revision && automaticOrders.has(revision) ? automaticOrders.get(revision) ?? null : null
+  // Until the automatic order is known the list would show palette order as "automatic",
+  // so it stays locked: loading, the failure with a Retry, or a revision with no automatic
+  // order (it cannot be traced as it stands, e.g. its cleanup is stale).
+  const automaticOrderLock = !revision || !flattened || !orderMatters ? null
+    : automaticOrderCached ? (automaticOrder ? null : 'Automatic order unavailable: this revision cannot be traced as it stands.')
+      : automaticOrderError?.revision === revision ? `Automatic order unavailable: ${automaticOrderError.message}`
+        : 'Loading automatic order…'
   useEffect(() => {
     // The Edit stage shows one overlay for whichever tool is active: the pencil's
     // staged (uncommitted) pixels in their target colours, or the selected areas.
@@ -974,10 +1033,17 @@ export default function App() {
       const settings = kind === 'palette' ? { palette: paletteSettings }
         : kind === 'cleanup' ? { cleanup: cleanupOverride ?? cleanupSettings }
           : kind === 'trace' ? { trace: traceSettingsForRun(revision) ?? await traceSettingsFetchingPalette(revision) } : undefined
+      // A layer order the run leaves out (order cannot matter) is the form's own, whichever
+      // run it came from: keep it in the draft, where the next form finds it, unless the
+      // user's pending draft already names an order, which wins.
+      const withheld = kind === 'trace' && !orderMatters ? traceSettings.layer_order : null
+      if (withheld && !draftTraceOrder(selected)) keepTraceDraftOrder(selected, withheld)
+      const draftOrder = withheld ? draftTraceOrder(selected) : null
       const started = await api.startPipeline(kind, selected, revision, settings)
       // Only a run from the newest trace carries the pending trace draft, so only that
       // run spends it; a branch from an older run leaves it for the newest.
       traceDraftSpent.current = kind === 'trace' && traceRuns.index <= 0 ? started.id : null
+      traceOrderHeld.current = traceDraftSpent.current && draftOrder ? { jobId: started.id, order: draftOrder } : null
       cleanupDraftSpent.current = kind === 'cleanup' && !cleanupOverride ? started.id : null
       setJob(started)
     }
@@ -988,7 +1054,7 @@ export default function App() {
   // The trace form for a run of `revisionId`, its layer order narrowed to that revision's
   // own palette so a stale order never runs; null when that palette must be read first.
   function traceSettingsForRun(revisionId: string): TraceSettings | null {
-    if (!traceSettings.layer_order) return traceSettings
+    if (!traceSettings.layer_order || !orderMatters) return withoutMootLayerOrder(traceSettings)
     return paletteRevision === revisionId ? withPaletteLayerOrder(traceSettings, editorPalette, removedColour) : null
   }
   // Reading the palette is part of starting the job (the job buttons stay disabled), and a
@@ -1013,6 +1079,17 @@ export default function App() {
     else if (step === 'cleanup') draft.cleanup = cleanupSettings
     else draft.trace = traceSettings
     localStorage.setItem(draftKey(selected), JSON.stringify(draft))
+  }
+  // The layer order of the project's pending trace draft (undefined: the draft names none).
+  function draftTraceOrder(projectId: string): string[] | null | undefined {
+    try { return (JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') as { trace?: Partial<TraceSettings> }).trace?.layer_order } catch { return undefined }
+  }
+  // Set `order` as the layer order of the project's trace draft, keeping its other fields.
+  function keepTraceDraftOrder(projectId: string, order: string[] | null) {
+    let draft: { trace?: Partial<TraceSettings> } = {}
+    try { draft = JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') } catch { draft = {} }
+    draft.trace = { ...draft.trace, layer_order: order }
+    localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
   }
   function clearDraft(projectId: string, step: 'palette' | 'cleanup' | 'trace') {
     let draft: { palette?: PaletteSettings; cleanup?: CleanupSettings; trace?: TraceSettings } = {}
@@ -1246,7 +1323,9 @@ export default function App() {
           markers={stage === 'flatten' || selectionMode ? preservationMarkers(paletteSettings, selectionMode === 'distinct-second' ? distinctFirst : null) : undefined}
           markerGridFrom={source?.id}
           highlightedMarker={highlight?.lists === pointLists ? highlight.id : null}
-          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedColour), tracedSize } : undefined}
+          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withoutMootLayerOrder(withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedColour)), tracedSize } : undefined}
+          // The unsaved Cleanup form, physical size included; nothing is saved.
+          cleanupPreview={stage === 'cleanup' && !selectionMode && revision ? { revisionId: revision, settings: cleanupSettings, tracedSize } : undefined}
           // Paused until the selected revision's own traced grid is known, so a preview is
           // never requested with another revision's size.
           livePreviewPaused={!artifactsCurrent || tracedGrid?.revision !== revision}
@@ -1314,9 +1393,9 @@ export default function App() {
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{readiness}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', { ...DEFAULT_CLEANUP_SETTINGS, ...(cleanupLookup.revision?.settings.cleanup as Partial<CleanupSettings>) })}>Re-run Cleanup with its last settings</button></div>}
           <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || startingJob || cleanupStale} aria-describedby={lockedBy('trace-lock-reason')} onClick={() => runPipeline('trace')}>Trace and validate</button>{lockReason('trace-lock-reason')}</div>
-          <PipelineControls stage="trace" removedColour={removedColour} automaticOrder={paletteRevision === revision ? automaticOrder : null} layerOrderLocked={!revision || paletteRevision === revision || (artifactsCurrent && !flattened) ? null
+          <PipelineControls stage="trace" removedColour={removedColour} automaticOrder={automaticOrder} layerOrderLocked={!revision || paletteRevision === revision || (artifactsCurrent && !flattened) ? automaticOrderLock
             : tracedGridError && tracedGridError.revision === revision ? `Palette unavailable: ${tracedGridError.message}`
-              : selectedUnavailable ?? 'Loading the selected revision…'} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
+              : selectedUnavailable ?? 'Loading the selected revision…'} onRetryLayerOrder={automaticOrderLock && automaticOrderError?.revision === revision ? () => setAutomaticOrderAttempt(attempt => attempt + 1) : null} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {(!selected || !revision || !source) && <><h2>Editing unavailable</h2><p className="stage-guidance">Create or choose artwork first.</p></>}

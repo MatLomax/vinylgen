@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from typing import Callable
 
 import numpy as np
 from numba import njit
@@ -114,6 +115,101 @@ def _widen_refusal(result, target, seed_idx, targets, exp_r0, exp_c0,
     return False
 
 
+@dataclass(frozen=True)
+class RegionMeasurements:
+    """Every four-connected single-colour region of a label raster, measured whole.
+
+    ``ids`` numbers each pixel's region (unique across colours) and indexes the
+    per-region arrays: ``area`` is the region's pixel count, ``width`` twice the
+    maximum of its padded EDT (the feature width cleanup compares against), and
+    ``explicit`` whether it holds an explicitly protected pixel. None of these
+    depend on cleanup settings, so a region's undersized decision is exact under any
+    thresholds even when only a crop of the raster is cleaned: ``crop`` keeps the
+    per-region arrays whole and crops only ``ids``.
+    """
+
+    ids: np.ndarray
+    area: np.ndarray
+    width: np.ndarray
+    explicit: np.ndarray
+
+    def crop(self, rows: slice, columns: slice) -> "RegionMeasurements":
+        return replace(self, ids=self.ids[rows, columns])
+
+
+# Rows of the distance pass computed at a time in ``_region_peak_distances``.
+MEASURE_CHUNK_ROWS = 256
+
+
+def _region_peak_distances(mask: np.ndarray, components: np.ndarray, count: int) -> np.ndarray:
+    """Each component's maximum padded EDT (``_padded_edt(mask)``), bit for bit.
+
+    Only the nearest-background feature transform is held for the whole mask; the
+    distances are formed from it a band of rows at a time, with the same integer
+    offsets, float64 squares, sum and square root the EDT itself computes, so the
+    full float64 distance field is never resident.
+    """
+    padded = np.pad(mask, 1)
+    features = ndimage.distance_transform_edt(padded, return_distances=False,
+                                              return_indices=True)
+    del padded
+    height, width = components.shape
+    columns = np.arange(1, width + 1)
+    peak = np.zeros(count + 1)
+    for start in range(0, height, MEASURE_CHUNK_ROWS):
+        stop = min(height, start + MEASURE_CHUNK_ROWS)
+        rows = np.arange(start + 1, stop + 1)[:, None]
+        dy = (features[0, start + 1:stop + 1, 1:width + 1] - rows).astype(np.float64)
+        dx = (features[1, start + 1:stop + 1, 1:width + 1] - columns).astype(np.float64)
+        distance = np.sqrt(dy * dy + dx * dx)
+        np.maximum.at(peak, components[start:stop].ravel(), distance.ravel())
+    return peak[1:]
+
+
+def measure_colour_regions(labels: np.ndarray, colour: int, explicit: np.ndarray,
+                           checkpoint: Callable[[], None] | None = None,
+                           ) -> tuple[tuple[slice, slice], np.ndarray, int, np.ndarray,
+                                      np.ndarray, np.ndarray]:
+    """Measure the four-connected regions of one colour of the whole raster.
+
+    Returns the colour's bounding box, the component labels inside it (0 off the
+    colour, 1..count on it), the count, and per component (index 0 is component 1)
+    its pixel count, feature width and whether it holds an explicitly protected
+    pixel, exactly as ``cleanup_labels`` measures a component. The distances are
+    taken on the bounding box padded by one pixel: any background pixel outside the
+    box is at least as far as the pad ring between, so they equal the whole-raster
+    padded EDT. ``checkpoint`` runs before the distance transform and may raise.
+    """
+    mask = labels == colour
+    rows = np.flatnonzero(mask.any(axis=1))
+    if rows.size == 0:
+        empty = np.zeros(0)
+        return ((slice(0, 0), slice(0, 0)), np.zeros((0, 0), dtype=np.int32), 0,
+                empty.astype(np.int64), empty, empty.astype(bool))
+    columns = np.flatnonzero(mask.any(axis=0))
+    bounds = (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(columns[0]), int(columns[-1]) + 1))
+    mask = np.ascontiguousarray(mask[bounds])
+    structure = ndimage.generate_binary_structure(2, 1)
+    components, count = ndimage.label(mask, structure=structure)
+    area = np.bincount(components.ravel(), minlength=count + 1)[1:].astype(np.int64)
+    held = np.bincount(components[explicit[bounds].astype(bool) & mask],
+                       minlength=count + 1)[1:] > 0
+    if checkpoint is not None:
+        checkpoint()
+    width = 2.0 * _region_peak_distances(mask, components, count)
+    return bounds, components, count, area, width, held
+
+
+def remove_then_widen_stages(settings: CleanupSettings) -> tuple[CleanupSettings, CleanupSettings]:
+    """The remove and widen settings a ``remove_then_widen`` cleanup runs in turn."""
+    remove = replace(settings, cleanup_action="remove",
+                     min_detail_width=settings.remove_below_width,
+                     min_region_area=settings.min_region_area)
+    widen = replace(settings, cleanup_action="widen",
+                    min_detail_width=settings.min_detail_width, min_region_area=0.0)
+    return remove, widen
+
+
 def resolve_physical_size(settings: CleanupSettings, width: int, height: int) -> CleanupSettings:
     """The settings with a one-sided physical size completed from the raster's
     proportions. Without a size both dimensions stay ``None`` (pixel units)."""
@@ -169,13 +265,20 @@ def apply_cleanup(labels: np.ndarray, palette: list[dict], settings: CleanupSett
 
 def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
                    settings: CleanupSettings, units_per_pixel: float,
-                   *, explicit: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
+                   *, explicit: np.ndarray | None = None,
+                   regions: RegionMeasurements | None = None) -> tuple[np.ndarray, dict]:
     """Remove or widen undersized regions of ``included`` colours.
 
     ``explicit`` marks the user's explicitly protected pixels, which are never
     reassigned to another colour: an undersized region holding any of them is kept
     whole (counted in ``protected_kept_regions``) and widening never consumes one.
     Such a region may still be widened itself.
+
+    ``regions``, when ``labels`` is a crop of a larger raster, holds that raster's
+    whole-region measurements (``ids`` cropped like ``labels``). A region's area,
+    width and explicit protection are then read from them rather than from its part
+    inside the crop, so it is judged undersized exactly as a full run judges it.
+    Only the first stage uses them: after it the raster differs from the measured one.
     """
     result = labels.copy()
     summary = {"enabled": settings.cleanup, "action": settings.cleanup_action,
@@ -187,13 +290,11 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
     width = settings.min_detail_width
     area = settings.min_region_area
     if settings.cleanup_action == "remove_then_widen":
-        remove_settings = replace(settings, cleanup_action="remove",
-                                  min_detail_width=settings.remove_below_width,
-                                  min_region_area=area)
+        remove_settings, widen_settings = remove_then_widen_stages(settings)
         removed, remove_summary = cleanup_labels(
-            result, included, palette, remove_settings, units_per_pixel, explicit=explicit)
-        widen_settings = replace(settings, cleanup_action="widen",
-                                 min_detail_width=width, min_region_area=0.0)
+            result, included, palette, remove_settings, units_per_pixel, explicit=explicit,
+            regions=regions)
+        # The removal changed the raster, so the measurements no longer describe it.
         widened, widen_summary = cleanup_labels(
             removed, included, palette, widen_settings, units_per_pixel, explicit=explicit)
         combined = {"enabled": True, "action": "remove_then_widen",
@@ -235,7 +336,18 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
         small_mask = np.zeros(result.shape, dtype=bool)
         small_component_ids = np.zeros(result.shape, dtype=np.int32)
         component_number = 0
-        for source in included:
+        if regions is not None:
+            undersized = np.zeros(regions.area.shape, dtype=bool)
+            if area_px > 0:
+                undersized |= regions.area < area_px
+            if width_px > 0:
+                undersized |= regions.width < width_px
+            small_pixels = undersized[regions.ids] & np.isin(snapshot, included)
+            kept = small_pixels & regions.explicit[regions.ids]
+            summary["protected_kept_regions"] += int(np.unique(regions.ids[kept]).size)
+            small_mask = small_pixels & ~kept
+            small_component_ids = np.where(small_mask, regions.ids + 1, 0).astype(np.int32)
+        for source in (included if regions is None else ()):
             components, count = ndimage.label(snapshot == source, structure=structure)
             objects = ndimage.find_objects(components)
             field = snapshot_field(source)
@@ -309,11 +421,16 @@ def cleanup_labels(labels: np.ndarray, included: list[int], palette: list[dict],
         for component in range(1, count + 1):
             bounds = objects[component - 1]
             local = components[bounds] == component
-            pixels = int(local.sum())
             # The component's padded-box EDT: the per-colour field on its pixels,
             # zero on the rest of the box (background there in the box transform).
             distance = np.where(local, source_field[bounds], 0.0)
-            feature_width = 2.0 * float(distance.max())
+            if regions is None:
+                pixels = int(local.sum())
+                feature_width = 2.0 * float(distance.max())
+            else:
+                region = int(regions.ids[bounds][local][0])
+                pixels = int(regions.area[region])
+                feature_width = float(regions.width[region])
             too_small = (area_px > 0 and pixels < area_px) or (width_px > 0 and feature_width < width_px)
             local_growth_seed = None
             if settings.cleanup_action == "widen" and width_px > 0:

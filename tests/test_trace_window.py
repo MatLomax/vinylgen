@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from vinylgen.contracts import SegmentationBundle, TraceSettings
+from vinylgen import trace_window
 from vinylgen.svg_writer import INKSCAPE, SVG
 from vinylgen.trace_window import (
     FITTERS_PER_WINDOW,
@@ -110,7 +112,7 @@ class WindowTraceTests(unittest.TestCase):
         window = window or Window(0, 0, segmentation.width, segmentation.height)
         crop = margin_window(window, segmentation.width, segmentation.height)
         boundaries = window_boundaries(segmentation, included, crop)
-        order = segmentation.layer_order(included, palette)
+        order = segmentation.automatic_order(included, palette, preview_trace_settings(settings))
         preview = ET.fromstring(render_window_svg(
             boundaries, window, order, palette, preview_trace_settings(settings),
             float(settings.get("overlap", 0.0))))
@@ -163,6 +165,27 @@ class WindowTraceTests(unittest.TestCase):
         self.assertEqual(first, [0, 1, 2])
         segmentation.labels[:] = 2  # a cached order is not recomputed from the labels
         self.assertEqual(segmentation.layer_order([0, 1, 2], palette), first)
+
+    def test_automatic_order_is_inferred_only_when_layer_order_can_matter(self):
+        with tempfile.TemporaryDirectory(dir=SCRATCH) as name:
+            subject = nested_subject(Path(name))
+            segmentation = PreviewSegmentation.load(subject / "segmentation.npz")
+        palette = [{"index": index, "name": f"C{index}", "hex": hex_value}
+                   for index, hex_value in enumerate(["#0F233C", "#E15F2D", "#3CB45A"])]
+        # Green fills the canvas border: inference would put it lowest.
+        for edge in (np.s_[0, :], np.s_[-1, :], np.s_[:, 0], np.s_[:, -1]):
+            segmentation.labels[edge] = 2
+        with mock.patch.object(trace_window, "infer_order",
+                               wraps=trace_window.infer_order) as spy:
+            edge_to_edge = segmentation.automatic_order(
+                [0, 1, 2], palette, preview_trace_settings({}))
+            spy.assert_not_called()
+            self.assertEqual(edge_to_edge, [0, 1, 2])
+            for settings in ({"solid_underlayers": True}, {"overlap": 0.5}):
+                with self.subTest(settings=settings):
+                    self.assertEqual(segmentation.automatic_order(
+                        [0, 1, 2], palette, preview_trace_settings(settings))[0], 2)
+            spy.assert_called_once()
 
     def test_float16_costs_crop_to_the_same_values_as_a_full_load(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as name:

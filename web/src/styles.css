@@ -751,6 +751,7 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 /* Live trace preview on the Trace canvas: the switch, its badge and states sit top-left;
    the previewed shapes sit inside the transformed image stage at their window. */
 .image-stage img.trace-preview-shapes { inset: auto; }
+.image-stage img.cleanup-preview-pixels, .image-stage img.cleanup-preview-changes { inset: auto; }
 .trace-preview-controls { position: absolute; z-index: 6; inset-block-start: 14px; inset-inline-start: 14px; display: grid; gap: 6px; justify-items: start; max-width: min(320px, calc(100% - 90px)); pointer-events: none; }
 .trace-preview-announcer { display: grid; gap: 6px; justify-items: start; }
 .trace-preview-switch { pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); color: var(--text-label); font-size: 13px; cursor: pointer; }

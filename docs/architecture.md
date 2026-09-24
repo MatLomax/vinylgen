@@ -17,6 +17,7 @@ source raster
   -> validation.py     SVG structural validation
   -> tracing.py        vector-stage orchestration and audit
      trace_window.py   the same vector stage on one window, for the live preview
+     cleanup_window.py cutter cleanup of one window, for the live cleanup preview
 ```
 
 `reporting.py` owns palette inspection images. `cli_palette.py` and
@@ -160,7 +161,9 @@ re-previews once it has been still for 150 ms, and a newer change aborts the
 request in flight. The server resolves exactly what "Trace and validate" from
 that revision would trace: the effective (cleaned) segmentation, the active
 cleanup's removed colour and physical size (a stale cleanup blocks the preview
-as it blocks the trace), and the layer order inferred from the whole image. It
+as it blocks the trace), and the layer order a trace would use (inferred from the
+whole image when solid underlayers or an overlap make order matter, otherwise
+palette order). It
 traces the window plus a hidden 64 px margin through the real vector stage:
 `shared_boundary_polygons` on the crop, the canonical chain fitter with the
 normalized trace settings, the same overlap-buffer or solid-underlayer
@@ -190,6 +193,34 @@ most of it out of view), and underlayer adjacency and overlap buffers see only
 the crop; validation and protected-feature recovery are skipped; and nothing is
 saved. "Trace and validate" still creates the revision. When the window's
 margin reaches every image edge, the preview is the full trace path for path.
+
+The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served
+on the same preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its
+"Live preview" switch is remembered separately from the Trace canvas's; with it
+on, the canvas cleans whatever is zoomed into with the Cleanup form's current,
+unsaved values, physical size included (the thresholds are in mm), and draws the
+cleaned pixels over the image at that window. The changes sit on top, on the same
+raster grid, as a separate overlay a "Show changes" switch (also remembered)
+hides: the net change from the uncleaned raster, red where removal set the final
+colour, green where widening did, transparent where a pixel ends unchanged. The
+window, the 600 × 600 px limit with "Zoom in to preview", the 150 ms settle, the
+aborting of the request in flight, the checkpoints and the error conventions
+(404, 409 for an unflattened or stale revision or a superseded request, 422 for
+the window or settings, 503 when shutting down) are the trace preview's. The
+server cleans the window plus a hidden 256 px margin (wider than the trace
+preview's 64 px, since widening depends on neighbours well beyond the window) of
+the raster a Cleanup run of that revision starts from (before any earlier
+cleanup), measuring every region of the whole raster once per revision so a
+region the window cuts is judged by its whole area and width. The thread
+holds either that raster (with its measurements) or a traced segmentation, never
+both, and releases it after the same idle period, so alternating between the
+Cleanup and Trace canvases reloads each time and re-measures on each return to
+Cleanup (about 6.4 s on `sourceup`). Nothing is saved; "Run
+cleanup" still creates the revision. The differences from a full run (a removal
+group split at the crop edge, the widen approximation, no protection-clearing
+audit numbers), how often they showed in testing, and the per-update times (up
+to about 1.3 s for widen on 1.5-megapixel subjects) are documented in the
+[tracing specification](svg-tracing-spec.md).
 
 ## Stage invariants
 

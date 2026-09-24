@@ -250,6 +250,9 @@ class EditorState(BaseModel):
     height: int
     palette: list[dict[str, Any]]
     protected_pixels: int
+
+
+class AutomaticLayerOrder(BaseModel):
     # Bottom-to-top hex order a trace infers before any override (None: not traceable).
     automatic_layer_order: list[str] | None = None
 
