@@ -1,3 +1,4 @@
+import functools
 import importlib.util
 import os
 import sys
@@ -95,13 +96,52 @@ def _random_labels(rng, kind, height, width, colours):
     raise ValueError(kind)
 
 
-class BoundaryGraphFastTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.reference = _load_reference()
+_FUZZ_CASES = 320
+# The fuzz cases are split across shards so a parallel run spreads the slow
+# reference comparisons over several workers. Every shard regenerates the same
+# seeded sequence (cheap) and compares only its own indices, so together the
+# shards check exactly the full case list.
+_FUZZ_SHARDS = 8
 
+
+@functools.cache
+def _reference():
+    return _load_reference()
+
+
+def _fuzz_cases():
+    """Yield every seeded fuzz case in a fixed order: (index, kind, inputs)."""
+    rng = np.random.default_rng(20240905)
+    kinds = ("uniform", "blobs", "checkerboard", "isolated")
+    for index in range(_FUZZ_CASES):
+        kind = kinds[index % len(kinds)]
+        height = int(rng.integers(1, 41))
+        width = int(rng.integers(1, 61))
+        colours = int(rng.integers(2, 7))
+        labels = _random_labels(rng, kind, height, width, colours)
+        used_max = int(labels.max())
+        palette = used_max + 1 + int(rng.integers(0, 2))
+        dtype = np.float32 if index % 2 else np.float64
+        palette_costs = rng.random((height, width, palette)).astype(dtype)
+        if index % 5 == 0:
+            # Force denominator ties so the crossing clamps to the midpoint.
+            palette_costs[:] = np.float32(1.0) if dtype is np.float32 else 1.0
+        elif index % 7 == 0:
+            # Non-finite costs: NaN crossings clamp to the lower bound and
+            # infinite ones to whichever bound the sign selects.
+            specials = rng.random(palette_costs.shape) < 0.05
+            palette_costs[specials] = np.nan
+            palette_costs[rng.random(palette_costs.shape) < 0.02] = np.inf
+        protected_features = None
+        if index % 3:
+            protected_features = rng.random((height, width)) < 0.3
+        included = list(range(palette))
+        yield index, kind, (labels, included, palette_costs, protected_features)
+
+
+class BoundaryGraphFastTests(unittest.TestCase):
     def _compare(self, labels, included, palette_costs, protected_features):
-        expected = self.reference.shared_boundary_polygons(
+        expected = _reference().shared_boundary_polygons(
             labels.copy(), included, palette_costs,
             protected_features=protected_features)
         produced = shared_boundary_polygons(
@@ -109,41 +149,17 @@ class BoundaryGraphFastTests(unittest.TestCase):
             protected_features=protected_features)
         _assert_equal(self, produced, expected)
 
-    def test_fuzz_matches_reference(self):
-        rng = np.random.default_rng(20240905)
-        kinds = ("uniform", "blobs", "checkerboard", "isolated")
-        cases = 0
-        for index in range(320):
-            kind = kinds[index % len(kinds)]
-            if kind == "checkerboard":
-                height = int(rng.integers(1, 41))
-                width = int(rng.integers(1, 61))
-            else:
-                height = int(rng.integers(1, 41))
-                width = int(rng.integers(1, 61))
-            colours = int(rng.integers(2, 7))
-            labels = _random_labels(rng, kind, height, width, colours)
-            used_max = int(labels.max())
-            palette = used_max + 1 + int(rng.integers(0, 2))
-            dtype = np.float32 if index % 2 else np.float64
-            palette_costs = rng.random((height, width, palette)).astype(dtype)
-            if index % 5 == 0:
-                # Force denominator ties so the crossing clamps to the midpoint.
-                palette_costs[:] = np.float32(1.0) if dtype is np.float32 else 1.0
-            elif index % 7 == 0:
-                # Non-finite costs: NaN crossings clamp to the lower bound and
-                # infinite ones to whichever bound the sign selects.
-                specials = rng.random(palette_costs.shape) < 0.05
-                palette_costs[specials] = np.nan
-                palette_costs[rng.random(palette_costs.shape) < 0.02] = np.inf
-            protected_features = None
-            if index % 3:
-                protected_features = rng.random((height, width)) < 0.3
-            included = list(range(palette))
-            with self.subTest(case=index, kind=kind, shape=(height, width)):
-                self._compare(labels, included, palette_costs, protected_features)
-            cases += 1
-        self.assertGreaterEqual(cases, 300)
+    def _fuzz_shard(self, shard):
+        checked = 0
+        for index, kind, inputs in _fuzz_cases():
+            # Deal consecutive blocks of four (one of each kind, both dtypes)
+            # round-robin so every shard gets the same mix of case costs.
+            if (index // 4) % _FUZZ_SHARDS != shard:
+                continue
+            with self.subTest(case=index, kind=kind, shape=inputs[0].shape):
+                self._compare(*inputs)
+            checked += 1
+        self.assertEqual(checked, _FUZZ_CASES // _FUZZ_SHARDS)
 
     def test_corpus_subjects_match_reference(self):
         _require_slow_tests()
@@ -171,6 +187,11 @@ class BoundaryGraphFastTests(unittest.TestCase):
         included = list(range(bundle.palette_rgb.shape[0]))
         self._compare(bundle.labels, included, bundle.palette_costs,
                       bundle.protected_features)
+
+
+for _shard in range(_FUZZ_SHARDS):
+    setattr(BoundaryGraphFastTests, f"test_fuzz_matches_reference_{_shard}",
+            lambda self, shard=_shard: self._fuzz_shard(shard))
 
 
 if __name__ == "__main__":

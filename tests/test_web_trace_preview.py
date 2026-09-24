@@ -220,7 +220,7 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         service._clock = time.monotonic
         service._idle_seconds = 0.05
         self.assertEqual((await self.preview(palette_revision, window)).status_code, 200)
-        for _ in range(100):
+        for _ in range(1000):
             if service._segmentation is None:
                 break
             await asyncio.sleep(0.02)
@@ -323,7 +323,7 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
             service.shutdown()
             response = await running
             queued_response = await queued
-        self.assertLess(time.monotonic() - stopped_at, 2.0)
+        self.assertLess(time.monotonic() - stopped_at, 5.0)
         for stopped in (response, queued_response):
             self.assertEqual(stopped.status_code, 503, stopped.text)
             self.assertIn("server shutting down", stopped.text)

@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import base64
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -431,7 +432,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         raise RuntimeError(fault)
     fallback_image = subject_dir / "trace-fallbacks.png"
     fallback_overlay = subject_dir / "trace-fallbacks-overlay.png"
-    semantic_render = scratch / f"{subject_dir.name}-semantic-validation.png"
+    # Unique per trace: concurrent traces of same-named subjects (parallel jobs,
+    # parallel tests) must not overwrite or delete each other's render.
+    semantic_render = scratch / f"{subject_dir.name}-{uuid.uuid4().hex}-semantic-validation.png"
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
     palette_rgb = segmentation.palette_rgb.astype(np.int32)
     canvas = box(0, 0, width, height)

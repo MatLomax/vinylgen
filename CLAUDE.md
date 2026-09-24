@@ -84,9 +84,10 @@ python3 palette_infer.py images --min-region-pixels 0 --jobs 1
 # Trace every prepared subject.
 python3 svg_trace.py outputs
 
-# Run the regression suite. Always use the project virtual environment: the
-# system Python does not include web-test dependencies such as httpx.
-.venv/bin/python -m unittest discover -s tests -v
+# Run the regression suite in parallel (one worker per core; ~15 s). Always use
+# the project virtual environment: the system Python does not include web-test
+# dependencies such as httpx. `-j 1` runs serially; test names narrow the run.
+.venv/bin/python scripts/run_tests.py
 ```
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold

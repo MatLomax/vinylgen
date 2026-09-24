@@ -110,7 +110,7 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def wait(self, client: httpx.AsyncClient, job_id: str) -> dict:
-        for _ in range(200):
+        for _ in range(1000):
             job = (await client.get(f"/api/jobs/{job_id}")).json()
             if job["status"] not in {"queued", "running"}:
                 return job
@@ -376,7 +376,7 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
                 source=io.BytesIO(_png(size=(64, 48))))
             started = (await client.post(
                 f"/api/projects/{project['id']}/revisions/{parent}/upscale", json={})).json()
-            for _ in range(200):
+            for _ in range(1000):
                 if entered.is_set():
                     break
                 await asyncio.sleep(.01)

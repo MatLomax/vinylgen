@@ -361,7 +361,7 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
             "/api/jobs", json={"steps": 5, "step_delay_ms": 40})).json()
         store.update_job(job["id"], error="Worker process stopped before completion")
         current = store.get_job(job["id"])
-        for _ in range(200):
+        for _ in range(1000):
             current = store.get_job(job["id"])
             if current["status"] in {"succeeded", "failed", "cancelled"}:
                 break

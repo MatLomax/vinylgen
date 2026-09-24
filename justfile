@@ -1,4 +1,6 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# Recipe arguments reach the shell as "$@" too, so they pass through unsplit.
+set positional-arguments
 
 default:
     @just --list
@@ -13,11 +15,29 @@ setup:
 build:
     npm --prefix web run build
 
-# Run all automated tests.
-test: test-backend test-frontend
+# Run all automated tests. Backend and frontend run concurrently; each one's
+# output is buffered and printed whole so the two never interleave.
+test:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    mkdir -p .tmp
+    logs="$(mktemp -d .tmp/test-logs.XXXXXX)"
+    trap 'rm -rf "$logs"' EXIT
+    .venv/bin/python scripts/run_tests.py > "$logs/backend" 2>&1 & backend=$!
+    npm --prefix web test > "$logs/frontend" 2>&1 & frontend=$!
+    wait "$backend"; backend_status=$?
+    wait "$frontend"; frontend_status=$?
+    echo "=== backend ==="; cat "$logs/backend"
+    echo "=== frontend ==="; cat "$logs/frontend"
+    if (( backend_status || frontend_status )); then
+        echo "Tests failed: backend exit $backend_status, frontend exit $frontend_status" >&2
+        exit 1
+    fi
 
-test-backend:
-    .venv/bin/python -m unittest discover -s tests -v
+# Runs across one worker per core; pass args such as `-j 1`, `-v`,
+# `--durations 20` or test names (e.g. test_web_pipeline.WebCleanupStageTest).
+test-backend *args:
+    .venv/bin/python scripts/run_tests.py "$@"
 
 test-frontend:
     npm --prefix web test

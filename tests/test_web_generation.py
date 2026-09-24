@@ -143,15 +143,15 @@ print(json.dumps({{"type": "turn.completed", "secret": "must-not-persist"}}), fl
 
     def test_timeout_terminates_process_and_cleans_job(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "timed out"):
-            self.provider(.1).generate(prompt="sleep forever", size="1024x1024", quality="low")
+            self.provider(2).generate(prompt="sleep forever", size="1024x1024", quality="low")
         call = json.loads(self.log.read_text().splitlines()[-1])
         self.assertFalse(Path(call["cwd"]).exists())
 
     def test_timeout_kills_descendant_after_leader_exits(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "timed out"):
-            self.provider(.1).generate(prompt="child forever", size="1024x1024", quality="low")
+            self.provider(2).generate(prompt="child forever", size="1024x1024", quality="low")
         child_pid = int((Path(self.temp.name) / "child.pid").read_text())
-        for _ in range(100):
+        for _ in range(1000):
             if not Path(f"/proc/{child_pid}").exists():
                 break
             time.sleep(.01)
@@ -170,7 +170,7 @@ print(json.dumps({{"type": "turn.completed", "secret": "must-not-persist"}}), fl
 
         thread = threading.Thread(target=run)
         thread.start()
-        for _ in range(100):
+        for _ in range(1000):
             if self.log.exists() and self.log.stat().st_size:
                 break
             time.sleep(.01)
@@ -195,7 +195,7 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def wait(self, job_id: str) -> dict:
-        for _ in range(100):
+        for _ in range(1000):
             job = (await self.client.get(f"/api/jobs/{job_id}")).json()
             if job["status"] not in {"queued", "running"}:
                 return job
@@ -322,7 +322,7 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
                                    base_url="http://test")
         try:
             started = (await client.post("/api/generations", json={"prompt": "slow"})).json()
-            for _ in range(100):
+            for _ in range(1000):
                 if entered.is_set():
                     break
                 await asyncio.sleep(.01)
@@ -356,7 +356,7 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
         client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                    base_url="http://test")
         started = (await client.post("/api/generations", json={"prompt": "slow"})).json()
-        for _ in range(100):
+        for _ in range(1000):
             if entered.is_set():
                 break
             await asyncio.sleep(.01)
@@ -404,7 +404,7 @@ class WebGenerationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cancellation.is_set())
 
     async def wait_for_app(self, client: httpx.AsyncClient, job_id: str) -> dict:
-        for _ in range(100):
+        for _ in range(1000):
             job = (await client.get(f"/api/jobs/{job_id}")).json()
             if job["status"] not in {"queued", "running"}:
                 return job

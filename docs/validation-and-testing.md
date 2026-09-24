@@ -5,8 +5,25 @@
 Run:
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python scripts/run_tests.py            # parallel, one worker per core
+.venv/bin/python scripts/run_tests.py -j 1 -v    # serial, verbose
+.venv/bin/python scripts/run_tests.py test_web_pipeline --durations 10
 ```
+
+`scripts/run_tests.py` is a standard-library unittest runner. It dispatches each
+test as its own unit, except classes with class or module fixtures, which stay
+together; it schedules the slowest units first using durations recorded by the
+previous full run in `.tmp/test-durations.json`. Tests must therefore not share
+fixed scratch paths: every test and every pipeline stage writes to a unique
+temporary directory or file name. Plain `python -m unittest discover -s tests`
+still works for a serial run. Slow seeded fuzz checks are split into shard tests
+(for example `test_fuzz_matches_reference_0`..`_7` in
+`tests/test_boundary_graph_fast.py`) so no single test bounds the run; each
+shard regenerates the same seeded case list and checks its share of it.
+
+`just test` runs this backend suite and the frontend `vitest` suite
+concurrently, printing each one's output whole once both finish; the whole gate
+takes roughly 24 s on the 28-core host.
 
 The current tests cover:
 
