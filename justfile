@@ -93,11 +93,13 @@ restart:
 
 # Build, test, restart, and check both routes. Refuses to restart while a job is
 # active, because the restart would interrupt it and surface a spurious "Worker
-# process stopped before completion"; pass force=true to override.
+# process stopped before completion"; pass force=true to override. just hands a
+# recipe parameter its command-line word verbatim, so both "force=true" and a bare
+# "true" arrive here and both override.
 deploy force="false": test build
     active="$(curl -fsS --max-time 5 http://127.0.0.1:8275/api/health 2>/dev/null \
         | sed -n 's/.*"active_jobs":\([0-9][0-9]*\).*/\1/p' || true)"; \
-    if [[ "{{force}}" != "true" && -n "$active" && "$active" != "0" ]]; then \
+    if [[ "{{force}}" != "true" && "{{force}}" != "force=true" && -n "$active" && "$active" != "0" ]]; then \
         echo "Refusing to restart: $active job(s) still active; a restart would interrupt them." >&2; \
         echo "Wait for them to finish, or run 'just deploy force=true' to override." >&2; \
         exit 1; \
