@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
+import { ImageWorkspace, type CanvasMarker, type WorkspaceLayer } from './ImageWorkspace'
 import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
 
+const TRACE_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
 const layers: WorkspaceLayer[] = [
   { id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' },
   { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
@@ -319,7 +320,7 @@ describe('traced vector layers on the editor canvas', () => {
   }
 
   it('registers a millimetre-sized SVG on the flattened pixel grid and overlays the trace audit', () => {
-    const { container } = render(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    const { container } = render(<ImageWorkspace layers={traced} preferredLayerId="svg" editorMode inspectionKinds={['fallbacks']} canvasLabel="Trace canvas" />)
     // A 1200 mm wide SVG reports ~4535 CSS px; the raster grid is 3000 × 1000.
     loadUrl(container, '/traced.svg', 4535, 1512)
     loadUrl(container, '/flat.png', 3000, 1000)
@@ -454,14 +455,14 @@ describe('traced vector layers on the editor canvas', () => {
       { id: `${id}-svg`, name: 'Traced', url: `/${id}.svg`, mediaType: 'image/svg+xml', role: 'image', sizeFrom: 'flat' },
       { id: `${id}-marks`, name: 'Tightened boundaries', url: `/${id}-marks.png`, mediaType: 'image/png', role: 'overlay', kind: 'trace-fallbacks-overlay' },
     ]
-    const { container, rerender } = render(<ImageWorkspace layers={run('a')} preferredLayerId="a-svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    const { container, rerender } = render(<ImageWorkspace layers={run('a')} preferredLayerId="a-svg" editorMode inspectionKinds={TRACE_KINDS} canvasLabel="Trace canvas" />)
     loadUrl(container, '/flat.png', 300, 100)
     loadUrl(container, '/a.svg', 300, 100)
     loadUrl(container, '/a-marks.png', 300, 100)
     const toggle = () => within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Tightened boundaries') as HTMLInputElement
     fireEvent.click(toggle())
     expect(toggle().checked).toBe(true)
-    rerender(<ImageWorkspace layers={run('b')} preferredLayerId="b-svg" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    rerender(<ImageWorkspace layers={run('b')} preferredLayerId="b-svg" editorMode inspectionKinds={TRACE_KINDS} canvasLabel="Trace canvas" />)
     loadUrl(container, '/b.svg', 300, 100)
     loadUrl(container, '/b-marks.png', 300, 100)
     expect(toggle().checked).toBe(true)
@@ -473,7 +474,7 @@ describe('traced vector layers on the editor canvas', () => {
       { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
       { id: 'marks', name: 'Tightened boundaries', url: '/marks.png', mediaType: 'image/png', role: 'overlay', kind: 'trace-fallbacks-overlay' },
     ]
-    const { container, rerender } = render(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    const { container, rerender } = render(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionKinds={TRACE_KINDS} canvasLabel="Trace canvas" />)
     loadUrl(container, '/flat.png', 300, 100)
     loadUrl(container, '/marks.png', 300, 100)
     fireEvent.click(within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Tightened boundaries'))
@@ -481,7 +482,7 @@ describe('traced vector layers on the editor canvas', () => {
     rerender(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode canvasLabel="Flatten canvas" />)
     expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
     expect(container.querySelector('img.inspection-overlay')).toBeNull()
-    rerender(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    rerender(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionKinds={TRACE_KINDS} canvasLabel="Trace canvas" />)
     expect(container.querySelector('img.inspection-overlay')).not.toBeNull()
   })
 })
@@ -623,5 +624,215 @@ describe('canvas loading states and wheel zoom', () => {
       expect(status?.getAttribute('aria-live')).toBe('polite')
       expect(status?.textContent).toBe('Preview unavailable: no traced grid')
     } finally { localStorage.clear(); vi.useRealTimers() }
+  })
+})
+
+describe('preservation markers, pick aim and upscaled overlays on the Flatten canvas', () => {
+  // A 100 × 50 source flattened at 2× upscale onto a 200 × 100 grid, with the flatten's
+  // protected-areas overlay on that flattened grid.
+  const flatten: WorkspaceLayer[] = [
+    { id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' },
+    { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
+    { id: 'protected', name: 'Protected areas', url: '/protected.png', mediaType: 'image/png', role: 'overlay', kind: 'protected-areas-overlay' },
+    { id: 'missed', name: 'Missed source details (red)', url: '/missed.png', mediaType: 'image/png', role: 'overlay', kind: 'trace-missed-details-overlay' },
+  ]
+  const markers: CanvasMarker[] = [
+    { id: 'protect-0', kind: 'protect', label: '1', points: [[10, 20]] },
+    { id: 'preserve-0', kind: 'preserve', label: '1', points: [[30, 5]] },
+    { id: 'preserve-1', kind: 'preserve', label: '2', points: [[40, 6]] },
+    { id: 'pair-0', kind: 'pair', label: '1', points: [[2, 3], [80, 40]] },
+    { id: 'pair-pending', kind: 'pair', label: '2', points: [[60, 10]], pending: true },
+  ]
+  type Props = Partial<Parameters<typeof ImageWorkspace>[0]>
+  const canvas = (props: Props) => <ImageWorkspace layers={flatten} editorMode canvasLabel="Flatten canvas" markers={markers} markerGridFrom="source" inspectionKinds={['protected-areas-overlay']} {...props} />
+
+  function prepareFlatten(props: Props = {}) {
+    const result = render(canvas(props))
+    const viewport = within(result.container).getByLabelText(props.selectionLabel ?? 'Image comparison viewport')
+    Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
+    viewport.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) })
+    HTMLElement.prototype.setPointerCapture = () => undefined
+    for (const [name, width, height] of [['source', 100, 50], ['flat', 200, 100], ['protected', 200, 100], ['missed', 200, 100]] as const) {
+      for (const image of [...result.container.querySelectorAll('img')].filter(node => node.src.endsWith(`/${name}.png`)) as HTMLImageElement[]) {
+        Object.defineProperties(image, { naturalWidth: { configurable: true, value: width }, naturalHeight: { configurable: true, value: height } })
+        fireEvent.load(image)
+      }
+    }
+    return { ...result, viewport }
+  }
+  const view = (container: HTMLElement) => {
+    const match = /translate3d\(([-\d.e]+)px, ([-\d.e]+)px, 0\) scale\(([\d.e]+)\)/.exec((container.querySelector('.image-stage') as HTMLElement).style.transform)!
+    return { x: Number(match[1]), y: Number(match[2]), scale: Number(match[3]) }
+  }
+  const pointsOf = (container: HTMLElement, id: string) => [...container.querySelectorAll(`[data-marker-id="${id}"] .marker-point`)].map(node => {
+    const match = /translate\(([-\d.e]+) ([-\d.e]+)\)/.exec(node.getAttribute('transform')!)!
+    return { x: Number(match[1]), y: Number(match[2]) }
+  })
+  const expectAt = (actual: { x: number; y: number }, expected: { x: number; y: number }) => {
+    expect(actual.x).toBeCloseTo(expected.x, 6)
+    expect(actual.y).toBeCloseTo(expected.y, 6)
+  }
+
+  it('draws each kind as its own numbered shape on its pixel centre, hidden from assistive tech', () => {
+    const { container } = prepareFlatten({ preferredLayerId: 'source' })
+    const layer = container.querySelector('svg.canvas-annotations')!
+    expect(layer.getAttribute('aria-hidden')).toBe('true')
+    const marker = (id: string) => container.querySelector(`[data-marker-id="${id}"]`)!
+    expect(marker('protect-0').classList.contains('protect')).toBe(true)
+    expect(marker('protect-0').querySelector('.marker-shape')?.tagName).toBe('polygon')
+    expect(marker('preserve-0').querySelector('.marker-shape')?.tagName).toBe('circle')
+    expect(marker('pair-0').querySelector('.marker-point .marker-shape')?.tagName).toBe('rect')
+    // A pair is two markers joined by a line.
+    expect(pointsOf(container, 'pair-0')).toHaveLength(2)
+    expect(marker('pair-0').querySelectorAll('.marker-link line')).toHaveLength(2)
+    expect([...marker('preserve-1').querySelectorAll('.marker-label')].map(node => node.textContent)).toEqual(['2'])
+    expect([...marker('pair-0').querySelectorAll('.marker-label')].map(node => node.textContent)).toEqual(['1', '1'])
+    const { x, y, scale } = view(container)
+    expectAt(pointsOf(container, 'protect-0')[0], { x: x + 10.5 * scale, y: y + 20.5 * scale })
+    expectAt(pointsOf(container, 'pair-0')[1], { x: x + 80.5 * scale, y: y + 40.5 * scale })
+  })
+
+  it('follows zoom and pan while keeping a constant on-screen size', () => {
+    const { container, viewport } = prepareFlatten({ preferredLayerId: 'source' })
+    const radius = () => container.querySelector('[data-marker-id="preserve-0"] .marker-shape')!.getAttribute('r')
+    const before = view(container)
+    const initialRadius = radius()
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 160, clientY: 130 })
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 160, clientY: 130 })
+    const after = view(container)
+    expect(after.scale).toBeCloseTo(before.scale * 1.5625, 6)
+    expectAt(pointsOf(container, 'preserve-0')[0], { x: after.x + 30.5 * after.scale, y: after.y + 5.5 * after.scale })
+    expect(radius()).toBe(initialRadius)
+  })
+
+  it('scales source-grid markers onto a larger flattened view', () => {
+    const { container } = prepareFlatten({ preferredLayerId: 'flat' })
+    expect((container.querySelector('.image-stage') as HTMLElement).style.width).toBe('200px')
+    const { x, y, scale } = view(container)
+    // Source pixel (10, 20) covers flattened pixels 20–21 × 40–41; its centre is 21, 41.
+    expectAt(pointsOf(container, 'protect-0')[0], { x: x + 21 * scale, y: y + 41 * scale })
+    expectAt(pointsOf(container, 'pair-pending')[0], { x: x + 121 * scale, y: y + 21 * scale })
+  })
+
+  it('draws no markers over an image whose grid does not register with theirs', () => {
+    const odd: WorkspaceLayer[] = [{ id: 'report', name: 'Report', url: '/report.png', mediaType: 'image/png', role: 'image' }, ...flatten]
+    const { container } = render(<ImageWorkspace layers={odd} editorMode preferredLayerId="report" markers={markers} markerGridFrom="source" />)
+    for (const [name, width, height] of [['report', 100, 70], ['source', 100, 50]] as const) {
+      const image = [...container.querySelectorAll('img')].find(node => node.src.endsWith(`/${name}.png`)) as HTMLImageElement
+      Object.defineProperties(image, { naturalWidth: { configurable: true, value: width }, naturalHeight: { configurable: true, value: height } })
+      fireEvent.load(image)
+    }
+    expect(container.querySelector('.canvas-marker')).toBeNull()
+  })
+
+  it('shows the pending pair marker and highlights the marker of the hovered row', () => {
+    const { container, rerender } = prepareFlatten({ preferredLayerId: 'source' })
+    const marker = (id: string) => container.querySelector(`[data-marker-id="${id}"]`)!
+    expect(marker('pair-pending').classList.contains('pending')).toBe(true)
+    expect(marker('pair-0').classList.contains('pending')).toBe(false)
+    expect(container.querySelector('.canvas-marker.highlighted')).toBeNull()
+    rerender(canvas({ preferredLayerId: 'source', highlightedMarker: 'preserve-1' }))
+    expect([...container.querySelectorAll('.canvas-marker.highlighted')].map(node => node.getAttribute('data-marker-id'))).toEqual(['preserve-1'])
+  })
+
+  it('aims a pick with a crosshair on the hovered pixel and reads out its coordinates', () => {
+    const onSelectPoint = vi.fn()
+    const label = 'Source image preservation-point selector'
+    const { container, viewport } = prepareFlatten({ preferredLayerId: 'source', onSelectPoint, pickAim: true, selectionLabel: label })
+    const { x, y, scale } = view(container)
+    const client = { clientX: x + 12.5 * scale, clientY: y + 34.5 * scale }
+    fireEvent.pointerMove(viewport, { pointerId: 1, ...client })
+    const square = container.querySelector('.pick-aim .marker-shape .pick-hover')!
+    expect(Number(square.getAttribute('x')) + Number(square.getAttribute('width')) / 2).toBeCloseTo(x + 12.5 * scale, 6)
+    expect(Number(square.getAttribute('y')) + Number(square.getAttribute('height')) / 2).toBeCloseTo(y + 34.5 * scale, 6)
+    expect(container.querySelectorAll('.pick-aim .marker-shape line')).toHaveLength(4)
+    const readout = container.querySelector('.pick-readout')!
+    expect(readout.textContent).toBe('x 12, y 34')
+    expect(readout.getAttribute('aria-hidden')).toBe('true')
+    // The annotations take no pointer: a click on a marker's pixel still picks it.
+    fireEvent.pointerDown(viewport, { pointerId: 1, ...client })
+    fireEvent.pointerUp(viewport, { pointerId: 1, ...client })
+    expect(onSelectPoint).toHaveBeenCalledWith([12, 34])
+    fireEvent.pointerLeave(viewport)
+    expect(container.querySelector('.pick-aim')).toBeNull()
+    expect(container.querySelector('.pick-readout')).toBeNull()
+  })
+
+  it('shows no aim or readout on the Edit stage area selector, which picks without aiming', () => {
+    const onSelectPoint = vi.fn()
+    const label = 'Flattened artwork area selector'
+    const { container, viewport } = prepareFlatten({ preferredLayerId: 'flat', onSelectPoint, selectionLabel: label, canvasLabel: 'Edit canvas', markers: [], inspectionKinds: [] })
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 400, clientY: 300 })
+    expect(container.querySelector('.pick-aim')).toBeNull()
+    expect(container.querySelector('.pick-readout')).toBeNull()
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 400, clientY: 300 })
+    fireEvent.pointerUp(viewport, { pointerId: 1, clientX: 400, clientY: 300 })
+    expect(onSelectPoint).toHaveBeenCalledTimes(1)
+  })
+
+  it('flips the readout by its measured size near the viewport edge, anchoring its far corner', () => {
+    const measured = { offsetWidth: 150, offsetHeight: 20 }
+    const original = Object.getOwnPropertyDescriptors(HTMLElement.prototype)
+    for (const [name, size] of Object.entries(measured)) {
+      Object.defineProperty(HTMLElement.prototype, name, { configurable: true, get(this: HTMLElement) { return this.classList.contains('pick-readout') ? size : 0 } })
+    }
+    try {
+      const label = 'Source image preservation-point selector'
+      const { container, viewport } = prepareFlatten({ preferredLayerId: 'source', onSelectPoint: vi.fn(), pickAim: true, selectionLabel: label })
+      const readout = () => container.querySelector('.pick-readout') as HTMLElement
+      fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 400, clientY: 300 })
+      expect(readout().style.transform).toBe('')
+      // 670 px across: a 150 px readout would cross the 800 px edge (a 110 px one would not).
+      fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 670, clientY: 300 })
+      expect(readout().style.transform).toBe('translate(-100%, 0)')
+      const aim = container.querySelector('.pick-aim .marker-shape .pick-hover')!
+      const centre = Number(aim.getAttribute('x')) + Number(aim.getAttribute('width')) / 2
+      expect(parseFloat(readout().style.left)).toBeLessThan(centre)
+    } finally {
+      for (const name of Object.keys(measured)) {
+        if (original[name]) Object.defineProperty(HTMLElement.prototype, name, original[name])
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name]
+      }
+    }
+  })
+
+  it('draws a Trace audit overlay over the Source view when the traced grid is an upscale of it', () => {
+    const { container } = prepareFlatten({ preferredLayerId: 'source', canvasLabel: 'Trace canvas', inspectionKinds: TRACE_KINDS, markers: [] })
+    fireEvent.click(within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Missed source details (red)'))
+    // The 200 × 100 traced-grid overlay stretches over the 100 × 50 source.
+    expect([...container.querySelectorAll('img.inspection-overlay')].map(node => node.getAttribute('alt'))).toEqual(['Missed source details (red)'])
+    expect(screen.queryByText(/Hidden because its pixel dimensions differ/)).toBeNull()
+  })
+
+  it('shows no aim outside pick mode', () => {
+    const { container, viewport } = prepareFlatten({ preferredLayerId: 'source' })
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 400, clientY: 300 })
+    expect(container.querySelector('.pick-aim')).toBeNull()
+    expect(container.querySelector('.pick-readout')).toBeNull()
+  })
+
+  it('offers only its own overlay and draws it on both the source and the upscaled flattened view', () => {
+    const { container, rerender } = prepareFlatten({ preferredLayerId: 'source' })
+    const group = screen.getByRole('group', { name: 'Inspection layers' })
+    expect(within(group).queryByLabelText('Missed source details (red)')).toBeNull()
+    fireEvent.click(within(group).getByLabelText('Protected areas'))
+    const drawn = () => [...container.querySelectorAll('img.inspection-overlay')].map(node => node.getAttribute('alt'))
+    // The 200 × 100 overlay stretches over the 100 × 50 source it registers with.
+    expect(drawn()).toEqual(['Protected areas'])
+    expect(container.querySelector('img.inspection-overlay')?.parentElement?.classList.contains('image-stage')).toBe(true)
+    expect(screen.queryByText(/Hidden because its pixel dimensions differ/)).toBeNull()
+    rerender(canvas({ preferredLayerId: 'flat' }))
+    expect(drawn()).toEqual(['Protected areas'])
+    // The Trace canvas offers its own audits and never Protected areas, which stays on for Flatten.
+    rerender(canvas({ preferredLayerId: 'flat', canvasLabel: 'Trace canvas', inspectionKinds: TRACE_KINDS }))
+    const traceGroup = screen.getByRole('group', { name: 'Inspection layers' })
+    expect(within(traceGroup).queryByLabelText('Protected areas')).toBeNull()
+    expect(within(traceGroup).getByLabelText('Missed source details (red)')).toBeTruthy()
+    expect(drawn()).toEqual([])
+    rerender(canvas({ preferredLayerId: 'source' }))
+    expect(drawn()).toEqual(['Protected areas'])
   })
 })

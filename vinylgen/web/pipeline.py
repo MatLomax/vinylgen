@@ -117,7 +117,11 @@ def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled) -> No
 PALETTE_FILES = {
     "source": "source.png", "flattened": "flattened.png",
     "segmentation": "segmentation.npz", "palette": "palette.json", "report": "report.png",
+    # Written only when the run explicitly protected a pixel (pipeline_worker).
+    "protected-areas-overlay": "protected-areas-overlay.png",
 }
+# The flatten outputs a trace reads: every palette file but the optional overlay.
+TRACE_INPUT_KINDS = set(PALETTE_FILES) - {"protected-areas-overlay"}
 CLEANUP_FILES = {
     "flattened": "flattened.png", "segmentation": "segmentation.npz",
     "palette": "palette.json", "report": "report.png", "cleanup-audit": "cleanup.json",
@@ -339,8 +343,7 @@ class PipelineRunner:
         if cleanup_stale:
             raise ValueError(STALE_CLEANUP_MESSAGE)
         subject = work / self.store.get_project(project_id)["slug"]
-        required = set(PALETTE_FILES)
-        self._copy_inputs(parent_id, subject, required)
+        self._copy_inputs(parent_id, subject, TRACE_INPUT_KINDS)
         trace_settings = TraceSettings(**values)
         cleanup_settings = (cleanup_revision["settings"]["cleanup"]
                             if cleanup_revision is not None else None)

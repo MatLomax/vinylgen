@@ -8,6 +8,7 @@ import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS, visibleTraceWindow, type
 const layers: WorkspaceLayer[] = [
   { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
 ]
+const TRACE_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
 
 type Pending = { url: string; init: RequestInit; resolve: (response: unknown) => void }
 let pending: Pending[] = []
@@ -27,7 +28,7 @@ afterEach(() => {
 })
 
 function workspace(livePreview?: LivePreviewOptions) {
-  return <ImageWorkspace layers={layers} editorMode canvasLabel="Trace canvas" inspectionToggles livePreview={livePreview} />
+  return <ImageWorkspace layers={layers} editorMode canvasLabel="Trace canvas" inspectionKinds={TRACE_KINDS} livePreview={livePreview} />
 }
 
 // Renders a 1000 x 700 image in an 800 x 600 viewport, fitted (scale 0.768).

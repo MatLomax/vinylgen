@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS artifacts_revision ON artifacts(revision_id, created_
 # run's own outputs and an Inkscape edit of that run's SVG: both describe geometry
 # a retrace replaces.
 STALE_ARTIFACT_KINDS = {
-    "palette": {"flattened", "segmentation", "palette", "report"},
+    "palette": {"flattened", "segmentation", "palette", "report", "protected-areas-overlay"},
     "cleanup": {"cleanup-audit"},
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
@@ -66,6 +66,11 @@ STALE_ARTIFACT_KINDS = {
 TRACE_RUN_SUPERSEDES = (
     STALE_ARTIFACT_KINDS["trace"] | STALE_ARTIFACT_KINDS["validation"]
     | STALE_ARTIFACT_KINDS["export"])
+
+# Everything a ``palette`` (flatten) revision supersedes from older revisions: every
+# flatten output of an older run, including the protected-areas overlay a run that
+# protected nothing does not write.
+PALETTE_RUN_SUPERSEDES = STALE_ARTIFACT_KINDS["palette"]
 
 
 # The raster a cleanup revision rewrites; a newer cleanup replaces them.
@@ -466,6 +471,8 @@ class Store:
         older run, including optional audits that run did not repeat, and an older
         run's Inkscape edit, validation and export (``TRACE_RUN_SUPERSEDES``); this
         holds for trace revisions recorded before a trace marked validation stale.
+        Likewise a ``palette`` run supersedes every flatten output of an older run,
+        including its optional protected-areas overlay (``PALETTE_RUN_SUPERSEDES``).
         """
         result: dict[str, dict[str, Any]] = {}
         current: str | None = revision_id
@@ -492,6 +499,8 @@ class Store:
                 cleanup_superseded = True
             if revision["kind"] == "trace":
                 stale_kinds.update(TRACE_RUN_SUPERSEDES)
+            if revision["kind"] == "palette":
+                stale_kinds.update(PALETTE_RUN_SUPERSEDES)
             current = revision["parent_revision_id"]
         return result
 

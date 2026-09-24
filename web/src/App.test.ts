@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
 import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { activeCleanupRevision, ancestorCleanupIterations, ancestorPaletteIterations, artifactToWorkspaceLayer, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
+import { activeCleanupRevision, ancestorCleanupIterations, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -17,7 +17,7 @@ vi.mock('./api', async importOriginal => {
   const original = await importOriginal<typeof import('./api')>()
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
-type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; loading?: boolean; layers?: { id: string; name: string; role?: string; sizeFrom?: string }[] }
+type CapturedWorkspace = { onSelectPoint?: (point: [number, number]) => void; preferredLayerId?: string; editorMode?: boolean; canvasLabel?: string; loading?: boolean; layers?: { id: string; name: string; role?: string; sizeFrom?: string }[]; inspectionKinds?: readonly string[]; markers?: { id: string; kind: string; label: string; points: [number, number][]; pending?: boolean }[]; markerGridFrom?: string; highlightedMarker?: string | null; pickAim?: boolean }
 const workspaceProps = vi.hoisted(() => ({ current: null as CapturedWorkspace | null }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: CapturedWorkspace) => { workspaceProps.current = props; return null } }))
 const editorProps = vi.hoisted(() => ({ current: null as { onCommit: (id: string) => void } | null }))
@@ -71,6 +71,7 @@ describe('artifact to workspace layer integration', () => {
   it.each([
     ['trace-missed-details-overlay', 'Missed source details (red)'],
     ['trace-fallbacks-overlay', 'Tightened boundaries'],
+    ['protected-areas-overlay', 'Protected areas'],
   ])('maps the transparent %s to a labelled toggleable overlay', (kind, label) => {
     expect(artifactToWorkspaceLayer(artifact(kind))).toMatchObject({ role: 'overlay', name: label })
   })
@@ -379,6 +380,8 @@ describe('pipeline setting provenance', () => {
     // live area selector, so a click must not add a preservation point.
     fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+    // The area selector picks without the preservation crosshair.
+    expect(workspaceProps.current?.pickAim).toBe(false)
     act(() => workspaceProps.current?.onSelectPoint?.([12, 34]))
 
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
@@ -2811,5 +2814,82 @@ describe('stepping trace runs while their artifacts load', () => {
       await act(async () => answer!({ ...queuedJob, kind: 'trace' }))
       expect(mocks.startPipeline).toHaveBeenCalledTimes(1)
     })
+  })
+})
+
+describe('Flatten canvas preservation markers and overlays', () => {
+  const paletteRevision: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', settings: { palette: {} } }
+  const overlays = [artifact('protected-areas-overlay'), artifact('trace-fallbacks-overlay'), artifact('trace-missed-details-overlay')]
+  const TRACE_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
+
+  async function openFlatten() {
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockResolvedValue({ ...project, revisions: [paletteRevision, revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), ...overlays])
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas'))
+    await vi.waitFor(() => expect(workspaceProps.current?.layers?.some(layer => layer.id === 'protected-areas-overlay-id')).toBe(true))
+  }
+
+  it('offers each canvas only its own overlays: Protected areas on Flatten, the trace audits on Trace', async () => {
+    await openFlatten()
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === 'protected-areas-overlay-id')).toMatchObject({ role: 'overlay', name: 'Protected areas' })
+    expect(workspaceProps.current?.inspectionKinds).toEqual(['protected-areas-overlay'])
+    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Trace canvas'))
+    expect(workspaceProps.current?.inspectionKinds).toEqual(TRACE_KINDS)
+    fireEvent.click(screen.getByRole('tab', { name: 'Cleanup' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Cleanup canvas'))
+    expect(workspaceProps.current?.inspectionKinds).toEqual([])
+    expect(canvasOverlayKinds('flatten', true)).toEqual(['protected-areas-overlay'])
+    expect(canvasOverlayKinds('trace', true)).toEqual([])
+    expect(canvasOverlayKinds('palette', false)).toEqual([])
+  })
+
+  it('marks every chosen point on the canvas on the source grid, with a pending pair and a row highlight', async () => {
+    await openFlatten()
+    expect(workspaceProps.current?.markers).toEqual([])
+    expect(workspaceProps.current?.markerGridFrom).toBe('source-id')
+    const panel = screen.getByRole('tabpanel', { name: 'Flatten' })
+    const pick = async (button: RegExp, point: [number, number]) => {
+      fireEvent.click(within(panel).getByRole('button', { name: button }))
+      await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeTypeOf('function'))
+      expect(workspaceProps.current?.pickAim).toBe(true)
+      act(() => workspaceProps.current!.onSelectPoint!(point))
+    }
+    await pick(/Protect connected detail/, [12, 34])
+    await pick(/Preserve colour family/, [5, 6])
+    await pick(/Keep two colours separate/, [1, 2])
+    // The first pick of a pair shows as a pending marker numbered as its future row.
+    expect(workspaceProps.current?.markers).toContainEqual({ id: 'pair-pending', kind: 'pair', label: '1', points: [[1, 2]], pending: true })
+    act(() => workspaceProps.current!.onSelectPoint!([3, 4]))
+    // Out of pick mode the markers stay on the Flatten canvas.
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
+    expect(workspaceProps.current?.markers).toEqual([
+      { id: 'protect-0', kind: 'protect', label: '1', points: [[12, 34]] },
+      { id: 'preserve-0', kind: 'preserve', label: '1', points: [[5, 6]] },
+      { id: 'pair-0', kind: 'pair', label: '1', points: [[1, 2], [3, 4]] },
+    ])
+    const row = within(panel).getByText('12, 34').closest('.point-row') as HTMLElement
+    expect(row.querySelector('.point-number')?.textContent).toBe('1')
+    fireEvent.mouseEnter(row)
+    expect(workspaceProps.current?.highlightedMarker).toBe('protect-0')
+    fireEvent.mouseLeave(row)
+    expect(workspaceProps.current?.highlightedMarker).toBeNull()
+    const pairRow = within(panel).getByText('1, 2 ↔ 3, 4').closest('.point-row') as HTMLElement
+    fireEvent.focus(within(pairRow).getByRole('button', { name: 'Remove' }))
+    expect(workspaceProps.current?.highlightedMarker).toBe('pair-0')
+    // Removing the highlighted row clears the highlight with it.
+    fireEvent.click(within(pairRow).getByRole('button', { name: 'Remove' }))
+    expect(workspaceProps.current?.highlightedMarker).toBeNull()
+    expect(workspaceProps.current?.markers?.map(marker => marker.id)).toEqual(['protect-0', 'preserve-0'])
+    expect(workspaceProps.current?.pickAim).toBe(false)
+    // A highlight never outlives the lists it was made against: after a new pick (the row
+    // still hovered, with no leave event) no marker is highlighted.
+    fireEvent.mouseEnter(row)
+    expect(workspaceProps.current?.highlightedMarker).toBe('protect-0')
+    await pick(/Protect connected detail/, [7, 8])
+    expect(workspaceProps.current?.highlightedMarker).toBeNull()
   })
 })

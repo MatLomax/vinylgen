@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultComparePair, fitTransform, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
+import { defaultComparePair, fitTransform, gridsRegister, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
 
 describe('shared workspace transform', () => {
   it('keeps the pixel under the pointer registered while zooming', () => {
@@ -54,6 +54,16 @@ describe('shared workspace transform', () => {
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 768 })).toBe(true)
     expect(sameImageSize({ width: 1024, height: 768 }, { width: 1024, height: 900 })).toBe(false)
     expect(sameImageSize({ width: 1024, height: 768 }, undefined)).toBe(false)
+  })
+
+  it('registers grids that are equal or one integer upscale of the other', () => {
+    expect(gridsRegister({ width: 40, height: 32 }, { width: 40, height: 32 })).toBe(true)
+    expect(gridsRegister({ width: 40, height: 32 }, { width: 120, height: 96 })).toBe(true)
+    expect(gridsRegister({ width: 120, height: 96 }, { width: 40, height: 32 })).toBe(true)
+    // A different factor per axis, a fractional factor, or an unknown grid never registers.
+    expect(gridsRegister({ width: 40, height: 32 }, { width: 80, height: 96 })).toBe(false)
+    expect(gridsRegister({ width: 40, height: 32 }, { width: 60, height: 48 })).toBe(false)
+    expect(gridsRegister({ width: 40, height: 32 }, undefined)).toBe(false)
   })
 
   it('chooses distinct before/after images and no counterpart for a lone image', () => {

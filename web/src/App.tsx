@@ -9,17 +9,22 @@ import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, resolvePaletteColour, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
 // Traced SVGs are drawn on the flattened pixel grid (their viewBox), whatever their physical size.
 const TRACED_SVG_KINDS = new Set(['traced-overlap', 'traced-edge'])
-// Transparent audit overlays drawn on the traced pixel grid, offered as labelled toggles.
+// Transparent audit overlays, offered as labelled toggles on the canvas of their stage:
+// the trace audits on the traced grid, a flatten's protected areas on its flattened grid.
 const OVERLAY_ARTIFACT_LABELS: Record<string, string> = {
   'trace-missed-details-overlay': 'Missed source details (red)',
   'trace-fallbacks-overlay': 'Tightened boundaries',
+  'protected-areas-overlay': 'Protected areas',
 }
+const TRACE_OVERLAY_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
+const FLATTEN_OVERLAY_KINDS = ['protected-areas-overlay']
+const NO_OVERLAY_KINDS: string[] = []
 // Standalone audit images that paint the whole faded source: kept as files, never layers.
 const OPAQUE_AUDIT_KINDS = new Set(['trace-fallbacks', 'trace-semantic-warnings'])
 
@@ -63,6 +68,12 @@ export function customRatioDimensions(width: number, height: number): Dimensions
   const scale = Math.floor(Math.min(maximumWidth / ratioWidth, maximumHeight / ratioHeight))
   const dimensions: Dimensions = [ratioWidth * scale, ratioHeight * scale]
   return scale > 0 && dimensions.every(value => value >= 256) ? dimensions : null
+}
+
+// The overlay kinds a stage's canvas offers: its own audits, and none while a preservation
+// point is picked on another stage's canvas.
+export function canvasOverlayKinds(stage: WorkflowStage, picking: boolean): string[] {
+  return stage === 'flatten' ? FLATTEN_OVERLAY_KINDS : stage === 'trace' && !picking ? TRACE_OVERLAY_KINDS : NO_OVERLAY_KINDS
 }
 
 export function artifactToWorkspaceLayer(artifact: Artifact): WorkspaceLayer | null {
@@ -414,6 +425,11 @@ export default function App() {
   const cleanupDraftSpent = useRef<string | null>(null)
   const [selectionMode, setSelectionMode] = useState<SelectionMode>(null)
   const [distinctFirst, setDistinctFirst] = useState<[number, number] | null>(null)
+  // The canvas marker of the preservation row hovered or focused in the Flatten panel.
+  // Marker ids are list indices, so a highlight holds only for the point lists it was
+  // made against: any change to them (a pick, a removal, a reset, stepping iterations)
+  // drops it, and an id never highlights the point that moved into its index.
+  const [highlight, setHighlight] = useState<{ id: string; lists: string } | null>(null)
   const [regionSelection, setRegionSelection] = useState<Component[]>([])
   const [flattenedPixels, setFlattenedPixels] = useState<Pixels | null>(null)
   // The revision `flattenedPixels` belong to; area/pencil edits act only on that one.
@@ -1158,6 +1174,11 @@ export default function App() {
     finally { setPencilBusyProjects(busy => busy.filter(id => id !== projectId)) }
   }
 
+  // A preservation point is being picked on the shown source image (Edit's own canvas
+  // clicks select areas instead); only then does the canvas aim the pick.
+  const preservationPicking = stage !== 'edit' && Boolean(selectionMode) && view === 'source'
+  const pointLists = JSON.stringify([paletteSettings.protected_component_points, paletteSettings.preserved_colour_points, paletteSettings.distinct_colour_point_pairs])
+
   function selectPreservationPoint(point: [number, number]) {
     if (selectionMode === 'protect-component') {
       setPaletteSettings(value => ({ ...value, protected_component_points: [...value.protected_component_points, point] }))
@@ -1219,7 +1240,12 @@ export default function App() {
         {stage === 'upload' || stage === 'flatten' || stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
-          inspectionToggles={stage === 'trace' && !selectionMode}
+          inspectionKinds={canvasOverlayKinds(stage, Boolean(selectionMode))}
+          // Preservation points are source pixels; the canvas scales them onto a larger
+          // flattened raster.
+          markers={stage === 'flatten' || selectionMode ? preservationMarkers(paletteSettings, selectionMode === 'distinct-second' ? distinctFirst : null) : undefined}
+          markerGridFrom={source?.id}
+          highlightedMarker={highlight?.lists === pointLists ? highlight.id : null}
           livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedColour), tracedSize } : undefined}
           // Paused until the selected revision's own traced grid is known, so a preview is
           // never requested with another revision's size.
@@ -1230,7 +1256,8 @@ export default function App() {
           loading={revisionLoading || (Boolean(artifactsRevision) && !artifactsCurrent && failedRevision !== revision)}
           preferredLayerId={viewLayerId(view)}
           selectionLabel={stage === 'edit' ? (editTool === 'pencil' ? 'Flattened artwork pencil' : 'Flattened artwork area selector') : selectionMode ? 'Source image preservation-point selector' : undefined}
-          onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (selectionMode && view === 'source' ? selectPreservationPoint : undefined)}
+          onSelectPoint={stage === 'edit' ? (editSelectable && editTool === 'areas' ? toggleRegion : undefined) : (preservationPicking ? selectPreservationPoint : undefined)}
+          pickAim={preservationPicking}
           paintMode={stage === 'edit' && editTool === 'pencil' && editSelectable}
           onPaint={stage === 'edit' && editTool === 'pencil' && editSelectable ? paintPixel : undefined}
           overlay={stage === 'palette' && editSelectable ? palettePreviewFrame : stage === 'edit' && editSelectable ? overlayFrame : undefined}
@@ -1274,7 +1301,7 @@ export default function App() {
           {lockReason('flatten-lock-reason')}
         </div>
         <PipelineControls stage="flatten" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette}
-          selectionMode={selectionMode} setSelectionMode={setSelectionMode}
+          selectionMode={selectionMode} setSelectionMode={setSelectionMode} onHighlightPoint={id => setHighlight(id === null ? null : { id, lists: pointLists })}
           onReset={() => { setPaletteSettings(DEFAULT_PALETTE_SETTINGS); setSelectionMode(null) }}
           iterationCount={paletteIterations.length} iterationIndex={paletteStep} onStep={stepPalette} onCommitDraft={() => persistDraft('palette')} />
         </section>

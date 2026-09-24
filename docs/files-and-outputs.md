@@ -89,6 +89,22 @@ The flattened image remains full-size at the top. A black band is appended
 beneath it, containing palette swatches, exact `#RRGGBB` values, and image-area
 percentages to four decimal places, ordered descending.
 
+### `protected-areas-overlay.png` (web flatten)
+
+The web flatten job writes this transparent RGBA overlay (artifact kind
+`protected-areas-overlay`) only when `segmentation.npz`'s explicit-protection
+mask has a true pixel, meaning a `protected_component_points` pick protected
+something. Each explicitly protected pixel is semi-transparent green
+`(40, 220, 120, 150)`, distinct from the red missed-details and cyan
+tightened-boundary trace overlays, and every other pixel is fully transparent.
+It is stored as a 1-bit paletted PNG, with index 0 fully transparent and index
+1 the overlay colour at that alpha, so it stays small for gigapixel masks.
+It is the size of the segmentation grid, which is the flattened grid and so
+larger than the source when `flatten_upscale` > 1. The Flatten canvas offers it
+as the "Protected areas" toggle on both the Source and Flattened views. The CLI
+does not write it. A later flatten never inherits an earlier run's overlay (see
+[architecture](architecture.md)).
+
 ### `contact.png`
 
 Convenience review sheet across all flattened outputs. It is generated outside
@@ -163,7 +179,12 @@ overlays) it did not repeat, together with everything made of that older run:
 its `inkscape-edit` artifacts, its `validation` and its `export`. A trace
 revision marks validation and export stale, and trace revisions recorded
 before it did are treated the same way, so a run started from an older run's
-validation or export never inherits them. An export packages the run's own
+validation or export never inherits them. A `palette` (flatten) run likewise
+hides every flatten-kind artifact of an older run (`flattened`,
+`segmentation`, `palette`, `report` and `protected-areas-overlay`), so a
+re-flatten that protected nothing never inherits an earlier run's
+protected-areas overlay; revisions derived from a flatten (edits, cleanup,
+trace) inherit it with the rest. An export packages the run's own
 validation: an export job is refused ("revision has stale prerequisite
 concerns: validation") until the current trace run has been validated, whether
 the parent marks validation stale itself or simply has no effective

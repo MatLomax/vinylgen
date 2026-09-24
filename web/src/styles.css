@@ -83,6 +83,24 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .viewport.pan-ready { cursor: grab; }
 .viewport.pan-active { cursor: grabbing; }
 .pencil-hover { position: absolute; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px var(--surface-root), inset 0 0 0 1px var(--split-line); }
+/* Screen-space annotations over the canvas: preservation markers and the pick-mode aim.
+   Each shape is a dark halo under a coloured stroke so it reads on any artwork. They
+   never take the pointer, so panning and picking pass straight through. */
+.canvas-annotations { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 2; }
+.canvas-annotations .marker-halo { fill: none; stroke: rgba(12, 14, 13, .9); stroke-width: 4.5; }
+.canvas-annotations .marker-shape { fill: none; stroke-width: 2; }
+.canvas-marker { --marker-colour: #ffc53d; }
+.canvas-marker.preserve { --marker-colour: #5cc8ff; }
+.canvas-marker.pair { --marker-colour: #ff6ad5; }
+.canvas-marker .marker-shape { stroke: var(--marker-colour); }
+.canvas-marker.pending .marker-shape { stroke-dasharray: 3 2; }
+.canvas-marker.highlighted .marker-shape { stroke: var(--split-line); stroke-width: 3; }
+.canvas-marker.highlighted .marker-halo { stroke-width: 7; }
+.canvas-marker .marker-label { fill: var(--marker-colour); stroke: rgba(12, 14, 13, .9); stroke-width: 3.5; paint-order: stroke; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.canvas-marker.highlighted .marker-label { fill: var(--split-line); }
+.pick-aim .marker-shape { stroke: var(--split-line); stroke-width: 1.5; }
+.pick-aim .marker-halo { stroke-width: 3.5; }
+.pick-readout { position: absolute; z-index: 3; pointer-events: none; padding: 3px 7px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); color: var(--text-strong); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .image-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .image-stage img, .compare-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
 .image-stage img { display: block; object-fit: fill; pointer-events: none; }
@@ -234,6 +252,10 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .selection-list > span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .selection-list code { color: var(--text-muted); font-size: 11px; }
 .selection-list button { min-height: 36px; padding: 6px 8px; font-size: 11px; }
+.selection-list .point-row { padding: 0 4px; border-radius: var(--radius-sm); }
+.selection-list .point-row:hover, .selection-list .point-row:focus-within { background: var(--surface-root); }
+.selection-list .point-row code { flex: 1; }
+.selection-list .point-number { min-width: 20px; color: var(--text-label); font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; }
 
 .artwork-preview { position: relative; display: grid; min-width: 0; min-height: 0; margin: 0; place-items: center; overflow: hidden; background: var(--surface-canvas); }
 .artwork-preview img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; }

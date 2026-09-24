@@ -32,6 +32,12 @@ Artifact lookup walks revision ancestry, so a trace revision reuses its
 parent's source and segmentation without copying blobs. A trace revision
 supersedes everything made of an older run (its trace outputs, Inkscape edit,
 validation and export), so export requires a validation of the current run.
+Likewise a flatten (`palette`) revision supersedes every flatten output of an
+older run, including the optional `protected-areas-overlay.png` a run that
+protected nothing does not write, and the overlay belongs to the palette
+concern a source upscale marks stale. Revisions derived from the flatten
+(palette and pencil edits, cleanup, trace) inherit the overlay with the rest of
+the flatten, since they carry its explicit protection unchanged.
 
 The web workflow is Flatten, Palette, Edit, Cleanup, Trace. Cleanup
 (`vinylgen/web/cleanup.py`) owns the physical output size, the removed colour
@@ -72,6 +78,24 @@ edited, and an edit after a cleanup marks that cleanup stale. Because connectivi
 is recomputed from the label grid, a pencil stroke that severs a region splits
 it into separate components with no extra bookkeeping. Undo and redo navigate
 revision ancestry.
+
+The Flatten stage's preservation tools (protect a connected detail, preserve a
+colour family, keep two colours separate) pick source pixels on the same
+canvas. Every chosen point is drawn there as a screen-space marker of constant
+size that follows pan and zoom: a diamond for a protected detail, a ring for a
+preserved colour and two squares joined by a line for a separate pair, each
+numbered as its row in the side-panel list, with a pair's first pick shown as a
+pending marker. Hovering or focusing a row highlights its marker. The markers
+are source-grid positions, scaled onto the Flattened view when
+`flatten_upscale` makes that raster larger, and take no pointer input. They are
+hidden from assistive technology because the side-panel lists are the
+accessible form. While a pick is active the hovered pixel is outlined by a
+crosshair with an x, y readout. Each editor canvas offers toggles only for its
+own stage's overlays: Flatten offers "Protected areas", Trace offers its two
+audit overlays, and the other canvases offer none. An enabled overlay is drawn
+over any shown image whose pixel grid it registers with, meaning the same grid
+or one integer upscale of it, so a flatten's overlay lines up on both the
+Source and Flattened views.
 
 Source generation is a provider-backed branch before deterministic processing.
 `vinylgen.web.generation` expands the short subject through a persisted,

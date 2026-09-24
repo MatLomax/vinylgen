@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { CleanupSettings, PaletteColour, PaletteSettings, TraceSettings } from './api'
+import type { CanvasMarker } from './ImageWorkspace'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
   initial_colours: 16, final_colours: null, histogram_bits: 5, analysis_max_dimension: 640, dither_radius: 1, similar_delta_e: 28, small_share: .004, small_delta_e: 36, fold_small_colours: true,
@@ -103,8 +104,28 @@ function ToggleGroup({ label, help, on, dirty, onToggle, children }: {
     <div className="settings-grid">{children}</div>
   </div>
 }
-function PointList({ title, points, onRemove }: { title: string; points: [number, number][]; onRemove: (index: number) => void }) {
-  return points.length ? <div className="selection-list"><strong>{title}</strong>{points.map((point, index) => <span key={`${point}-${index}`}><code>{point.join(', ')}</code><button type="button" className="secondary" onClick={() => onRemove(index)}>Remove</button></span>)}</div> : null
+// The canvas marker of each chosen preservation point, numbered by its row in the
+// side-panel list; a pair's first pick (`pendingFirst`) shows as a pending pair marker
+// numbered as the row it will become.
+export const preservationMarkerId = (kind: CanvasMarker['kind'], index: number) => `${kind}-${index}`
+export const PENDING_PAIR_MARKER_ID = 'pair-pending'
+export function preservationMarkers(palette: Pick<PaletteSettings, 'protected_component_points' | 'preserved_colour_points' | 'distinct_colour_point_pairs'>, pendingFirst: [number, number] | null): CanvasMarker[] {
+  return [
+    ...palette.protected_component_points.map((point, index): CanvasMarker => ({ id: preservationMarkerId('protect', index), kind: 'protect', label: String(index + 1), points: [point] })),
+    ...palette.preserved_colour_points.map((point, index): CanvasMarker => ({ id: preservationMarkerId('preserve', index), kind: 'preserve', label: String(index + 1), points: [point] })),
+    ...palette.distinct_colour_point_pairs.map((pair, index): CanvasMarker => ({ id: preservationMarkerId('pair', index), kind: 'pair', label: String(index + 1), points: [pair[0], pair[1]] })),
+    ...(pendingFirst ? [{ id: PENDING_PAIR_MARKER_ID, kind: 'pair' as const, label: String(palette.distinct_colour_point_pairs.length + 1), points: [pendingFirst], pending: true }] : []),
+  ]
+}
+// A chosen-point row; hovering or focusing it highlights its canvas marker.
+function PointRow({ id, number, onHighlight, onRemove, children }: { id: string; number: number; onHighlight: (id: string | null) => void; onRemove: () => void; children: React.ReactNode }) {
+  return <span className="point-row" onMouseEnter={() => onHighlight(id)} onMouseLeave={() => onHighlight(null)} onFocus={() => onHighlight(id)} onBlur={() => onHighlight(null)}>
+    <b className="point-number">{number}</b><code>{children}</code>
+    <button type="button" className="secondary" onClick={() => { onHighlight(null); onRemove() }}>Remove</button>
+  </span>
+}
+function PointList({ title, kind, points, onRemove, onHighlight }: { title: string; kind: CanvasMarker['kind']; points: [number, number][]; onRemove: (index: number) => void; onHighlight: (id: string | null) => void }) {
+  return points.length ? <div className="selection-list"><strong>{title}</strong>{points.map((point, index) => <PointRow key={`${point}-${index}`} id={preservationMarkerId(kind, index)} number={index + 1} onHighlight={onHighlight} onRemove={() => onRemove(index)}>{point.join(', ')}</PointRow>)}</div> : null
 }
 
 // The palette colour a layer-order entry (or a removed colour) names, resolved as the
@@ -179,7 +200,7 @@ function LayerOrderList({ colours: palette, order, onChange, dirty, locked, remo
   </div>
 }
 
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedColour = null, automaticOrder = null }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedColour = null, automaticOrder = null, onHighlightPoint = () => undefined }: {
   stage: 'flatten' | 'cleanup' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
   cleanup?: CleanupSettings; setCleanup?: (value: CleanupSettings) => void; baseCleanup?: CleanupSettings
   paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
@@ -192,6 +213,8 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   removedColour?: string | null
   // The tracer's automatic bottom-to-top order (hex), which unnamed colours follow.
   automaticOrder?: string[] | null
+  // The canvas marker id of the preservation row hovered or focused, or null.
+  onHighlightPoint?: (id: string | null) => void
 }) {
   const p = <K extends keyof PaletteSettings>(key: K, value: PaletteSettings[K]) => setPalette({ ...palette, [key]: value })
   const t = <K extends keyof TraceSettings>(key: K, value: TraceSettings[K]) => setTrace({ ...trace, [key]: value })
@@ -262,8 +285,8 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <button type="button" className={selectionMode === 'preserve-colour' ? 'active' : 'secondary'} onClick={() => setSelectionMode(selectionMode === 'preserve-colour' ? null : 'preserve-colour')}><strong>Preserve colour family</strong><small>Keep this source colour represented in the palette.</small></button>
         <button type="button" className={selectionMode?.startsWith('distinct') ? 'active' : 'secondary'} onClick={() => setSelectionMode('distinct-first')}><strong>Keep two colours separate</strong><small>Select two colours that must not merge.</small></button>
       </div>{selectionMode && <p className="selection-status" role="status">{selectionMode === 'distinct-second' ? 'Now select the second colour.' : selectionMode === 'distinct-first' ? 'Select the first colour.' : 'Select the intended source detail.'}</p>}
-      <PointList title="Protected details" points={palette.protected_component_points} onRemove={index => p('protected_component_points', palette.protected_component_points.filter((_, row) => row !== index))} /><PointList title="Preserved colours" points={palette.preserved_colour_points} onRemove={index => p('preserved_colour_points', palette.preserved_colour_points.filter((_, row) => row !== index))} />
-      {palette.distinct_colour_point_pairs.length > 0 && <div className="selection-list"><strong>Separate pairs</strong>{palette.distinct_colour_point_pairs.map((pair, index) => <span key={index}><code>{pair[0].join(', ')} ↔ {pair[1].join(', ')}</code><button type="button" className="secondary" onClick={() => p('distinct_colour_point_pairs', palette.distinct_colour_point_pairs.filter((_, row) => row !== index))}>Remove</button></span>)}</div>}</section>
+      <PointList title="Protected details" kind="protect" points={palette.protected_component_points} onHighlight={onHighlightPoint} onRemove={index => p('protected_component_points', palette.protected_component_points.filter((_, row) => row !== index))} /><PointList title="Preserved colours" kind="preserve" points={palette.preserved_colour_points} onHighlight={onHighlightPoint} onRemove={index => p('preserved_colour_points', palette.preserved_colour_points.filter((_, row) => row !== index))} />
+      {palette.distinct_colour_point_pairs.length > 0 && <div className="selection-list"><strong>Separate pairs</strong>{palette.distinct_colour_point_pairs.map((pair, index) => <PointRow key={index} id={preservationMarkerId('pair', index)} number={index + 1} onHighlight={onHighlightPoint} onRemove={() => p('distinct_colour_point_pairs', palette.distinct_colour_point_pairs.filter((_, row) => row !== index))}>{pair[0].join(', ')} ↔ {pair[1].join(', ')}</PointRow>)}</div>}</section>
     </> : stage === 'cleanup' ? <>
       <section className="settings-group"><h3>Physical output</h3><p>Set the vinyl size and the colour left uncut. Trace uses both; changing them means running Cleanup again.</p><div className="settings-grid">
         <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches overlap and cleanup to mm; it never changes the curves." value={cleanup.width_mm} optional dirty={cd('width_mm')} onChange={value => c('width_mm', value)} />

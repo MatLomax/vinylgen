@@ -69,6 +69,19 @@ export function sameImageSize(a?: ImageSize, b?: ImageSize) {
 }
 
 /**
+ * Whether two pixel grids register exactly: the same size, or one an integer upscale
+ * of the other by one factor on both axes (the flattened grid of a run with
+ * `flatten_upscale` > 1 against its source). A layer on either grid then maps onto
+ * the other by stretching over the same extent.
+ */
+export function gridsRegister(a?: ImageSize, b?: ImageSize) {
+  if (!a || !b || !a.width || !a.height || !b.width || !b.height) return false
+  const [small, large] = a.width <= b.width ? [a, b] : [b, a]
+  const factor = large.width / small.width
+  return Number.isInteger(factor) && large.height === small.height * factor
+}
+
+/**
  * The integer pixels a pencil stroke covers moving to (toX, toY). With no prior
  * point it is just the destination; otherwise it is every step along the line
  * from the last painted pixel, so a fast drag leaves no gaps. The starting pixel

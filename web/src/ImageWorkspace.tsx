@@ -1,6 +1,6 @@
-import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { LoaderCircle, Maximize, ZoomIn, ZoomOut } from 'lucide-react'
-import { clamp, defaultComparePair, distance, fitTransform, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
+import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 
@@ -13,12 +13,22 @@ export type WorkspaceLayer = { id: string; name: string; url: string; mediaType:
 // The Trace canvas's live preview; `tracedSize` is null while the revision's traced grid
 // is unknown, which pauses it.
 export type CanvasLivePreview = Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: ImageSize | null }
+// A chosen point drawn over the canvas at a constant on-screen size: `points` are pixels
+// of the `markerGridFrom` layer (one point, or both points of a pair), `label` is the
+// number of its row in the side-panel list, and `pending` marks a pair's first pick
+// while its second is still to come.
+export type CanvasMarkerKind = 'protect' | 'preserve' | 'pair'
+export type CanvasMarker = { id: string; kind: CanvasMarkerKind; label: string; points: [number, number][]; pending?: boolean }
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
+// Screen-space sizes of the marker shapes and the pick-mode crosshair arms, in CSS px.
+const MARKER_RADIUS = 7
+const AIM_GAP = 3
+const AIM_ARM = 10
 // The absolute URL an <img> resolves a layer's (possibly relative) URL to.
 const absoluteUrl = (url: string) => new URL(url, document.baseURI).href
 type CompareMode = 'single' | 'split' | 'blink'
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionToggles = false, loading = false, livePreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionToggles?: boolean; loading?: boolean; livePreview?: CanvasLivePreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint, paintMode = false, onPaint, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, livePreview, livePreviewPaused = false, livePreviewStatus, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; livePreview?: CanvasLivePreview; livePreviewPaused?: boolean; livePreviewStatus?: string; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -33,6 +43,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const [spacePan, setSpacePan] = useState(false)
   const [panDragging, setPanDragging] = useState(false)
   const [hoverPixel, setHoverPixel] = useState<[number, number] | null>(null)
+  const readout = useRef<HTMLDivElement>(null)
+  const [readoutFlip, setReadoutFlip] = useState({ x: false, y: false })
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [beforeId, setBeforeId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).beforeId)
@@ -72,16 +84,20 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const [announcement, setAnnouncement] = useState('')
   useEffect(() => { setAnnouncement(busy ? 'Loading image…' : '') }, [busy])
   const after = visible.find(layer => layer.id === afterId)
-  const inspections = layers.filter(layer => layer.role === 'mask' || layer.role === 'overlay')
+  // An editor canvas offers (and draws) only its own overlay kinds, `inspectionKinds`, so
+  // an overlay switched on in one stage never sticks on another; it returns with its
+  // stage. The inspector offers every mask and overlay.
+  const inspections = layers.filter(layer => (layer.role === 'mask' || layer.role === 'overlay')
+    && (!editorMode || inspectionKinds.includes(inspectionKey(layer))))
   const beforeSize = before ? dimensions[before.id] : undefined
   const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
   const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
   const comparisonAvailable = comparableImages.length > 0
-  // An editor canvas without inspection toggles offers no way to switch an overlay off,
-  // so an overlay switched on in another stage stays hidden there (and returns with it).
-  const inspectionsOffered = !editorMode || inspectionToggles
-  const compatibleInspections = inspections.filter(layer => inspectionsOffered && enabledInspections[inspectionKey(layer)] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
-  const incompatibleInspections = inspections.filter(layer => inspectionsOffered && enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
+  // An enabled overlay draws over the shown image when their grids register: the same
+  // grid, or one an integer upscale of the other (a flattened grid with
+  // `flatten_upscale` > 1 over its source), stretched over the same extent.
+  const compatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
+  const incompatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -335,7 +351,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
-    if (paintMode) setHoverPixel(panningPointer.current || spaceHeld.current ? null : imagePixel(event.clientX, event.clientY))
+    if (paintMode || (pickAim && onSelectPoint)) setHoverPixel(panningPointer.current || spaceHeld.current ? null : imagePixel(event.clientX, event.clientY))
     const previous = pointers.current.get(event.pointerId)
     if (!previous) return
     const current = localPoint(event.clientX, event.clientY)
@@ -436,6 +452,62 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const previewOptions: LivePreviewOptions | undefined = livePreview ? { ...livePreview, tracedSize: livePreview.tracedSize ?? { width: 1, height: 1 } } : undefined
   const tracePreview = useTracePreview(previewOptions, transform, previewPaused ? { width: 0, height: 0 } : { width: viewport.current?.clientWidth ?? 0, height: viewport.current?.clientHeight ?? 0 }, size)
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
+  // Markers are placed on the shown image's grid, scaled from their own grid when the two
+  // register (the source grid over a larger flattened raster); otherwise none is drawn.
+  const markerGrid = markerGridFrom ? dimensions[markerGridFrom] : undefined
+  const markerScale = markers.length && size.width && gridsRegister(size, markerGrid) ? size.width / markerGrid!.width : null
+  const markerAt = ([x, y]: [number, number]) => ({
+    x: transform.x + (x + .5) * markerScale! * transform.scale, y: transform.y + (y + .5) * markerScale! * transform.scale })
+  // Pick mode outlines the hovered pixel with a crosshair and reads out its coordinates.
+  const aim = pickAim && onSelectPoint && hoverPixel ? {
+    x: transform.x + (hoverPixel[0] + .5) * transform.scale, y: transform.y + (hoverPixel[1] + .5) * transform.scale,
+    half: Math.max(transform.scale / 2, 2) } : null
+  // The readout sits below-right of the aimed pixel, flipping to the other side where its
+  // measured box would cross the viewport's right or bottom edge; a flipped side is
+  // anchored at its far corner by translate(-100%), so no text width is assumed.
+  const readoutOffset = aim ? aim.half + AIM_GAP + 4 : 0
+  const readoutPlacement = aim ? {
+    left: readoutFlip.x ? aim.x - readoutOffset : aim.x + readoutOffset,
+    top: readoutFlip.y ? aim.y - readoutOffset : aim.y + readoutOffset,
+    transform: readoutFlip.x || readoutFlip.y ? `translate(${readoutFlip.x ? '-100%' : '0'}, ${readoutFlip.y ? '-100%' : '0'})` : undefined,
+  } : undefined
+  useLayoutEffect(() => {
+    const element = readout.current
+    if (!aim || !element) return
+    const x = aim.x + readoutOffset + element.offsetWidth > (viewport.current?.clientWidth ?? Infinity)
+    const y = aim.y + readoutOffset + element.offsetHeight > (viewport.current?.clientHeight ?? Infinity)
+    if (x !== readoutFlip.x || y !== readoutFlip.y) setReadoutFlip({ x, y })
+  })
+  const annotations = (markerScale !== null || aim) && <svg className="canvas-annotations" aria-hidden="true">
+    {markerScale !== null && markers.map(marker => {
+      const at = marker.points.map(markerAt)
+      const [a, b] = at
+      const span = a && b ? Math.hypot(b.x - a.x, b.y - a.y) : 0
+      const trim = span > 2 * MARKER_RADIUS ? MARKER_RADIUS / span : null
+      return <g key={marker.id} className={`canvas-marker ${marker.kind}${marker.pending ? ' pending' : ''}${marker.id === highlightedMarker ? ' highlighted' : ''}`} data-marker-id={marker.id}>
+        {trim !== null && <g className="marker-link">
+          {['marker-halo', 'marker-shape'].map(layer => <line key={layer} className={layer} x1={a.x + (b.x - a.x) * trim} y1={a.y + (b.y - a.y) * trim} x2={b.x - (b.x - a.x) * trim} y2={b.y - (b.y - a.y) * trim} />)}
+        </g>}
+        {at.map((point, index) => <g key={index} className="marker-point" transform={`translate(${point.x} ${point.y})`}>
+          {['marker-halo', 'marker-shape'].map(layer => marker.kind === 'protect'
+            ? <polygon key={layer} className={layer} points={`0,${-MARKER_RADIUS - 1} ${MARKER_RADIUS + 1},0 0,${MARKER_RADIUS + 1} ${-MARKER_RADIUS - 1},0`} />
+            : marker.kind === 'preserve'
+              ? <circle key={layer} className={layer} r={MARKER_RADIUS} />
+              : <rect key={layer} className={layer} x={-MARKER_RADIUS + 1} y={-MARKER_RADIUS + 1} width={2 * MARKER_RADIUS - 2} height={2 * MARKER_RADIUS - 2} />)}
+          <text className="marker-label" x={MARKER_RADIUS + 3} y={-MARKER_RADIUS - 1}>{marker.label}</text>
+        </g>)}
+      </g>
+    })}
+    {aim && <g className="pick-aim">
+      {['marker-halo', 'marker-shape'].map(layer => <g key={layer} className={layer}>
+        <rect className="pick-hover" x={aim.x - aim.half} y={aim.y - aim.half} width={2 * aim.half} height={2 * aim.half} />
+        <line x1={aim.x - aim.half - AIM_GAP - AIM_ARM} y1={aim.y} x2={aim.x - aim.half - AIM_GAP} y2={aim.y} />
+        <line x1={aim.x + aim.half + AIM_GAP} y1={aim.y} x2={aim.x + aim.half + AIM_GAP + AIM_ARM} y2={aim.y} />
+        <line x1={aim.x} y1={aim.y - aim.half - AIM_GAP - AIM_ARM} x2={aim.x} y2={aim.y - aim.half - AIM_GAP} />
+        <line x1={aim.x} y1={aim.y + aim.half + AIM_GAP} x2={aim.x} y2={aim.y + aim.half + AIM_GAP + AIM_ARM} />
+      </g>)}
+    </g>}
+  </svg>
 
   const controls = <>
     {!editorMode && <section className="control-section">
@@ -494,8 +566,10 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         onPointerCancel={dividerPointerUp}
         onKeyDown={dividerKeyDown}
       ><span className="split-line" aria-hidden="true" /></div>}
+      {annotations}
+      {aim && hoverPixel && <div ref={readout} className="pick-readout" aria-hidden="true" style={readoutPlacement}>x {hoverPixel[0]}, y {hoverPixel[1]}</div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
-      {editorMode && inspectionToggles && inspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
+      {editorMode && inspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
         {inspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
         {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
       </div>}

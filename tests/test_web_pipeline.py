@@ -478,6 +478,97 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(audit["cleanup"]["removed_regions"], 0)
         self.assertIn("kept 1 explicitly protected regions under the threshold", job["message"])
 
+    async def protected_flatten(self, **palette) -> tuple[dict, str]:
+        imported = await self.client.post(
+            "/api/projects/import", data={"name": "Protected Overlay Fixture"},
+            files={"source": ("fixture.png", self.speck_source_png(), "image/png")})
+        project = imported.json()
+        job = await self.run_job(
+            "palette", project["id"], project["revisions"][0]["id"],
+            palette={"initial_colours": 2, "min_colour_share": 0, "min_region_pixels": 0,
+                     "dither_radius": 0, **palette})
+        return project, job["result_revision_id"]
+
+    async def overlay_pixels(self, row: dict) -> np.ndarray:
+        image = Image.open(io.BytesIO(await self.download(row)))
+        # Stored compactly as a two-entry paletted PNG with a transparent index 0.
+        self.assertEqual(image.mode, "P")
+        self.assertEqual(len(image.getpalette()), 6)
+        return np.asarray(image.convert("RGBA"))
+
+    async def test_a_protecting_flatten_records_its_protected_areas_overlay(self) -> None:
+        from vinylgen.web.pipeline_worker import PROTECTED_AREAS_RGBA
+        for upscale in (1, 2):
+            with self.subTest(flatten_upscale=upscale):
+                _, revision = await self.protected_flatten(
+                    protected_component_points=[[34, 3]], flatten_upscale=upscale)
+                own = await self.artifacts(revision)
+                self.assertEqual(own["protected-areas-overlay"]["filename"],
+                                 "protected-areas-overlay.png")
+                self.assertEqual(own["protected-areas-overlay"]["media_type"], "image/png")
+                mask = (await self.bundle(own["segmentation"])).explicit_protected_features
+                self.assertTrue(mask.any())
+                self.assertEqual(mask.shape, (32 * upscale, 40 * upscale))
+                overlay = await self.overlay_pixels(own["protected-areas-overlay"])
+                # On the segmentation's (upscaled) grid, marking exactly the protected pixels.
+                self.assertEqual(overlay.shape[:2], mask.shape)
+                np.testing.assert_array_equal(overlay[..., 3] > 0, mask)
+                self.assertTrue((overlay[mask] == PROTECTED_AREAS_RGBA).all())
+                self.assertTrue((overlay[~mask] == 0).all())
+
+    async def exported_names(self, project_id: str, revision_id: str) -> list[str]:
+        traced = (await self.run_job("trace", project_id, revision_id))["result_revision_id"]
+        validated = (await self.run_job("validate", project_id, traced))["result_revision_id"]
+        exported = (await self.run_job("export", project_id, validated))["result_revision_id"]
+        archive = await self.download((await self.artifacts(exported))["export"])
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            return zipped.namelist()
+
+    async def test_the_export_packages_the_protected_areas_overlay_in_effect(self) -> None:
+        project, protected = await self.protected_flatten(protected_component_points=[[34, 3]])
+        self.assertIn("protected-areas-overlay.png",
+                      await self.exported_names(project["id"], protected))
+        project, plain = await self.protected_flatten()
+        self.assertNotIn("protected-areas-overlay.png",
+                         await self.exported_names(project["id"], plain))
+
+    async def test_a_flatten_that_protects_nothing_records_no_overlay(self) -> None:
+        _, revision = await self.protected_flatten()
+        self.assertNotIn("protected-areas-overlay", await self.artifacts(revision))
+        self.assertNotIn("protected-areas-overlay", await self.artifacts(revision, effective=True))
+        # A trace still reads every flatten output it needs without the optional overlay.
+        project = self.app.state.store.get_revision(revision)["project_id"]
+        await self.run_job("trace", project, revision)
+
+    async def test_a_new_flatten_never_inherits_an_older_runs_protected_areas(self) -> None:
+        project, protected = await self.protected_flatten(protected_component_points=[[34, 3]])
+        overlay = (await self.artifacts(protected))["protected-areas-overlay"]
+        # Derived revisions keep the flatten's explicit protection, so they show its overlay.
+        edit = await self.client.post(
+            f"/api/projects/{project['id']}/revisions/{protected}/edits",
+            json={"operations": [{"tool": "rename_colour", "label": 0, "name": "Midnight"}]})
+        self.assertEqual(edit.status_code, 201, edit.text)
+        edited = edit.json()["id"]
+        cleaned = (await self.run_job("cleanup", project["id"], edited, cleanup={
+            "width_mm": 40, "cleanup": True, "min_region_area": 4}))["result_revision_id"]
+        for derived in (edited, cleaned):
+            effective = await self.artifacts(derived, effective=True)
+            self.assertEqual(effective["protected-areas-overlay"]["id"], overlay["id"])
+        traced = (await self.run_job("trace", project["id"], cleaned))["result_revision_id"]
+        self.assertEqual((await self.artifacts(traced, effective=True))
+                         ["protected-areas-overlay"]["id"], overlay["id"])
+        # A re-flatten of `cleaned` that protects nothing drops the older run's overlay.
+        reflattened = (await self.run_job("palette", project["id"], cleaned, palette={
+            "initial_colours": 2, "min_colour_share": 0}))["result_revision_id"]
+        self.assertNotIn("protected-areas-overlay",
+                         await self.artifacts(reflattened, effective=True))
+        # So does a source upscale, which marks the palette concern stale.
+        store = self.app.state.store
+        upscaled = store.create_upscaled_source(
+            protected, message="Upscaled", settings={}, checkpoint="model", seed=1,
+            source=io.BytesIO(self.speck_source_png()))
+        self.assertNotIn("protected-areas-overlay", store.effective_artifacts(upscaled))
+
     async def test_the_cleanup_result_message_counts_cleared_automatic_protection(self) -> None:
         project, palette_revision = await self.flattened()
         job = await self.run_job("cleanup", project["id"], palette_revision, cleanup={
