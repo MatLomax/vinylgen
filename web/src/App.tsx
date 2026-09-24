@@ -11,7 +11,7 @@ import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
 import { palettePointsForRevision } from './sourceGrid'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, layerOrderMatters, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, isPixelRecord, layerOrderMatters, legacyCleanupSettings, normalizeTraceSettings, pixelRecordInUnits, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -493,6 +493,9 @@ export default function App() {
   const [cleanupStep, setCleanupStep] = useState(0)
   const cleanupLive = useRef<CleanupSettings | null>(null)
   const traceDraftSpent = useRef<string | null>(null)
+  // Pixel-era trace settings (a recorded run the server could not convert, a draft saved
+  // before units) waiting for the traced grid of `revision` to convert on.
+  const pixelTrace = useRef<{ project: string; revision: string; stored?: Partial<TraceSettings>; draft?: Partial<TraceSettings> } | null>(null)
   // A Create form mounted while another stage was showing measured nothing, so
   // fit the subject again whenever Create becomes visible.
   const subjectField = useRef<HTMLTextAreaElement | null>(null)
@@ -886,10 +889,35 @@ export default function App() {
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draftPalette })
     setCleanupSettings({ ...DEFAULT_CLEANUP_SETTINGS, ...storedCleanup, ...draft.cleanup })
     setCleanupStep(0); cleanupLive.current = null
-    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...(traceRuns.index > 0 || !draft.trace ? {} : normalizeTraceSettings(draft.trace)) })
+    // Trace lengths are thousandths of the traced image's longer side. A draft saved
+    // before units (no length_unit) holds pixels, as does a recorded run the server could
+    // not convert ('px'); those wait in `pixelTrace` until this revision's traced grid is
+    // measured, then convert on it (the effect below).
+    const draftTrace = traceRuns.index > 0 || !draft.trace ? undefined : normalizeTraceSettings(draft.trace)
+    const pixelStored = storedTrace && isPixelRecord(storedTrace) ? storedTrace : undefined
+    const pixelDraft = draftTrace && isPixelRecord(draftTrace) ? draftTrace : undefined
+    pixelTrace.current = selected && current && (pixelStored || pixelDraft)
+      ? { project: selected, revision: current.id, stored: pixelStored, draft: pixelDraft } : null
+    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...(pixelStored ? {} : storedTrace), ...(pixelDraft ? {} : draftTrace) })
     setPaletteStep(0); paletteLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
+  // Pixel-era trace settings held back by the fill above convert on the traced grid of the
+  // revision they were loaded for, once it is measured; a converted draft is stored back.
+  useEffect(() => {
+    const pending = pixelTrace.current
+    if (!pending || !tracedGrid || tracedGrid.revision !== pending.revision || pending.project !== selected) return
+    pixelTrace.current = null
+    const longSide = Math.max(tracedGrid.width, tracedGrid.height)
+    const stored = pending.stored && pixelRecordInUnits(pending.stored, longSide)
+    const draft = pending.draft && pixelRecordInUnits(pending.draft, longSide)
+    setTraceSettings(settings => ({ ...settings, ...stored, ...draft }))
+    if (draft) {
+      let saved: { trace?: Partial<TraceSettings> } = {}
+      try { saved = JSON.parse(localStorage.getItem(draftKey(pending.project)) || '{}') } catch { saved = {} }
+      localStorage.setItem(draftKey(pending.project), JSON.stringify({ ...saved, trace: draft }))
+    }
+  }, [tracedGrid, selected, current?.id])
   // Once the server has resolved the inherited removed colour for this revision, the
   // form takes it in place of the value it inherited before reading it (the cleanup's
   // hex, which a recolour can give two colours), unless the user changed that value.
@@ -1235,7 +1263,11 @@ export default function App() {
       const { remove_colour: removeColour, ...rest } = cleanupSettings
       draft.cleanup = removeColour === baselineCleanup.remove_colour ? rest : cleanupSettings
     }
-    else draft.trace = traceSettings
+    else {
+      // The form's own settings supersede any pixel-era draft still waiting to convert.
+      draft.trace = traceSettings
+      pixelTrace.current = null
+    }
     localStorage.setItem(draftKey(selected), JSON.stringify(draft))
   }
   // The layer order of the project's pending trace draft (undefined: the draft names none).
@@ -1479,6 +1511,9 @@ export default function App() {
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionKinds={canvasOverlayKinds(stage, Boolean(selectionMode))}
+          // The Trace canvas marks the path nodes of the traced SVG it shows (the variant
+          // the run's settings chose), types read from its sodipodi:nodetypes.
+          pathNodes={stage === 'trace' && !selectionMode && tracedSvg ? { url: tracedSvg.download_url } : undefined}
           // Preservation points are source pixels; the canvas scales them onto a larger
           // flattened raster. They are mapped onto the selected revision's source, so they
           // wait until the shown artifacts are that revision's own.

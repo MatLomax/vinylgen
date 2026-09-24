@@ -18,7 +18,8 @@ from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import (apply_cleanup, cleanup_labels, measure_colour_regions,
                                      remove_then_widen_stages)
 from vinylgen.web.cleanup import write_changes_overlay
-from vinylgen.trace_window import PREVIEW_MARGIN_PX, PreviewCancelled, Window
+from vinylgen.trace_lengths import PREVIEW_MARGIN_MIN_PX
+from vinylgen.trace_window import PreviewCancelled, Window
 
 PALETTE = [
     {"index": 0, "name": "Night", "hex": "#0F233C", "rgb": [15, 35, 60]},
@@ -154,7 +155,7 @@ class CleanWindowTest(unittest.TestCase):
 
     def test_the_hidden_margin_is_256_px_apart_from_the_trace_preview(self) -> None:
         self.assertEqual(CLEANUP_PREVIEW_MARGIN_PX, 256)
-        self.assertEqual(PREVIEW_MARGIN_PX, 64)
+        self.assertEqual(PREVIEW_MARGIN_MIN_PX, 64)
         labels, _, explicit = raster()
         interior = Window(400, 300, 100, 100)
         preview = clean_window(source_of(labels, explicit), interior, PALETTE,

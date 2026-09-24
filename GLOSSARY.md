@@ -105,6 +105,9 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **minimum region area** | The area threshold used by cutter cleanup to classify undersized regions. | removal area threshold | minimum region pixels |
 | **remove-below width** | In remove-then-widen mode, the separate width below which regions are removed before surviving geometry is widened. | removal width threshold | minimum detail width |
 | **physical mode** | Trace configuration with output dimensions, making width and area settings use millimetres and square millimetres. | physical units mode | cutter-ready mode |
+| **trace length unit** | A thousandth (‰) of the traced image's longer side: the unit of the eight trace lengths (curve-fit tolerance, straight-line deviation, minimum straight length, maximum deviation, side smoothness, corner sharpening allowance, analysis scale, curve feature scale), resolved to pixels on the whole traced image before fitting. `length_unit: per_mille`. | thousandths, ‰ of the image | px, when a pixel-era record (`length_unit: px`, or none) is meant |
+| **analysis scale** | The trace length (`corner_analysis_span`) the corner detector's side windows derive from: the span and 1.75× it, and the join tangent windows at ¼ and ½. | corner analysis span | span, without saying which |
+| **pixel-era record** | Trace settings recorded before trace lengths were thousandths: lengths in pixels, marked `length_unit: px` or carrying no `length_unit`. Converted on the image it traced, never recognised by magnitude. | pixel record | legacy settings, without saying which legacy |
 | **pixel mode** | Trace configuration without physical dimensions, making width and area settings use pixels and square pixels. | raster units mode | physical mode |
 | **trace fallback** | A recorded local recovery used when ordinary fitted geometry cannot satisfy protected-feature validation. | local fallback, dense fallback when that final step is meant | global raster trace |
 
@@ -122,7 +125,9 @@ type wherever Vinylgen shows nodes.
 | **smooth node** | A node whose two handles are at 180° to each other and equal in length (balanced). | circle | Inkscape calls this type *symmetric* (`sodipodi:nodetypes` `z`); name it by Vinylgen's term |
 | **turn angle** | The change of direction at a node, in degrees: 0° is straight on, 180° doubles back. | bend angle | interior angle, which is 180° minus the turn |
 | **kink** | A cusp node whose turn angle is below the corner threshold: an unintended sharp change of direction in what should be a continuous edge. | | corner |
-| **corner threshold** | The turn angle at or above which a bend supported by straight runs on both sides becomes a hard corner (a cusp node). | | sharpness, when it could mean the interior angle |
+| **corner threshold** | The turn angle at or above which the direction jump where two smooth sides meet (each a straight line or a circular arc, within the side smoothness) becomes a hard corner (a cusp node). Only such corners, junction anchors and image-edge endpoints are cusps; every other node is a symmetric node, however sharp its local bend. | | sharpness, when it could mean the interior angle |
+| **side smoothness** | How far each side of a possible corner may stray from its best-fit circular arc (a straight line included) and still confirm the corner, in ‰ of the image's longer side (`side_smoothness`); by default the straight-line deviation. | | corner straightness (its former name, still read from stored records) |
+| **corner sharpening allowance** | How far a sharpened corner, the point where its two sides' arcs meet, may lie from its sample on the drawn edge, in ‰ of the image's longer side (`corner_sharpening_allowance`); by default the maximum deviation, and independent of it. A 90° round sharpens when its radius is at most about 2.41 allowances; the corner detector skips that much arc beside a candidate (the **tip skip**) so such a round never vetoes its own corner. | | corner move limit |
 
 ## Revisions, artifacts, and state
 

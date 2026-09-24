@@ -57,7 +57,6 @@ from vinylgen.cleanup_window import (
 from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION, pixel_scale, resolve_physical_size
 from vinylgen.trace_window import (
-    PREVIEW_MARGIN_PX,
     PREVIEW_MAX_AREA_PX,
     PreviewCancelled,
     PreviewSegmentation,
@@ -70,6 +69,7 @@ from vinylgen.trace_window import (
     render_window_svg,
     window_boundaries,
 )
+from vinylgen.trace_lengths import preview_margin
 from vinylgen.tracing import apply_order_override, ensure_palette_names, resolve_colour
 
 from .models import CleanupJobSettings, TraceJobSettings
@@ -277,7 +277,10 @@ class TracePreviewService:
         crop = Window(0, 0, segmentation.width, segmentation.height)
         boundaries = window_boundaries(segmentation, [0, 1, 2], crop, self._closing)
         render_window_svg(boundaries, Window(8, 8, 32, 32), [0, 1, 2], palette,
-                          preview_trace_settings({}), 0.0, self._closing)
+                          # Pixel-era lengths: sensible fit windows on this tiny image.
+                          preview_trace_settings({"length_unit": "px"}, segmentation.width,
+                                                 segmentation.height),
+                          0.0, self._closing)
         # The cleanup preview's widening kernel.
         source = CleanupSource(labels=segmentation.labels,
                                explicit=np.zeros_like(segmentation.labels, dtype=bool),
@@ -609,10 +612,6 @@ class TracePreviewService:
         artifacts = self.store.effective_artifacts(revision_id)
         if "segmentation" not in artifacts or "palette" not in artifacts:
             raise PreviewUnavailable("the revision has no flattened artwork to trace yet")
-        try:
-            settings = preview_trace_settings(request.trace.model_dump())
-        except ValueError as exc:
-            raise PreviewRejected(str(exc)) from exc
         palette = self._palette(artifacts["palette"], request.colour_names)
         segmentation_id = artifacts["segmentation"]["id"]
         segmentation = self._segmentation_for(
@@ -624,6 +623,11 @@ class TracePreviewService:
         if not np.array_equal(segmentation.palette_rgb, expected_rgb):
             raise PreviewUnavailable("segmentation palette does not match palette.json")
         width, height = segmentation.width, segmentation.height
+        # Lengths resolve on the whole traced image, as the trace run resolves them.
+        try:
+            settings = preview_trace_settings(request.trace.model_dump(), width, height)
+        except ValueError as exc:
+            raise PreviewRejected(str(exc)) from exc
         window_request = request.window
         try:
             window = clamp_window(window_request.x, window_request.y, window_request.width,
@@ -657,7 +661,7 @@ class TracePreviewService:
             raise PreviewRejected("omitted colour cannot occur in layer order")
         overlap_px = settings.overlap / pixel_scale(
             resolve_physical_size(cleanup, width, height), width)
-        crop = margin_window(window, width, height, PREVIEW_MARGIN_PX)
+        crop = margin_window(window, width, height, preview_margin(settings))
         boundaries, _ = self._boundaries.get(
             (segmentation_id, tuple(included), crop),
             lambda: window_boundaries(segmentation, included, crop, checkpoint))

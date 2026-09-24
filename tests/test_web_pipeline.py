@@ -13,7 +13,9 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from vinylgen.contracts import CleanupSettings, PaletteSettings, SegmentationBundle, TraceSettings
+from vinylgen.contracts import (
+    TRACE_LENGTH_FIELDS, CleanupSettings, PaletteSettings, SegmentationBundle, TraceSettings)
+from vinylgen.web.models import TraceJobSettings
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
@@ -223,6 +225,60 @@ class WebPipelineTest(PipelineApiHarness):
             "palette", project["id"], project["revisions"][0]["id"],
             palette={"initial_colours": 2, "min_colour_share": 0})
         return project, palette["result_revision_id"]
+
+    async def test_a_pixel_era_trace_is_served_in_thousandths_and_retraces_identically(self) -> None:
+        # A trace revision recorded before trace lengths were thousandths of the
+        # image's longer side stores pixels and no length_unit. The API serves it
+        # converted on the raster that run traced (40 px here), so a run posting the
+        # served settings resolves back to the recorded pixels and the same geometry.
+        project, palette_revision = await self.flattened_project("Pixel Era")
+        recorded = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
+                    "minimum_straight_length": 3.0, "corner_analysis_span": 6.0,
+                    "curve_feature_scale": 0.6, "max_deviation": None, "corner_threshold": 50.0}
+        units = {key: value * 1000 / 40 if key in TRACE_LENGTH_FIELDS and value is not None
+                 else value for key, value in recorded.items()}
+        units = {**units, "max_deviation": 2.0 * 1000 / 40, "length_unit": "per_mille"}
+        first = (await self.run_job("trace", project["id"], palette_revision,
+                                    trace=units))["result_revision_id"]
+        first_artifacts = await self.effective_kinds(first)
+        first_svg = (await self.client.get(first_artifacts["traced-edge"]["download_url"])).content
+        audit = json.loads((await self.client.get(
+            first_artifacts["trace-audit"]["download_url"])).content)
+        self.assertEqual(audit["lengths"]["reference_px"], 40)
+        self.assertEqual(audit["lengths"]["px"]["curve_fit_tolerance"], 1.2)
+        # The pixel-era record of that same run, as a trace revision with its SVG.
+        # It names side smoothness by its former name, corner_straightness, and has no
+        # corner sharpening allowance (that followed the maximum deviation).
+        legacy_trace = {("corner_straightness" if key == "side_smoothness" else key): value
+                        for key, value in asdict(TraceSettings(length_unit="px", **recorded)).items()
+                        if key not in ("length_unit", "corner_sharpening_allowance")}
+        legacy = self.app.state.store.create_revision(
+            project["id"], parent_revision_id=palette_revision, kind="trace",
+            message="Recorded in pixels", settings={
+                "pipeline_stage": "trace", "palette": None, "stale_concerns": ["export"],
+                "trace": legacy_trace})
+        uploaded = await self.client.post(
+            f"/api/revisions/{legacy['id']}/artifacts", data={"kind": "traced-overlap"},
+            files={"file": ("traced-overlap.svg", first_svg, "image/svg+xml")})
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        served = next(row for row in (await self.client.get(
+            f"/api/projects/{project['id']}/revisions")).json() if row["id"] == legacy["id"])
+        trace = served["settings"]["trace"]
+        self.assertEqual(trace["length_unit"], "per_mille")
+        self.assertNotIn("corner_straightness", trace)
+        followed = {"side_smoothness": "straight_line_max_deviation",
+                    "corner_sharpening_allowance": "max_deviation"}
+        for name in TRACE_LENGTH_FIELDS:
+            self.assertAlmostEqual(trace[name], units[followed.get(name, name)], msg=name)
+        # The stored record is untouched.
+        self.assertEqual(self.app.state.store.get_revision(legacy["id"])["settings"]["trace"],
+                         legacy_trace)
+        again = (await self.run_job("trace", project["id"], palette_revision, trace={
+            key: value for key, value in trace.items()
+            if key in TraceJobSettings.model_fields}))["result_revision_id"]
+        again_svg = (await self.client.get(
+            (await self.effective_kinds(again))["traced-edge"]["download_url"])).content
+        self.assertEqual(again_svg, first_svg)
 
     async def effective_kinds(self, revision_id: str) -> dict[str, dict]:
         rows = (await self.client.get(f"/api/revisions/{revision_id}/effective-artifacts")).json()
@@ -1171,7 +1227,8 @@ class WebCleanupStageTest(PipelineApiHarness):
         project, palette_revision = await self.flattened()
         legacy_settings = {
             "pipeline_stage": "trace", "palette": None, "stale_concerns": ["export"],
-            "trace": {**asdict(TraceSettings()), **asdict(CleanupSettings(
+            "trace": {**{key: value for key, value in asdict(TraceSettings(length_unit="px")).items()
+                         if key != "length_unit"}, **asdict(CleanupSettings(
                 width_mm=400, cleanup=True, min_region_area=2))}}
         legacy = self.app.state.store.create_revision(
             project["id"], parent_revision_id=palette_revision, kind="trace",

@@ -23,7 +23,7 @@ from .models import (ApplyLabelEdits, Artifact, AutomaticLayerOrder, CleanupJobS
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob, StartUpscale, UpscaleOptions,
                      UpscaleSettings)
-from .pipeline import rerun_cleanup_settings, with_removed_colour_hex
+from .pipeline import rerun_cleanup_settings, served_revisions
 from .store import Store
 from .trace_preview import TracePreviewService, trace_preview_router
 from .upscale import (DEFAULT_CONTROLNET_MODEL, SAMPLE_SIZE_MAX, UPSCALER_LANCZOS,
@@ -230,7 +230,7 @@ def create_app(config: WebConfig | None = None,
     async def get_project(project_id: str) -> dict:
         try:
             return {**store.get_project(project_id), "revisions": await asyncio.to_thread(
-                with_removed_colour_hex, store, store.list_revisions(project_id))}
+                served_revisions, store, store.list_revisions(project_id))}
         except KeyError as exc:
             raise missing(exc) from exc
 
@@ -260,7 +260,7 @@ def create_app(config: WebConfig | None = None,
     async def list_revisions(project_id: str) -> list[dict]:
         try:
             return await asyncio.to_thread(
-                with_removed_colour_hex, store, store.list_revisions(project_id))
+                served_revisions, store, store.list_revisions(project_id))
         except KeyError as exc:
             raise missing(exc) from exc
 

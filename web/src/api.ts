@@ -27,9 +27,15 @@ export type CleanupSettings = {
 }
 export type TraceSettings = {
   overlap: number; solid_underlayers: boolean; layer_order: string[] | null
-  corner_threshold: number; curve_fit_tolerance: number
+  // The unit of the eight trace lengths: thousandths of the traced image's longer side.
+  // Records from before units carry none, or 'px' (see pixelRecordInUnits).
+  corner_threshold: number; length_unit: 'per_mille'; curve_fit_tolerance: number
   straight_line_max_deviation: number; minimum_straight_length: number
-  max_deviation: number | null; corner_analysis_span: number; corner_straightness: number
+  max_deviation: number | null; corner_analysis_span: number; side_smoothness: number
+  // Null (automatic) follows max_deviation, itself automatic (1‰) when that is null too.
+  corner_sharpening_allowance: number | null
+  straight_line_snap: 'off' | 'axis' | 'axis_diagonal'; snap_angle: number
+  node_placement: 'prefer_extremes' | 'at_extremes' | 'fewest'; nodes_at_bends: boolean; curve_feature_scale: number
   soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
 }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }

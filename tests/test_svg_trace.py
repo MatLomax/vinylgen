@@ -3,6 +3,7 @@ import math
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -84,7 +85,7 @@ class SvgTraceTests(unittest.TestCase):
         self.assertEqual(cleanup.min_detail_width, 0.0)
         self.assertEqual(cleanup.min_region_area, 0.0)
         self.assertEqual(cleanup.remove_below_width, 0.0)
-        settings = TraceSettings()
+        settings = TraceSettings(length_unit="px")
         self.assertEqual(settings.curve_fit_tolerance, 1.5)
         self.assertEqual(settings.corner_analysis_span, 8.0)
 
@@ -186,19 +187,29 @@ class SvgTraceTests(unittest.TestCase):
                             for warning in summary["warnings"]))
 
     def test_shared_curve_fit_smooths_shallow_turns_but_keeps_square_corners(self):
-        settings = TraceSettings(corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
+        settings = TraceSettings(length_unit="px", corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         square = ring_path(
             [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], settings)
-        shallow = ring_path(
-            [(0, 0), (5, 0), (10, 1), (10, 10), (0, 10), (0, 0)], settings)
+        shallow_ring = [(0, 0), (5, 0), (10, 1), (10, 10), (0, 10), (0, 0)]
         self.assertEqual(square.metrics.cubics, 0)
         self.assertNotIn("C", square.path)
-        self.assertGreater(shallow.metrics.cubics, 0)
-        self.assertIn("C", shallow.path)
+        # The 11 degree bend at (5, 0) is no corner: it never becomes a node. With
+        # the default straight-line deviation its 1 px bow straightens into one
+        # line between the corners at (0, 0) and (10, 1); with a tighter one it is
+        # a curve.
+        shallow = ring_path(shallow_ring, settings)
+        self.assertNotIn("5 0", shallow.path)
+        self.assertIn("L10 1", shallow.path)
+        curved = ring_path(shallow_ring, replace(settings, straight_line_max_deviation=0.1))
+        self.assertGreater(curved.metrics.cubics, 0)
+        self.assertIn("C", curved.path)
+        nodes = [tuple(map(float, command[1:].split()[-2:]))
+                 for command in re.findall(r"[MLC][^MLCZ]*", curved.path)]
+        self.assertNotIn((5.0, 0.0), nodes)
 
     def test_corner_analysis_looks_past_single_pixel_stair_step(self):
-        settings = TraceSettings(corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
+        settings = TraceSettings(length_unit="px", corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         fitted = ring_path(
             [(0, 0), (4, 0), (4, 1), (8, 1), (8, 8), (0, 8), (0, 0)],
@@ -254,16 +265,20 @@ class SvgTraceTests(unittest.TestCase):
             subject = self.fixture(Path(name))
             # 400 mm over the 40 px fixture is 10 mm per pixel, so any mm conversion
             # would move the fitting limit by a factor of ten.
-            for explicit in (None, .5):
+            # 1.5 px, not below the 1 px floor every resolved deviation is held at.
+            for explicit in (None, 1.5):
                 pixels, pixel_fits, pixel_paths = self._trace_capturing_fit_settings(
-                    subject, TraceSettings(max_deviation=explicit))
+                    subject, TraceSettings(length_unit="px", max_deviation=explicit))
                 physical, physical_fits, physical_paths = self._trace_capturing_fit_settings(
-                    subject, TraceSettings(max_deviation=explicit),
+                    subject, TraceSettings(length_unit="px", max_deviation=explicit),
                     cleanup=CleanupSettings(width_mm=400))
                 expected = 2.0 if explicit is None else explicit
                 self.assertEqual(physical["mode"], "physical")
                 for report, fits in ((pixels, pixel_fits), (physical, physical_fits)):
-                    self.assertEqual(report["settings"]["max_deviation"], expected)
+                    self.assertEqual(report["lengths"]["px"]["max_deviation"], expected)
+                    # The settings record thousandths of the 40 px fixture's longer side.
+                    self.assertEqual(report["settings"]["length_unit"], "per_mille")
+                    self.assertAlmostEqual(report["settings"]["max_deviation"], expected * 25.0)
                     self.assertEqual(
                         report["validation"]["semantic"]["settings"]["maximum_deviation_px"], expected)
                     self.assertTrue(fits)
@@ -274,9 +289,9 @@ class SvgTraceTests(unittest.TestCase):
     def test_layers_components_holes_and_determinism(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            first = trace_subject(subject, TraceSettings(), {})
+            first = trace_subject(subject, TraceSettings(length_unit="px"), {})
             svg_before = (subject / "traced-edge.svg").read_bytes()
-            second = trace_subject(subject, TraceSettings(), {})
+            second = trace_subject(subject, TraceSettings(length_unit="px"), {})
             self.assertEqual(svg_before, (subject / "traced-edge.svg").read_bytes())
             overlay = (subject / "trace.html").read_text()
             self.assertIn('<img src="data:image/png;base64,', overlay)
@@ -305,7 +320,7 @@ class SvgTraceTests(unittest.TestCase):
     def test_solid_underlayers_make_lower_layers_solid_without_shared_edges(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            report = trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
             # The edge variant remains the gap-free registration partition, so the
             # bottom layer still carries the shared-edge cutout under the top layer.
             self.assertGreaterEqual(
@@ -353,7 +368,7 @@ class SvgTraceTests(unittest.TestCase):
     def test_solid_underlayers_skip_non_adjacent_upper_colours(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.nested_fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            report = trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
             overlap = {layer["hex"]: layer for layer in report["geometry"]["overlap"]}
             # The orange middle layer borders the green square, so it backs it into a
             # hole-free solid.
@@ -400,7 +415,7 @@ class SvgTraceTests(unittest.TestCase):
             skipped = self.palette_first_fixture(root / "skipped")
             with mock.patch.object(tracing, "infer_order",
                                    side_effect=AssertionError("infer_order ran")):
-                report = trace_subject(skipped, TraceSettings(), {})
+                report = trace_subject(skipped, TraceSettings(length_unit="px"), {})
             order = report["layer_order"]
             self.assertIsNone(order["inferred_bottom_to_top"])
             self.assertEqual(order["not_inferred"], tracing.ORDER_NOT_INFERRED)
@@ -416,7 +431,7 @@ class SvgTraceTests(unittest.TestCase):
             inferred, _ = tracing.infer_order(labels, [0, 1, 2], palette)
             inferred_hex = [palette[index]["hex"] for index in inferred]
             self.assertEqual(inferred_hex, ["#0F233C", "#E15F2D", "#3CB45A"])
-            trace_subject(inferred_subject, TraceSettings(layer_order=inferred_hex), {})
+            trace_subject(inferred_subject, TraceSettings(length_unit="px", layer_order=inferred_hex), {})
             for variant in ("edge", "overlap"):
                 skipped_fills, skipped_shapes = self.layer_shapes(skipped / f"traced-{variant}.svg")
                 inferred_fills, inferred_shapes = self.layer_shapes(
@@ -431,7 +446,7 @@ class SvgTraceTests(unittest.TestCase):
             subject = self.palette_first_fixture(Path(name))
             with mock.patch.object(tracing, "infer_order",
                                    side_effect=AssertionError("infer_order ran")):
-                report = trace_subject(subject, TraceSettings(layer_order=["#0F233C"]), {})
+                report = trace_subject(subject, TraceSettings(length_unit="px", layer_order=["#0F233C"]), {})
             names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
             # The named colour first, then the rest in palette order.
             self.assertEqual(report["layer_order"]["effective_bottom_to_top"],
@@ -441,7 +456,7 @@ class SvgTraceTests(unittest.TestCase):
                              ["#0F233C", "#E15F2D", "#3CB45A"])
 
     def test_order_is_inferred_when_underlayers_or_overlap_make_it_matter(self):
-        for settings in (TraceSettings(solid_underlayers=True), TraceSettings(overlap=1.0)):
+        for settings in (TraceSettings(length_unit="px", solid_underlayers=True), TraceSettings(length_unit="px", overlap=1.0)):
             with self.subTest(settings=settings), tempfile.TemporaryDirectory(
                     dir=Path(__file__).parents[1] / ".tmp") as name:
                 subject = self.palette_first_fixture(Path(name))
@@ -470,7 +485,7 @@ class SvgTraceTests(unittest.TestCase):
     def test_solid_underlayers_reuse_shared_fits_without_reoptimising(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.nested_fixture(Path(name))
-            trace_subject(subject, TraceSettings(solid_underlayers=True), {})
+            trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
             edge = set(self.drawing_commands(subject / "traced-edge.svg"))
             overlap = self.drawing_commands(subject / "traced-overlap.svg")
             self.assertTrue(overlap, "expected the solid underlayers to emit fitted geometry")
@@ -485,7 +500,7 @@ class SvgTraceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
             seen: list[tuple[float, str]] = []
-            trace_subject(subject, TraceSettings(), {},
+            trace_subject(subject, TraceSettings(length_unit="px"), {},
                           progress=lambda fraction, message: seen.append((fraction, message)))
             self.assertTrue(seen, "expected trace to report progress")
             fractions = [fraction for fraction, _ in seen]
@@ -500,7 +515,7 @@ class SvgTraceTests(unittest.TestCase):
     def test_optional_colour_removal(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(), {},
+            report = trace_subject(subject, TraceSettings(length_unit="px"), {},
                                    cleanup=CleanupSettings(remove_colour="#E15F2D"))
             self.assertEqual(report["colours"]["omitted"]["hex"], "#E15F2D")
             self.assertEqual(report["validation"]["edge"]["layer_count"], 1)
@@ -551,7 +566,7 @@ class InspectionOverlayTests(unittest.TestCase):
     def test_missed_details_overlay_marks_only_the_missed_pixels(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(max_deviation=2.0), {})
+            report = trace_subject(subject, TraceSettings(length_unit="px", max_deviation=2.0), {})
             self.assertFalse(report["validation"]["semantic"]["passed"])
             overlay = self.rgba(subject / "trace-missed-details-overlay.png")
             with Image.open(subject / "trace-semantic-warnings.png") as opaque:
@@ -565,7 +580,7 @@ class InspectionOverlayTests(unittest.TestCase):
     def test_tightened_boundaries_overlay_marks_only_the_fallback_chains(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(max_deviation=50.0), {})
+            report = trace_subject(subject, TraceSettings(length_unit="px", max_deviation=50.0), {})
             self.assertTrue(any("dense fallback" in warning for warning in report["warnings"]))
             self.assertTrue((subject / "trace-fallbacks.png").exists())
             overlay = self.rgba(subject / "trace-fallbacks-overlay.png")
@@ -581,10 +596,10 @@ class InspectionOverlayTests(unittest.TestCase):
     def test_overlays_are_absent_without_warnings_and_removed_when_a_rerun_clears_them(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            trace_subject(subject, TraceSettings(max_deviation=50.0), {})
+            trace_subject(subject, TraceSettings(length_unit="px", max_deviation=50.0), {})
             self.assertTrue((subject / "trace-fallbacks-overlay.png").exists())
             self.assertTrue((subject / "trace-missed-details-overlay.png").exists())
-            report = trace_subject(subject, TraceSettings(max_deviation=6.0), {})
+            report = trace_subject(subject, TraceSettings(length_unit="px", max_deviation=6.0), {})
             self.assertEqual(report["warnings"], [])
             for name in ("trace-fallbacks.png", "trace-fallbacks-overlay.png",
                          "trace-semantic-warnings.png", "trace-missed-details-overlay.png"):

@@ -15,7 +15,7 @@ vi.mock('./api', async importOriginal => {
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
 // The canvas gets the options at once, with a null grid (paused) until it is measured.
-type Captured = { canvasLabel?: string; livePreview?: Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: LivePreviewOptions['tracedSize'] | null }; livePreviewPaused?: boolean }
+type Captured = { canvasLabel?: string; livePreview?: Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: LivePreviewOptions['tracedSize'] | null }; livePreviewPaused?: boolean; pathNodes?: { url: string } }
 const workspaceProps = vi.hoisted(() => ({ current: null as Captured | null, history: [] as Captured[] }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: Captured) => { workspaceProps.current = props; workspaceProps.history.push(props); return null } }))
 
@@ -75,5 +75,20 @@ describe('Trace canvas live preview wiring', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
     await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Palette canvas'))
     expect(workspaceProps.current?.livePreview).toBeUndefined()
+  })
+})
+
+describe('Trace canvas Nodes overlay wiring', () => {
+  it('gives the Trace canvas the traced SVG it shows, and no other canvas', async () => {
+    const traced: Artifact[] = ['traced-edge', 'traced-overlap'].map(kind => ({ ...artifact(kind), filename: `${kind}.svg`, media_type: 'image/svg+xml', download_url: `/artifacts/${kind}.svg` }))
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), ...traced])
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
+    // Edge to edge (no overlap, no solid underlayers): the edge SVG is the one shown.
+    await vi.waitFor(() => expect(workspaceProps.current?.pathNodes).toEqual({ url: '/artifacts/traced-edge.svg' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas'))
+    expect(workspaceProps.current?.pathNodes).toBeUndefined()
   })
 })

@@ -23,7 +23,8 @@ from shapely.geometry import box
 from shapely.ops import unary_union
 
 from vinylgen.colour import colour_names, nearest_palette_labels
-from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
+from vinylgen.contracts import (
+    DEFAULT_MAX_DEVIATION_PER_MILLE, FOLLOWING_LENGTHS, CleanupSettings, SegmentationBundle, TraceSettings)
 from vinylgen.cutter_cleanup import apply_cleanup, pixel_scale, resolve_physical_size
 from vinylgen.curve_fit import (
     SharedChainFitter, geometry_components, region_components, shared_boundary_components)
@@ -34,7 +35,10 @@ from vinylgen.boundary_graph import (
     shared_boundary_polygons,
     component_sizes,
 )
+from vinylgen.node_types import cusp_anchor_keys
 from vinylgen.svg_writer import add_layer, svg_document, write_svg
+from vinylgen.trace_lengths import (
+    length_audit, length_reference, resolve_trace_lengths, trace_lengths_in_units)
 from vinylgen.validation import (
     semantic_warning_mask,
     validate_semantic_preservation,
@@ -46,8 +50,18 @@ from vinylgen.validation import (
 # not adjacency under the authoritative four-connectivity model.
 _UNDERLAYER_ADJACENCY_EPS = 1e-9
 
-# The maximum contour deviation (px of the traced image) when none is configured.
-DEFAULT_MAX_DEVIATION_PX = 2.0
+# The semantic audit checks source thin features at least this long: three
+# times the maximum deviation (a feature shorter than that may legitimately be
+# smoothed away by a fit within it), and never under the 6 px the thin-feature
+# detector needs to tell a line from a speck. It is 6 px at the pixel-era 2 px
+# deviation and grows with the image, like the deviation.
+FEATURE_SPAN_DEVIATIONS = 3.0
+MINIMUM_FEATURE_SPAN_PX = 6.0
+
+
+def feature_span(maximum_deviation: float) -> float:
+    """The shortest source feature (px) the semantic audit checks."""
+    return max(MINIMUM_FEATURE_SPAN_PX, FEATURE_SPAN_DEVIATIONS * float(maximum_deviation))
 
 
 def _partition_polygons(geometry) -> list:
@@ -447,17 +461,25 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     units_per_pixel = pixel_scale(physical, width)
     physical_mm = ((physical.width_mm, physical.height_mm)
                    if physical.width_mm is not None else None)
-    # Curve-fitting settings, max_deviation included, are always in pixels of
-    # the traced image; only overlap and the cutter-cleanup thresholds are
-    # physical and converted through units_per_pixel.
+    # The trace lengths are in thousandths of the traced raster's longer side (a
+    # pixel-era record is converted on this image); the fitter gets them in
+    # pixels. Only overlap and the cutter-cleanup thresholds are physical and
+    # converted through units_per_pixel.
+    reference = length_reference(width, height)
+    settings = trace_lengths_in_units(settings, reference)
     if settings.max_deviation is None:
-        settings.max_deviation = DEFAULT_MAX_DEVIATION_PX
+        settings.max_deviation = DEFAULT_MAX_DEVIATION_PER_MILLE
+    # A length following the automatic deviation is recorded as the value it took.
+    for name, followed in FOLLOWING_LENGTHS.items():
+        if getattr(settings, name) is None:
+            setattr(settings, name, getattr(settings, followed))
+    tracing_settings = resolve_trace_lengths(settings, reference)
     overlap_px = settings.overlap / units_per_pixel
-    tracing_settings = TraceSettings(**asdict(settings))
     warnings = list(order_warnings)
     scratch = Path(__file__).resolve().parents[1] / ".tmp"
     scratch.mkdir(exist_ok=True)
     tolerance = float(tracing_settings.max_deviation or 0.0)
+    minimum_feature_span = feature_span(tolerance)
     tick(0.05, "Building shared boundaries")
     partition, boundary_track, topology = shared_boundary_polygons(
         working, included, segmentation.palette_costs,
@@ -465,6 +487,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     fault = partition_watertight_fault(topology, float(width * height))
     if fault is not None:
         raise RuntimeError(fault)
+    # Junction anchors (three or more colours) and endpoint anchors (the image
+    # edge) are always cusp nodes in the SVG.
+    junctions = cusp_anchor_keys(boundary_track)
     fallback_image = subject_dir / "trace-fallbacks.png"
     fallback_overlay = subject_dir / "trace-fallbacks-overlay.png"
     # Unique per trace: concurrent traces of same-named subjects (parallel jobs,
@@ -509,7 +534,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                    f"Fitting layer {position + 1} of {len(order)}")
             edge_components = components_by_colour[index]
             edge_stats = add_layer(roots["edge"], palette[index], edge_components, "",
-                                   subject_dir.name, "edge", 0.0)
+                                   subject_dir.name, "edge", 0.0, junctions)
             edge_stats["construction"] = "canonical shared-chain fit"
             edge_stats["source_colour_components"] = len(raster_component_sizes[index])
             variant_stats["edge"].append(edge_stats)
@@ -517,7 +542,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                 position, order, edge_components, layer_geometry, boundary_track,
                 chain_fits, tracing_settings, overlap_px, shared_fitter)
             overlap_stats = add_layer(roots["overlap"], palette[index], overlap_components, "",
-                                      subject_dir.name, "overlap", 0.0)
+                                      subject_dir.name, "overlap", 0.0, junctions)
             overlap_stats["construction"] = construction
             overlap_stats["raster_component_pixels_descending"] = raster_component_sizes[index]
             variant_stats["overlap"].append(overlap_stats)
@@ -569,8 +594,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             original, source, vector_rgb=vector_rgb,
             protected_features=segmentation.protected_features,
             segmentation_labels=segmentation.labels, vector_labels=vector_labels,
-            maximum_deviation=tolerance, invariant_cache=semantic_cache,
-            defer_vector_dark_metrics=True)
+            maximum_deviation=tolerance, minimum_feature_span=minimum_feature_span,
+            invariant_cache=semantic_cache, defer_vector_dark_metrics=True)
         report(1.0, "Validated")
         return variant_stats, validations, vector_rgb, fit_audit
 
@@ -649,7 +674,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         original, source, vector_rgb=vector_rgb,
         protected_features=segmentation.protected_features,
         segmentation_labels=segmentation.labels, vector_labels=prev_vector_labels,
-        maximum_deviation=tolerance, invariant_cache=semantic_cache)
+        maximum_deviation=tolerance, minimum_feature_span=minimum_feature_span,
+        invariant_cache=semantic_cache)
     write_trace_html(subject_dir, width, height)
     topology["shared_curve_fit"] = shared_fit_audit
     dense_fallbacks = [identity for identity, state in recovery.items()
@@ -707,6 +733,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "mode": "physical" if physical_mm is not None else "pixels",
              "physical_dimensions_mm": list(physical_mm) if physical_mm is not None else None,
              "settings": asdict(settings),
+             "lengths": length_audit(settings, tracing_settings, reference),
              "cleanup_settings": asdict(physical),
              "backend": {"tracer": "shared raster boundary graph",
                          "planar_geometry": f"Shapely {shapely.__version__}"},

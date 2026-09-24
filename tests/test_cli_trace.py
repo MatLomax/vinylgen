@@ -31,10 +31,11 @@ class LegacyConfigTests(unittest.TestCase):
 
     def legacy_block(self, **changes) -> dict:
         # The settings block of an older trace.json: every field it recorded (the
-        # cleanup, size and removed-colour fields included), with the
-        # curve_optimization flag and without corner_straightness.
-        block = {**asdict(TraceSettings()), **asdict(CleanupSettings())}
-        del block["corner_straightness"]
+        # cleanup, size and removed-colour fields included), in pixels without a
+        # length_unit, with the curve_optimization flag and without side smoothness
+        # (then called corner straightness) or a corner sharpening allowance.
+        block = {**asdict(TraceSettings(length_unit="px")), **asdict(CleanupSettings())}
+        del block["side_smoothness"], block["corner_sharpening_allowance"], block["length_unit"]
         block["curve_optimization"] = True
         block.update(changes)
         return block
@@ -42,27 +43,45 @@ class LegacyConfigTests(unittest.TestCase):
     def test_false_flag_keeps_recorded_corners_and_zeroes_the_deviation(self):
         settings = self.settings(self.legacy_block(curve_optimization=False, straight_line_max_deviation=1.2))
         self.assertEqual(settings.straight_line_max_deviation, 0.0)
-        self.assertEqual(settings.corner_straightness, 1.2)
+        self.assertEqual(settings.side_smoothness, 1.2)
 
     def test_false_flag_without_a_recorded_deviation_uses_the_default(self):
         settings = self.settings({"curve_optimization": False})
         self.assertEqual(settings.straight_line_max_deviation, 0.0)
-        self.assertEqual(settings.corner_straightness, 1.6)
+        self.assertEqual(settings.side_smoothness, 1.6)
 
-    def test_false_flag_keeps_an_explicit_corner_straightness(self):
+    def test_false_flag_keeps_an_explicit_side_smoothness(self):
         settings = self.settings({"curve_optimization": False, "straight_line_max_deviation": 1.2,
-                                  "corner_straightness": .5})
-        self.assertEqual((settings.straight_line_max_deviation, settings.corner_straightness), (0.0, .5))
+                                  "side_smoothness": .5})
+        self.assertEqual((settings.straight_line_max_deviation, settings.side_smoothness), (0.0, .5))
+
+    def test_corner_straightness_is_read_as_side_smoothness(self):
+        # Its former name, in a config and as a flag.
+        settings = self.settings(self.legacy_block(corner_straightness=.7))
+        self.assertEqual(settings.side_smoothness, .7)
+        self.assertFalse(hasattr(settings, "corner_straightness"))
+        settings = self.settings({"length_unit": "per_mille"}, "--corner-straightness", ".3")
+        self.assertEqual(settings.side_smoothness, .3)
+        settings = self.settings({"length_unit": "per_mille"}, "--corner-sharpening-allowance", "1.5")
+        self.assertEqual(settings.corner_sharpening_allowance, 1.5)
 
     def test_true_flag_is_dropped_and_changes_nothing(self):
         settings = self.settings(self.legacy_block(straight_line_max_deviation=1.2))
-        self.assertEqual((settings.straight_line_max_deviation, settings.corner_straightness), (1.2, 1.2))
+        self.assertEqual((settings.straight_line_max_deviation, settings.side_smoothness), (1.2, 1.2))
         self.assertFalse(hasattr(settings, "curve_optimization"))
 
     def test_cli_flags_still_override_the_upgraded_config(self):
         settings = self.settings(self.legacy_block(curve_optimization=False),
-                                 "--straight-line-max-deviation", ".3")
-        self.assertEqual((settings.straight_line_max_deviation, settings.corner_straightness), (.3, 1.6))
+                                 "--corner-threshold", "45")
+        self.assertEqual((settings.corner_threshold, settings.straight_line_max_deviation,
+                          settings.side_smoothness, settings.length_unit), (45, 0.0, 1.6, "px"))
+
+    def test_a_length_flag_over_a_pixel_config_is_rejected(self):
+        # The flag is thousandths of the image, the config's lengths pixels: one
+        # settings record cannot hold both, so the CLI says so instead of mixing them.
+        with self.assertRaisesRegex(ValueError, "thousandths.*config's lengths are pixels"):
+            self.settings(self.legacy_block(curve_optimization=False),
+                          "--straight-line-max-deviation", ".3")
 
     def test_other_unknown_keys_are_still_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown config setting"):

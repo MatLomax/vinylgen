@@ -131,7 +131,12 @@ contract.
 
 `traced-edge.svg` is a gap-free planar partition built from boundaries shared
 verbatim by neighbouring colours. `traced-overlap.svg` uses the same partition
-and expands lower layers when overlap is configured above zero. `traced.png` is
+and expands lower layers when overlap is configured above zero. Every path in
+both carries `sodipodi:nodetypes` (one `c`/`s`/`z` node type per node, with the
+`sodipodi` namespace declared on the root); the rules and the string layout are
+in [SVG tracing specification](svg-tracing-spec.md) "Path node types". SVGs
+traced before the attribute existed have none, and the Trace canvas's Nodes
+overlay says so instead of guessing. `traced.png` is
 the current preview rendered from `traced-overlap.svg` and must be
 regenerated whenever either SVG changes. It targets 768 DPI, but its longer
 side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
@@ -152,6 +157,20 @@ configuration, backend versions, colour names/order, component/node/hole
 counts, render comparisons, warnings, and structural validation. Its
 `settings` block holds the trace settings and `cleanup_settings` the size,
 removed colour and cleanup settings it used, with the physical size resolved.
+The trace settings include the node placement (`node_placement`,
+`nodes_at_bends`, `curve_feature_scale`) and straight-line snapping
+(`straight_line_snap`, `snap_angle`); a `trace.json` written before those
+existed lacks them and was traced by the earlier worst-sample fitter without
+snapping. The eight trace lengths in `settings` are thousandths of the traced
+raster's longer side (`length_unit: "per_mille"`, with the automatic maximum
+deviation and a corner sharpening allowance that follows it filled in), and
+`lengths` records how they resolved:
+`reference_px` (that longer side), `per_mille` and `px` (each length in
+thousandths and in the pixels the fit used). A `trace.json` written before units
+has no `length_unit` and no `lengths`: its lengths are pixels, and used as a CLI
+`--config` it is converted on each image it traces (see [SVG tracing
+specification](svg-tracing-spec.md) "Trace length units"). A `corner_straightness`
+in an older `trace.json` is read as `side_smoothness`, its current name.
 `cleanup` holds the cleanup summary when the trace CLI cleaned inline, and is
 `null` when the labels came from the cleanup stage, whose `cleanup.json` holds
 that summary.

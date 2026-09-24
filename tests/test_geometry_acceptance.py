@@ -25,7 +25,7 @@ class GeometryAcceptanceTests(unittest.TestCase):
                               (float(x + 1), float(x // 2))))
         fitted = SharedChainFitter().fit(
             staircase,
-            TraceSettings(curve_fit_tolerance=0.3),
+            TraceSettings(length_unit="px", curve_fit_tolerance=0.3),
         )
 
         self.assertEqual(fitted.metrics.lines, 1)
@@ -47,7 +47,7 @@ class GeometryAcceptanceTests(unittest.TestCase):
             (-.1, 9), (.1, 6), (-.1, 3), (0, 0),
         ]
         fitted = ring_path(points, TraceSettings(
-            curve_fit_tolerance=0.3,
+            length_unit="px", curve_fit_tolerance=0.3,
             corner_analysis_span=4,
             corner_threshold=math.degrees(0.7),
         ))
@@ -62,7 +62,7 @@ class GeometryAcceptanceTests(unittest.TestCase):
                    for value in x]
         fitted = SharedChainFitter().fit(
             feather,
-            TraceSettings(curve_fit_tolerance=0.25),
+            TraceSettings(length_unit="px", curve_fit_tolerance=0.25),
         )
 
         self.assertGreater(fitted.metrics.cubics, 0)

@@ -39,7 +39,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0), (2, 1), (4, 1), (4, 2), (6, 2),
                   (6, 10), (0, 10), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=math.degrees(0.7),
+            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(0.7),
                                   corner_analysis_span=4,
                                   curve_fit_tolerance=0.8), set())
         self.assertLess(fitted.metrics.final_nodes, len(points) - 1)
@@ -47,11 +47,19 @@ class VectorPipelineTests(unittest.TestCase):
         self.assertGreaterEqual(fitted.metrics.cubics, 0)
 
     def test_curve_is_fit_across_many_samples_not_rounded_per_vertex(self):
-        arc = [(float(x), float(10 - np.sqrt(max(0, 100 - x * x))))
-               for x in range(-8, 9)]
-        points = [*arc, (8, 12), (-8, 12), arc[0]]
+        # Boundary chains are sampled about every pixel of arc length, so the arc
+        # and the three sides are sampled that way too. (Sampled at unit x steps
+        # instead, the arc's steep ends have 1.3-8 px gaps that a 3 px corner
+        # window cannot resolve, and the ring-wide corner analysis confirms
+        # corners inside the arc.)
+        angles = np.linspace(-math.asin(0.8), math.asin(0.8), 20)
+        arc = [(10 * math.sin(angle), 10 - 10 * math.cos(angle)) for angle in angles]
+        sides = ([(8.0, 4.0 + step) for step in range(1, 9)]
+                 + [(8.0 - step, 12.0) for step in range(1, 17)]
+                 + [(-8.0, 12.0 - step) for step in range(1, 8)])
+        points = [*arc, *sides, arc[0]]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=math.degrees(0.8),
+            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(0.8),
                                   corner_analysis_span=3,
                                   curve_fit_tolerance=0.35), set())
         self.assertGreater(fitted.metrics.cubics, 0)
@@ -63,7 +71,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (1, 0.05), (2, 0), (3, 0.1),
                   (3, 2), (0, 2), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=math.degrees(1.2),
+            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(1.2),
                                   corner_analysis_span=1,
                                   curve_fit_tolerance=0.2), set())
         numbers = [float(value) for value in __import__('re').findall(
@@ -74,7 +82,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0.2), (4, 0.8), (6, 1.8),
                   (6, 8), (0, 8), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(corner_threshold=math.degrees(1.2),
+            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(1.2),
                                   curve_fit_tolerance=1.0),
             [HardAnchor((4.0, 0.8), "junction")])
         self.assertIn("4 0.8", fitted.path)

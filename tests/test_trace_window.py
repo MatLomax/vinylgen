@@ -13,7 +13,6 @@ from vinylgen import trace_window
 from vinylgen.svg_writer import INKSCAPE, SVG
 from vinylgen.trace_window import (
     FITTERS_PER_WINDOW,
-    PREVIEW_MARGIN_PX,
     PreviewCancelled,
     PreviewSegmentation,
     Window,
@@ -24,9 +23,15 @@ from vinylgen.trace_window import (
     render_window_svg,
     window_boundaries,
 )
+from vinylgen.trace_lengths import preview_margin
 from vinylgen.tracing import trace_subject
 
 SCRATCH = Path(__file__).resolve().parents[1] / ".tmp"
+
+
+def px_settings(values: dict | None = None, width: int = 1000, height: int = 1000) -> TraceSettings:
+    """Resolved preview settings with pixel-era lengths, which suit these small images."""
+    return preview_trace_settings({"length_unit": "px", **(values or {})}, width, height)
 
 
 def nested_subject(root: Path, height: int = 32, width: int = 40,
@@ -83,19 +88,19 @@ class WindowGeometryTests(unittest.TestCase):
                 clamp_window(*request, 100, 80)
 
     def test_margin_grows_every_side_and_stops_at_the_image_edge(self):
-        self.assertEqual(margin_window(Window(200, 300, 50, 60), 1000, 1000),
-                         Window(200 - PREVIEW_MARGIN_PX, 300 - PREVIEW_MARGIN_PX,
-                                50 + 2 * PREVIEW_MARGIN_PX, 60 + 2 * PREVIEW_MARGIN_PX))
+        self.assertEqual(margin_window(Window(200, 300, 50, 60), 1000, 1000, 64),
+                         Window(136, 236, 178, 188))
         self.assertEqual(margin_window(Window(10, 950, 50, 50), 1000, 1000, 64),
                          Window(0, 886, 124, 114))
 
     def test_settings_normalize_like_a_trace_run(self):
-        settings = preview_trace_settings({"straight_line_max_deviation": 0.7})
+        settings = px_settings({"straight_line_max_deviation": 0.7})
         self.assertEqual(settings.max_deviation, 2.0)
-        self.assertEqual(settings.corner_straightness, 0.7)
+        self.assertEqual(settings.side_smoothness, 0.7)
+        self.assertEqual(settings.length_unit, "px")
         self.assertEqual(preview_variant(settings), "edge")
-        self.assertEqual(preview_variant(preview_trace_settings({"overlap": 0.5})), "overlap")
-        self.assertEqual(preview_variant(preview_trace_settings({"solid_underlayers": True})),
+        self.assertEqual(preview_variant(px_settings({"overlap": 0.5})), "overlap")
+        self.assertEqual(preview_variant(px_settings({"solid_underlayers": True})),
                          "overlap")
 
 
@@ -103,18 +108,19 @@ class WindowTraceTests(unittest.TestCase):
     def trace_and_preview(self, settings: dict, window: Window | None = None):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as name:
             subject = nested_subject(Path(name))
-            trace_subject(subject, TraceSettings(**settings), {})
-            variant = preview_variant(preview_trace_settings(settings))
+            trace_subject(subject, TraceSettings(length_unit="px", **settings), {})
+            variant = preview_variant(px_settings(settings))
             traced = ET.parse(subject / f"traced-{variant}.svg").getroot()
             palette = json.loads((subject / "palette.json").read_text())["palette"]
             segmentation = PreviewSegmentation.load(subject / "segmentation.npz")
         included = [0, 1, 2]
         window = window or Window(0, 0, segmentation.width, segmentation.height)
-        crop = margin_window(window, segmentation.width, segmentation.height)
+        crop = margin_window(window, segmentation.width, segmentation.height,
+                             preview_margin(px_settings(settings)))
         boundaries = window_boundaries(segmentation, included, crop)
-        order = segmentation.automatic_order(included, palette, preview_trace_settings(settings))
+        order = segmentation.automatic_order(included, palette, px_settings(settings))
         preview = ET.fromstring(render_window_svg(
-            boundaries, window, order, palette, preview_trace_settings(settings),
+            boundaries, window, order, palette, px_settings(settings),
             float(settings.get("overlap", 0.0))))
         return traced, preview, crop
 
@@ -134,22 +140,25 @@ class WindowTraceTests(unittest.TestCase):
 
     def test_a_window_is_drawn_at_its_image_position_with_the_margin_hidden(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as name:
-            subject = nested_subject(Path(name), height=200, width=220, origin=(85, 95))
+            subject = nested_subject(Path(name), height=300, width=320, origin=(135, 145))
             segmentation = PreviewSegmentation.load(subject / "segmentation.npz")
         palette = [{"index": index, "name": f"C{index}", "hex": hex_value}
                    for index, hex_value in enumerate(["#0F233C", "#E15F2D", "#3CB45A"])]
-        window = Window(100, 90, 40, 30)
-        crop = margin_window(window, segmentation.width, segmentation.height)
-        self.assertEqual(crop, Window(36, 26, 168, 158))
+        window = Window(150, 140, 40, 30)
+        # The pixel-era margin: 8 x (8 px analysis span + 4.83 px corner tip skip).
+        self.assertEqual(preview_margin(px_settings()), 103)
+        crop = margin_window(window, segmentation.width, segmentation.height,
+                             preview_margin(px_settings()))
+        self.assertEqual(crop, Window(47, 37, 246, 236))
         boundaries = window_boundaries(segmentation, [0, 1, 2], crop)
         # The boundary graph is crop-local: the crop's right edge is x = crop.width.
         xs = [point[0] for chain in boundaries.track.chains for point in chain.points]
         self.assertEqual((min(xs), max(xs)), (0.0, float(crop.width)))
         svg = ET.fromstring(render_window_svg(
-            boundaries, window, [0, 1, 2], palette, preview_trace_settings({}), 0.0))
-        self.assertEqual(svg.attrib["viewBox"], "100 90 40 30")
+            boundaries, window, [0, 1, 2], palette, px_settings({}), 0.0))
+        self.assertEqual(svg.attrib["viewBox"], "150 140 40 30")
         group = next(svg.iter(f"{{{SVG}}}g"))
-        self.assertEqual(group.attrib["transform"], "translate(36 26)")
+        self.assertEqual(group.attrib["transform"], "translate(47 37)")
         # Every colour inside the window is drawn, each shape a separately fitted path.
         paths = layer_paths(svg)
         self.assertEqual(len(paths), 3)
@@ -178,13 +187,13 @@ class WindowTraceTests(unittest.TestCase):
         with mock.patch.object(trace_window, "infer_order",
                                wraps=trace_window.infer_order) as spy:
             edge_to_edge = segmentation.automatic_order(
-                [0, 1, 2], palette, preview_trace_settings({}))
+                [0, 1, 2], palette, px_settings({}))
             spy.assert_not_called()
             self.assertEqual(edge_to_edge, [0, 1, 2])
             for settings in ({"solid_underlayers": True}, {"overlap": 0.5}):
                 with self.subTest(settings=settings):
                     self.assertEqual(segmentation.automatic_order(
-                        [0, 1, 2], palette, preview_trace_settings(settings))[0], 2)
+                        [0, 1, 2], palette, px_settings(settings))[0], 2)
             spy.assert_called_once()
 
     def test_float16_costs_crop_to_the_same_values_as_a_full_load(self):
@@ -243,7 +252,7 @@ class CancellationTests(unittest.TestCase):
         window = Window(0, 0, segmentation.width, segmentation.height)
         boundaries = window_boundaries(segmentation, [0, 1, 2], window)
         self.assertGreater(len(boundaries.track.chains), 50)
-        settings = preview_trace_settings({})
+        settings = px_settings({})
         checkpoint, _ = self.cancel_after(20)
         with self.assertRaises(PreviewCancelled):
             render_window_svg(boundaries, window, [0, 1, 2], PALETTE, settings, 0.0, checkpoint)
@@ -257,14 +266,14 @@ class CancellationTests(unittest.TestCase):
     def test_each_window_keeps_only_its_recent_fit_caches(self):
         segmentation = speckled_segmentation(48)
         boundaries = window_boundaries(segmentation, [0, 1, 2], Window(0, 0, 48, 48))
-        first = boundaries.fitter_for(preview_trace_settings({"curve_fit_tolerance": 1.0}), 0.0)
+        first = boundaries.fitter_for(px_settings({"curve_fit_tolerance": 1.0}), 0.0)
         self.assertIs(boundaries.fitter_for(
-            preview_trace_settings({"curve_fit_tolerance": 1.0}), 0.0), first)
+            px_settings({"curve_fit_tolerance": 1.0}), 0.0), first)
         for tolerance in (1.1, 1.2, 1.3, 1.4):
-            boundaries.fitter_for(preview_trace_settings({"curve_fit_tolerance": tolerance}), 0.0)
+            boundaries.fitter_for(px_settings({"curve_fit_tolerance": tolerance}), 0.0)
         self.assertEqual(len(boundaries.fitters), FITTERS_PER_WINDOW)
         self.assertIsNot(boundaries.fitter_for(
-            preview_trace_settings({"curve_fit_tolerance": 1.0}), 0.0), first)
+            px_settings({"curve_fit_tolerance": 1.0}), 0.0), first)
 
 
 if __name__ == "__main__":

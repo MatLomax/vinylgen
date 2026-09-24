@@ -208,26 +208,28 @@ export function stagePlacement(window: PreviewWindow, kx: number, ky: number) {
 
 async function requestTracePreview(revisionId: string, window: PreviewWindow, trace: TraceSettings, signal: AbortSignal) {
   const body = await fetchTracePreview(revisionId, window, trace, signal)
-  return { window: body.window, result: svgUrl(body.svg) }
+  return { window: body.window, result: { url: svgUrl(body.svg), svg: body.svg } }
 }
 
 /**
  * Drives the Trace canvas's live preview. Returns the shapes to place inside the
- * transformed image stage (so they track pan and zoom exactly) and the on-canvas
- * controls: the switch, the "Live preview" badge, busy and error states. Without
+ * transformed image stage (so they track pan and zoom exactly), the on-canvas
+ * controls (the switch, the "Live preview" badge, busy and error states), and the
+ * shown preview's SVG text and window with the stage px per traced px. Without
  * `options` (any canvas but Trace) it renders nothing and requests nothing.
  */
-export function useTracePreview(options: LivePreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize): { stageLayer: ReactNode; controls: ReactNode } {
+export function useTracePreview(options: LivePreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize): { stageLayer: ReactNode; controls: ReactNode; shown: { window: PreviewWindow; svg: string } | null; kx: number; ky: number } {
   const preview = useLivePreview(options, transform, viewport, stage,
     { storageKey: LIVE_PREVIEW_STORAGE_KEY, label: 'Live trace preview', request: requestTracePreview })
   const { shown } = preview
   const stageLayer = shown ? <img
     className="trace-preview-shapes vector"
-    src={shown.result}
+    src={shown.result.url}
     alt="Live trace preview"
     draggable={false}
     data-window={`${shown.window.x} ${shown.window.y} ${shown.window.width} ${shown.window.height}`}
     style={stagePlacement(shown.window, preview.kx, preview.ky)}
   /> : null
-  return { stageLayer, controls: preview.controls() }
+  // The shown preview's SVG and window, for overlays drawn from its geometry.
+  return { stageLayer, controls: preview.controls(), shown: shown ? { window: shown.window, svg: shown.result.svg } : null, kx: preview.kx, ky: preview.ky }
 }

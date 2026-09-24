@@ -171,9 +171,10 @@ cleanup's removed colour and physical size (a stale cleanup blocks the preview
 as it blocks the trace), and the layer order a trace would use (inferred from the
 whole image when solid underlayers or an overlap make order matter, otherwise
 palette order). It
-traces the window plus a hidden 64 px margin through the real vector stage:
+traces the window plus a hidden margin (at least 64 px, growing with the
+resolved fit windows) through the real vector stage:
 `shared_boundary_polygons` on the crop, the canonical chain fitter with the
-normalized trace settings, the same overlap-buffer or solid-underlayer
+trace settings resolved to pixels on the whole image's longer side, the same overlap-buffer or solid-underlayer
 construction (`underlayer_geometry`, `overlap_layer_components`) and the SVG
 layer writer, returning the variant the form's settings select (overlap with
 solid underlayers or a positive overlap, otherwise edge to edge). Its SVG's
@@ -223,7 +224,7 @@ aborting of the request in flight, the checkpoints and the error conventions
 (404, 409 for an unflattened or stale revision or a superseded request, 422 for
 the window or settings, 503 when shutting down) are the trace preview's. The
 server cleans the window plus a hidden 256 px margin (wider than the trace
-preview's 64 px, since widening depends on neighbours well beyond the window) of
+preview's 64 px floor, since widening depends on neighbours well beyond the window) of
 the raster a Cleanup run of that revision starts from (before any earlier
 cleanup), measuring every region of the whole raster once per revision so a
 region the window cuts is judged by its whole area and width. The thread

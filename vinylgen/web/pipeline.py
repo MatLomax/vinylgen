@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -15,8 +16,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
-from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
+from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings, upgrade_trace_record
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
+from vinylgen.trace_lengths import is_pixel_record, length_reference, pixel_record_in_units
 from vinylgen.tracing import ensure_palette_names, resolve_colour
 from vinylgen.validation import validate_svg
 
@@ -255,6 +257,57 @@ def with_removed_colour_hex(store: Store, revisions: list[dict]) -> list[dict]:
         except (KeyError, ValueError):
             continue
     return revisions
+
+
+_VIEW_BOX = re.compile(rb'viewBox="0 0 (\d+) (\d+)"')
+
+
+def traced_length_reference(store: Store, revision: dict) -> int | None:
+    """The longer side (px) of the raster the trace run behind ``revision`` traced:
+    its own trace revision, else the nearest trace ancestor (a validation or export
+    copies that run's settings). Read from the ``viewBox`` its traced SVG opens with,
+    which is that raster's pixel grid. ``None`` when no traced SVG says."""
+    seen: set[str] = set()
+    current: dict | None = revision
+    while current is not None and current["id"] not in seen:
+        seen.add(current["id"])
+        if current["kind"] == "trace":
+            for row in store.list_artifacts(current["id"]):
+                if row["kind"] in ("traced-overlap", "traced-edge"):
+                    with store.artifact_path(row["id"]).open("rb") as handle:
+                        found = _VIEW_BOX.search(handle.read(4096))
+                    if found:
+                        return length_reference(int(found[1]), int(found[2]))
+            return None
+        parent = current["parent_revision_id"]
+        current = store.get_revision(parent) if parent else None
+    return None
+
+
+def with_trace_length_units(store: Store, revisions: list[dict]) -> list[dict]:
+    """``revisions`` as the API reports them: trace settings recorded in pixels (every
+    run before trace lengths were thousandths of the image's longer side, which
+    carries no ``length_unit``) are converted to thousandths of the raster that run
+    traced, so the form resolves them back to the pixels it traced with. A record
+    whose raster size cannot be read is left in pixels, marked ``length_unit: px``.
+    Renamed fields (``corner_straightness``) are served under their current names."""
+    for revision in revisions:
+        settings = revision["settings"]
+        trace = settings.get("trace")
+        if not isinstance(trace, dict):
+            continue
+        trace = settings["trace"] = upgrade_trace_record(trace)
+        if not is_pixel_record(trace):
+            continue
+        reference = traced_length_reference(store, revision)
+        settings["trace"] = (pixel_record_in_units(trace, reference) if reference is not None
+                             else {**trace, "length_unit": "px"})
+    return revisions
+
+
+def served_revisions(store: Store, revisions: list[dict]) -> list[dict]:
+    """``revisions`` with every legacy record brought up to date for the client."""
+    return with_trace_length_units(store, with_removed_colour_hex(store, revisions))
 
 
 def _cleanup_palette(store: Store, cleanup_revision: dict) -> list[dict]:

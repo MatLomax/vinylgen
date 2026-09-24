@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -27,9 +27,10 @@ from shapely.geometry import box
 from vinylgen.boundary_graph import SharedBoundaryTrack, shared_boundary_polygons
 from vinylgen.contracts import TraceSettings
 from vinylgen.curve_fit import SharedChainFitter, shared_boundary_components
+from vinylgen.node_types import cusp_anchor_keys
 from vinylgen.svg_writer import SVG, add_layer
+from vinylgen.trace_lengths import length_reference, resolve_trace_lengths
 from vinylgen.tracing import (
-    DEFAULT_MAX_DEVIATION_PX,
     infer_order,
     layer_order_matters,
     overlap_layer_components,
@@ -37,10 +38,10 @@ from vinylgen.tracing import (
     underlayer_geometry,
 )
 
-# Hidden context traced around the visible window, in traced-image px. Boundaries
-# are split at the crop edge; this keeps that split, and the fit differences it
-# causes, outside the part the user sees.
-PREVIEW_MARGIN_PX = 64
+# Hidden context is traced around the visible window. Boundaries are split at the
+# crop edge; the margin keeps that split, and the fit differences it causes,
+# outside the part the user sees. It grows with the resolved fit windows
+# (``vinylgen.trace_lengths.preview_margin``, at least 64 px).
 # The largest visible window (traced-image px) a preview is drawn for. A warm dense
 # window of this size, margin included, traces in well under a second.
 PREVIEW_MAX_AREA_PX = 600 * 600
@@ -93,7 +94,7 @@ def clamp_window(x: int, y: int, width: int, height: int,
 
 
 def margin_window(window: Window, image_width: int, image_height: int,
-                  margin: int = PREVIEW_MARGIN_PX) -> Window:
+                  margin: int) -> Window:
     """``window`` grown by ``margin`` px on every side, clipped to the image."""
     left = max(0, window.x - margin)
     top = max(0, window.y - margin)
@@ -102,12 +103,12 @@ def margin_window(window: Window, image_width: int, image_height: int,
     return Window(left, top, right - left, bottom - top)
 
 
-def preview_trace_settings(values: dict) -> TraceSettings:
-    """The trace settings a preview fits with, normalized exactly as a trace run does."""
-    settings = TraceSettings(**values)
-    if settings.max_deviation is None:
-        settings = replace(settings, max_deviation=DEFAULT_MAX_DEVIATION_PX)
-    return settings
+def preview_trace_settings(values: dict, image_width: int, image_height: int) -> TraceSettings:
+    """The trace settings a preview fits with, resolved to pixels exactly as a trace
+    run does: on the WHOLE traced image (``image_width`` x ``image_height``), never
+    on the previewed window, so the preview fits what the run would."""
+    return resolve_trace_lengths(TraceSettings(**values),
+                                 length_reference(image_width, image_height))
 
 
 def preview_variant(settings: TraceSettings) -> str:
@@ -192,8 +193,10 @@ class WindowBoundaries:
         it also caches), keeping only the ``FITTERS_PER_WINDOW`` most recent."""
         key = (settings.curve_fit_tolerance, settings.straight_line_max_deviation,
                settings.minimum_straight_length, settings.corner_analysis_span,
-               settings.corner_threshold, settings.corner_straightness,
-               settings.max_deviation, float(overlap_px))
+               settings.corner_threshold, settings.side_smoothness,
+               settings.corner_sharpening_allowance, settings.max_deviation, settings.straight_line_snap, settings.snap_angle,
+               settings.node_placement, settings.nodes_at_bends,
+               settings.curve_feature_scale, float(overlap_px))
         if key in self.fitters:
             self.fitters.move_to_end(key)
         else:
@@ -246,6 +249,7 @@ def render_window_svg(boundaries: WindowBoundaries, window: Window, order: list[
         "viewBox": f"{window.x} {window.y} {window.width} {window.height}",
         "preserveAspectRatio": "none"})
     group = ET.SubElement(root, f"{{{SVG}}}g", {"transform": f"translate({crop.x} {crop.y})"})
+    junctions = cusp_anchor_keys(boundaries.track)
     for position, index in enumerate(order):
         check()
         edge_components = components.get(index, [])
@@ -255,5 +259,5 @@ def render_window_svg(boundaries: WindowBoundaries, window: Window, order: list[
                 chain_fits, settings, overlap_px, fitter)
         else:
             layer_components = edge_components
-        add_layer(group, palette[index], layer_components, "", "preview", variant, 0.0)
+        add_layer(group, palette[index], layer_components, "", "preview", variant, 0.0, junctions)
     return ET.tostring(root, encoding="unicode")

@@ -106,7 +106,7 @@ describe('abortable project artifact requests', () => {
     })
     expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(29)
     // The same field counts as the server's TraceJobSettings and CleanupJobSettings.
-    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(13)
+    expect(Object.keys(DEFAULT_TRACE_SETTINGS)).toHaveLength(20)
     expect(Object.keys(DEFAULT_CLEANUP_SETTINGS)).toHaveLength(8)
   })
 

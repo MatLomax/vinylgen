@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CleanupSettings, PaletteColour, TraceSettings } from './api'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, formatPhysicalSize, paletteColourMatches, removedColourChoice, legacyCleanupSettings, normalizeTraceSettings, physicalSize, type PhysicalSize } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, formatPhysicalSize, paletteColourMatches, removedColourChoice, legacyCleanupSettings, normalizeTraceSettings, physicalSize, TRACE_LENGTH_FIELDS, isPixelRecord, lengthInPixels, pixelHint, pixelRecordInUnits, type PhysicalSize, type TraceLengthField } from './PipelineControls'
 
 afterEach(cleanup)
 
@@ -125,15 +125,15 @@ describe('iteration stepper', () => {
 })
 
 describe('trace setting units', () => {
-  const fittingLabels = ['Curve-fit tolerance (px)', 'Straight-line deviation (px)', 'Minimum straight length (px)', 'Corner analysis span (px)', 'Maximum deviation (px)']
+  const fittingLabels = ['Curve-fit tolerance (‰)', 'Straight-line deviation (‰)', 'Minimum straight length (‰)', 'Analysis scale (‰)', 'Maximum deviation (‰)', 'Side smoothness (‰)', 'Corner sharpening allowance (‰)', 'Curve feature scale (‰)']
 
-  it('labels the overlap in pixels without a physical size from Cleanup, and fitting settings in pixels', () => {
+  it('labels the overlap in pixels without a physical size from Cleanup, and fitting settings in thousandths', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
     for (const label of ['Layer overlap (px)', ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
     expect(screen.getByText('No physical size (px)')).toBeTruthy()
   })
 
-  it('switches the overlap to millimetres when Cleanup set a size, leaving fitting labels in pixels', () => {
+  it('switches the overlap to millimetres when Cleanup set a size, leaving fitting labels in thousandths', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined, COLOURS, { width: 300, height: 200 })
     for (const label of ['Layer overlap (mm)', ...fittingLabels]) expect(screen.getByText(label)).toBeTruthy()
     expect(screen.queryByText('Layer overlap (px)')).toBeNull()
@@ -278,39 +278,48 @@ describe('legacy trace settings', () => {
 
   it('maps curve_optimization false to a straight-line deviation of 0 and drops the flag', () => {
     // Corners keep the recorded deviation they were detected with.
-    expect(normalizeTraceSettings({ curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 2 })).toEqual({ straight_line_max_deviation: 0, corner_straightness: 1.6, overlap: 2 })
-    expect(normalizeTraceSettings({ curve_optimization: true, straight_line_max_deviation: 1.6 })).toEqual({ straight_line_max_deviation: 1.6, corner_straightness: 1.6 })
+    expect(normalizeTraceSettings({ curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 2 })).toEqual({ straight_line_max_deviation: 0, side_smoothness: 1.6, overlap: 2 })
+    expect(normalizeTraceSettings({ curve_optimization: true, straight_line_max_deviation: 1.6 })).toEqual({ straight_line_max_deviation: 1.6, side_smoothness: 1.6 })
     expect(normalizeTraceSettings({ overlap: 1 })).toEqual({ overlap: 1 })
   })
 
-  it('maps missing corner straightness to the recorded straight-line deviation', () => {
-    expect(normalizeTraceSettings({ straight_line_max_deviation: .7 })).toEqual({ straight_line_max_deviation: .7, corner_straightness: .7 })
-    expect(normalizeTraceSettings({ straight_line_max_deviation: .7, corner_straightness: null as unknown as number })).toEqual({ straight_line_max_deviation: .7, corner_straightness: .7 })
-    expect(normalizeTraceSettings({ straight_line_max_deviation: 0, corner_straightness: .4 })).toEqual({ straight_line_max_deviation: 0, corner_straightness: .4 })
-    // Absent both, merging over the defaults gives the 1.6 px default.
-    expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ overlap: 1 }) }.corner_straightness).toBe(1.6)
+  it('maps missing side smoothness to the recorded straight-line deviation', () => {
+    expect(normalizeTraceSettings({ straight_line_max_deviation: .7 })).toEqual({ straight_line_max_deviation: .7, side_smoothness: .7 })
+    expect(normalizeTraceSettings({ straight_line_max_deviation: .7, side_smoothness: null as unknown as number })).toEqual({ straight_line_max_deviation: .7, side_smoothness: .7 })
+    expect(normalizeTraceSettings({ straight_line_max_deviation: 0, side_smoothness: .4 })).toEqual({ straight_line_max_deviation: 0, side_smoothness: .4 })
+    // Absent both, merging over the defaults gives the default (thousandths).
+    expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ overlap: 1 }) }.side_smoothness).toBe(.8)
+  })
+
+  it('maps a record still keyed corner_straightness onto side_smoothness and drops the old key', () => {
+    expect(normalizeTraceSettings({ straight_line_max_deviation: 1.3, corner_straightness: 1.6 })).toEqual({ straight_line_max_deviation: 1.3, side_smoothness: 1.6 })
+    // A record naming both (a draft saved mid-migration) keeps the current key.
+    expect(normalizeTraceSettings({ straight_line_max_deviation: 1.3, side_smoothness: .9, corner_straightness: 1.6 })).toEqual({ straight_line_max_deviation: 1.3, side_smoothness: .9 })
+    expect(normalizeTraceSettings({ straight_line_max_deviation: 1.3, corner_straightness: 1.6 })).not.toHaveProperty('corner_straightness')
   })
 })
 
-describe('corner straightness control', () => {
-  it('renders as an unbounded px number field beside the corner settings and edits its own key', () => {
+describe('side smoothness control', () => {
+  it('renders as an unbounded number field beside the corner settings and edits its own key', () => {
     const setTrace = vi.fn()
-    renderTrace({ ...DEFAULT_TRACE_SETTINGS, corner_straightness: .9 }, setTrace)
-    const field = screen.getByLabelText(/Corner straightness \(px\)/) as HTMLInputElement
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, side_smoothness: .9 }, setTrace)
+    const field = screen.getByLabelText(/Side smoothness \(‰\)/) as HTMLInputElement
     expect(field.value).toBe('0.9')
     expect(field.min).toBe('0')
     expect(field.max).toBe('')
     const labels = Array.from(document.querySelectorAll('.setting-field > span')).map(node => node.textContent)
-    expect(labels.indexOf('Corner straightness (px)')).toBe(labels.indexOf('Corner analysis span (px)') + 1)
+    expect(labels.indexOf('Side smoothness (‰)')).toBe(labels.indexOf('Analysis scale (‰)') + 1)
+    expect(labels.indexOf('Corner sharpening allowance (‰)')).toBe(labels.indexOf('Side smoothness (‰)') + 1)
     fireEvent.change(field, { target: { value: '0.3' } })
-    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ corner_straightness: .3, straight_line_max_deviation: 1.6 }))
+    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ side_smoothness: .3, straight_line_max_deviation: .8 }))
   })
 
-  it('describes maximum deviation as a curve-tolerance cap that never limits lines', () => {
+  it('describes maximum deviation as a cap on the curve-fit tolerance and straight-line deviation that the allowance follows', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
     const help = screen.getByLabelText(/Maximum deviation/).closest('label')?.querySelector('small')?.textContent ?? ''
-    expect(help).toMatch(/caps the curve-fit tolerance/)
-    expect(help).toMatch(/Does not limit straight lines/)
+    expect(help).toMatch(/caps the curve-fit tolerance and the straight-line deviation/)
+    expect(help).toMatch(/the corner sharpening allowance follows it unless set/)
+    expect(help).not.toMatch(/Does not limit straight lines/)
   })
 
   it('keeps corners out of the straight-line deviation help', () => {
@@ -320,3 +329,156 @@ describe('corner straightness control', () => {
     expect(help).not.toMatch(/corner/i)
   })
 })
+
+describe('corner sharpening allowance control', () => {
+  it('renders as an optional field beside side smoothness and edits its own key', () => {
+    const setTrace = vi.fn()
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, corner_sharpening_allowance: .6 }, setTrace)
+    const field = screen.getByLabelText(/Corner sharpening allowance \(‰\)/) as HTMLInputElement
+    expect(field.value).toBe('0.6')
+    expect(field.min).toBe('0.0001')
+    fireEvent.change(field, { target: { value: '' } })
+    expect(setTrace).toHaveBeenCalledWith(expect.objectContaining({ corner_sharpening_allowance: null }))
+  })
+
+  it('is null (automatic) by default and shows the Automatic placeholder when empty', () => {
+    expect(DEFAULT_TRACE_SETTINGS.corner_sharpening_allowance).toBeNull()
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
+    const field = screen.getByLabelText(/Corner sharpening allowance \(‰\)/) as HTMLInputElement
+    expect(field.value).toBe('')
+    expect(field.placeholder).toBe('Automatic')
+  })
+
+  it('describes what it does and that it follows the maximum deviation automatically', () => {
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
+    const help = screen.getByLabelText(/Corner sharpening allowance/).closest('label')?.querySelector('small')?.textContent ?? ''
+    expect(help).toMatch(/Automatic: the maximum deviation/)
+    expect(help).toMatch(/2\.4 times it snap sharp/)
+  })
+})
+
+describe('node placement and straight-line snapping', () => {
+  it('defaults to fewest nodes preferring extremes, bends on, a 2 ‰ scale and horizontal & vertical snapping at 2 degrees', () => {
+    expect(DEFAULT_TRACE_SETTINGS).toMatchObject({ node_placement: 'prefer_extremes', nodes_at_bends: true, curve_feature_scale: 2, straight_line_snap: 'axis', snap_angle: 2 })
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
+    const placement = screen.getByLabelText(/^Node placement/) as HTMLSelectElement
+    expect(placement.value).toBe('prefer_extremes')
+    expect(Array.from(placement.options).map(option => [option.value, option.textContent])).toEqual([['prefer_extremes', 'Fewest nodes, prefer extremes'], ['at_extremes', 'Always at extremes'], ['fewest', 'Fewest nodes only']])
+    const snap = screen.getByLabelText(/Snap straight lines/) as HTMLSelectElement
+    expect(Array.from(snap.options).map(option => [option.value, option.textContent])).toEqual([['off', 'Off'], ['axis', 'Horizontal & vertical'], ['axis_diagonal', 'Also 45°']])
+    expect((screen.getByLabelText(/Nodes at tightest bends/) as HTMLInputElement).checked).toBe(true)
+    const angle = screen.getByLabelText(/Snap angle/) as HTMLInputElement
+    expect([angle.value, angle.min, angle.max]).toEqual(['2', '0.5', '10'])
+    const scale = screen.getByLabelText(/Curve feature scale \(‰\)/) as HTMLInputElement
+    expect([scale.value, scale.min, scale.max]).toEqual(['2', '0.25', '16'])
+    expect(document.querySelectorAll('.field-dirty')).toHaveLength(0)
+  })
+
+  it('edits each option under its own key and marks it dirty', () => {
+    const setTrace = vi.fn()
+    renderTrace(DEFAULT_TRACE_SETTINGS, setTrace)
+    fireEvent.change(screen.getByLabelText(/^Node placement/), { target: { value: 'at_extremes' } })
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULT_TRACE_SETTINGS, node_placement: 'at_extremes' })
+    fireEvent.click(screen.getByLabelText(/Nodes at tightest bends/))
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULT_TRACE_SETTINGS, nodes_at_bends: false })
+    fireEvent.change(screen.getByLabelText(/Curve feature scale/), { target: { value: '8' } })
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULT_TRACE_SETTINGS, curve_feature_scale: 8 })
+    fireEvent.change(screen.getByLabelText(/Snap straight lines/), { target: { value: 'axis_diagonal' } })
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULT_TRACE_SETTINGS, straight_line_snap: 'axis_diagonal' })
+    fireEvent.change(screen.getByLabelText(/Snap angle/), { target: { value: '5' } })
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULT_TRACE_SETTINGS, snap_angle: 5 })
+    cleanup()
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, node_placement: 'fewest', nodes_at_bends: false, straight_line_snap: 'off' }, () => undefined)
+    for (const label of [/^Node placement/, /^Snap straight lines/]) expect(screen.getByLabelText(label).closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    expect(screen.getByLabelText(/Nodes at tightest bends/).closest('label')?.querySelector('.field-dirty')).toBeTruthy()
+    expect(screen.getByLabelText(/Curve feature scale/).closest('label')?.querySelector('.field-dirty')).toBeNull()
+  })
+
+  it('disables the snap angle while snapping is off', () => {
+    renderTrace({ ...DEFAULT_TRACE_SETTINGS, straight_line_snap: 'off' }, () => undefined)
+    expect((screen.getByLabelText(/Snap angle/) as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('loads stored settings without the new fields with their defaults', () => {
+    const { node_placement: _a, nodes_at_bends: _b, curve_feature_scale: _c, straight_line_snap: _d, snap_angle: _e, ...stored } = DEFAULT_TRACE_SETTINGS
+    expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ ...stored, curve_fit_tolerance: 1 }) }).toEqual({ ...DEFAULT_TRACE_SETTINGS, curve_fit_tolerance: 1 })
+  })
+
+  it('says the corner threshold is only the corner detector\'s and the tolerance sets the node count', () => {
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
+    const corner = screen.getByLabelText(/Corner threshold/).closest('label')?.querySelector('small')?.textContent ?? ''
+    expect(corner).toMatch(/where two smooth sides meet \(straight or curved\) to become a hard corner/)
+    expect(corner).toMatch(/placed by Node placement/)
+    const tolerance = screen.getByLabelText(/Curve-fit tolerance/).closest('label')?.querySelector('small')?.textContent ?? ''
+    expect(tolerance).toMatch(/sets the node count directly/)
+  })
+})
+
+describe('trace lengths in thousandths of the image', () => {
+  const lengthLabels: [string, TraceLengthField][] = [['Curve-fit tolerance', 'curve_fit_tolerance'], ['Straight-line deviation', 'straight_line_max_deviation'], ['Minimum straight length', 'minimum_straight_length'], ['Maximum deviation', 'max_deviation'], ['Side smoothness', 'side_smoothness'], ['Corner sharpening allowance', 'corner_sharpening_allowance'], ['Analysis scale', 'corner_analysis_span'], ['Curve feature scale', 'curve_feature_scale']]
+  const help = (label: string) => screen.getByLabelText(new RegExp(`^${label}`)).closest('label')?.querySelector('small')?.textContent ?? ''
+
+  it('says what each length comes to in pixels on the traced image', () => {
+    render(<PipelineControls stage="trace" palette={DEFAULT_PALETTE_SETTINGS} setPalette={() => undefined} basePalette={DEFAULT_PALETTE_SETTINGS} trace={{ ...DEFAULT_TRACE_SETTINGS, curve_fit_tolerance: 1.5 }} setTrace={() => undefined} baseTrace={DEFAULT_TRACE_SETTINGS} paletteColours={[]}
+      selectionMode={null} setSelectionMode={() => undefined} onReset={() => undefined} iterationCount={0} iterationIndex={0} onStep={() => undefined} onCommitDraft={() => undefined} tracedSize={{ width: 4000, height: 6000 }} />)
+    // The longer side (6000 px) sets the scale: 1.5 thousandths are 9 px.
+    expect(help('Curve-fit tolerance')).toMatch(/= 9 px on this image\.$/)
+    expect(help('Straight-line deviation')).toMatch(/= 4\.8 px on this image\.$/)
+    expect(help('Analysis scale')).toMatch(/= 24 px on this image\.$/)
+    // An automatic maximum deviation shows its automatic value.
+    expect(help('Maximum deviation')).toMatch(/= 6 px on this image \(Automatic\)\.$/)
+    expect(help('Side smoothness')).toMatch(/= 4\.8 px on this image\.$/)
+    // An automatic corner sharpening allowance follows the (also automatic) maximum deviation.
+    expect(help('Corner sharpening allowance')).toMatch(/= 6 px on this image \(Automatic\)\.$/)
+    for (const [label] of lengthLabels) expect(help(label)).toMatch(/px on this image/)
+  })
+
+  it('shows no pixel hint before the traced image is measured', () => {
+    renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
+    for (const [label] of lengthLabels) expect(help(label)).not.toMatch(/px on this image/)
+  })
+
+  it('formats hints by size', () => {
+    expect(pixelHint('curve_fit_tolerance', .75, 600)).toBe(' = 1 px on this image, held at the 1 px minimum.')
+    expect(pixelHint('max_deviation', null, 600)).toBe(' = 1 px on this image (Automatic), held at the 1 px minimum.')
+    expect(pixelHint('straight_line_max_deviation', .8, 600)).toBe(' = 0.48 px on this image.')
+    expect(pixelHint('curve_fit_tolerance', .75, 2000)).toBe(' = 1.5 px on this image.')
+    expect(pixelHint('corner_analysis_span', 4, 11264)).toBe(' = 45 px on this image.')
+    expect(pixelHint('curve_fit_tolerance', .75, null)).toBe('')
+    // Corner sharpening allowance has no automatic value of its own: without an explicit
+    // fallback (the caller's job, since it follows the maximum deviation) an automatic
+    // (null) allowance hints nothing.
+    expect(pixelHint('corner_sharpening_allowance', null, 6000)).toBe('')
+    expect(pixelHint('corner_sharpening_allowance', null, 6000, 1)).toBe(' = 6 px on this image (Automatic).')
+    expect(pixelHint('corner_sharpening_allowance', 2, 6000, 1)).toBe(' = 12 px on this image.')
+  })
+
+  it('converts a pixel-era record on its image so it resolves back to its pixels', () => {
+    expect(isPixelRecord({ curve_fit_tolerance: 1.5 })).toBe(true)
+    expect(isPixelRecord({ length_unit: 'px' })).toBe(true)
+    expect(isPixelRecord({ length_unit: 'per_mille', curve_fit_tolerance: 1 })).toBe(false)
+    // A draft holding no length (only a layer order) has nothing to convert.
+    expect(isPixelRecord({ layer_order: ['#000000'] })).toBe(false)
+    const stored = { curve_fit_tolerance: 1.2, straight_line_max_deviation: 1.3, max_deviation: null, overlap: 2, curve_optimization: false }
+    const converted = pixelRecordInUnits(stored, 1536) as Record<string, unknown>
+    expect(converted.length_unit).toBe('per_mille')
+    expect(converted.overlap).toBe(2)
+    expect(converted.curve_optimization).toBe(false)
+    const px = (name: TraceLengthField) => lengthInPixels(converted[name] as number, 1536)
+    // Recorded lengths, the pixel-era defaults for absent ones, 2 px for an automatic
+    // deviation, the recorded deviation for side smoothness (still carried as the old
+    // `corner_straightness` key nowhere here, so it follows straight_line_max_deviation),
+    // and the same automatic 2 px the corner sharpening allowance follows from the
+    // maximum deviation.
+    const expected: Record<TraceLengthField, number> = { curve_fit_tolerance: 1.2, straight_line_max_deviation: 1.3, minimum_straight_length: 4, max_deviation: 2, side_smoothness: 1.3, corner_sharpening_allowance: 2, corner_analysis_span: 8, curve_feature_scale: 4 }
+    for (const name of TRACE_LENGTH_FIELDS) expect(px(name)).toBeCloseTo(expected[name], 9)
+    expect(pixelRecordInUnits(converted, 1536)).toBe(converted)
+  })
+
+  it('converts a pixel-era record naming an explicit corner sharpening allowance', () => {
+    const stored = { curve_fit_tolerance: 1.2, straight_line_max_deviation: 1.3, max_deviation: 3, corner_sharpening_allowance: 5 }
+    const converted = pixelRecordInUnits(stored, 1536) as Record<string, unknown>
+    expect(lengthInPixels(converted.corner_sharpening_allowance as number, 1536)).toBeCloseTo(5, 9)
+  })
+})
+

@@ -19,7 +19,8 @@ from PIL import Image
 
 from vinylgen import trace_window
 from vinylgen.svg_writer import INKSCAPE, SVG
-from vinylgen.trace_window import PREVIEW_MARGIN_PX, PreviewCancelled
+from vinylgen.trace_lengths import PREVIEW_MARGIN_MIN_PX as PREVIEW_MARGIN_PX
+from vinylgen.trace_window import PreviewCancelled
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
 from vinylgen.trace_window import PreviewSegmentation
@@ -94,7 +95,8 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         # A window whose margin reaches every image edge covers exactly what the trace
         # run traces, so the preview must reproduce that run's geometry path for path.
         window = {"x": 10, "y": 8, "width": WIDTH - 20, "height": HEIGHT - 16}
-        for trace in ({}, {"solid_underlayers": True, "curve_fit_tolerance": 0.8}):
+        for trace in ({}, {"solid_underlayers": True, "curve_fit_tolerance": 0.8,
+                           "length_unit": "per_mille"}):
             with self.subTest(trace=trace):
                 response = await self.preview(palette_revision, window, trace)
                 self.assertEqual(response.status_code, 200, response.text)
@@ -151,9 +153,13 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(svg.iter(f"{{{SVG}}}g")).attrib["transform"],
                          f"translate({400 - PREVIEW_MARGIN_PX} 0)")
         self.assertEqual(len(service._boundaries.keys()), 1)
-        # A settings-only change re-fits the cached boundaries of the same window.
+        # A settings-only change re-fits the cached boundaries of the same window. On
+        # this 620 px fixture the change is coarser, not finer: tighter tolerances
+        # would both be held at the 1 px floor.
         retuned = await self.preview(palette_revision, request_window,
-                                     {"curve_fit_tolerance": 0.2, "straight_line_max_deviation": 0.1})
+                                     {"curve_fit_tolerance": 6, "straight_line_max_deviation": 6,
+                                      "max_deviation": 6, "corner_sharpening_allowance": 1,
+                                      "length_unit": "per_mille"})
         self.assertEqual(retuned.status_code, 200, retuned.text)
         self.assertNotEqual(retuned.json()["svg"], body["svg"])
         self.assertEqual(len(service._boundaries.keys()), 1)
@@ -223,8 +229,14 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cleanup_field.status_code, 422)
         bad_order = await self.preview(palette_revision, window, {"layer_order": ["Nonexistent"]})
         self.assertEqual(bad_order.status_code, 422, bad_order.text)
-        bad_setting = await self.preview(palette_revision, window, {"curve_fit_tolerance": 0})
+        bad_setting = await self.preview(palette_revision, window,
+                                         {"curve_fit_tolerance": 0, "length_unit": "per_mille"})
         self.assertEqual(bad_setting.status_code, 422)
+        # A client still sending pixel lengths names no unit and is refused, never
+        # read as thousandths.
+        pixel_client = await self.preview(palette_revision, window, {"curve_fit_tolerance": 1.5})
+        self.assertEqual(pixel_client.status_code, 422)
+        self.assertIn("length_unit", pixel_client.text)
 
     async def test_a_superseded_request_stops_and_the_kernels_warm_off_the_loop(self) -> None:
         _, _, palette_revision = await self.flattened_project()

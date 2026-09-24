@@ -3,11 +3,16 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Iterable
+
+from vinylgen.node_types import path_nodetypes
 
 SVG = "http://www.w3.org/2000/svg"
 INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
+SODIPODI = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
 ET.register_namespace("", SVG)
 ET.register_namespace("inkscape", INKSCAPE)
+ET.register_namespace("sodipodi", SODIPODI)
 
 
 def svg_document(width: int, height: int,
@@ -23,7 +28,12 @@ def svg_document(width: int, height: int,
 
 
 def add_layer(root: ET.Element, row: dict, components: list[dict], transform: str,
-              subject: str, variant: str, stroke_width: float) -> dict:
+              subject: str, variant: str, stroke_width: float,
+              junctions: Iterable[str]) -> dict:
+    """Append one colour's layer of paths; ``junctions`` are the written positions of
+    the junction and image-edge endpoint anchors, which are always cusp nodes
+    (``vinylgen.node_types.cusp_anchor_keys``)."""
+    junctions = frozenset(junctions)
     slug = re.sub(r"[^a-z0-9]+", "-", str(row["name"]).casefold()).strip("-")
     layer = ET.SubElement(root, f"{{{SVG}}}g", {
         f"{{{INKSCAPE}}}groupmode": "layer", f"{{{INKSCAPE}}}label": f"{row['name']} ({row['hex']})",
@@ -34,7 +44,8 @@ def add_layer(root: ET.Element, row: dict, components: list[dict], transform: st
     for number, component in enumerate(components, 1):
         path_id = f"{variant}-{slug}-{number:03d}"
         ET.SubElement(layer, f"{{{SVG}}}path", {"id": path_id,
-                      f"{{{INKSCAPE}}}label": f"{row['name']} {number:03d}", "d": component["d"]})
+                      f"{{{INKSCAPE}}}label": f"{row['name']} {number:03d}", "d": component["d"],
+                      f"{{{SODIPODI}}}nodetypes": path_nodetypes(component["d"], junctions)})
         stats.append({"id": path_id, "nodes": component["nodes"],
                       "holes": component["holes"],
                       "fit_metrics": component["fit_metrics"]})

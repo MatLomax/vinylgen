@@ -12,10 +12,68 @@ export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
   width_mm: null, height_mm: null, remove_colour: null,
   cleanup: false, cleanup_action: 'remove', min_detail_width: 0, min_region_area: 0, remove_below_width: 0,
 }
+// Trace lengths are thousandths of the traced image's longer side (vinylgen.contracts);
+// these mirror its default tables.
+export const TRACE_LENGTH_FIELDS = ['curve_fit_tolerance', 'straight_line_max_deviation', 'minimum_straight_length', 'max_deviation', 'side_smoothness', 'corner_sharpening_allowance', 'corner_analysis_span', 'curve_feature_scale'] as const
+export type TraceLengthField = typeof TRACE_LENGTH_FIELDS[number]
+const PER_MILLE_DEFAULTS = { curve_fit_tolerance: .75, straight_line_max_deviation: .8, minimum_straight_length: 2, corner_analysis_span: 4, curve_feature_scale: 2 }
+// The pixel defaults every setting recorded before units was traced with.
+const PX_DEFAULTS: Record<string, number> = { curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, corner_analysis_span: 8, curve_feature_scale: 4 }
+// Lengths defaulting to another length's value, and automatic lengths (null) with their
+// default in thousandths and in pixels.
+const FOLLOWING_LENGTHS: Record<string, TraceLengthField> = { side_smoothness: 'straight_line_max_deviation', corner_sharpening_allowance: 'max_deviation' }
+const AUTOMATIC_LENGTHS: Record<string, [number, number]> = { max_deviation: [1, 2] }
+export const CURVE_FEATURE_SCALE_RANGE: [number, number] = [.25, 16]
 export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
-  overlap: 0, solid_underlayers: false, layer_order: null, corner_threshold: 60,
-  curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, corner_straightness: 1.6,
+  overlap: 0, solid_underlayers: false, layer_order: null, corner_threshold: 60, length_unit: 'per_mille',
+  ...PER_MILLE_DEFAULTS, max_deviation: null, side_smoothness: PER_MILLE_DEFAULTS.straight_line_max_deviation, corner_sharpening_allowance: null,
+  straight_line_snap: 'axis', snap_angle: 2, node_placement: 'prefer_extremes', nodes_at_bends: true,
   soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
+}
+// Whether a stored trace record holds pixel lengths: it says 'px', or predates units (no
+// marker) and sets a length. One setting no length (a draft holding only a layer order)
+// has nothing to convert. The server serves every recorded run in thousandths.
+export function isPixelRecord(stored: Record<string, unknown>): boolean {
+  if (stored.length_unit !== undefined) return stored.length_unit === 'px'
+  return TRACE_LENGTH_FIELDS.some(name => typeof stored[name] === 'number')
+}
+// A stored pixel-era trace record with its lengths in thousandths of an image whose longer
+// side is `longSide` px (vinylgen.trace_lengths.pixel_record_in_units): absent lengths take
+// the pixel-era defaults, following lengths the recorded value they follow, automatic ones
+// their pixel default, so the record traces as it did. Other keys are kept as they are.
+export function pixelRecordInUnits<T extends Record<string, unknown>>(stored: T, longSide: number): T {
+  if (!isPixelRecord(stored)) return stored
+  const lengths: Record<string, number> = {}
+  for (const name of TRACE_LENGTH_FIELDS) {
+    const value = stored[name]
+    if (typeof value === 'number') lengths[name] = value
+    else if (name in PX_DEFAULTS) lengths[name] = PX_DEFAULTS[name]
+  }
+  for (const [name, [, px]] of Object.entries(AUTOMATIC_LENGTHS)) if (lengths[name] === undefined) lengths[name] = px
+  for (const [name, source] of Object.entries(FOLLOWING_LENGTHS)) if (lengths[name] === undefined) lengths[name] = lengths[source]
+  return { ...stored, ...Object.fromEntries(Object.entries(lengths).map(([name, value]) => [name, value * 1000 / longSide])), length_unit: 'per_mille' }
+}
+// What a length in thousandths comes to in pixels on an image whose longer side is `longSide`.
+export function lengthInPixels(value: number, longSide: number): number {
+  return value * longSide / 1000
+}
+// The help-text hint of a trace length: its pixels on the current image (the automatic
+// default for an automatic length left empty, or an explicit `automaticUnits` for a
+// length whose automatic value follows another field's, such as the corner sharpening
+// allowance following the maximum deviation), or nothing before the image is measured.
+// Lengths the trace never resolves below MIN_ACCURACY_PX (vinylgen.trace_lengths): below a
+// pixel they would chase the boundary's sub-pixel noise on a small image.
+export const FLOORED_LENGTHS: readonly TraceLengthField[] = ['curve_fit_tolerance', 'max_deviation', 'corner_sharpening_allowance']
+export const MIN_ACCURACY_PX = 1
+export function pixelHint(name: TraceLengthField, value: number | null, longSide: number | null, automaticUnits = AUTOMATIC_LENGTHS[name]?.[0]): string {
+  if (!longSide) return ''
+  const units = value ?? automaticUnits
+  if (units === undefined) return ''
+  const px = lengthInPixels(units, longSide)
+  const automatic = value === null ? ' (Automatic)' : ''
+  if (FLOORED_LENGTHS.includes(name) && px < MIN_ACCURACY_PX) return ` = ${MIN_ACCURACY_PX} px on this image${automatic}, held at the ${MIN_ACCURACY_PX} px minimum.`
+  const shown = px >= 10 ? px.toFixed(0) : px >= 1 ? String(Number(px.toFixed(1))) : String(Number(px.toFixed(2)))
+  return ` = ${shown} px on this image${automatic}.`
 }
 const CLEANUP_KEYS = Object.keys(DEFAULT_CLEANUP_SETTINGS) as (keyof CleanupSettings)[]
 // Trace settings recorded before the cleanup stage existed embed the physical size, the
@@ -25,19 +83,22 @@ export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<
   const picked = Object.fromEntries(CLEANUP_KEYS.filter(key => key in stored).map(key => [key, stored[key]]))
   return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
-// Bring stored trace settings up to the current fields. Settings recorded without
-// `corner_straightness` detected corners with their straight-line deviation, so they
-// load with that value (absent both, the 1.6 px default applies when merged over the
-// defaults). A `curve_optimization: false` flag loads as a straight-line deviation of
-// 0 (straighten only exactly straight runs); the flag itself is dropped. Embedded
-// cleanup-stage fields (see legacyCleanupSettings) are dropped from the trace form.
-export function normalizeTraceSettings<T extends Partial<TraceSettings>>(stored: T & { curve_optimization?: unknown }): T {
-  const { curve_optimization: legacy, ...rest } = stored
+// Bring stored trace settings up to the current fields. A record still keyed
+// `corner_straightness` (its name before it became `side_smoothness`) loads under the
+// new key, and the old key is dropped so it is never sent. Settings recorded without
+// either key detected corners with their straight-line deviation, so they load with
+// that value (absent both, the default applies when merged over the defaults). A
+// `curve_optimization: false` flag loads as a straight-line deviation of 0 (straighten
+// only exactly straight runs); the flag itself is dropped. Embedded cleanup-stage
+// fields (see legacyCleanupSettings) are dropped from the trace form.
+export function normalizeTraceSettings<T extends Partial<TraceSettings>>(stored: T & { curve_optimization?: unknown; corner_straightness?: number }): T {
+  const { curve_optimization: legacy, corner_straightness: legacySmoothness, ...rest } = stored
   const next: Partial<TraceSettings> = { ...rest }
   for (const key of CLEANUP_KEYS) delete (next as Record<string, unknown>)[key]
-  if (next.corner_straightness == null) {
-    delete next.corner_straightness
-    if (typeof next.straight_line_max_deviation === 'number') next.corner_straightness = next.straight_line_max_deviation
+  if (next.side_smoothness == null) {
+    delete next.side_smoothness
+    if (typeof legacySmoothness === 'number') next.side_smoothness = legacySmoothness
+    else if (typeof next.straight_line_max_deviation === 'number') next.side_smoothness = next.straight_line_max_deviation
   }
   if (legacy === false) next.straight_line_max_deviation = 0
   return next as T
@@ -268,8 +329,15 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       : null
   const removalNote = removal.colour && !removalBlocked ? <small id="remove-colour-status" className="remove-colour-match"><span className="swatch" style={{ background: removal.colour.hex }} /> Removes {removal.colour.name || removal.colour.hex} ({removal.colour.hex})</small>
     : removalProblem ? <small id="remove-colour-status" className="remove-colour-missing" role="alert">{removalProblem}</small> : null
-  // Fitting settings are always pixels of the traced image; physical settings follow
-  // the output size: the Cleanup form's own, and for Trace the size its cleanup set.
+  // Trace lengths are thousandths of the traced image's longer side, each hinted in its
+  // pixels on this image; physical settings follow the output size: the Cleanup form's
+  // own, and for Trace the size its cleanup set.
+  const longSide = tracedSize ? Math.max(tracedSize.width, tracedSize.height) : null
+  // The corner sharpening allowance's own automatic value is not fixed: left empty it
+  // follows the maximum deviation, whether that is itself a set value or automatic.
+  const hint = (name: TraceLengthField) => name === 'corner_sharpening_allowance'
+    ? pixelHint(name, trace.corner_sharpening_allowance, longSide, trace.max_deviation ?? AUTOMATIC_LENGTHS.max_deviation[0])
+    : pixelHint(name, trace[name], longSide)
   const physical = stage === 'cleanup' ? cleanup.width_mm !== null || cleanup.height_mm !== null : traceSize !== null
   const length = physical ? 'mm' : 'px'
   const area = physical ? 'mm²' : 'px²'
@@ -354,8 +422,15 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
         <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>On: each lower layer is cut as a solid shape under everything above it, so no edges are shared and alignment is easiest; uses the most vinyl. Replaces the overlap distance.</small></span></label>
         {layerOrderMatters(trace) && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedIndex={removedIndex} automaticOrder={automaticOrder} onRetry={onRetryLayerOrder} />}
       </div></section>
-      <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Distances here are pixels of the traced image, whatever the physical size.</p><div className="settings-grid">
-        <NumberField label="Corner threshold" help="How sharp a bend, in degrees, must be to become a hard corner. Lower: more bends become sharp points. Higher: gentle bends stay smooth curves." value={trace.corner_threshold} max={180} dirty={td('corner_threshold')} onChange={value => t('corner_threshold', value!)} /><NumberField label="Corner analysis span (px)" help="Length of edge, in px, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored." value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Corner straightness (px)" help="How far, in px, the edges beside a corner may wobble and still confirm it. Lower: only clean straight edges make sharp corners. Higher: rougher edges still get sharp corners." value={trace.corner_straightness} dirty={td('corner_straightness')} onChange={value => t('corner_straightness', value!)} /><NumberField label="Curve-fit tolerance (px)" help="How far, in px, a curve may stray from the pixel edge. Lower: follows the pixels more closely, more nodes. Higher: smoother, fewer nodes." value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (px)" help="How far, in px, an edge may bend and still be drawn as one straight line. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved." value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (px)" help="Shortest edge, in px, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved." value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (px)" help="In px (Automatic: 2): caps the curve-fit tolerance, limits how far a corner may shift, and sets how much drift the check after tracing allows. Lower than the curve-fit tolerance: tighter curves, more nodes, stricter check; higher: only relaxes the check. Does not limit straight lines." value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />
+      <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Lengths here are thousandths (‰) of the traced image's longer side, so a setting traces alike at any image size; each says what it comes to in pixels on this image.</p><div className="settings-grid">
+        <NumberField label="Corner threshold" help="How far, in degrees, the edge must change direction where two smooth sides meet (straight or curved) to become a hard corner. Only hard corners and points where three colours meet are sharp nodes; every other node joins smoothly and is placed by Node placement below. Lower: more bends become sharp corners. Higher: only sharper turns do." value={trace.corner_threshold} max={180} dirty={td('corner_threshold')} onChange={value => t('corner_threshold', value!)} /><NumberField label="Analysis scale (‰)" help={`Length of edge, in ‰ of the image's longer side, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored.${hint('corner_analysis_span')}`} value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Side smoothness (‰)" help={`How far, in ‰ of the image's longer side, the edge on each side of a possible corner may stray from a smooth arc (a straight line or a steady curve) and still confirm the corner. Lower: only clean sides make sharp corners. Higher: rougher sides still get sharp corners.${hint('side_smoothness')}`} value={trace.side_smoothness} dirty={td('side_smoothness')} onChange={value => t('side_smoothness', value!)} /><NumberField label="Corner sharpening allowance (‰)" help={`How far, in ‰ of the image's longer side, a sharpened corner may lie from the drawn edge (Automatic: the maximum deviation). A corner becomes the point where its two sides meet only within this distance, so roundings up to about 2.4 times it snap sharp and larger ones stay round. Lower: only near-sharp corners sharpen. Higher: softer roundings become sharp corners.${hint('corner_sharpening_allowance')}`} value={trace.corner_sharpening_allowance} optional min={.0001} dirty={td('corner_sharpening_allowance')} onChange={value => t('corner_sharpening_allowance', value)} /><NumberField label="Curve-fit tolerance (‰)" help={`How far, in ‰ of the image's longer side, a curve may stray from the pixel edge. Curves use as few nodes as stay within it, so this sets the node count directly. Lower: follows the pixels more closely, more nodes. Higher: fewer nodes, smoother curves.${hint('curve_fit_tolerance')}`} value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (‰)" help={`How far, in ‰ of the image's longer side, the edge may stray from the straight line drawn for it, capped at the maximum deviation. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved.${hint('straight_line_max_deviation')}`} value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (‰)" help={`Shortest edge, in ‰ of the image's longer side, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved.${hint('minimum_straight_length')}`} value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (‰)" help={`In ‰ of the image's longer side (Automatic: 1): caps the curve-fit tolerance and the straight-line deviation, and sets how much drift the check after tracing allows; the corner sharpening allowance follows it unless set. Lower than either: that fit is tighter, with more nodes, and the check stricter; higher: only relaxes the check.${hint('max_deviation')}`} value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />
+      </div></section>
+      <section className="settings-group"><h3>Nodes &amp; straight lines</h3><p>Where curve nodes go and how straight edges are drawn, for paths that look drawn by hand.</p><div className="settings-grid">
+        <Field label="Node placement" help="Fewest nodes, prefer extremes: as few nodes as the curve-fit tolerance allows, at the leftmost, rightmost, top and bottom points of curves when that costs no extra node. Always at extremes: a node at every such point, even when that adds nodes. Fewest nodes only: as few nodes as possible, wherever they fit best." dirty={td('node_placement')}><select value={trace.node_placement} onChange={event => t('node_placement', event.target.value as TraceSettings['node_placement'])}><option value="prefer_extremes">Fewest nodes, prefer extremes</option><option value="at_extremes">Always at extremes</option><option value="fewest">Fewest nodes only</option></select></Field>
+        <label className="check-field"><input type="checkbox" checked={trace.nodes_at_bends} onChange={event => t('nodes_at_bends', event.target.checked)} /><span><strong>Nodes at tightest bends<DirtyDot dirty={td('nodes_at_bends')} /></strong><small>On: the tightest point of a bend can take a node, like a hand-drawn path. Off: nodes go at extremes, inflections and wherever the tolerance needs one.</small></span></label>
+        <NumberField label="Curve feature scale (‰)" help={`Length of edge, in ‰ of the image's longer side, smoothed over before looking for extremes, inflections and bends. Lower: small bumps get nodes of their own. Higher: pixel steps and small wiggles are ignored.${hint('curve_feature_scale')}`} value={trace.curve_feature_scale} min={CURVE_FEATURE_SCALE_RANGE[0]} max={CURVE_FEATURE_SCALE_RANGE[1]} dirty={td('curve_feature_scale')} onChange={value => t('curve_feature_scale', value!)} />
+        <Field label="Snap straight lines" help="Make straight edges exactly horizontal or vertical (and, with Also 45°, diagonal) when they are within the snap angle, never moving an edge further than the straight-line deviation (or the maximum deviation, if lower). Off: straight edges keep their measured angle." dirty={td('straight_line_snap')}><select value={trace.straight_line_snap} onChange={event => t('straight_line_snap', event.target.value as TraceSettings['straight_line_snap'])}><option value="off">Off</option><option value="axis">Horizontal &amp; vertical</option><option value="axis_diagonal">Also 45°</option></select></Field>
+        <NumberField label="Snap angle (°)" help="How far, in degrees, a straight edge may be off horizontal, vertical or 45° and still snap. Lower: only nearly exact edges snap. Higher: more edges snap." value={trace.snap_angle} min={.5} max={10} disabled={trace.straight_line_snap === 'off'} dirty={td('snap_angle')} onChange={value => t('snap_angle', value!)} />
       </div></section>
       <section className="settings-group"><h3>Complexity warnings</h3><p>These limits warn; they never silently simplify geometry.</p><div className="settings-grid"><NumberField label="Nodes per path" help="Warn when one shape has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_path_nodes} min={1} step={1} dirty={td('soft_path_nodes')} onChange={value => t('soft_path_nodes', value!)} /><NumberField label="Nodes per layer" help="Warn when one colour layer has more nodes than this in total. Lower: warns sooner. Never changes the geometry." value={trace.soft_layer_nodes} min={1} step={1} dirty={td('soft_layer_nodes')} onChange={value => t('soft_layer_nodes', value!)} /><NumberField label="Nodes per document" help="Warn when the whole design has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_document_nodes} min={1} step={1} dirty={td('soft_document_nodes')} onChange={value => t('soft_document_nodes', value!)} /></div></section>
     </>}
