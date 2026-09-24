@@ -9,6 +9,7 @@ const DEFAULTS: UpscaleSettings = {
   denoise: 0.7, controlnet: true, controlnet_strength: 0.4, sample_size: 1024, tile_size: 512, seed: null,
 }
 const OPTIONS: UpscaleOptions = {
+  available: true,
   upscalers: [{ value: '4xNomos8kSCHAT-S.pth', label: 'Nomos 8k SC HAT' }, { value: 'none', label: 'None (plain resize)' }],
   checkpoints: [{ value: 'blue_pencil-XL-v7.0.0.safetensors', label: 'blue_pencil XL v7' }],
   controlnets: [{ value: 'control_v11f1e_sd15_tile.pth', label: 'Tile ControlNet' }],
@@ -56,6 +57,31 @@ describe('upscale settings panel', () => {
     fireEvent.change(upscaler, { target: { value: 'none' } })
 
     expect(factor.disabled).toBe(true)
+  })
+
+  it('says only that ComfyUI is not running when it is unreachable, keeping Close', async () => {
+    vi.spyOn(api, 'upscaleOptions').mockResolvedValue({ available: false })
+    const onClose = vi.fn()
+    render(<UpscalePanel open projectId="project-1" revisionId="revision-1" onClose={onClose} onStarted={() => undefined} />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('ComfyUI is not running.')
+    expect(screen.queryByRole('button', { name: 'Start upscale' })).toBeNull()
+    expect(screen.queryByLabelText(/^Upscaler/)).toBeNull()
+    expect(screen.queryByText(/Loading upscale options/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('shows the start error message without an Error prefix when ComfyUI went away', async () => {
+    vi.spyOn(api, 'upscaleOptions').mockResolvedValue(OPTIONS)
+    vi.spyOn(api, 'upscale').mockRejectedValue(new Error('ComfyUI is not running.'))
+    render(<UpscalePanel open projectId="project-1" revisionId="revision-1" onClose={() => undefined} onStarted={() => undefined} />)
+
+    await screen.findByLabelText(/^Upscaler/)
+    fireEvent.click(screen.getByRole('button', { name: 'Start upscale' }))
+
+    expect((await screen.findByRole('alert')).textContent).toBe('ComfyUI is not running.')
   })
 
   it('renders nothing when closed', () => {

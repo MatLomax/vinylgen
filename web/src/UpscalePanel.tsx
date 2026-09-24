@@ -1,7 +1,12 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { api, type Job, type UpscaleOptions, type UpscaleSettings } from './api'
+
 import { Field, NumberField, Slider } from './PipelineControls'
+
+type AvailableOptions = Extract<UpscaleOptions, { available: true }>
+
+function message(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause) }
 
 // A manual, optional trigger on a source revision (docs/upscale-stage.md section 7): a
 // small settings surface for the pre-flatten generative tiled-detail upscale, seeded
@@ -14,7 +19,8 @@ export function UpscalePanel({ open, projectId, revisionId, onClose, onStarted }
   onClose: () => void
   onStarted: (job: Job) => void
 }) {
-  const [options, setOptions] = useState<UpscaleOptions | null>(null)
+  const [options, setOptions] = useState<AvailableOptions | null>(null)
+  const [unavailable, setUnavailable] = useState(false)
   const [settings, setSettings] = useState<UpscaleSettings | null>(null)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -24,13 +30,15 @@ export function UpscalePanel({ open, projectId, revisionId, onClose, onStarted }
     if (!open) return
     setError('')
     setOptions(null)
+    setUnavailable(false)
     setSettings(null)
     setLoading(true)
     const controller = new AbortController()
     api.upscaleOptions(controller.signal).then(loaded => {
+      if (!loaded.available) { setUnavailable(true); return }
       setOptions(loaded)
       setSettings(loaded.defaults)
-    }).catch(cause => { if (!controller.signal.aborted) setError(String(cause)) })
+    }).catch(cause => { if (!controller.signal.aborted) setError(message(cause)) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [open])
@@ -56,7 +64,7 @@ export function UpscalePanel({ open, projectId, revisionId, onClose, onStarted }
     try {
       const started = await api.upscale(projectId, revisionId, settings)
       onStarted(started.job)
-    } catch (cause) { setError(String(cause)) }
+    } catch (cause) { setError(message(cause)) }
     finally { setSubmitting(false) }
   }
 
@@ -66,8 +74,9 @@ export function UpscalePanel({ open, projectId, revisionId, onClose, onStarted }
         <h2 id="upscale-modal-title">Upscale source</h2>
         <button type="button" className="secondary icon-button" aria-label="Close" onClick={onClose}><X aria-hidden="true" /></button>
       </div>
-      <p className="section-intro">Run a generative tiled-detail redraw on this source before flattening — a locally-running ComfyUI adds real resolution and detail. This creates a new, recoverable revision and can take a while.</p>
+      {!unavailable && <p className="section-intro">Run a generative tiled-detail redraw on this source before flattening — a locally-running ComfyUI adds real resolution and detail. This creates a new, recoverable revision and can take a while.</p>}
       {loading && <p role="status">Loading upscale options…</p>}
+      {!loading && unavailable && <p className="error" role="alert">ComfyUI is not running.</p>}
       {!loading && settings && options && <form onSubmit={submit}>
         <div className="settings-grid">
           <Field label="Upscaler" help="Upscale model run before the tiled redraw, or none / lanczos for a plain resize with no redraw detail.">

@@ -10,10 +10,10 @@ from typing import Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .config import WebConfig
-from .comfy_client import ComfyClient, ComfyUnavailable
+from .comfy_client import COMFY_NOT_RUNNING, ComfyClient, ComfyUIError, ComfyUnavailable
 from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
@@ -21,7 +21,8 @@ from .editor import apply_edits, editor_state
 from .models import (ApplyLabelEdits, Artifact, CreateProject, CreateRevision, EditorState,
                      GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
-                     StartGeneration, StartJob, StartUpscale, UpscaleSettings)
+                     StartGeneration, StartJob, StartUpscale, UpscaleOptions,
+                     UpscaleSettings)
 from .store import Store
 from .trace_preview import TracePreviewService, trace_preview_router
 from .upscale import (DEFAULT_CONTROLNET_MODEL, SAMPLE_SIZE_MAX, UPSCALER_LANCZOS,
@@ -104,7 +105,7 @@ def create_app(config: WebConfig | None = None,
     async def protect_mutations(request: Request, call_next):
         if (config.require_proxy_identity and request.method not in {"GET", "HEAD", "OPTIONS"}
                 and not request.headers.get("X-Gandalf-User")):
-            return PlainTextResponse("Authenticated Gandalf identity required", status_code=403)
+            return JSONResponse({"detail": "Authenticated Gandalf identity required"}, status_code=403)
         return await call_next(request)
 
     def missing(exc: KeyError) -> HTTPException:
@@ -172,12 +173,16 @@ def create_app(config: WebConfig | None = None,
         project = store.get_project(revision["project_id"])
 
         # Reject settings that name a model ComfyUI does not have before a job is
-        # queued (spec section 8); an unreachable ComfyUI is a 503 as elsewhere.
+        # queued (spec section 8). An unreachable ComfyUI is a 409 rather than a
+        # 5xx: the public proxy replaces 5xx bodies, and the dialog must be able
+        # to show the message. A reachable ComfyUI that errors is a 502.
         client = comfy_client_factory()
         try:
             options = _comfy_options(client)
         except ComfyUnavailable as exc:
-            raise HTTPException(503, str(exc)) from exc
+            raise HTTPException(409, COMFY_NOT_RUNNING) from exc
+        except ComfyUIError as exc:
+            raise HTTPException(502, str(exc)) from exc
         finally:
             client.close()
         invalid = _validate_upscale_settings(payload.settings, options)
@@ -192,19 +197,25 @@ def create_app(config: WebConfig | None = None,
         jobs.start_upscale(job["id"], parent_revision_id=revision_id, settings=payload.settings)
         return {"project": project, "job": job}
 
-    @app.get("/api/upscale/options")
+    @app.get("/api/upscale/options", response_model=UpscaleOptions)
     async def upscale_options() -> dict:
         def option(value: str) -> dict:
             return {"value": value, "label": value}
 
+        # An unreachable ComfyUI is an expected state, not a server fault: report
+        # it as `available: false` so the dialog can say so. A reachable ComfyUI
+        # that errors is a 502.
         client = comfy_client_factory()
         try:
             options = _comfy_options(client)
-        except ComfyUnavailable as exc:
-            raise HTTPException(503, str(exc)) from exc
+        except ComfyUnavailable:
+            return {"available": False}
+        except ComfyUIError as exc:
+            raise HTTPException(502, str(exc)) from exc
         finally:
             client.close()
         return {
+            "available": True,
             "upscalers": [{"value": "none", "label": "None"},
                           {"value": "lanczos", "label": "Lanczos"},
                           *(option(name) for name in options["upscalers"])],

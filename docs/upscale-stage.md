@@ -161,9 +161,10 @@ locked to the tuned reference defaults and not surfaced in the UI.
 
 - `POST /api/projects/{id}/revisions/{rev}/upscale` -> 202 `{project, job}`,
   job kind `upscale`.
-- `GET /api/upscale/options` -> enumerated upscale models, checkpoints,
-  controlnets, plus tuned defaults and `sample_size_max`, read live from
-  `/object_info`.
+- `GET /api/upscale/options` -> `available: true` with the enumerated upscale
+  models, checkpoints, controlnets, plus tuned defaults and `sample_size_max`,
+  read live from `/object_info`; `200 {"available": false}` when ComfyUI cannot
+  be reached; 502 when ComfyUI is reachable but its `/object_info` errors.
 - `vinylgen/web/jobs.py`: `start_upscale` / `_run_upscale`, offloading the
   blocking ComfyUI round trip to the existing `ThreadPoolExecutor`, streaming
   tile progress ("Tile k/N", N from `expected_tile_total`) through `_update`/SSE.
@@ -185,8 +186,15 @@ preview from the ComfyUI form is out of scope for the first version.
 
 ## 8. Failure modes (all surfaced as job errors, none silent)
 
-- ComfyUI unreachable -> fail with a clear "ComfyUI not running at COMFYUI_URL"
-  message; generation and the deterministic pipeline are unaffected.
+- ComfyUI unreachable -> the user sees exactly "ComfyUI is not running." and
+  nothing else (no URL, no proxy error page). The options route reports
+  `available: false` and the upscale dialog shows only that message and its
+  Close button; the start route answers 409 with that message as its `detail`
+  (a 4xx, because the public reverse proxy replaces 5xx bodies with its own
+  HTML page); a job whose ComfyUI calls fail to connect mid-run fails with that
+  message as its `error`. Generation and the deterministic pipeline are
+  unaffected. The frontend's `result()` shows a JSON `detail` and otherwise only
+  "Server error <status> (<statusText>)", never a raw response body.
 - Missing checkpoint / upscale / controlnet file -> validated against
   `/object_info` up front, rejected before queueing.
 - VRAM OOM or sampler error -> ComfyUI reports `status_str == "error"`; propagate

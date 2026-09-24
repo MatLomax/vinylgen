@@ -20,6 +20,10 @@ import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8188"
 
+# The user-facing message for an unreachable ComfyUI, shared by the options and
+# start-upscale routes and a failed upscale job.
+COMFY_NOT_RUNNING = "ComfyUI is not running."
+
 
 class ComfyUIError(Exception):
     """A ComfyUI HTTP request or queued job failed."""
@@ -52,7 +56,9 @@ class ComfyClient:
                  **kwargs: Any) -> httpx.Response:
         try:
             return self._client.request(method, url, timeout=timeout, **kwargs)
-        except httpx.ConnectError as exc:
+        # Nothing answering at the address (refused, or a connect that never completes)
+        # and a connection that drops mid-request both mean ComfyUI is not running.
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
             raise ComfyUnavailable(f"ComfyUI not running at {self.base_url}") from exc
         except httpx.TransportError as exc:
             raise ComfyUIError(f"ComfyUI request to {url} failed: {exc}") from exc

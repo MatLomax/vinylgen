@@ -181,6 +181,32 @@ class UpscaleSettings(BaseModel):
     seed: int | None = None
 
 
+class SelectOption(BaseModel):
+    value: str
+    label: str
+
+
+class UpscaleOptionsAvailable(BaseModel):
+    """The installed models ComfyUI reports, with the tuned defaults and cap."""
+
+    available: Literal[True] = True
+    upscalers: list[SelectOption]
+    checkpoints: list[SelectOption]
+    controlnets: list[SelectOption]
+    defaults: UpscaleSettings
+    sample_size_max: int
+
+
+class UpscaleOptionsUnavailable(BaseModel):
+    """ComfyUI could not be reached, so no upscale settings can be offered."""
+
+    available: Literal[False] = False
+
+
+UpscaleOptions = Annotated[UpscaleOptionsAvailable | UpscaleOptionsUnavailable,
+                           Field(discriminator="available")]
+
+
 class StartUpscale(BaseModel):
     settings: UpscaleSettings = Field(default_factory=UpscaleSettings)
 

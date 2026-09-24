@@ -39,13 +39,51 @@ export type UpscaleSettings = {
   upscaler: string; upscale_factor: number; checkpoint: string; denoise: number
   controlnet: boolean; controlnet_strength: number; sample_size: number; tile_size: number; seed: number | null
 }
-export type UpscaleOptions = { upscalers: SelectOption[]; checkpoints: SelectOption[]; controlnets: SelectOption[]; defaults: UpscaleSettings; sample_size_max: number }
+// `available: false` means ComfyUI could not be reached, so no settings are offered.
+export type UpscaleOptions =
+  | { available: true; upscalers: SelectOption[]; checkpoints: SelectOption[]; controlnets: SelectOption[]; defaults: UpscaleSettings; sample_size_max: number }
+  | { available: false }
 export type UpscaleStarted = { project: Project; job: Job }
 export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 
+type ValidationIssue = { loc?: unknown[]; msg?: unknown }
+
+function describeDetail(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail.trim() || null
+  if (Array.isArray(detail)) {
+    // FastAPI's request validation list: `{loc: ['body', 'settings', 'denoise'], msg}`.
+    const issues = detail.map(item => {
+      const { loc, msg } = (item ?? {}) as ValidationIssue
+      if (typeof msg !== 'string') return null
+      const path = Array.isArray(loc) ? loc.filter((part, index) => !(index === 0 && ['body', 'query', 'path'].includes(String(part)))).join('.') : ''
+      return path ? `${path}: ${msg}` : msg
+    }).filter((issue): issue is string => Boolean(issue))
+    return issues.length ? issues.join('; ') : null
+  }
+  return null
+}
+
+// The message for a failed response: a JSON `detail` when the server sent one, otherwise a
+// short status line. A non-JSON body (a proxy's HTML error page, plain text) is never shown.
+export function errorMessage(status: number, statusText: string, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed && typeof parsed === 'object' && 'detail' in parsed) {
+      const detail = describeDetail((parsed as { detail: unknown }).detail)
+      if (detail) return detail
+    }
+  } catch { /* not JSON */ }
+  return statusText ? `Server error ${status} (${statusText})` : `Server error ${status}`
+}
+
+async function failure(response: Response): Promise<Error> {
+  const body = await response.text().catch(() => '')
+  return new Error(errorMessage(response.status, response.statusText, body))
+}
+
 async function result<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || response.statusText)
+  if (!response.ok) throw await failure(response)
   return response.json() as Promise<T>
 }
 
@@ -53,7 +91,7 @@ export const api = {
   health: () => fetch('/api/health').then(result<Health>),
   projects: () => fetch('/api/projects').then(result<Project[]>),
   project: (projectId: string, signal?: AbortSignal) => fetch(`/api/projects/${projectId}`, { signal }).then(result<Project & { revisions: Revision[] }>),
-  deleteProject: (projectId: string) => fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).then(async response => { if (!response.ok) throw new Error((await response.text()) || response.statusText) }),
+  deleteProject: (projectId: string) => fetch(`/api/projects/${projectId}`, { method: 'DELETE' }).then(async response => { if (!response.ok) throw await failure(response) }),
   artifacts: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/artifacts`, { signal }).then(result<Artifact[]>),
   // `beforeCleanup` resolves the raster the cleanup stage starts from (see Store.effective_artifacts).
   effectiveArtifacts: (revisionId: string, signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
@@ -76,7 +114,7 @@ export const api = {
         if (request.status >= 200 && request.status < 300) {
           try { resolve(JSON.parse(request.responseText) as Project & { revisions: Revision[] }) }
           catch { reject(new Error('Malformed import response')) }
-        } else reject(new Error(request.responseText || request.statusText))
+        } else reject(new Error(errorMessage(request.status, request.statusText, request.responseText)))
       }
       request.onerror = () => reject(new Error(request.statusText || 'Upload failed'))
       request.send(body)

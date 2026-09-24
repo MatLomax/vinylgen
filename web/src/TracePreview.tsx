@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
-import type { TraceSettings } from './api'
+import { errorMessage, type TraceSettings } from './api'
 import type { ImageSize, ViewTransform } from './workspace'
 
 // The live trace preview: the Trace canvas traces whatever is zoomed into, with the
@@ -46,13 +46,11 @@ export async function fetchTracePreview(revisionId: string, window: PreviewWindo
   })
   if (!response.ok) {
     const text = await response.text()
-    let detail = text || response.statusText
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown }
-      if (typeof parsed.detail === 'string') detail = parsed.detail
-      else if (Array.isArray(parsed.detail)) detail = 'The trace settings are not valid for a preview'
-    } catch { /* plain-text error body */ }
-    throw new Error(detail)
+    let invalidSettings = false
+    try { invalidSettings = Array.isArray((JSON.parse(text) as { detail?: unknown }).detail) } catch { /* not JSON */ }
+    // A proxy may replace the body with its own HTML page; errorMessage never shows it.
+    throw new Error(invalidSettings ? 'The trace settings are not valid for a preview'
+      : errorMessage(response.status, response.statusText, text))
   }
   return response.json() as Promise<TracePreviewResponse>
 }

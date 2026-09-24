@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, followJob, type UpscaleSettings } from './api'
+import { api, errorMessage, followJob, type UpscaleSettings } from './api'
 import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -67,10 +67,16 @@ describe('abortable project artifact requests', () => {
   })
 
   it('surfaces the server message when a project delete is refused', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response("Cancel the project's active job before deleting it", { status: 409 }))
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "Cancel the project's active job before deleting it" }), { status: 409 }))
     vi.stubGlobal('fetch', fetch)
 
     await expect(api.deleteProject('project-1')).rejects.toThrow("Cancel the project's active job before deleting it")
+  })
+
+  it('never shows a non-JSON body when a project delete fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html><body>Bad gateway</body></html>', { status: 502, statusText: 'Bad Gateway' })))
+
+    await expect(api.deleteProject('project-1')).rejects.toThrow(/^Server error 502 \(Bad Gateway\)$/)
   })
 
   it('starts text-only source generation with complete settings', async () => {
@@ -115,7 +121,7 @@ describe('pre-flatten generative upscale', () => {
   it('fetches enumerated upscale options with an abort signal', async () => {
     const controller = new AbortController()
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      upscalers: [], checkpoints: [], controlnets: [], defaults: SETTINGS, sample_size_max: 1024,
+      available: true, upscalers: [], checkpoints: [], controlnets: [], defaults: SETTINGS, sample_size_max: 1024,
     })))
     vi.stubGlobal('fetch', fetch)
 
@@ -133,6 +139,35 @@ describe('pre-flatten generative upscale', () => {
     expect(fetch).toHaveBeenCalledWith('/api/projects/project-1/revisions/revision-1/upscale', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: SETTINGS }),
     })
+  })
+})
+
+describe('failed response messages', () => {
+  it('turns a proxy HTML 503 page into a short status message', async () => {
+    const html = '<!DOCTYPE html><html><head><title>503</title></head><body><h1>Service Unavailable</h1></body></html>'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(html, { status: 503, statusText: 'Service Unavailable', headers: { 'Content-Type': 'text/html' } })))
+
+    const failure = api.upscaleOptions().then(() => null, (error: Error) => error.message)
+    await expect(failure).resolves.toBe('Server error 503 (Service Unavailable)')
+  })
+
+  it('shows a JSON string detail verbatim', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: 'ComfyUI is not running.' }), { status: 409, statusText: 'Conflict' })))
+
+    await expect(api.upscale('project-1', 'revision-1', {} as UpscaleSettings)).rejects.toThrow(/^ComfyUI is not running\.$/)
+  })
+
+  it('summarises a FastAPI validation-error list', () => {
+    const body = JSON.stringify({ detail: [
+      { loc: ['body', 'settings', 'denoise'], msg: 'Input should be less than or equal to 1', type: 'less_than_equal' },
+      { loc: ['body', 'prompt'], msg: 'Field required', type: 'missing' },
+    ] })
+    expect(errorMessage(422, 'Unprocessable Entity', body)).toBe('settings.denoise: Input should be less than or equal to 1; prompt: Field required')
+  })
+
+  it('falls back to the bare status when there is no status text or detail', () => {
+    expect(errorMessage(500, '', '')).toBe('Server error 500')
+    expect(errorMessage(500, 'Internal Server Error', JSON.stringify({ error: 'x' }))).toBe('Server error 500 (Internal Server Error)')
   })
 })
 
@@ -181,9 +216,21 @@ describe('image import upload', () => {
     const promise = api.importProject('Art', new File(['x'], 'art.png', { type: 'image/png' }))
     const xhr = FakeXHR.instances[0]
     xhr.status = 413
-    xhr.responseText = 'Image is over the upload limit'
+    xhr.statusText = 'Content Too Large'
+    xhr.responseText = JSON.stringify({ detail: 'Upload exceeds the configured limit' })
     xhr.onload?.()
-    await expect(promise).rejects.toThrow('Image is over the upload limit')
+    await expect(promise).rejects.toThrow(/^Upload exceeds the configured limit$/)
+  })
+
+  it('never shows a non-JSON body when the import fails', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXHR)
+    const promise = api.importProject('Art', new File(['x'], 'art.png', { type: 'image/png' }))
+    const xhr = FakeXHR.instances[0]
+    xhr.status = 503
+    xhr.statusText = 'Service Unavailable'
+    xhr.responseText = '<html><body>Service Unavailable</body></html>'
+    xhr.onload?.()
+    await expect(promise).rejects.toThrow(/^Server error 503 \(Service Unavailable\)$/)
   })
 })
 

@@ -174,6 +174,30 @@ class ComfyClientUnavailableTest(unittest.TestCase):
         finally:
             client.close()
 
+    def test_connect_timeout_and_dropped_connection_mean_not_running(self) -> None:
+        for error in (httpx.ConnectTimeout("connect timed out"),
+                      httpx.RemoteProtocolError("server disconnected")):
+            def fail(request: httpx.Request, error=error) -> httpx.Response:
+                raise error
+            client = ComfyClient("http://comfy.test", transport=httpx.MockTransport(fail))
+            try:
+                with self.subTest(error=type(error).__name__):
+                    with self.assertRaisesRegex(ComfyUnavailable, "ComfyUI not running"):
+                        client.submit_prompt({}, "client-1")
+            finally:
+                client.close()
+
+    def test_read_timeout_stays_a_request_failure(self) -> None:
+        def fail(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("busy")
+        client = ComfyClient("http://comfy.test", transport=httpx.MockTransport(fail))
+        try:
+            with self.assertRaises(ComfyUIError) as caught:
+                client.submit_prompt({}, "client-1")
+            self.assertNotIsInstance(caught.exception, ComfyUnavailable)
+        finally:
+            client.close()
+
     def test_interrupt_swallows_refused_connection(self) -> None:
         client = ComfyClient(self._closed_port_url())
         try:

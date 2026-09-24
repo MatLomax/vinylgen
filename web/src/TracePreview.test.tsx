@@ -161,6 +161,20 @@ describe('Trace canvas live preview', () => {
     expect(decodeURIComponent((screen.getByAltText('Live trace preview') as HTMLImageElement).src)).toContain('fresh')
   })
 
+  it('never shows a proxy error page, only a short server error', async () => {
+    prepare(options())
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    zoomTwice()
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS) })
+    const page = '<!DOCTYPE html><html><body><div class="code">503</div></body></html>'
+    await act(async () => {
+      pending[0].resolve({ ok: false, status: 503, statusText: 'Service Unavailable', json: async () => { throw new Error('not JSON') }, text: async () => page })
+    })
+    const status = screen.getByRole('status').textContent ?? ''
+    expect(status).toBe('Preview failed: Server error 503 (Service Unavailable)')
+    expect(status).not.toContain('<')
+  })
+
   it('shows the server error when a preview fails', async () => {
     prepare(options())
     fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))

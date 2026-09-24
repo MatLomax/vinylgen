@@ -137,6 +137,8 @@ class WebInkscapeTest(unittest.IsolatedAsyncioTestCase):
             allowed = await client.post("/api/projects", json={"name": "Allowed"},
                                         headers={"X-Gandalf-User": "user@example.test"})
             self.assertEqual(denied.status_code, 403)
+            # JSON, so the frontend can show the reason rather than a bare status.
+            self.assertEqual(denied.json(), {"detail": "Authenticated Gandalf identity required"})
             self.assertEqual(allowed.status_code, 201)
         finally:
             await client.aclose()

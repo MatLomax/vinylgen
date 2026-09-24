@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 
+from .comfy_client import COMFY_NOT_RUNNING, ComfyUnavailable
 from .store import Store
 from .pipeline import PipelineRunner
 from .generation import CodexImageProvider, GenerationRunner, ImageProvider
@@ -126,6 +127,11 @@ class JobManager:
         except asyncio.CancelledError:
             await self._update(job_id, status="cancelled", message="Cancelled", error=None,
                                finished_at=_now())
+        except ComfyUnavailable:
+            # ComfyUI went away after the job was accepted; the job overlay shows
+            # the same message the upscale dialog does.
+            await self._update(job_id, status="failed", error=COMFY_NOT_RUNNING,
+                               message="Failed", finished_at=_now())
         except Exception as exc:
             await self._update(job_id, status="failed", error=str(exc), message="Failed",
                                finished_at=_now())

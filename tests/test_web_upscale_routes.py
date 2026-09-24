@@ -11,7 +11,7 @@ import httpx
 from PIL import Image
 
 from vinylgen.web.app import create_app
-from vinylgen.web.comfy_client import ComfyUnavailable
+from vinylgen.web.comfy_client import ComfyUIError, ComfyUnavailable
 from vinylgen.web.config import WebConfig
 from vinylgen.web.generation import GeneratedImage
 from vinylgen.web.models import UpscaleSettings
@@ -60,18 +60,28 @@ class BlockingUpscaleProvider(FakeUpscaleProvider):
                                progress=progress)
 
 
+class UnreachableUpscaleProvider(FakeUpscaleProvider):
+    """ComfyUI stopped answering after the job was accepted."""
+
+    def upscale(self, *, image, settings, cancelled=lambda: False, progress=None) -> GeneratedImage:
+        raise ComfyUnavailable("ComfyUI not running at http://127.0.0.1:8188")
+
+
 class FakeComfyClient:
     """A canned ``ComfyClient`` for the options endpoint, injected by tests."""
 
     def __init__(self, options: dict[tuple[str, str], list[str]] | None = None,
-                 unavailable: bool = False) -> None:
+                 unavailable: bool = False, failing: bool = False) -> None:
         self.options = options or {}
         self.unavailable = unavailable
+        self.failing = failing
         self.closed = False
 
     def object_info_options(self, node_class: str, input_name: str) -> list[str]:
         if self.unavailable:
             raise ComfyUnavailable("ComfyUI not running at http://127.0.0.1:8188")
+        if self.failing:
+            raise ComfyUIError("ComfyUI /object_info/UpscaleModelLoader failed (500): boom")
         return self.options.get((node_class, input_name), [])
 
     def close(self) -> None:
@@ -205,7 +215,7 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
             await client.aclose()
             await app.state.jobs.shutdown()
 
-    async def test_start_upscale_returns_503_when_comfy_unavailable(self) -> None:
+    async def test_start_upscale_reports_comfy_not_running(self) -> None:
         app = create_app(WebConfig(Path(self.tmp.name) / "down"),
                          upscale_provider=FakeUpscaleProvider(),
                          comfy_client_factory=lambda: FakeComfyClient(unavailable=True))
@@ -219,8 +229,9 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
                 source=io.BytesIO(_png(size=(64, 48))))
             response = await client.post(
                 f"/api/projects/{project['id']}/revisions/{parent}/upscale", json={})
-            self.assertEqual(response.status_code, 503, response.text)
-            self.assertIn("ComfyUI", response.text)
+            # A 4xx, so the public proxy passes the JSON detail through.
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.json(), {"detail": "ComfyUI is not running."})
             self.assertEqual(
                 [r for r in store.list_revisions(project["id"])
                  if r["kind"] == "upscaled-source"], [])
@@ -278,12 +289,13 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
                  "label": "xinsir-controlnet-tile-sdxl-1.0.safetensors"}])
             self.assertEqual(body["defaults"], UpscaleSettings().model_dump())
             self.assertEqual(body["sample_size_max"], 1024)
+            self.assertIs(body["available"], True)
             self.assertTrue(fake.closed)
         finally:
             await client.aclose()
             await app.state.jobs.shutdown()
 
-    async def test_options_returns_503_when_comfy_unavailable(self) -> None:
+    async def test_options_reports_unavailable_when_comfy_unreachable(self) -> None:
         fake = FakeComfyClient(unavailable=True)
         app = create_app(WebConfig(Path(self.tmp.name) / "unavailable"),
                          comfy_client_factory=lambda: fake)
@@ -291,9 +303,59 @@ class WebUpscaleRoutesTest(unittest.IsolatedAsyncioTestCase):
                                    base_url="http://test")
         try:
             response = await client.get("/api/upscale/options")
-            self.assertEqual(response.status_code, 503)
-            self.assertIn("ComfyUI", response.text)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), {"available": False})
             self.assertTrue(fake.closed)
+        finally:
+            await client.aclose()
+            await app.state.jobs.shutdown()
+
+    async def test_options_and_start_are_502_when_comfy_errors(self) -> None:
+        fake = FakeComfyClient(failing=True)
+        app = create_app(WebConfig(Path(self.tmp.name) / "erroring"),
+                         upscale_provider=FakeUpscaleProvider(),
+                         comfy_client_factory=lambda: fake)
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                   base_url="http://test")
+        try:
+            response = await client.get("/api/upscale/options")
+            self.assertEqual(response.status_code, 502, response.text)
+            self.assertIn("boom", response.json()["detail"])
+            self.assertTrue(fake.closed)
+            store = app.state.store
+            project = store.create_project("Erroring")
+            parent = store.create_generated_source(
+                project["id"], message="Generated", settings={"width": 64, "height": 48},
+                source=io.BytesIO(_png(size=(64, 48))))
+            response = await client.post(
+                f"/api/projects/{project['id']}/revisions/{parent}/upscale", json={})
+            self.assertEqual(response.status_code, 502, response.text)
+            self.assertIn("boom", response.json()["detail"])
+        finally:
+            await client.aclose()
+            await app.state.jobs.shutdown()
+
+    async def test_job_reports_comfy_not_running_when_it_goes_down_mid_run(self) -> None:
+        app = create_app(WebConfig(Path(self.tmp.name) / "down-mid-run"),
+                         upscale_provider=UnreachableUpscaleProvider(),
+                         comfy_client_factory=lambda: FakeComfyClient(VALID_OPTIONS))
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                   base_url="http://test")
+        try:
+            store = app.state.store
+            project = store.create_project("Down mid run")
+            parent = store.create_generated_source(
+                project["id"], message="Generated", settings={"width": 64, "height": 48},
+                source=io.BytesIO(_png(size=(64, 48))))
+            response = await client.post(
+                f"/api/projects/{project['id']}/revisions/{parent}/upscale", json={})
+            self.assertEqual(response.status_code, 202, response.text)
+            job = await self.wait(client, response.json()["job"]["id"])
+            self.assertEqual(job["status"], "failed", job)
+            self.assertEqual(job["error"], "ComfyUI is not running.")
+            self.assertEqual(
+                [r for r in store.list_revisions(project["id"])
+                 if r["kind"] == "upscaled-source"], [])
         finally:
             await client.aclose()
             await app.state.jobs.shutdown()
