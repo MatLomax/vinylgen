@@ -77,8 +77,11 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const compatibleAfter = after && before && after.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[after.id]) ? after : undefined
   const comparableImages = before ? visible.filter(layer => layer.id !== before.id && beforeSize && sameImageSize(beforeSize, dimensions[layer.id])) : []
   const comparisonAvailable = comparableImages.length > 0
-  const compatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
-  const incompatibleInspections = inspections.filter(layer => enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
+  // An editor canvas without inspection toggles offers no way to switch an overlay off,
+  // so an overlay switched on in another stage stays hidden there (and returns with it).
+  const inspectionsOffered = !editorMode || inspectionToggles
+  const compatibleInspections = inspections.filter(layer => inspectionsOffered && enabledInspections[inspectionKey(layer)] && beforeSize && sameImageSize(beforeSize, dimensions[layer.id]))
+  const incompatibleInspections = inspections.filter(layer => inspectionsOffered && enabledInspections[inspectionKey(layer)] && beforeSize && dimensions[layer.id] && !sameImageSize(beforeSize, dimensions[layer.id]))
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -467,7 +470,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     <p className="visually-hidden" aria-live="polite">{announcement}</p>
     <div className="viewport-toolbar" inert={sheetOpen}><span>{loading ? 'Loading…' : before?.name}</span><strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
     <div ref={viewport} className={`viewport ${onSelectPoint ? 'selecting-point' : ''} ${paintMode ? 'painting' : ''} ${spacePan ? 'pan-ready' : ''} ${panDragging ? 'pan-active' : ''}`} inert={sheetOpen} aria-busy={busy} aria-label={selectionLabel || 'Image comparison viewport'} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp} onPointerLeave={() => setHoverPixel(null)}>
-      <div className="image-stage" style={transformStyle}>
+      <div className={`image-stage ${transform.scale >= 1 ? 'magnified' : ''}`} style={transformStyle}>
         {before && <img className={before.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={before.url} alt={before.name} draggable={false} onLoad={event => beforeSettled(event, true)} onError={event => beforeSettled(event, false)} />}
         {showAfter && compatibleAfter && <div className="compare-layer" style={mode === 'split' ? { clipPath: `inset(0 ${size.width - splitPosition}px 0 0)` } : undefined}><img className={compatibleAfter.mediaType === 'image/svg+xml' ? 'vector' : undefined} src={compatibleAfter.url} alt={compatibleAfter.name} draggable={false} /></div>}
         {compatibleInspections.map(layer => <img key={layer.id} className={`inspection-overlay ${layer.role}`} src={layer.url} alt={layer.name} draggable={false} />)}

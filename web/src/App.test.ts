@@ -1113,6 +1113,28 @@ describe('cleanup stage', () => {
     expect(workspaceProps.current?.layers?.some(layer => layer.id === 'flattened-id')).toBe(true)
   })
 
+  it('renders the zoomable shared canvas for the Upload and Flatten stages, not the static preview', async () => {
+    serve([paletteRevision, revision])
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(workspaceProps.current?.editorMode).toBe(true))
+    expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas')
+    await vi.waitFor(() => expect(workspaceProps.current?.layers?.some(layer => layer.id === 'flattened-id')).toBe(true))
+    expect(workspaceProps.current?.layers?.some(layer => layer.id === 'source-id')).toBe(true)
+    expect(document.querySelector('.artwork-preview')).toBeNull()
+    expect(workspaceProps.current?.onSelectPoint).toBeUndefined()
+    // Picking a preservation point stays on the same Flatten canvas, with clicks routed to it.
+    fireEvent.click(screen.getByRole('button', { name: /Protect connected detail/ }))
+    await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeTypeOf('function'))
+    expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas')
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Upload canvas'))
+    expect(workspaceProps.current?.editorMode).toBe(true)
+    expect(workspaceProps.current?.onSelectPoint).toBeUndefined()
+    expect(workspaceProps.current?.layers?.some(layer => layer.id === 'source-id')).toBe(true)
+    expect(document.querySelector('.artwork-preview')).toBeNull()
+  })
+
   it('runs cleanup with the form settings, spends its draft, and lands on the Cleaned view', async () => {
     let update: ((job: Job) => void) | undefined
     mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })

@@ -467,6 +467,23 @@ describe('traced vector layers on the editor canvas', () => {
     expect(toggle().checked).toBe(true)
     expect((screen.getByAltText('Tightened boundaries') as HTMLImageElement).getAttribute('src')).toBe('/b-marks.png')
   })
+
+  it('hides an overlay switched on in Trace on a canvas that offers no toggle, and restores it on return', () => {
+    const traced: WorkspaceLayer[] = [
+      { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
+      { id: 'marks', name: 'Tightened boundaries', url: '/marks.png', mediaType: 'image/png', role: 'overlay', kind: 'trace-fallbacks-overlay' },
+    ]
+    const { container, rerender } = render(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    loadUrl(container, '/flat.png', 300, 100)
+    loadUrl(container, '/marks.png', 300, 100)
+    fireEvent.click(within(screen.getByRole('group', { name: 'Inspection layers' })).getByLabelText('Tightened boundaries'))
+    expect(container.querySelector('img.inspection-overlay')).not.toBeNull()
+    rerender(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode canvasLabel="Flatten canvas" />)
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    expect(container.querySelector('img.inspection-overlay')).toBeNull()
+    rerender(<ImageWorkspace layers={traced} preferredLayerId="flat" editorMode inspectionToggles canvasLabel="Trace canvas" />)
+    expect(container.querySelector('img.inspection-overlay')).not.toBeNull()
+  })
 })
 
 describe('canvas loading states and wheel zoom', () => {
@@ -513,6 +530,19 @@ describe('canvas loading states and wheel zoom', () => {
       act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
       expect(fetch).toHaveBeenCalledTimes(1)
     } finally { localStorage.clear(); vi.useRealTimers() }
+  })
+
+  it('renders pixels as crisp blocks only once zoomed to 1:1 or closer, smoothing below', () => {
+    const { container } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Upload canvas" />)
+    const viewport = fitted(container)
+    const stage = container.querySelector('.image-stage') as HTMLElement
+    // 1000 × 700 fitted into 800 × 600 is below 1:1.
+    expect(stage.classList.contains('magnified')).toBe(false)
+    for (let step = 0; step < 20 && !stage.classList.contains('magnified'); step++) {
+      act(() => { viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, clientX: 400, clientY: 300, bubbles: true, cancelable: true })) })
+    }
+    expect(stage.classList.contains('magnified')).toBe(true)
+    expect(Number(/scale\(([\d.]+)\)/.exec(stage.style.transform)?.[1])).toBeGreaterThanOrEqual(1)
   })
 
   it('zooms on the wheel through a non-passive listener that cancels the page scroll', () => {
