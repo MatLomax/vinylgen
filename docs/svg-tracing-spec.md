@@ -251,7 +251,7 @@ at 1×, and the short-edge minimum from the minimum straight length.
 | Recovery floor, 0.05 px | `_tightened` | Stays: a floor on a tightened tolerance against raster noise, far below every resolved tolerance. |
 | Semantic-audit feature span, 6 px | `validate_semantic_preservation` via `tracing.feature_span` | Scales: `max(6 px, 3 × maximum deviation)`, 6 px at the pixel-era 2 px deviation; a feature shorter than three deviations may legitimately be smoothed away. The 6 px floor and the thin-feature detector's 4 px support radius are raster measurements and stay. |
 | Partition absolute tolerance, 1e-6 px² | `partition_watertight_fault` | Stays: floating-point noise; its relative term already scales with the canvas area. |
-| Preview margin, 64 px | `trace_lengths.preview_margin` | Computed: `max(64 px, 8 × the longest reach)`, the reach being the largest of the analysis scale plus the corner tip skip, twice the curve feature scale and the minimum straight length (103 px at the pixel-era defaults: 8 × (8 + 4.83)). |
+| Preview margin, 64 px | `trace_lengths.preview_margin` | Computed: `max(64 px, 8 × the longest reach)`, the reach being the largest of the analysis scale plus the corner tip skip, twice the curve feature scale and the minimum straight length (103 px at the pixel-era defaults: 8 × (8 + 4.83)). The multiple is measured, not derived ([Preview margin measurement](#preview-margin-measurement)): no multiple makes the preview match the full trace inside its window, and each smaller one tried leaves more difference in view than 8. |
 | Preview area limits (px²) | `PREVIEW_MAX_AREA_PX`, cleanup preview | Stay: they bound the preview's compute cost, which is in pixels. |
 | Corner-candidate suppression gap (formerly `index_gap`, a sample count) | `_geometric_corners` | Arc length: two candidates are one corner within half the analysis scale of arc, or when their cusps lie within half the analysis scale (or the sharpening allowance) of each other and their samples within half the scale plus twice the allowance of arc. Correct on sparse rings (buffered overlap rings, a polygon's vertices) and dense chains alike. |
 | One-arc noise floor, 0.3 px | `_ONE_ARC_FLOOR` in `_corner_candidates` | Stays: raster noise is a pixel quantity. A corner's one-arc miss must exceed 1.5 × its sides' own error plus 0.3 px ([Corner detection](#corner-detection)). |
@@ -289,6 +289,56 @@ exactly and a re-trace reproduces its geometry:
   flag (thousandths) over a pixel config;
 - the web API requires `length_unit: "per_mille"` in any trace request that sets
   a length, so a client still sending pixels is refused, never misread.
+
+### Preview margin measurement
+
+The live trace preview's margin (`trace_lengths.preview_margin`) was measured
+against the whole-image trace (2026-09-25; scripts and results in
+`.tmp/preview-margin/`). The inputs were the nine corpus subjects, `sourceup`,
+`fox-table` (4096 × 1360), the `fox-owl-table-2` cleanup (6398 × 2133) and
+`phoenix-4x-regen-2` (11264 × 7920). Each image had 28 windows: 10 random (8 at
+600 × 600, 2 at 300 × 300) and 18 boundary-dense (8 at 600 × 600, 2 at 600 × 300,
+4 at 300 × 300, 4 at 150 × 150). Three settings were tried: the defaults, analysis
+scale 10‰, and analysis scale 8‰ with curve feature scale 8‰. The reference is
+the whole image traced through the preview path, which is the trace run's SVG
+path for path.
+
+**Criterion.** A window agrees when every written segment whose control points'
+bounding box meets the window, and every node inside it with its node type,
+matches the reference within 1e-5 px. The difference the margin controls is
+counted per boundary chain: a chain the crop cuts (it has a sample within 1 px of
+a crop edge that is not an image edge) is compared, inside the window, against
+the same whole chain fitted in the crop's own coordinates.
+
+**Result.** At the defaults, with windows showing a margin-caused difference
+out of 28 and the median cold preview (boundaries plus fit) of the 600 × 600
+dense windows:
+
+| Image | 2 reaches | 4 reaches | 6 reaches | 8 reaches |
+|---|---|---|---|---|
+| `fox-table` | 64 px: 26, 1.60 s | 106 px: 23, 1.81 s | 158 px: 19, 2.30 s | 211 px: 11, 2.64 s |
+| `fox-owl-table-2` | 83 px: 28, 0.51 s | 165 px: 27, 0.73 s | 247 px: 22, 0.89 s | 329 px: 20, 1.12 s |
+| `sourceup` | 77 px: 26, 0.33 s | 154 px: 23, 0.43 s | 231 px: 16, 0.53 s | 307 px: 8, 0.63 s |
+| `phoenix-4x-regen-2` | 145 px: 27, 0.24 s | 289 px: 22, 0.37 s | 434 px: 14, 0.55 s | 578 px: 7, 0.71 s |
+
+On the corpus the 64 px floor governs up to 6 reaches, and 8 reaches (77 px)
+takes the count from 222 to 205 of 252 windows. Over all images and settings, 4
+reaches left a margin-caused difference in 777 of 1092 windows and 8 reaches in
+453. Differences reach up to about 250 px inside the window, at every multiple.
+A cut boundary's fit changes along the whole run between its cusps, and those
+runs are long in pixels whatever the fit windows are, so no multiple of the reach
+(and no formula over its parts) makes the preview agree. Every smaller multiple
+shows more difference in view than 8, so the margin stays at 8 reaches.
+Shrinking it trades agreement for speed: 4 reaches is 30 to 50% faster on the
+large images and makes no difference on the corpus.
+
+**Translation noise.** Separately from the margin, the preview traces in
+crop-local coordinates, and the chain fitter is not translation-invariant. A
+chain the crop does not cut can still fit differently, because its samples
+differ from the whole image's by about 1e-13 px and near-ties then resolve
+differently (for example, which end of an exactly flat run takes an axis-extreme
+node). At 8 reaches, 190 of the 252 corpus windows and 2 (`phoenix-4x-regen-2`) to 27 (`fox-table`) of 28 per large
+image showed such differences. No margin removes them.
 
 ## Cutter cleanup (raster labels)
 

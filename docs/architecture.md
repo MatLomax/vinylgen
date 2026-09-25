@@ -235,11 +235,14 @@ re-fits cached boundaries. The Live preview switch is remembered in the browser
 across stage changes and reloads. The app's startup submits a warm-up trace to
 the preview thread, which compiles the Numba kernels without delaying startup or
 health. A preview
-differs from a full run in three documented ways: boundaries crossing the crop
-edge are split there, so their fit can differ near that edge (the margin keeps
-most of it out of view), and underlayer adjacency and overlap buffers see only
-the crop; validation and protected-feature recovery are skipped; and nothing is
-saved. "Trace and validate" still creates the revision. When the window's
+differs from a full run in four documented ways: boundaries crossing the crop
+edge are split there, so their fit can differ along the run between their cusps,
+into the window too (the margin moves most of it out of view, never all of it;
+[measurement](svg-tracing-spec.md#preview-margin-measurement)), and underlayer
+adjacency and overlap buffers see only the crop; the crop is traced in
+crop-local coordinates, and the chain fitter is not translation-invariant, so an
+uncut boundary can still fit differently where near-ties resolve the other way;
+validation and protected-feature recovery are skipped; and nothing is saved. "Trace and validate" still creates the revision. When the window's
 margin reaches every image edge, the preview is the full trace path for path.
 
 The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served

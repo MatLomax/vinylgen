@@ -3,10 +3,14 @@
 The preview reuses the real vector stage on a crop: the shared-boundary graph of
 the window plus a hidden margin, the canonical chain fitter with the requested
 trace settings, the same overlap/solid-underlayer construction and the same SVG
-layer writer. Only three things differ from a full trace, all by construction:
+layer writer. Four things differ from a full trace, all by construction:
 
-- Boundaries crossing the crop edge are split there, so their fit can differ near
-  the edge. The margin keeps most of that outside the visible window.
+- Boundaries crossing the crop edge are split there, so their fit can differ
+  along the whole run between their cusps, into the visible window too. The
+  margin pushes most of that away from the window, never all of it.
+- The crop is traced in crop-local coordinates, and the chain fitter is not
+  translation-invariant: a boundary the crop does not cut can still fit
+  differently where near-ties resolve the other way.
 - Layer order, when it can matter, is inferred from the whole image (it is a
   whole-image decision), but underlayer adjacency and overlap buffers only see the
   crop.
@@ -39,8 +43,8 @@ from vinylgen.tracing import (
 )
 
 # Hidden context is traced around the visible window. Boundaries are split at the
-# crop edge; the margin keeps that split, and the fit differences it causes,
-# outside the part the user sees. It grows with the resolved fit windows
+# crop edge; the margin moves that split, and most of the fit differences it
+# causes, away from the part the user sees. It grows with the resolved fit windows
 # (``vinylgen.trace_lengths.preview_margin``, at least 64 px).
 # The largest visible window (traced-image px) a preview is drawn for. A warm dense
 # window of this size, margin included, traces in well under a second.

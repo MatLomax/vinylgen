@@ -156,12 +156,16 @@ PREVIEW_MARGIN_MIN_PX = 64
 def preview_margin(resolved: TraceSettings) -> int:
     """The live preview's hidden margin in px for resolved (pixel) settings.
 
-    Boundaries are split at the crop edge, and a fit near a split can differ from
-    the full trace. The margin keeps that outside the visible window, so it grows
-    with the longest window a fit reaches from a sample: the analysis span plus the
-    corner detector's tip skip (its side windows start that far out), twice the
-    curve feature scale (its smoothing plus its tangent windows) and the minimum
-    straight length.
+    Boundaries are split at the crop edge, and the fit of a split boundary can
+    differ from the full trace's along the whole run between its cusps, not only
+    within a fit window of the split. The margin pushes that away from the visible
+    window. It grows with the longest window a fit reaches from a sample: the
+    analysis span plus the corner detector's tip skip (its side windows start that
+    far out), twice the curve feature scale (its smoothing plus its tangent
+    windows) and the minimum straight length. No multiple of that reach removes
+    the difference. Every smaller multiple measured leaves more of it inside the
+    window than 8 does, so the margin stays at 8 reaches
+    (docs/svg-tracing-spec.md "Preview margin measurement").
     """
     reach = max(float(resolved.corner_analysis_span) + _tip_skip(resolved),
                 2.0 * float(resolved.curve_feature_scale),
