@@ -18,7 +18,7 @@ const COMMITTED = svgDocument(`
   <g id="layer-red"><path id="a" d="M100 100 L300 100 C400 100 400 300 300 300 L100 100 Z" sodipodi:nodetypes="cscz"/></g>
   <g id="layer-blue"><path id="b" d="M300 100 L500 100 L300 300 Z" sodipodi:nodetypes="zccz"/></g>`)
 
-// The calls of the marker pass (the paths that are filled), leaving out the black ring
+// The calls of the marker pass (the paths that are filled), leaving out the white ring
 // drawn around each marker's outline.
 function markerPass<T extends { name: string }>(calls: T[]): T[] {
   const passes: T[][] = []
@@ -103,11 +103,11 @@ describe('node culling and drawing', () => {
     }
   })
 
-  it('outlines each type in its colour inside a black ring that touches the outline, both 70% opaque', () => {
+  it('outlines each type in its colour inside a white ring that touches the outline, both 80% opaque', () => {
     const context = recorder()
     drawNodeMarkers(context, [layer], { x: 0, y: 0, scale: 1 }, { width: 4000, height: 3000 }, 1)
     expect(context.calls.filter(call => call.name === 'stroke').map(call => call.args[0])).toEqual(
-      ['#000000b3', `${NODE_MARKER_COLOURS.cusp}b3`, '#000000b3', `${NODE_MARKER_COLOURS.symmetric}b3`, '#000000b3', `${NODE_MARKER_COLOURS.smooth}b3`])
+      ['#ffffffcc', `${NODE_MARKER_COLOURS.cusp}cc`, '#ffffffcc', `${NODE_MARKER_COLOURS.symmetric}cc`, '#ffffffcc', `${NODE_MARKER_COLOURS.smooth}cc`])
     expect(context.fillStyle).toBe('rgba(255, 255, 255, .1)')
     // The ring's centreline sits one outline width outside the marker's, so the two strokes abut.
     const line = context.lineWidth

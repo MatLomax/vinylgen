@@ -211,12 +211,12 @@ export function forEachNodeIn(index: NodeIndex, rect: Rect, visit: (node: number
 // their edges.
 export type NodeLayer = { index: NodeIndex; scaleX: number; scaleY: number; offsetX: number; offsetY: number; clip?: Rect; exclude?: Rect }
 
-// Outline width of a marker, in CSS px; the black ring around it is as wide.
+// Outline width of a marker, in CSS px; the white ring around it is as wide.
 const NODE_MARKER_LINE = 1.25
 // Each node type's outline colour, on the canvas and in the legend.
-export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff4775', symmetric: '#40b4ff', smooth: '#ffe23d' }
-// Opacity of both a marker's coloured outline and its black ring.
-export const NODE_MARKER_BORDER_OPACITY = .7
+export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff6b93', symmetric: '#6ccdff', smooth: '#fff266' }
+// Opacity of both a marker's coloured outline and its white ring.
+export const NODE_MARKER_BORDER_OPACITY = .8
 const BORDER_ALPHA_HEX = Math.round(NODE_MARKER_BORDER_OPACITY * 255).toString(16).padStart(2, '0')
 
 // A node type's marker centred on (x, y), grown outward by `grow` CSS px on every side.
@@ -264,7 +264,7 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
       shapes[types[node]].push([transform.x + sx * transform.scale, transform.y + sy * transform.scale])
     })
   }
-  // One path per shape and pass keeps tens of thousands of markers cheap: first the black
+  // One path per shape and pass keeps tens of thousands of markers cheap: first the white
   // ring just outside the outline, then the faint fill and the type's coloured outline.
   context.lineWidth = NODE_MARKER_LINE
   context.lineJoin = 'miter'
@@ -273,7 +273,7 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
     if (!points.length) return
     context.beginPath()
     for (const [x, y] of points) traceMarker(context, type, x, y, NODE_MARKER_LINE)
-    context.strokeStyle = `#000000${BORDER_ALPHA_HEX}`
+    context.strokeStyle = `#ffffff${BORDER_ALPHA_HEX}`
     context.stroke()
     context.beginPath()
     for (const [x, y] of points) traceMarker(context, type, x, y, 0)
@@ -344,7 +344,7 @@ export function NodeShape({ type }: { type: NodeType }) {
     : type === 'symmetric' ? <rect x={c - r * .85 - grow} y={c - r * .85 - grow} width={2 * (r * .85 + grow)} height={2 * (r * .85 + grow)} {...style} />
       : <circle cx={c} cy={c} r={r + grow} {...style} />
   return <svg className={`node-shape ${type}`} width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-    {shape(d, { fill: 'none', stroke: '#000', strokeOpacity: NODE_MARKER_BORDER_OPACITY })}
+    {shape(d, { fill: 'none', stroke: '#fff', strokeOpacity: NODE_MARKER_BORDER_OPACITY })}
     {shape(0, { fill: 'rgba(255, 255, 255, .1)', stroke: NODE_MARKER_COLOURS[type], strokeOpacity: NODE_MARKER_BORDER_OPACITY })}
   </svg>
 }
