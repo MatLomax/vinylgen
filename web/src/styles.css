@@ -825,3 +825,4 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 .node-legend .node-count { margin-inline-start: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .node-legend .node-shape { flex: 0 0 auto; stroke-width: 1.25; stroke-linejoin: miter; }
 .node-legend .node-status { margin: 0; font-size: 12px; }
+.node-legend .node-legend-heading { margin: 0; font-size: 12px; color: var(--text-muted); }

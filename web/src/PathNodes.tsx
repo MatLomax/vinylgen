@@ -239,29 +239,41 @@ type MarkerContext = Pick<CanvasRenderingContext2D, 'setTransform' | 'clearRect'
  * Draws every visible node of `layers` as its type's marker at a constant screen size:
  * cusp a rhombus, symmetric a square, smooth a circle. The canvas is viewport-sized at
  * device resolution (`dpr`) and not itself transformed; `transform` places stage px on
- * it exactly as the image stage is placed. Returns how many markers were drawn.
+ * it exactly as the image stage is placed. Returns how many markers were drawn and, by
+ * type, how many of those nodes lie inside the viewport itself: a node just outside it,
+ * drawn only because part of its marker reaches in, is drawn but not in view.
  */
-export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], transform: ViewTransform, viewport: ImageSize, dpr: number): number {
+export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], transform: ViewTransform, viewport: ImageSize, dpr: number): { drawn: number; inView: Record<NodeType, number> } {
   context.setTransform(1, 0, 0, 1, 0, 0)
   context.clearRect(0, 0, viewport.width * dpr, viewport.height * dpr)
-  if (!transform.scale) return 0
+  const inView: Record<NodeType, number> = { cusp: 0, symmetric: 0, smooth: 0 }
+  if (!transform.scale) return { drawn: 0, inView }
   context.setTransform(dpr, 0, 0, dpr, 0, 0)
   const r = NODE_MARKER_RADIUS
   const margin = (r * 1.25 + 2 * NODE_MARKER_LINE) / transform.scale
-  const view: Rect = { x0: -transform.x / transform.scale - margin, y0: -transform.y / transform.scale - margin,
-    x1: (viewport.width - transform.x) / transform.scale + margin, y1: (viewport.height - transform.y) / transform.scale + margin }
+  // The viewport in stage px, and the same grown by a marker's reach for drawing.
+  const seen: Rect = { x0: -transform.x / transform.scale, y0: -transform.y / transform.scale,
+    x1: (viewport.width - transform.x) / transform.scale, y1: (viewport.height - transform.y) / transform.scale }
+  const view: Rect = { x0: seen.x0 - margin, y0: seen.y0 - margin, x1: seen.x1 + margin, y1: seen.y1 + margin }
+  const typeCounts = [0, 0, 0]
   const shapes: [number, number][][] = [[], [], []]
   for (const layer of layers) {
     const stage: Rect = layer.clip ? { x0: Math.max(view.x0, layer.clip.x0), y0: Math.max(view.y0, layer.clip.y0), x1: Math.min(view.x1, layer.clip.x1), y1: Math.min(view.y1, layer.clip.y1) } : view
     if (stage.x1 < stage.x0 || stage.y1 < stage.y0) continue
+    // The stage rectangle in node units, padded against the rounding of that conversion;
+    // which nodes are inside is decided in stage px, where clip and exclude are both tested,
+    // so a node on a shared edge is kept by exactly one of them.
     const ax = (stage.x0 - layer.offsetX) / layer.scaleX, bx = (stage.x1 - layer.offsetX) / layer.scaleX
     const ay = (stage.y0 - layer.offsetY) / layer.scaleY, by = (stage.y1 - layer.offsetY) / layer.scaleY
+    const pad = 1e-9 * (1 + Math.max(Math.abs(ax), Math.abs(bx), Math.abs(ay), Math.abs(by)))
     const { xs, ys, types } = layer.index.nodes
     const exclude = layer.exclude
-    forEachNodeIn(layer.index, { x0: Math.min(ax, bx), y0: Math.min(ay, by), x1: Math.max(ax, bx), y1: Math.max(ay, by) }, node => {
+    forEachNodeIn(layer.index, { x0: Math.min(ax, bx) - pad, y0: Math.min(ay, by) - pad, x1: Math.max(ax, bx) + pad, y1: Math.max(ay, by) + pad }, node => {
       const sx = xs[node] * layer.scaleX + layer.offsetX, sy = ys[node] * layer.scaleY + layer.offsetY
+      if (sx < stage.x0 || sx > stage.x1 || sy < stage.y0 || sy > stage.y1) return
       if (exclude && sx >= exclude.x0 && sx <= exclude.x1 && sy >= exclude.y0 && sy <= exclude.y1) return
       shapes[types[node]].push([transform.x + sx * transform.scale, transform.y + sy * transform.scale])
+      if (sx >= seen.x0 && sx <= seen.x1 && sy >= seen.y0 && sy <= seen.y1) typeCounts[types[node]] += 1
     })
   }
   // One path per shape and pass keeps tens of thousands of markers cheap: first the white
@@ -281,7 +293,8 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
     context.strokeStyle = `${NODE_MARKER_COLOURS[NODE_TYPES[type]]}${BORDER_ALPHA_HEX}`
     context.stroke()
   })
-  return shapes.reduce((total, points) => total + points.length, 0)
+  typeCounts.forEach((count, type) => { inView[NODE_TYPES[type]] = count })
+  return { drawn: shapes.reduce((total, points) => total + points.length, 0), inView }
 }
 
 export type NodeSource = { status: 'idle' } | { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; index: NodeIndex }

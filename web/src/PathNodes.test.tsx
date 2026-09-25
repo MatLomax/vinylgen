@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { Profiler, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
@@ -90,7 +91,7 @@ describe('node culling and drawing', () => {
   it('draws a rhombus for a cusp, a square for a symmetric node and a circle for a smooth node, at a constant screen size', () => {
     for (const scale of [1, 4]) {
       const context = recorder()
-      const drawn = drawNodeMarkers(context, [layer], { x: 0, y: 0, scale }, { width: 4000, height: 3000 }, 1)
+      const { drawn } = drawNodeMarkers(context, [layer], { x: 0, y: 0, scale }, { width: 4000, height: 3000 }, 1)
       expect(drawn).toBe(4)
       const rects = markerPass(context.calls).filter(call => call.name === 'rect')
       const arcs = markerPass(context.calls).filter(call => call.name === 'arc')
@@ -119,11 +120,58 @@ describe('node culling and drawing', () => {
 
   it('culls nodes outside the viewport and honours clip and exclude rectangles', () => {
     // Panned so only x in [400, 1200] is in view: just (500,100).
-    expect(drawNodeMarkers(recorder(), [layer], { x: -400, y: 0, scale: 1 }, { width: 800, height: 600 }, 1)).toBe(1)
+    expect(drawNodeMarkers(recorder(), [layer], { x: -400, y: 0, scale: 1 }, { width: 800, height: 600 }, 1).drawn).toBe(1)
     const clipped: NodeLayer = { ...layer, clip: { x0: 0, y0: 0, x1: 200, y1: 200 } }
-    expect(drawNodeMarkers(recorder(), [clipped], { x: 0, y: 0, scale: 1 }, { width: 1000, height: 700 }, 1)).toBe(1)
+    expect(drawNodeMarkers(recorder(), [clipped], { x: 0, y: 0, scale: 1 }, { width: 1000, height: 700 }, 1).drawn).toBe(1)
     const excluded: NodeLayer = { ...layer, exclude: { x0: 0, y0: 0, x1: 200, y1: 200 } }
-    expect(drawNodeMarkers(recorder(), [excluded], { x: 0, y: 0, scale: 1 }, { width: 1000, height: 700 }, 1)).toBe(3)
+    expect(drawNodeMarkers(recorder(), [excluded], { x: 0, y: 0, scale: 1 }, { width: 1000, height: 700 }, 1).drawn).toBe(3)
+  })
+
+  it('counts by type only the nodes inside the viewport, not those drawn only for their marker\'s reach', () => {
+    // Unpanned, all four nodes are in view.
+    expect(drawNodeMarkers(recorder(), [layer], { x: 0, y: 0, scale: 1 }, { width: 800, height: 600 }, 1).inView).toEqual({ cusp: 2, symmetric: 1, smooth: 1 })
+    // Panned so the view starts at x 302: (300,100) and (300,300) sit 2px off-screen, so
+    // their markers reach in and are drawn, but only (500,100) is in view.
+    const edge = drawNodeMarkers(recorder(), [layer], { x: -302, y: 0, scale: 1 }, { width: 800, height: 600 }, 1)
+    expect(edge.drawn).toBe(3)
+    expect(edge.inView).toEqual({ cusp: 1, symmetric: 0, smooth: 0 })
+    // Panned further, nothing is in view.
+    expect(drawNodeMarkers(recorder(), [layer], { x: -600, y: 0, scale: 1 }, { width: 800, height: 600 }, 1).inView).toEqual({ cusp: 0, symmetric: 0, smooth: 0 })
+  })
+
+  it('counts the preview\'s nodes inside its window and the committed trace\'s outside it, not the preview\'s margin', () => {
+    // The preview window is stage (150,150)-(450,450). The preview's cusp at (200,200) is in
+    // it; its symmetric nodes at (50..70, 50..70) lie in its margin, in view but clipped.
+    const preview = indexNodes(parseTracedNodes(svgDocument(
+      '<path d="M200 200 L260 200 L200 260 Z" sodipodi:nodetypes="cccc"/><path d="M50 50 L70 50 L50 70 Z" sodipodi:nodetypes="ssss"/>')))
+    const window = { x0: 150, y0: 150, x1: 450, y1: 450 }
+    const layers: NodeLayer[] = [
+      { ...layer, exclude: window },
+      { index: preview, scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0, clip: window },
+    ]
+    // Committed: (100,100) smooth, (300,100) symmetric, (500,100) cusp; (300,300) is in the
+    // window, so the preview's three cusps stand there instead.
+    expect(drawNodeMarkers(recorder(), layers, { x: 0, y: 0, scale: 1 }, { width: 800, height: 600 }, 1).inView).toEqual({ cusp: 4, symmetric: 1, smooth: 1 })
+    // Viewed from x 230, only part of the window is in view: the preview's (260,200) and
+    // the committed (300,100) and (500,100).
+    expect(drawNodeMarkers(recorder(), layers, { x: -230, y: 0, scale: 1 }, { width: 800, height: 600 }, 1).inView).toEqual({ cusp: 2, symmetric: 1, smooth: 0 })
+  })
+
+  it('keeps a node on the preview window\'s edge exactly once at a stage scale of 1/3', () => {
+    // A 2100px traced grid on a 700px stage. The window's right edge is at traced x 7,
+    // stage 7/3; the nodes on it are the preview's (symmetric), the committed trace's
+    // there (cusps) are excluded.
+    const shape = (code: string) => svgDocument(`<path d="M2 10 L7 10 L7 20 Z" sodipodi:nodetypes="${code.repeat(4)}"/>`, '0 0 2100 2100')
+    const committed = committedLayer(indexNodes(parseTracedNodes(shape('c'))), { width: 700, height: 700 })!
+    const k = 700 / 2100
+    const window = { x0: 0, y0: 0, x1: 7 * k, y1: 1000 * k }
+    const layers: NodeLayer[] = [
+      { ...committed, exclude: window },
+      { index: indexNodes(parseTracedNodes(shape('s'))), scaleX: k, scaleY: k, offsetX: 0, offsetY: 0, clip: window },
+    ]
+    const result = drawNodeMarkers(recorder(), layers, { x: 0, y: 0, scale: 1 }, { width: 800, height: 600 }, 1)
+    expect(result.drawn).toBe(3)
+    expect(result.inView).toEqual({ cusp: 0, symmetric: 3, smooth: 0 })
   })
 
   it('places nodes only when the SVG grid registers with the stage', () => {
@@ -141,7 +189,7 @@ describe('node culling and drawing', () => {
     const big = indexNodes(parseTracedNodes(svgDocument(paths.join(''))))
     expect(big.nodes.xs.length).toBe(10100)
     // Zoomed in on a corner, a draw visits only that corner's nodes.
-    expect(drawNodeMarkers(recorder(), [committedLayer(big, { width: 1000, height: 700 })!], { x: 0, y: 0, scale: 8 }, { width: 400, height: 280 }, 1)).toBeLessThan(100)
+    expect(drawNodeMarkers(recorder(), [committedLayer(big, { width: 1000, height: 700 })!], { x: 0, y: 0, scale: 8 }, { width: 400, height: 280 }, 1).drawn).toBeLessThan(100)
     expect(performance.now() - started).toBeLessThan(5000)
   })
 })
@@ -183,8 +231,8 @@ describe('Trace canvas Nodes overlay', () => {
   })
 
   type Props = Partial<Parameters<typeof ImageWorkspace>[0]>
-  function prepare(props: Props = {}) {
-    const result = render(<ImageWorkspace layers={layers} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" pathNodes={{ url: '/traced.svg' }} {...props} />)
+  function prepare(props: Props = {}, wrapper?: (props: { children: ReactNode }) => ReactNode) {
+    const result = render(<ImageWorkspace layers={layers} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" pathNodes={{ url: '/traced.svg' }} {...props} />, { wrapper })
     const viewport = within(result.container).getByLabelText('Image comparison viewport')
     Object.defineProperties(viewport, { clientWidth: { configurable: true, value: 800 }, clientHeight: { configurable: true, value: 600 } })
     viewport.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) })
@@ -219,6 +267,7 @@ describe('Trace canvas Nodes overlay', () => {
     await serveCommitted()
     const legend = screen.getByRole('list', { name: 'Node types' })
     expect([...legend.querySelectorAll('li')].map(item => item.textContent)).toEqual(['Cusp node2', 'Symmetric node1', 'Smooth node1'])
+    expect(screen.getByText('Nodes in view').id).toBe(legend.getAttribute('aria-describedby'))
     expect([...legend.querySelectorAll('svg')].map(shape => shape.firstElementChild?.tagName)).toEqual(['polygon', 'rect', 'circle'])
     expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
     expect(markers()).toBe(4)
@@ -234,12 +283,100 @@ describe('Trace canvas Nodes overlay', () => {
     expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
   })
 
+  function dragRight(distance: number) {
+    const viewport = screen.getByLabelText('Image comparison viewport')
+    viewport.setPointerCapture = () => undefined
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 100 + distance, clientY: 100 })
+    fireEvent.pointerUp(viewport, { pointerId: 1 })
+  }
+  const counts = () => [...screen.getByRole('list', { name: 'Node types' }).querySelectorAll('.node-count')].map(count => Number(count.textContent))
+
+  it('counts only the nodes in view, updating on zoom and pan', async () => {
+    prepare()
+    fireEvent.click(nodesSwitch())
+    await serveCommitted()
+    expect(counts()).toEqual([2, 1, 1])
+    // Two 1.25x zooms about the centre: scale 1.2, origin (-200, -120). The smooth node at
+    // (100,100) is now off-screen at x -80.
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    expect(counts()).toEqual([2, 1, 0])
+    // Dragged 150px right, it is back in view.
+    dragRight(150)
+    expect(counts()).toEqual([2, 1, 1])
+    // Dragged until no node is in view, the counts read 0.
+    dragRight(-1400)
+    expect(counts()).toEqual([0, 0, 0])
+    expect(screen.getByText('Nodes in view')).toBeTruthy()
+  })
+
+  it('sets no state on a draw whose counts are unchanged, so a pan move renders once', async () => {
+    let commits = 0
+    prepare({}, ({ children }) => <Profiler id="workspace" onRender={() => { commits += 1 }}>{children}</Profiler>)
+    fireEvent.click(nodesSwitch())
+    await serveCommitted()
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    expect(counts()).toEqual([2, 1, 0])
+    const viewport = screen.getByLabelText('Image comparison viewport')
+    viewport.setPointerCapture = () => undefined
+    fireEvent.pointerDown(viewport, { pointerId: 1, clientX: 100, clientY: 100 })
+    commits = 0
+    // Five 5px moves keep the same nodes in view: one commit each, none for the counts.
+    for (let step = 1; step <= 5; step += 1) fireEvent.pointerMove(viewport, { pointerId: 1, clientX: 100 + 5 * step, clientY: 100 })
+    expect(commits).toBe(5)
+    expect(counts()).toEqual([2, 1, 0])
+  })
+
+  it('never shows counts from another drawing: after Off and on, comparing, or a new trace', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => frames.push(callback))
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames[id - 1] = () => undefined })
+    const flush = () => act(() => { frames.splice(0).forEach(callback => callback(0)) })
+    const shown = () => screen.getByRole('list', { name: 'Node types' }).querySelectorAll('.node-count').length
+    const { rerender } = prepare({ compareBefore: ['flat'] })
+    fireEvent.click(nodesSwitch())
+    await serveCommitted()
+    flush()
+    expect(counts()).toEqual([2, 1, 1])
+    // Off, zoomed, and on again: nothing until the new view is drawn and counted.
+    fireEvent.click(nodesSwitch())
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    fireEvent.click(nodesSwitch())
+    expect(shown()).toBe(0)
+    flush()
+    expect(counts()).toEqual([2, 1, 0])
+    // Comparing hides them; Off again waits for a draw.
+    const compare = () => screen.getByRole('group', { name: 'Compare' })
+    fireEvent.click(within(compare()).getByRole('button', { name: 'split' }))
+    expect(shown()).toBe(0)
+    fireEvent.click(within(compare()).getByRole('button', { name: 'Off' }))
+    expect(shown()).toBe(0)
+    flush()
+    expect(counts()).toEqual([2, 1, 0])
+    // A new revision's trace: none while it loads, nor once loaded until it is drawn.
+    rerender(<ImageWorkspace layers={layers} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" pathNodes={{ url: '/traced-2.svg' }} compareBefore={['flat']} />)
+    expect(shown()).toBe(0)
+    const next = pending.find(entry => entry.url === '/traced-2.svg')!
+    await act(async () => { next.resolve({ ok: true, status: 200, text: async () => svgDocument('<path d="M400 400 L420 400 L400 420 Z" sodipodi:nodetypes="ssss"/>') }) })
+    expect(shown()).toBe(0)
+    flush()
+    expect(counts()).toEqual([0, 3, 0])
+  })
+
+
+
   it('says when the trace records no node types', async () => {
     prepare()
     fireEvent.click(nodesSwitch())
     const request = pending[0]
     await act(async () => { request.resolve({ ok: true, status: 200, text: async () => svgDocument('<path d="M0 0 L5 0 L0 5 Z"/>') }) })
     expect(screen.getByText('This trace has no node types. Re-run Trace to record them.')).toBeTruthy()
+    // With no nodes to draw, no counts or caption are shown.
+    expect(screen.getByRole('list', { name: 'Node types' }).querySelector('.node-count')).toBeNull()
+    expect(screen.queryByText('Nodes in view')).toBeNull()
   })
 
   it('hides the nodes while comparing, keeping the switch on', async () => {
@@ -250,12 +387,16 @@ describe('Trace canvas Nodes overlay', () => {
     for (const mode of ['split', 'blink']) {
       fireEvent.click(within(compare()).getByRole('button', { name: mode }))
       expect(container.querySelector('canvas.node-overlay')).toBeNull()
+      // Nothing is drawn, so no counts are shown.
+      expect(container.querySelector('.node-count')).toBeNull()
+      expect(screen.queryByText('Nodes in view')).toBeNull()
       expect(within(compare()).getByText('Overlays and live preview hidden while comparing')).toBeTruthy()
       expect(nodesSwitch().checked).toBe(true)
     }
     fireEvent.click(within(compare()).getByRole('button', { name: 'Off' }))
     expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
     expect(markers()).toBe(4)
+    expect(counts()).toEqual([2, 1, 1])
   })
 
   it('marks the live preview\'s own nodes inside its window instead of the committed trace\'s', async () => {
@@ -269,11 +410,16 @@ describe('Trace canvas Nodes overlay', () => {
     fireEvent.click(screen.getByLabelText('Zoom in'))
     act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
     const request = pending.find(entry => entry.url.endsWith('/trace-preview'))!
+    // Until the preview arrives, the committed trace's nodes in view are counted.
+    expect(counts()).toEqual([2, 1, 0])
     const window = { x: 166, y: 100, width: 668, height: 500 }
     // Crop-relative geometry under the crop's translation, as trace_window writes it.
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="translate(150 90)"><path d="M250 310 L300 310 L250 360 Z" sodipodi:nodetypes="cccc"/></g></svg>`
+    // The last path lies in the preview's margin, left of its window, at traced (120..130, 300..310).
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="translate(150 90)"><path d="M250 310 L300 310 L250 360 Z" sodipodi:nodetypes="cccc"/><path d="M-30 210 L-20 210 L-30 220 Z" sodipodi:nodetypes="ssss"/></g></svg>`
     await act(async () => { request.resolve({ ok: true, json: async () => ({ window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg, elapsed_ms: 1 }), text: async () => '' }) })
     expect(screen.getByAltText('Live trace preview')).toBeTruthy()
+    // The committed trace's counts are not shown for the new drawing before it is drawn.
+    expect(screen.getByRole('list', { name: 'Node types' }).querySelector('.node-count')).toBeNull()
     // Fake timers also hold animation frames: run the redraw.
     act(() => { vi.advanceTimersByTime(20) })
     const tips = markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args)
@@ -282,6 +428,16 @@ describe('Trace canvas Nodes overlay', () => {
     // the committed (300,100), (500,100) (on the window's edge) and (300,300) fall in its
     // window, and (100,100) out of view.
     expect(tips).toEqual([[280, 360 - k], [340, 360 - k], [280, 420 - k]])
+    // The legend counts those three: the committed nodes in the window are the preview's.
+    expect(counts()).toEqual([3, 0, 0])
+    // Dragged 150px right (before a new preview is asked for), the view is stage x 41.7 to
+    // 708: the committed smooth node at (100,100) comes into view outside the window and
+    // counts; the preview's margin nodes, now in view but outside its window, do not.
+    dragRight(150)
+    act(() => { vi.advanceTimersByTime(20) })
+    expect(screen.getByAltText('Live trace preview')).toBeTruthy()
+    expect(counts()).toEqual([3, 0, 1])
+    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(0)
   })
 
   it('with no current trace, offers Nodes while the live preview is on and marks the preview\'s nodes in its window', async () => {

@@ -1,10 +1,10 @@
-import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LoaderCircle, Maximize, Pause, Play, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, lineageRegisters, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type UpscaleLineage, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
-import { NODE_TYPE_LABELS, NODE_TYPES, NodeShape, committedLayer, drawNodeMarkers, useParsedNodes, useTracedNodes, type NodeLayer, type Rect } from './PathNodes'
+import { NODE_TYPE_LABELS, NODE_TYPES, NodeShape, committedLayer, drawNodeMarkers, useParsedNodes, useTracedNodes, type NodeLayer, type NodeType, type Rect } from './PathNodes'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
@@ -580,14 +580,25 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // A preview whose nodes cannot be read leaves the committed trace's nodes drawn in its
   // window, and the legend says so.
   const { index: previewNodes, failed: previewNodesFailed } = useParsedNodes(nodesDrawn && previewWindow ? tracePreview.shown!.svg : null)
-  // The legend counts the committed trace's nodes; with no trace, the drawn preview's.
-  const countedNodes = committedNodes.status === 'ready' ? committedNodes.index : !pathNodes?.url && previewNodes && previewRect ? previewNodes : null
+  // The legend counts the nodes in view, as drawn: the preview's inside its window and the
+  // committed trace's outside it, within the visible viewport. Each draw measures them, and
+  // the counts are tagged with the drawing they came from (`nodeDrawing`: the same nodes
+  // placed the same way, drawn without a break), so counts of other nodes or of a view
+  // before a break are never shown. A draw whose counts are unchanged sets no state.
+  const [nodesInView, setNodesInView] = useState<{ drawing: object; counts: Record<NodeType, number> } | null>(null)
+  const lastNodesInView = useRef(nodesInView)
+  const nodeCountsId = useId()
   const committedNodeLayer = committedNodes.status === 'ready' && size.width ? committedLayer(committedNodes.index, size) : null
   const nodeLayers: NodeLayer[] = nodesDrawn ? [
     ...(committedNodeLayer ? [{ ...committedNodeLayer, exclude: previewNodes && previewRect ? previewRect : undefined }] : []),
     ...(previewNodes && previewRect ? [{ index: previewNodes, scaleX: tracePreview.kx, scaleY: tracePreview.ky, offsetX: 0, offsetY: 0, clip: previewRect }] : []),
   ] : []
   const nodeLayersKey = JSON.stringify([committedNodeLayer && [committedNodeLayer.scaleX, committedNodeLayer.scaleY], previewRect, previewNodesFailed])
+  const nodeDrawing = useMemo(() => ({}), [nodesDrawn, committedNodes.status === 'ready' ? committedNodes.index : null, previewNodes, nodeLayersKey, size.width, size.height])
+  // Counts show while nodes are drawn, 0 where none is in view; they are hidden while
+  // comparing and while there are no nodes to draw (none to mark yet, or a trace without
+  // node types).
+  const shownNodeCounts = nodesDrawn && nodeLayers.some(layer => layer.index.nodes.xs.length > 0) && nodesInView?.drawing === nodeDrawing ? nodesInView.counts : null
   useEffect(() => {
     // Drawn in screen space on a viewport-sized canvas (like the editor overlay above),
     // so markers keep their size at any zoom; only the nodes in view are visited, and
@@ -600,12 +611,17 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       const backingWidth = Math.max(1, Math.round(width * dpr)), backingHeight = Math.max(1, Math.round(height * dpr))
       if (canvas.width !== backingWidth || canvas.height !== backingHeight) { canvas.width = backingWidth; canvas.height = backingHeight }
       const context = canvas.getContext('2d')
-      if (context) drawNodeMarkers(context, nodeLayers, transform, { width, height }, dpr)
+      if (!context) return
+      const { inView } = drawNodeMarkers(context, nodeLayers, transform, { width, height }, dpr)
+      const last = lastNodesInView.current
+      if (last?.drawing === nodeDrawing && NODE_TYPES.every(type => last.counts[type] === inView[type])) return
+      lastNodesInView.current = { drawing: nodeDrawing, counts: inView }
+      setNodesInView(lastNodesInView.current)
     }
     if (typeof window.requestAnimationFrame !== 'function') { draw(); return }
     const frame = window.requestAnimationFrame(draw)
     return () => window.cancelAnimationFrame(frame)
-  }, [nodesDrawn, committedNodes, previewNodes, nodeLayersKey, transform, size.width, size.height])
+  }, [nodeDrawing, transform])
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -784,8 +800,9 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
         {nodesAvailable && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [PATH_NODES_KEY]: event.target.checked }))} />Nodes</label>}
         {nodesOn && <div className="node-legend">
-          <ul aria-label="Node types">{NODE_TYPES.map(type => <li key={type}><NodeShape type={type} />{NODE_TYPE_LABELS[type]}{countedNodes && <span className="node-count">{countedNodes.nodes.counts[type].toLocaleString()}</span>}</li>)}</ul>
-          {!pathNodes?.url && <p className="node-status" role="status">{countedNodes ? 'No current trace: nodes are marked in the live preview.' : 'No current trace: nodes appear once the live preview draws.'}</p>}
+          {shownNodeCounts && <p className="node-legend-heading" id={nodeCountsId}>Nodes in view</p>}
+          <ul aria-label="Node types" aria-describedby={shownNodeCounts ? nodeCountsId : undefined}>{NODE_TYPES.map(type => <li key={type}><NodeShape type={type} />{NODE_TYPE_LABELS[type]}{shownNodeCounts && <span className="node-count">{shownNodeCounts[type].toLocaleString()}</span>}</li>)}</ul>
+          {!pathNodes?.url && <p className="node-status" role="status">{previewNodes && previewRect ? 'No current trace: nodes are marked in the live preview.' : 'No current trace: nodes appear once the live preview draws.'}</p>}
           {committedNodes.status === 'loading' && <p className="node-status" role="status">Loading nodes…</p>}
           {previewNodesFailed && <p className="node-status error" role="status">Couldn't read the preview's nodes</p>}
           {committedNodes.status === 'error' && <p className="node-status error" role="status">Nodes unavailable: {committedNodes.message}</p>}
