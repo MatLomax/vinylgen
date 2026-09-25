@@ -214,7 +214,7 @@ export type NodeLayer = { index: NodeIndex; scaleX: number; scaleY: number; offs
 // Outline width of a marker, in CSS px; the black ring around it is as wide.
 const NODE_MARKER_LINE = 1.25
 // Each node type's outline colour, on the canvas and in the legend.
-export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff3b30', symmetric: '#2f7bff', smooth: '#ffd60a' }
+export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff4775', symmetric: '#40b4ff', smooth: '#ffe23d' }
 
 // A node type's marker centred on (x, y), grown outward by `grow` CSS px on every side.
 function traceMarker(context: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'closePath' | 'rect' | 'arc'>, type: number, x: number, y: number, grow: number) {
