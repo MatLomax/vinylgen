@@ -12,7 +12,7 @@ export type NodeType = typeof NODE_TYPES[number]
 const TYPE_CODES: Record<string, number> = { c: 0, s: 1, z: 2 }
 export const NODE_TYPE_LABELS: Record<NodeType, string> = { cusp: 'Cusp node', symmetric: 'Symmetric node', smooth: 'Smooth node' }
 // Half the on-screen marker size, in CSS px; markers keep this size at every zoom.
-export const NODE_MARKER_RADIUS = 4
+export const NODE_MARKER_RADIUS = 4.5
 
 // Deduplicated nodes in the SVG's user units; `types` holds indexes into NODE_TYPES.
 // `untyped` counts the nodes of paths without (or with a short) `sodipodi:nodetypes`;
@@ -245,8 +245,8 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
   // One path per shape, filled then outlined, keeps tens of thousands of markers cheap.
   context.lineWidth = 1.25
   context.lineJoin = 'miter'
-  context.fillStyle = 'rgba(255, 255, 255, .92)'
-  context.strokeStyle = 'rgba(12, 14, 13, .95)'
+  context.fillStyle = 'rgba(255, 255, 255, .1)'
+  context.strokeStyle = '#fff'
   shapes.forEach((points, type) => {
     if (!points.length) return
     context.beginPath()
