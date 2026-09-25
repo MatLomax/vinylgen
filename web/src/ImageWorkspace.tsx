@@ -33,8 +33,9 @@ export type CanvasMarker = { id: string; kind: CanvasMarkerKind; label: string; 
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
 // The switch of the Trace canvas's Nodes overlay, kept with the inspection toggles.
 const PATH_NODES_KEY = 'path-nodes'
-// The traced SVG whose path nodes the canvas can mark (`pathNodes`).
-export type CanvasPathNodes = { url: string }
+// The canvas can mark path nodes (`pathNodes`): those of the committed traced SVG at
+// `url` when the revision has one, and the live preview's within its window.
+export type CanvasPathNodes = { url?: string }
 // Screen-space sizes of the marker shapes and the pick-mode crosshair arms, in CSS px.
 const MARKER_RADIUS = 7
 const AIM_GAP = 3
@@ -185,11 +186,9 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const compatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
   const incompatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
   const drawnInspections = comparing ? [] : compatibleInspections
-  // The Nodes overlay marks the committed trace's path nodes (and, over the live preview's
-  // window, the preview's own); like every overlay it is hidden while comparing.
-  const nodesOn = Boolean(pathNodes) && Boolean(enabledInspections[PATH_NODES_KEY])
-  const nodesDrawn = nodesOn && !comparing
-  const committedNodes = useTracedNodes(nodesOn ? pathNodes!.url : null)
+  // The Nodes switch; the overlay it turns on is settled with the live preview below.
+  const nodesSwitched = Boolean(pathNodes) && Boolean(enabledInspections[PATH_NODES_KEY])
+  const committedNodes = useTracedNodes(nodesSwitched ? pathNodes?.url ?? null : null)
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -565,6 +564,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size,
     { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && drawnInspections.includes(appliedChanges)) },
     previewHeld, livePreviewStatus)
+  // The Nodes overlay is offered while there are nodes to mark: a committed trace, or a
+  // live preview switched on and not paused. The switch's own setting is kept while it is
+  // not offered, so turning the live preview back on restores it. It marks the committed trace's path nodes and, over the
+  // live preview's window, the preview's own; like every overlay it is hidden while
+  // comparing.
+  const nodesAvailable = Boolean(pathNodes?.url) || (Boolean(pathNodes) && tracePreview.enabled && !previewPaused)
+  const nodesOn = nodesAvailable && nodesSwitched
+  const nodesDrawn = nodesOn && !comparing
   // Over the live preview's window the canvas shows the preview's geometry, so the nodes
   // there are the preview's; the committed trace's nodes are drawn everywhere else.
   const previewWindow = !previewHeld && tracePreview.shown ? tracePreview.shown.window : null
@@ -573,6 +580,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // A preview whose nodes cannot be read leaves the committed trace's nodes drawn in its
   // window, and the legend says so.
   const { index: previewNodes, failed: previewNodesFailed } = useParsedNodes(nodesDrawn && previewWindow ? tracePreview.shown!.svg : null)
+  // The legend counts the committed trace's nodes; with no trace, the drawn preview's.
+  const countedNodes = committedNodes.status === 'ready' ? committedNodes.index : !pathNodes?.url && previewNodes && previewRect ? previewNodes : null
   const committedNodeLayer = committedNodes.status === 'ready' && size.width ? committedLayer(committedNodes.index, size) : null
   const nodeLayers: NodeLayer[] = nodesDrawn ? [
     ...(committedNodeLayer ? [{ ...committedNodeLayer, exclude: previewNodes && previewRect ? previewRect : undefined }] : []),
@@ -771,11 +780,12 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {annotations}
       {aim && hoverPixel && <div ref={readout} className="pick-readout" aria-hidden="true" style={readoutPlacement}>x {hoverPixel[0]}, y {hoverPixel[1]}</div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
-      {editorMode && (toggledInspections.length > 0 || pathNodes) && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
+      {editorMode && (toggledInspections.length > 0 || nodesAvailable) && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
         {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
-        {pathNodes && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [PATH_NODES_KEY]: event.target.checked }))} />Nodes</label>}
+        {nodesAvailable && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [PATH_NODES_KEY]: event.target.checked }))} />Nodes</label>}
         {nodesOn && <div className="node-legend">
-          <ul aria-label="Node types">{NODE_TYPES.map(type => <li key={type}><NodeShape type={type} />{NODE_TYPE_LABELS[type]}{committedNodes.status === 'ready' && <span className="node-count">{committedNodes.index.nodes.counts[type].toLocaleString()}</span>}</li>)}</ul>
+          <ul aria-label="Node types">{NODE_TYPES.map(type => <li key={type}><NodeShape type={type} />{NODE_TYPE_LABELS[type]}{countedNodes && <span className="node-count">{countedNodes.nodes.counts[type].toLocaleString()}</span>}</li>)}</ul>
+          {!pathNodes?.url && <p className="node-status" role="status">{countedNodes ? 'No current trace: nodes are marked in the live preview.' : 'No current trace: nodes appear once the live preview draws.'}</p>}
           {committedNodes.status === 'loading' && <p className="node-status" role="status">Loading nodes…</p>}
           {previewNodesFailed && <p className="node-status error" role="status">Couldn't read the preview's nodes</p>}
           {committedNodes.status === 'error' && <p className="node-status error" role="status">Nodes unavailable: {committedNodes.message}</p>}

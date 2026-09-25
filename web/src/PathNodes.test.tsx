@@ -258,6 +258,64 @@ describe('Trace canvas Nodes overlay', () => {
     expect(tips).toEqual([[280, 360 - k], [340, 360 - k], [280, 420 - k]])
   })
 
+  it('with no current trace, offers Nodes while the live preview is on and marks the preview\'s nodes in its window', async () => {
+    vi.useFakeTimers()
+    const livePreview = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } }
+    const { container } = prepare({ pathNodes: {}, livePreview })
+    // Live preview off: no nodes to mark, so no switch.
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    fireEvent.click(nodesSwitch())
+    // Nothing is drawn yet (the whole image is too large to preview), and the legend says so.
+    expect(screen.getByText('Zoom in to preview')).toBeTruthy()
+    expect(screen.getByText('No current trace: nodes appear once the live preview draws.')).toBeTruthy()
+    expect(container.querySelector('.node-count')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    fireEvent.click(screen.getByLabelText('Zoom in'))
+    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
+    // Only the preview is requested; there is no committed trace to fetch.
+    expect(pending.map(entry => entry.url).filter(url => !url.endsWith('/trace-preview'))).toEqual([])
+    const request = pending.find(entry => entry.url.endsWith('/trace-preview'))!
+    const window = { x: 166, y: 100, width: 668, height: 500 }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="translate(150 90)"><path d="M250 310 L300 310 C320 330 320 340 300 360 L250 360 Z" sodipodi:nodetypes="ccscc"/><path d="M200 200 C210 200 220 210 220 220 C220 230 210 240 200 240 C190 240 180 230 180 220 C180 210 190 200 200 200 Z" sodipodi:nodetypes="zzzzz"/></g></svg>`
+    await act(async () => { request.resolve({ ok: true, json: async () => ({ window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg, elapsed_ms: 1 }), text: async () => '' }) })
+    act(() => { vi.advanceTimersByTime(20) })
+    expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
+    // Three cusp rhombi, one symmetric square and four smooth circles, all the preview's.
+    expect(drawn.filter(call => call.name === 'closePath')).toHaveLength(3)
+    expect(drawn.filter(call => call.name === 'rect')).toHaveLength(1)
+    expect(drawn.filter(call => call.name === 'arc')).toHaveLength(4)
+    // The preview's cusp at traced (400,400) sits at scale 1.2 from (-200,-120).
+    const k = NODE_MARKER_RADIUS * 1.25
+    expect(drawn.filter(call => call.name === 'moveTo').map(call => call.args)).toContainEqual([280, 360 - k])
+    // The legend counts the preview's nodes, and says where they are marked.
+    const legend = screen.getByRole('list', { name: 'Node types' })
+    expect([...legend.querySelectorAll('li')].map(item => item.textContent)).toEqual(['Cusp node3', 'Symmetric node1', 'Smooth node4'])
+    expect(screen.getByText('No current trace: nodes are marked in the live preview.')).toBeTruthy()
+    // Turning the live preview off takes the switch away with nothing left to mark;
+    // turning it back on offers the switch again, still on.
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    expect(container.querySelector('canvas.node-overlay')).toBeNull()
+    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
+    expect(nodesSwitch().checked).toBe(true)
+    expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
+  })
+
+  it('with no current trace, does not offer Nodes while the live preview is paused', () => {
+    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
+    const settings = DEFAULT_TRACE_SETTINGS
+    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: { width: 1000, height: 700 } }, livePreviewPaused: true })
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    cleanup()
+    // The traced grid not yet known pauses it the same way.
+    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: null } })
+    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
+    cleanup()
+    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: { width: 1000, height: 700 } } })
+    expect(nodesSwitch().checked).toBe(false)
+  })
+
   it('falls back to the committed nodes in the preview window, saying so, when the preview\'s nodes cannot be read', async () => {
     vi.useFakeTimers()
     localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')

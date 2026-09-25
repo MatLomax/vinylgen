@@ -90,6 +90,8 @@ export type LivePreviewState<Result> = {
   kx: number; ky: number
   // The on-canvas switch, badge and status, with `extra` controls (always shown) after the switch.
   controls: (extra?: ReactNode) => ReactNode
+  // Whether the canvas has a live preview with its switch on.
+  enabled: boolean
 }
 
 // Reads, from the server, what the badge says while a preview of the revision is in
@@ -198,7 +200,7 @@ export function useLivePreview<Settings, Result>(
       {enabled && !tooLarge && error && <p className="trace-preview-status error">Preview failed: {error}</p>}
     </div>
   </div> : null
-  return { shown: visibleShown, kx, ky, controls }
+  return { shown: visibleShown, kx, ky, controls, enabled: Boolean(options) && enabled }
 }
 
 // Where a preview of `window` (traced px) sits on the stage.
@@ -215,10 +217,11 @@ async function requestTracePreview(revisionId: string, window: PreviewWindow, tr
  * Drives the Trace canvas's live preview. Returns the shapes to place inside the
  * transformed image stage (so they track pan and zoom exactly), the on-canvas
  * controls (the switch, the "Live preview" badge, busy and error states), and the
- * shown preview's SVG text and window with the stage px per traced px. Without
- * `options` (any canvas but Trace) it renders nothing and requests nothing.
+ * shown preview's SVG text and window with the stage px per traced px, and whether
+ * its switch is on. Without `options` (any canvas but Trace) it renders nothing and
+ * requests nothing.
  */
-export function useTracePreview(options: LivePreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize): { stageLayer: ReactNode; controls: ReactNode; shown: { window: PreviewWindow; svg: string } | null; kx: number; ky: number } {
+export function useTracePreview(options: LivePreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize): { stageLayer: ReactNode; controls: ReactNode; shown: { window: PreviewWindow; svg: string } | null; kx: number; ky: number; enabled: boolean } {
   const preview = useLivePreview(options, transform, viewport, stage,
     { storageKey: LIVE_PREVIEW_STORAGE_KEY, label: 'Live trace preview', request: requestTracePreview })
   const { shown } = preview
@@ -231,5 +234,5 @@ export function useTracePreview(options: LivePreviewOptions | undefined, transfo
     style={stagePlacement(shown.window, preview.kx, preview.ky)}
   /> : null
   // The shown preview's SVG and window, for overlays drawn from its geometry.
-  return { stageLayer, controls: preview.controls(), shown: shown ? { window: shown.window, svg: shown.result.svg } : null, kx: preview.kx, ky: preview.ky }
+  return { stageLayer, controls: preview.controls(), shown: shown ? { window: shown.window, svg: shown.result.svg } : null, kx: preview.kx, ky: preview.ky, enabled: preview.enabled }
 }

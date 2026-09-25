@@ -15,7 +15,7 @@ vi.mock('./api', async importOriginal => {
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
 // The canvas gets the options at once, with a null grid (paused) until it is measured.
-type Captured = { canvasLabel?: string; livePreview?: Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: LivePreviewOptions['tracedSize'] | null }; livePreviewPaused?: boolean; pathNodes?: { url: string } }
+type Captured = { canvasLabel?: string; livePreview?: Omit<LivePreviewOptions, 'tracedSize'> & { tracedSize: LivePreviewOptions['tracedSize'] | null }; livePreviewPaused?: boolean; pathNodes?: { url?: string } }
 const workspaceProps = vi.hoisted(() => ({ current: null as Captured | null, history: [] as Captured[] }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: Captured) => { workspaceProps.current = props; workspaceProps.history.push(props); return null } }))
 
@@ -90,5 +90,19 @@ describe('Trace canvas Nodes overlay wiring', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
     await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas'))
     expect(workspaceProps.current?.pathNodes).toBeUndefined()
+  })
+
+  it('offers the nodes of the live preview on a revision with no trace, and on no other canvas', async () => {
+    render(createElement((await import('./App')).default))
+    await chooseProject()
+    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
+    await vi.waitFor(() => expect(workspaceProps.current?.livePreviewPaused).toBe(false))
+    expect(workspaceProps.current?.pathNodes).toEqual({ url: undefined })
+    expect(workspaceProps.current?.livePreview).toMatchObject({ revisionId: flattenRevision.id })
+    for (const tab of ['Flatten', 'Cleanup', 'Edit']) {
+      fireEvent.click(screen.getByRole('tab', { name: tab }))
+      await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).not.toBe('Trace canvas'))
+      expect(workspaceProps.current?.pathNodes).toBeUndefined()
+    }
   })
 })

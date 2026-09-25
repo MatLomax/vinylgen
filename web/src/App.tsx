@@ -1711,9 +1711,10 @@ export default function App() {
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionKinds={canvasOverlayKinds(stage, Boolean(selectionMode))}
-          // The Trace canvas marks the path nodes of the traced SVG it shows (the variant
-          // the run's settings chose), types read from its sodipodi:nodetypes.
-          pathNodes={stage === 'trace' && !selectionMode && tracedSvg ? { url: tracedSvg.download_url } : undefined}
+          // The Trace canvas marks path nodes, types read from sodipodi:nodetypes: those of
+          // the traced SVG it shows (the variant the run's settings chose) when the revision
+          // has one, and the live preview's within its window.
+          pathNodes={stage === 'trace' && !selectionMode ? { url: tracedSvg?.download_url } : undefined}
           // Preservation points are source pixels; the canvas scales them onto a larger
           // flattened raster. They are mapped onto the selected revision's source, so they
           // wait until the shown artifacts are that revision's own.
