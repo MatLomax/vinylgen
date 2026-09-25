@@ -51,7 +51,7 @@ STALE_ARTIFACT_KINDS = {
     "palette": {"flattened", "segmentation", "palette", "report", "protected-areas-overlay",
                 "before-cleanup-flattened", "before-cleanup-segmentation",
                 "before-cleanup-palette", "before-cleanup-report"},
-    "cleanup": {"cleanup-audit", "cleanup-changes-overlay"},
+    "cleanup": {"cleanup-audit", "cleanup-changes-overlay", "cleaned-flattened", "cleaned-labels"},
     "trace": {
         "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
@@ -89,6 +89,15 @@ BEFORE_CLEANUP_KINDS = {"before-cleanup-flattened": ("flattened", "flattened.png
                         "before-cleanup-segmentation": ("segmentation", "segmentation.npz"),
                         "before-cleanup-palette": ("palette", "palette.json"),
                         "before-cleanup-report": ("report", "report.png")}
+
+# The Cleaned image while touch-ups on it are shown: the current cleanup's own result
+# before any touch-up, in the current colours. A Cleanup run whose replayed touch-ups
+# changed its raster writes both (its labels, and the image); a recolour of the cleaned
+# raster while touch-ups are shown writes the image again in the new colours (a rename
+# changes no colour, so it writes nothing).
+# Like a cleaned raster they are skipped once a newer cleanup has been passed and in a
+# before-cleanup lookup, and an export never packages them.
+CLEANED_IMAGE_KINDS = {"cleaned-flattened", "cleaned-labels"}
 
 # Kinds that belong to their own revision only and never resolve through ancestry: the
 # touch-ups a revision records for a later Cleanup run to replay (``web.touch_ups``).
@@ -490,7 +499,8 @@ class Store:
         from every older revision are excluded. A cleanup replaces any earlier cleanup,
         so the raster artifacts and changes overlay of a cleaned raster (a ``cleanup``
         revision, or a label edit on its cleaned raster: ``describes_cleaned_raster``,
-        ``CLEANUP_RASTER_KINDS``) are skipped once a newer cleanup has been passed;
+        ``CLEANUP_RASTER_KINDS``, and the ``CLEANED_IMAGE_KINDS``) are skipped once a
+        newer cleanup has been passed;
         with ``before_cleanup`` they are skipped from the start, which resolves the
         raster that cleanup starts from. Where a cleaned raster is skipped, its
         revision's ``BEFORE_CLEANUP_KINDS`` (a rename or recolour of the raster before
@@ -518,7 +528,7 @@ class Store:
                 kind = row["kind"]
                 if kind in stale_kinds or kind in REVISION_ONLY_KINDS:
                     continue
-                if skip_raster and kind in CLEANUP_RASTER_KINDS:
+                if skip_raster and (kind in CLEANUP_RASTER_KINDS or kind in CLEANED_IMAGE_KINDS):
                     continue
                 if kind in BEFORE_CLEANUP_KINDS:
                     if not skip_raster:

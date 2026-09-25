@@ -53,6 +53,26 @@ from .store import Store
 TOUCH_UPS_KIND = "touch-ups"
 TOUCH_UPS_FILE = "touch-ups.npz"
 
+# The Cleaned image behind shown touch-ups (store.CLEANED_IMAGE_KINDS): its labels, as
+# member ``labels`` (int16), and the image in the current colours.
+CLEANED_LABELS_KIND = "cleaned-labels"
+CLEANED_LABELS_FILE = "cleaned-labels.npz"
+CLEANED_FLATTENED_KIND = "cleaned-flattened"
+CLEANED_FLATTENED_FILE = "cleaned-flattened.png"
+
+
+def cleaned_labels_bytes(labels: np.ndarray) -> bytes:
+    """``labels`` as the ``cleaned-labels`` artifact."""
+    stream = io.BytesIO()
+    np.savez_compressed(stream, labels=labels.astype(np.int16))
+    return stream.getvalue()
+
+
+def load_cleaned_labels(path: Path) -> np.ndarray:
+    """The labels a ``cleaned-labels`` artifact holds."""
+    with np.load(path) as archive:
+        return archive["labels"]
+
 # Why a touch-up was not replayed (``replay_touch_ups``), checked in this order: a
 # re-flatten changed the raster's size; a later edit covers it (all of a pencil
 # stroke, any of an area); it erases and the run removes no colour; the colour it

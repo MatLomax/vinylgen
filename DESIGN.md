@@ -205,6 +205,10 @@ Controls and compact containers use gently machined 6px corners. Larger handoff 
 
 The workflow navigator is persistent and sequential. Desktop steps pair Lucide line icons with title and help inside 64px rows; the selected stage uses Quiet Action Blue, Action Blue text, and a 3px leading marker. Phone steps become 112px × 58px horizontal items with the same selection language and native scrolling. Running status is a small Warning dot, not a competing accent fill.
 
+### Browser History
+
+Switching stage and choosing a project in the header each add a browser history entry. Back and Forward over the app's own entries move between stages without changing the revision; onto another project they return to the revision last shown there in this session, else the one the entry names, else the newest. The revision changes only through Undo, Redo and the Revision picker (offered whenever the project has revisions), edits and jobs. A link pasted into, or opened in, the page shows the revision it names.
+
 ### Artwork Inspector
 
 The stage canvases (Upload, Flatten, Palette, Cleanup, Edit and Trace) are interactive: they own pan, zoom, their stage's overlays and editing tools, and the split/blink comparison described below. Only the passive previews on the remaining stages (Create, Export) open the full-screen inspector, through a 44px circular Search-icon trigger floating 14px from the artwork’s top-right corner. The inspector owns pan, zoom, single/split/blink comparison with free Before/After pickers, overlays, and responsive bottom-sheet controls; it restores focus when dismissed.
@@ -212,6 +216,10 @@ The stage canvases (Upload, Flatten, Palette, Cleanup, Edit and Trace) are inter
 ### Trace Nodes Overlay
 
 The Trace canvas offers a "Nodes" switch beside its other inspection overlays. On, it marks every path node of the traced SVG it shows with its type's shape (GLOSSARY.md "Path nodes"): a cusp node is a rhombus, a symmetric node a square, a smooth node a circle. The types are read from the SVG's own `sodipodi:nodetypes`, so the canvas and Inkscape agree. Markers are warm white with a dark outline, keep one on-screen size at every zoom, and follow pan and zoom; handles are not drawn. A node shared by several paths (a boundary both of its colours draw) is marked once, and where the paths disagree the sharper type wins (cusp, then symmetric, then smooth) so no kink is hidden. Beneath the switch, a legend shows the three shapes with their terms and the committed trace's count of each; it also reports loading, a load failure, and a trace recorded before node types existed ("Re-run Trace to record them"). Where the live preview is drawn, the nodes inside its window are the preview's own and the committed trace's are not drawn there; if the preview's SVG cannot be read, the committed trace's nodes stay drawn in its window and the legend says "Couldn't read the preview's nodes". Only the nodes in view are drawn, on a viewport-sized screen-space canvas redrawn once per animation frame, so tens of thousands of nodes stay responsive. Like every overlay the nodes are hidden while comparing, with the switch kept on.
+
+### Artwork Views
+
+The header's view switch (the mobile header carries the same switch) lists the artwork's views in stage order, each only when it exists: Source; Flattened, the raster Cleanup starts from (with any edits made before a cleanup or while it is stale); Cleaned, the current cleanup's result before any touch-up, in the current colours (the server keeps it as `cleaned-flattened` once a Cleanup run's replayed touch-ups change the raster, or a recolour is made while touch-ups are shown; otherwise it is the raster before the first touch-up); Edited, the Cleaned image with the touch-ups made since it, offered only when there are any; Traced. Palette and Edit act on the last raster of these: Edited once touch-ups exist, else Cleaned while a cleanup is current, else Flattened. Entering Palette or Edit shows that view, and the first touch-up switches it from Cleaned to Edited; on any other view their tools are disabled and point back to it ("Switch to the Edited image…").
 
 ### Canvas Comparison
 
@@ -223,7 +231,7 @@ The shown image is the After. The Before is the stage's natural input:
 - Flatten, on any result view: the source.
 - Cleanup, on the Cleaned view: the raster before cleanup.
 - Trace, on the Traced view: the raster traced.
-- Palette and Edit: a Before picker over every image, with the raster before the edits first: while they edit the Cleaned image, the current cleanup's own result (else the raster before cleanup), so Cleanup's changes never read as edits; otherwise the flattened original (else the source).
+- Palette and Edit: a Before picker over every image, with the view before the one they edit first: while they edit the Edited image, the Cleaned image; while they edit the Cleaned image, the Flattened image (the raster before cleanup), so Cleanup's changes never read as edits; otherwise the flattened original from before any edits (else the source).
 
 As in the inspector, split draws the After left of the divider and the Before right of it; the divider is dragged by pointer or moved with the arrow, Page and Home/End keys. Blink alternates the two, with pause and manual stepping, and starts paused under reduced motion. Both stay registered with the canvas's zoom and pan.
 

@@ -18,7 +18,9 @@ from .models import LabelEditOperation
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
 from .pipeline import cleanup_removed_index, inherited_remove_colour, nearest_cleanup
 from .store import Store
-from .touch_ups import TOUCH_UPS_FILE, TOUCH_UPS_KIND, pixel_arrays, region_arrays, touch_ups_bytes
+from .touch_ups import (CLEANED_FLATTENED_FILE, CLEANED_FLATTENED_KIND, CLEANED_LABELS_KIND,
+                        TOUCH_UPS_FILE, TOUCH_UPS_KIND, load_cleaned_labels, pixel_arrays,
+                        region_arrays, touch_ups_bytes)
 
 # Four-way connectivity: the authoritative rule for what one physical vinyl region is.
 _CROSS = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
@@ -38,6 +40,32 @@ def edits_cleaned_raster(store: Store, revision_id: str) -> bool:
     cleanup ancestor is current (not stale)."""
     cleanup_revision, stale = nearest_cleanup(store, revision_id)
     return cleanup_revision is not None and not stale
+
+
+def cleaned_image_labels(store: Store, revision_id: str) -> np.ndarray | None:
+    """The labels of the Cleaned image while touch-ups on it are shown at ``revision_id``:
+    the current cleanup's own result before any touch-up. That is the ``cleaned-labels``
+    a Cleanup run wrote when its replayed touch-ups changed its raster, else the labels
+    of the revision before the oldest label edit since that cleanup that recorded
+    touch-ups (renames and recolours never change labels). ``None`` without a current
+    cleanup or without touch-ups since it."""
+    cleanup_revision, stale = nearest_cleanup(store, revision_id)
+    if cleanup_revision is None or stale:
+        return None
+    own = store.effective_artifacts(revision_id).get(CLEANED_LABELS_KIND)
+    if own is not None:
+        return load_cleaned_labels(store.artifact_path(own["id"]))
+    base: str | None = None
+    current: str | None = revision_id
+    while current and current != cleanup_revision["id"]:
+        revision = store.get_revision(current)
+        if revision["kind"] == "label-edit" and revision["settings"].get("touch_ups"):
+            base = revision["parent_revision_id"]
+        current = revision["parent_revision_id"]
+    if base is None:
+        return None
+    segmentation = store.effective_artifacts(base)["segmentation"]
+    return SegmentationBundle.load(store.artifact_path(segmentation["id"]), with_costs=False).labels
 
 
 @dataclass
@@ -300,6 +328,11 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
     removed = (removed_colour_index(store, revision_id, len(cleaned.report["palette"]))
                if cleaned is not None else None)
     stales_cleanup = False
+    # The cleaned labels before this batch's first touch-up, kept when the batch also
+    # recolours: with no touch-up before the batch, they are the Cleaned image.
+    snapshots_cleaned = cleaned is not None and any(
+        operation.tool == "recolour_colour" for operation in operations)
+    before_touch_ups: np.ndarray | None = None
     touch_ups: list[dict[str, Any]] = []
     touch_up_arrays: list[dict[str, np.ndarray]] = []
 
@@ -347,6 +380,8 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
                 raise ValueError("reassign_region requires a point")
             x, y = operation.point
             labels = edited.bundle.labels
+            if snapshots_cleaned and edited is cleaned and before_touch_ups is None:
+                before_touch_ups = labels.copy()
             component = _component_at(labels, x, y)
             source = int(labels[y, x])
             if source == target:
@@ -365,6 +400,8 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
             if not operation.pixels:
                 raise ValueError("paint_pixels requires at least one pixel")
             labels = edited.bundle.labels
+            if snapshots_cleaned and edited is cleaned and before_touch_ups is None:
+                before_touch_ups = labels.copy()
             height, width = labels.shape
             # Repaint individual pixels. Regions are derived from the label grid by
             # four-way connectivity, so a stroke that severs a region splits it into
@@ -388,6 +425,15 @@ def apply_edits(store: Store, project_id: str, revision_id: str,
     streams = _raster_streams(edited, costs_changed=edited is before and costs_changed)
     if cleaned is not None and before.changed:
         streams.extend(_before_cleanup_streams(before))
+    if cleaned is not None and cleaned.rgb_changed:
+        # A recolour while touch-ups are shown (made before this batch, or by it) recolours
+        # the Cleaned image behind them too.
+        cleaned_labels = cleaned_image_labels(store, revision_id)
+        if cleaned_labels is None:
+            cleaned_labels = before_touch_ups
+        if cleaned_labels is not None:
+            streams.append((CLEANED_FLATTENED_KIND, CLEANED_FLATTENED_FILE, "image/png",
+                            _png(Image.fromarray(cleaned.bundle.palette_rgb[cleaned_labels].astype(np.uint8), "RGB"))))
     if touch_ups:
         streams.append((TOUCH_UPS_KIND, TOUCH_UPS_FILE, "application/octet-stream",
                         io.BytesIO(touch_ups_bytes(touch_up_arrays))))

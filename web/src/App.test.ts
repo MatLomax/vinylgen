@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
 import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { activeCleanupRevision, ancestorCleanupIterations, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
+import { activeCleanupRevision, ancestorCleanupIterations, cleanedBeforeTouchUps, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(), automaticLayerOrder: vi.fn(),
@@ -26,6 +26,24 @@ vi.mock('./FlattenedEditor', () => ({ FlattenedEditor: (props: { onCommit: (id: 
 const project: Project = { id: 'project-1', slug: 'sky-whale', name: 'Sky whale', created_at: '2026-01-01', updated_at: '2026-01-01' }
 const revision: Revision = { id: 'revision-1', project_id: project.id, parent_revision_id: null, kind: 'source', message: null, settings: {}, created_at: '2026-01-01' }
 const queuedJob: Job = { id: 'job-1', project_id: project.id, revision_id: revision.id, result_revision_id: null, kind: 'generate', status: 'queued', progress: 0.25, message: 'Preparing artwork', error: null }
+
+// Selects a revision the way the user does, through the Revision picker (the Palette
+// panel's, rendered while the shown revision has a flattened raster).
+function pickRevision(id: string) {
+  act(() => { fireEvent.change(screen.getByRole('combobox', { name: 'Revision' }), { target: { value: id } }) })
+}
+// Runs Flatten on the shown revision and lands its job on the palette revision
+// `resultId`: the in-session way off a revision with no flattened raster, where no
+// Revision picker is offered.
+async function landFlatten(resultId: string) {
+  let update: ((job: Job) => void) | undefined
+  mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
+  const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+  await vi.waitFor(() => expect(run.disabled).toBe(false))
+  fireEvent.click(run)
+  await vi.waitFor(() => expect(update).toBeDefined())
+  await act(async () => update!({ ...queuedJob, kind: 'palette', status: 'succeeded', progress: 1, result_revision_id: resultId }))
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -280,6 +298,31 @@ describe('pipeline setting provenance', () => {
     expect(ancestorCleanupIterations([newer, older, palette], 'c2').map(item => item.width_mm)).toEqual([300, 200])
   })
 
+  it('finds the revision whose raster is the Cleaned image behind touch-ups (cleanedBeforeTouchUps)', () => {
+    const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: {} } }
+    const cleaned = { ...revision, id: 'cleanup', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 250 },
+      touch_ups: [{ operation: 0, tool: 'paint_pixels', target_label: 1 }], stale_concerns: ['trace', 'validation', 'export'] } }
+    const edit = (id: string, parent: string, settings: Record<string, unknown>) => ({ ...revision, id, parent_revision_id: parent, kind: 'label-edit',
+      settings: { cleaned_raster: true, stale_concerns: ['trace', 'validation', 'export'], ...settings } })
+    const recolour = edit('recolour', 'cleanup', { operations: [{ tool: 'recolour_colour', label: 0, rgb: [1, 2, 3] }] })
+    const first = edit('touch-1', 'recolour', { touch_ups: [{ operation: 0, tool: 'paint_pixels', target_label: 1 }] })
+    const rename = edit('rename', 'touch-1', { operations: [{ tool: 'rename_colour', label: 0, name: 'Ink' }] })
+    const second = edit('touch-2', 'rename', { touch_ups: [{ operation: 0, tool: 'reassign_region', target_label: 0 }] })
+    const merge = { ...revision, id: 'merge', parent_revision_id: 'touch-2', kind: 'label-edit', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
+    const revisions = [merge, second, rename, first, recolour, cleaned, palette]
+    // The parent of the oldest touch-up since the cleanup, whatever edits follow it.
+    expect(cleanedBeforeTouchUps(revisions, 'touch-2')).toBe('recolour')
+    expect(cleanedBeforeTouchUps(revisions, 'rename')).toBe('recolour')
+    expect(cleanedBeforeTouchUps(revisions, 'touch-1')).toBe('recolour')
+    // No touch-up since the cleanup: the cleanup's own replayed touch-ups do not count here
+    // (the server's cleaned-flattened stands for them).
+    expect(cleanedBeforeTouchUps(revisions, 'recolour')).toBeNull()
+    expect(cleanedBeforeTouchUps(revisions, 'cleanup')).toBeNull()
+    // No current cleanup (stale after a merge, or none at all).
+    expect(cleanedBeforeTouchUps(revisions, 'merge')).toBeNull()
+    expect(cleanedBeforeTouchUps(revisions, 'palette')).toBeNull()
+  })
+
   it('finds the active cleanup until a flatten or edit marks it stale', () => {
     const palette = { ...revision, id: 'palette', kind: 'palette', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
     const cleaned = { ...revision, id: 'cleanup', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 250 }, stale_concerns: ['trace', 'validation', 'export'] } }
@@ -496,13 +539,10 @@ describe('pipeline setting provenance', () => {
     const upscaled = { ...revision, id: 'upscaled-1', parent_revision_id: 'palette-1', kind: 'upscaled-source', created_at: '2026-01-02', settings: { parent_source_size: [64, 48], source_size: [136, 104], stale_concerns: ['palette', 'cleanup', 'trace', 'validation', 'export'] } }
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValue({ ...project, revisions: [upscaled, flattened] })
-    mocks.effectiveArtifacts.mockResolvedValue([artifact('source')])
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'palette-1' ? [artifact('source'), artifact('flattened')] : [artifact('source')])
   }
   const storedPaletteDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
-  const showRevision = (id: string) => act(() => {
-    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=${id}`)
-    window.dispatchEvent(new HashChangeEvent('hashchange'))
-  })
+  const showRevision = (id: string) => pickRevision(id)
   async function expectUpscaledRunMapped() {
     await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => [marker.kind, marker.points])).toEqual([['protect', [[22, 44]]]]))
     const run = screen.getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
@@ -549,7 +589,7 @@ describe('pipeline setting provenance', () => {
     localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ palette: { protected_component_points: [[10, 20]] }, palette_revision: 'palette-1' }))
     let releaseChild: (rows: Artifact[]) => void = () => undefined
     mocks.effectiveArtifacts.mockImplementation((id: string) => id === 'upscaled-1'
-      ? new Promise<Artifact[]>(resolve => { releaseChild = resolve }) : Promise.resolve([artifact('source')]))
+      ? new Promise<Artifact[]>(resolve => { releaseChild = resolve }) : Promise.resolve([artifact('source'), artifact('flattened')]))
     window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
     render(createElement((await import('./App')).default))
     await vi.waitFor(() => expect(workspaceProps.current?.markers?.map(marker => marker.points)).toEqual([[[10, 20]]]))
@@ -595,6 +635,191 @@ describe('workflow tab navigation', () => {
     window.history.forward()
     await vi.waitFor(() => expect(screen.getByRole('tab', { name: 'Edit' }).getAttribute('aria-selected')).toBe('true'))
     await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Edit' })))
+  })
+
+  // Real incident: after a stage switch and a run of edits, Back restored the revision the
+  // older history entry recorded, and the next edit silently branched from it.
+  it('moves Back and Forward between stages only, keeping the newest edit as the revision the next edit starts from', async () => {
+    const paletteRun: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', created_at: '2026-01-02', settings: { palette: {} } }
+    const edits: Revision[] = ['edit-1', 'edit-2', 'edit-3'].map((id, at) => ({ ...revision, id, parent_revision_id: at ? `edit-${at}` : 'palette-1', kind: 'label-edit',
+      created_at: `2026-01-0${at + 3}`, settings: { pipeline_stage: 'label-edit', stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }))
+    const stored: Revision[] = [paletteRun, revision]
+    mocks.projects.mockResolvedValue([project])
+    mocks.project.mockImplementation(async () => ({ ...project, revisions: [...stored] }))
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    const picker = () => screen.getByRole('combobox', { name: 'Revision' }) as HTMLSelectElement
+    const editingFrom = () => (editorProps.current as { revisionId?: string } | null)?.revisionId
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Palette' }))
+    await vi.waitFor(() => expect(window.location.hash).toContain('stage=palette'))
+    for (const edit of edits) {
+      stored.unshift(edit)
+      act(() => editorProps.current!.onCommit(edit.id))
+      await vi.waitFor(() => expect(editingFrom()).toBe(edit.id))
+    }
+    expect(window.location.hash).toBe(`#stage=palette&project=${project.id}&revision=edit-3`)
+
+    // Back returns to Flatten; the revision stays the newest edit, and the entry says so.
+    mocks.effectiveArtifacts.mockClear()
+    act(() => window.history.back())
+    await vi.waitFor(() => expect(screen.getByRole('tab', { name: 'Flatten' }).getAttribute('aria-selected')).toBe('true'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(window.location.hash).toBe(`#stage=flatten&project=${project.id}&revision=edit-3`)
+    expect(picker().value).toBe('edit-3')
+    expect(mocks.effectiveArtifacts.mock.calls.every(call => call[0] === 'edit-3')).toBe(true)
+    // Forward too, and the next edit starts from that head, not a branch below it.
+    act(() => window.history.forward())
+    await vi.waitFor(() => expect(screen.getByRole('tab', { name: 'Palette' }).getAttribute('aria-selected')).toBe('true'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(window.location.hash).toBe(`#stage=palette&project=${project.id}&revision=edit-3`)
+    expect(picker().value).toBe('edit-3')
+    expect(editingFrom()).toBe('edit-3')
+  })
+
+  it('loads the revision a history entry names when it changes the project', async () => {
+    const other: Project = { ...project, id: 'project-2', slug: 'moon-forge', name: 'Moon forge' }
+    const older: Revision = { ...revision, id: 'other-1', project_id: other.id }
+    const newer: Revision = { ...older, id: 'other-2', parent_revision_id: 'other-1', kind: 'palette', created_at: '2026-01-02' }
+    mocks.projects.mockResolvedValue([project, other])
+    mocks.project.mockImplementation(async (id: string) => id === other.id ? { ...other, revisions: [newer, older] } : { ...project, revisions: [revision] })
+    mocks.effectiveArtifacts.mockResolvedValue([artifact('source')])
+    window.history.replaceState(null, '', `/#stage=flatten&project=${other.id}&revision=other-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('other-1', expect.anything()))
+    // A later entry in the first project, then Back to the other project's entry.
+    act(() => {
+      window.history.pushState(null, '', `/#stage=flatten&project=${project.id}&revision=revision-1`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('revision-1', expect.anything()))
+    mocks.effectiveArtifacts.mockClear()
+    act(() => window.history.back())
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('other-1', expect.anything()))
+    expect(mocks.effectiveArtifacts).not.toHaveBeenCalledWith('other-2', expect.anything())
+    expect(window.location.hash).toBe(`#stage=flatten&project=${other.id}&revision=other-1`)
+    expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe(other.id)
+  })
+
+  // Two projects: A with a flatten and edits made on it this session, B with one revision.
+  function historyProjects() {
+    const other: Project = { ...project, id: 'project-2', slug: 'moon-forge', name: 'Moon forge' }
+    const paletteRun: Revision = { ...revision, id: 'palette-1', parent_revision_id: 'revision-1', kind: 'palette', created_at: '2026-01-02', settings: { palette: {} } }
+    const otherSource: Revision = { ...revision, id: 'other-1', project_id: other.id }
+    const stored: Revision[] = [paletteRun, revision]
+    mocks.projects.mockResolvedValue([project, other])
+    mocks.project.mockImplementation(async (id: string) => id === other.id ? { ...other, revisions: [otherSource] } : { ...project, revisions: [...stored] })
+    mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'revision-1' || id === 'other-1' ? [artifact('source')] : [artifact('source'), artifact('flattened')])
+    const edit = (id: string, parent: string): Revision => ({ ...revision, id, parent_revision_id: parent, kind: 'label-edit', created_at: `2026-01-0${stored.length + 1}`,
+      settings: { pipeline_stage: 'label-edit', stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } })
+    return { other, stored, edit }
+  }
+  const editingFrom = () => (editorProps.current as { revisionId?: string } | null)?.revisionId
+  const revisionPicker = () => screen.getByRole('combobox', { name: 'Revision' }) as HTMLSelectElement
+
+  it('gives a project chosen in the header its own history entry, and Back returns to the revision last shown in the project left', async () => {
+    const { other, stored, edit } = historyProjects()
+    window.history.replaceState(null, '', `/#stage=flatten&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Palette' }))
+    stored.unshift(edit('edit-1', 'palette-1'))
+    act(() => editorProps.current!.onCommit('edit-1'))
+    await vi.waitFor(() => expect(editingFrom()).toBe('edit-1'))
+    await screen.findByRole('option', { name: other.name })
+    fireEvent.change(screen.getByLabelText('Active project'), { target: { value: other.id } })
+    await vi.waitFor(() => expect(window.location.hash).toBe(`#stage=palette&project=${other.id}&revision=other-1`))
+
+    // Back onto A's Palette entry, then onto its older Flatten entry: A stays at edit-1.
+    act(() => window.history.back())
+    await vi.waitFor(() => expect((screen.getByLabelText('Active project') as HTMLSelectElement).value).toBe(project.id))
+    await vi.waitFor(() => expect(editingFrom()).toBe('edit-1'))
+    expect(window.location.hash).toBe(`#stage=palette&project=${project.id}&revision=edit-1`)
+    act(() => window.history.back())
+    await vi.waitFor(() => expect(screen.getByRole('tab', { name: 'Flatten' }).getAttribute('aria-selected')).toBe('true'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(window.location.hash).toBe(`#stage=flatten&project=${project.id}&revision=edit-1`)
+    expect(revisionPicker().value).toBe('edit-1')
+    expect(mocks.effectiveArtifacts).not.toHaveBeenCalledWith('palette-1', expect.anything(), undefined)
+    expect(mocks.effectiveArtifacts.mock.calls.filter(call => call[0] === 'palette-1')).toHaveLength(1)
+  })
+
+  it('shows the revision a link names when it is opened in the page, by hashchange or onto an entry the app did not write', async () => {
+    const { stored, edit } = historyProjects()
+    stored.unshift(edit('edit-1', 'palette-1'))
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=edit-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editingFrom()).toBe('edit-1'))
+    // A pasted link: the browser adds an entry of its own and fires hashchange.
+    act(() => {
+      window.history.pushState(null, '', `/#stage=palette&project=${project.id}&revision=palette-1`)
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    expect(revisionPicker().value).toBe('palette-1')
+    // Back or Forward onto an entry the app did not write (a bookmark opened in the page).
+    act(() => {
+      window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=edit-1`)
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
+    })
+    await vi.waitFor(() => expect(editingFrom()).toBe('edit-1'))
+    expect(revisionPicker().value).toBe('edit-1')
+  })
+
+  it('shows no project, and no error, when Back lands on an entry of a project deleted since', async () => {
+    const { other } = historyProjects()
+    let deleted = false
+    const load = mocks.project.getMockImplementation()!
+    mocks.project.mockImplementation(async (id: string, signal?: AbortSignal) => {
+      if (id === other.id && deleted) throw new Error('404 project not found')
+      return load(id, signal)
+    })
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await screen.findByRole('option', { name: other.name })
+    fireEvent.change(screen.getByLabelText('Active project'), { target: { value: other.id } })
+    await vi.waitFor(() => expect(window.location.hash).toContain('revision=other-1'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
+    await vi.waitFor(() => expect(window.location.hash).toContain('stage=flatten'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project' }))
+    deleted = true
+    mocks.projects.mockResolvedValue([project])
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete project' }))
+    const active = () => (screen.getByLabelText('Active project') as HTMLSelectElement).value
+    await vi.waitFor(() => expect(active()).toBe(''))
+    mocks.project.mockClear()
+
+    // Back onto the deleted project's Palette entry: no project, no error, entry rewritten.
+    act(() => window.history.back())
+    await vi.waitFor(() => expect(screen.getByRole('tab', { name: 'Palette' }).getAttribute('aria-selected')).toBe('true'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    expect(active()).toBe('')
+    expect(window.location.hash).toBe('#stage=palette')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(mocks.project).not.toHaveBeenCalledWith(other.id, expect.anything())
+    // The next valid navigation shows its project as usual.
+    act(() => window.history.back())
+    await vi.waitFor(() => expect(active()).toBe(project.id))
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps Undo, Redo and the Revision picker on a revision with no flattened raster', async () => {
+    historyProjects()
+    window.history.replaceState(null, '', `/#stage=palette&project=${project.id}&revision=palette-1`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    const history = () => screen.getByRole('navigation', { name: 'Revision history' })
+    fireEvent.click(within(history()).getByRole('button', { name: 'Undo' }))
+    await vi.waitFor(() => expect(window.location.hash).toContain('revision=revision-1'))
+    await vi.waitFor(() => expect(screen.getByText('Flatten this revision first to edit its palette.')).toBeTruthy())
+    expect(revisionPicker().value).toBe('revision-1')
+    const redo = within(history()).getByRole('button', { name: 'Redo' }) as HTMLButtonElement
+    expect(redo.disabled).toBe(false)
+    fireEvent.click(redo)
+    await vi.waitFor(() => expect(editingFrom()).toBe('palette-1'))
+    expect(revisionPicker().value).toBe('palette-1')
   })
 
   it('supports roving focus and arrow-key tab selection', async () => {
@@ -790,7 +1015,7 @@ describe('artwork view toggle', () => {
     expect(screen.getByText(/Switch to the Flattened image to select and edit areas\./)).toBeTruthy()
   })
 
-  it('adds an Edited view for edited revisions and restricts editing to it', async () => {
+  it('shows edits made without a cleanup as the Flattened image, the one Edit paints, with no Edited view', async () => {
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValue({ ...project, revisions: [editRevision, paletteRevision] })
     mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened')])
@@ -798,15 +1023,20 @@ describe('artwork view toggle', () => {
     render(createElement((await import('./App')).default))
     await chooseProject()
     const group = await screen.findByRole('group', { name: 'Artwork view' })
-    expect(within(group).getByRole('button', { name: 'Edited' })).toBeTruthy()
-    expect(within(group).getByRole('button', { name: 'Flattened' })).toBeTruthy()
+    expect(within(group).getAllByRole('button').map(button => button.textContent)).toEqual(['Source', 'Flattened'])
 
     fireEvent.click(screen.getByRole('tab', { name: 'Edit' }))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeInstanceOf(Function))
+    // Flattened is the edited raster, the one Edit paints; the flatten's original before
+    // the edits is the image Edit compares with first.
+    expect(within(group).getByRole('button', { name: 'Flattened' }).getAttribute('aria-pressed')).toBe('true')
+    expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id')
+    await vi.waitFor(() => expect(workspaceProps.current?.layers?.find(layer => layer.id === 'flattened-original')?.name).toContain('flattened (before edits)'))
+    expect((workspaceProps.current as { compareBefore?: string[] } | null)?.compareBefore?.[0]).toBe('flattened-original')
 
-    fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
+    fireEvent.click(within(group).getByRole('button', { name: 'Source' }))
     await vi.waitFor(() => expect(workspaceProps.current?.onSelectPoint).toBeUndefined())
-    expect(screen.getByText(/Switch to the Edited image to select and edit areas\./)).toBeTruthy()
+    expect(screen.getByText(/Switch to the Flattened image to select and edit areas\./)).toBeTruthy()
   })
 })
 
@@ -1009,7 +1239,7 @@ describe('landing on the newly produced artwork', () => {
     expect(workspaceProps.current?.layers?.find(layer => layer.id === overlap.id)?.name).toBe('Traced SVG · solid underlayers')
   })
 
-  it('shows the edited image once a palette edit commits', async () => {
+  it('shows the edited image, still the Flattened view without a cleanup, once a palette edit commits', async () => {
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValueOnce({ ...project, revisions: [paletteRevision, revision] })
       .mockResolvedValue({ ...project, revisions: [editRevision, paletteRevision, revision] })
@@ -1018,7 +1248,9 @@ describe('landing on the newly produced artwork', () => {
     render(createElement((await import('./App')).default))
     await vi.waitFor(() => expect(editorProps.current).not.toBeNull())
     act(() => editorProps.current!.onCommit('edit-1'))
-    await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+    await vi.waitFor(() => expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('edit-1', expect.anything()))
+    await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
+    expect(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).queryByRole('button', { name: 'Edited' })).toBeNull()
   })
 })
 
@@ -1571,7 +1803,7 @@ describe('cleanup stage', () => {
     }
     afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
-    it('paints a touch-up on the Cleaned image and keeps the cleanup current for Trace', async () => {
+    it('paints a touch-up on the Cleaned image, then keeps editing it as the Edited image, and keeps the cleanup current for Trace', async () => {
       decodePixels()
       const { api } = await import('./api')
       const applyEdits = vi.spyOn(api, 'applyEdits').mockImplementation(async () => {
@@ -1591,10 +1823,17 @@ describe('cleanup stage', () => {
       fireEvent.click(within(panel('Edit')).getByRole('button', { name: 'Apply pencil edits' }))
       await vi.waitFor(() => expect(applyEdits).toHaveBeenCalledWith(project.id, 'cleanup-1', [{ tool: 'paint_pixels', target_label: 1, pixels: [[1, 0]] }]))
       await vi.waitFor(() => expect(window.location.hash).toContain('revision=touch-1'))
-      // The touched-up raster is the Cleaned view, and the edited one.
+      // The touched-up raster is the Edited view, now the one edited; Cleaned stays the
+      // cleanup's own result, before the touch-up.
       await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-touch-1'))
-      expect(pressedView('Cleaned')).toBe('true')
-      expect(within((await screen.findAllByRole('group', { name: 'Artwork view' }))[0]).queryByRole('button', { name: 'Edited' })).toBeNull()
+      expect(pressedView('Edited')).toBe('true')
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      await vi.waitFor(() => expect(within(group).getAllByRole('button').map(button => button.textContent)).toEqual(['Source', 'Flattened', 'Cleaned', 'Edited']))
+      await vi.waitFor(() => expect(workspace()?.onPaint).toBeDefined())
+      fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-cleanup-1'))
+      expect(workspace()?.onPaint).toBeUndefined()
+      expect(within(panel('Edit')).getByText(/Switch to the Edited image to paint pixels\./)).toBeTruthy()
       // The cleanup stays current: Trace is not blocked, and the raster before cleanup is
       // still the cleanup's own lookup.
       expect(within(panel('Trace')).queryByText(/re-run Cleanup/)).toBeNull()
@@ -1607,18 +1846,88 @@ describe('cleanup stage', () => {
       render(createElement((await import('./App')).default))
       const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
       await vi.waitFor(() => expect(within(group).getByRole('button', { name: 'Edited' })).toBeTruthy())
-      fireEvent.click(within(group).getByRole('button', { name: 'Edited' }))
+      fireEvent.click(within(group).getByRole('button', { name: 'Flattened' }))
       await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-1-before'))
       expect(mocks.effectiveArtifacts).toHaveBeenCalledWith('recolour-1', expect.anything(), { beforeCleanup: true })
+      // Cleaned is the raster before the first touch-up; Edited the shown one.
+      fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-cleanup-1'))
+      fireEvent.click(within(group).getByRole('button', { name: 'Edited' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-1'))
+    })
+
+    // The server's Cleaned image behind the touch-ups (`cleaned-flattened`), when a
+    // revision up to its current cleanup wrote one.
+    const cleanedImageOf = (id: string) => ({ ...artifact('cleaned-flattened'), id: `cleaned-${id}`, revision_id: id, download_url: `/artifacts/cleaned-${id}` })
+    function serveCleanedImage(revisions: Revision[], writtenBy: string) {
+      serveTouchUps(revisions)
+      mocks.effectiveArtifacts.mockImplementation(async (id: string, _signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
+        options?.beforeCleanup ? [artifact('source'), segmentation(), artifact('flattened')]
+          : [artifact('source'), segmentation(), flattenedOf(id), ...(id === writtenBy ? [cleanedImageOf(writtenBy)] : [])])
+    }
+
+    it('shows a recolour made after a touch-up in the Cleaned image, from the server\'s recoloured copy', async () => {
+      serveCleanedImage([recoloured, touched, cleanupRevision, paletteRevision, revision], 'recolour-1')
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=recolour-1`)
+      render(createElement((await import('./App')).default))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      await vi.waitFor(() => expect(within(group).getAllByRole('button').map(button => button.textContent)).toEqual(['Source', 'Flattened', 'Cleaned', 'Edited']))
+      fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('cleaned-recolour-1'))
+      expect(workspace()?.layers?.find(layer => layer.id === 'cleaned-recolour-1')?.name).toMatch(/cleaned \(before touch-ups\)/)
+      // The kept image needs no lookup of the raster before the first touch-up.
+      expect(mocks.effectiveArtifacts.mock.calls.some(call => call[0] === 'cleanup-1' && !call[2]?.beforeCleanup)).toBe(false)
+      fireEvent.click(within(group).getByRole('button', { name: 'Edited' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-1'))
+    })
+
+    it('offers Edited after a Cleanup re-run that replayed touch-ups, with Cleaned its result before them', async () => {
+      const rerun: Revision = { ...cleanupRevision, id: 'cleanup-2', parent_revision_id: 'touch-1', created_at: '2026-01-05',
+        settings: { ...cleanupRevision.settings, touch_ups: [{ operation: 0, tool: 'paint_pixels', target_label: 1 }] } }
+      serveCleanedImage([rerun, touched, cleanupRevision, paletteRevision, revision], 'cleanup-2')
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=cleanup-2`)
+      render(createElement((await import('./App')).default))
+      // The replayed touch-ups are shown, so Edited is the editable view.
+      await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-cleanup-2'))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('cleaned-cleanup-2'))
+    })
+
+    it('shows a recolour made before the first touch-up in the Cleaned image', async () => {
+      const recolouredFirst: Revision = { ...recoloured, id: 'recolour-0', parent_revision_id: 'cleanup-1', created_at: '2026-01-03' }
+      const touchedAfter: Revision = { ...touched, id: 'touch-2', parent_revision_id: 'recolour-0', created_at: '2026-01-04' }
+      serveTouchUps([touchedAfter, recolouredFirst, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=touch-2`)
+      render(createElement((await import('./App')).default))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      await vi.waitFor(() => expect(within(group).getByRole('button', { name: 'Cleaned' })).toBeTruthy())
+      fireEvent.click(within(group).getByRole('button', { name: 'Cleaned' }))
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-0'))
+    })
+
+    it('edits the Cleaned image, with no Edited view, while only renames and recolours follow the cleanup', async () => {
+      const recolouredOnly: Revision = { ...recoloured, id: 'recolour-0', parent_revision_id: 'cleanup-1', created_at: '2026-01-03' }
+      serveTouchUps([recolouredOnly, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=recolour-0`)
+      render(createElement((await import('./App')).default))
+      await vi.waitFor(() => expect(pressedView('Cleaned')).toBe('true'))
+      const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
+      expect(within(group).getAllByRole('button').map(button => button.textContent)).toEqual(['Source', 'Flattened', 'Cleaned'])
+      await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-0'))
+      // Edit compares the Cleaned image with the Flattened one, the raster before cleanup.
+      await vi.waitFor(() => expect((workspace() as { compareBefore?: string[] } | null)?.compareBefore?.[0]).toBe('flattened-id'))
     })
 
     it('edits the raster before cleanup once a merge makes the cleanup stale', async () => {
       serveTouchUps([merged, cleanupRevision, paletteRevision, revision])
       window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=merge-1`)
       render(createElement((await import('./App')).default))
-      await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+      await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
       const group = (await screen.findAllByRole('group', { name: 'Artwork view' }))[0]
       expect(within(group).queryByRole('button', { name: 'Cleaned' })).toBeNull()
+      expect(within(group).queryByRole('button', { name: 'Edited' })).toBeNull()
       await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-merge-1'))
       expect(await within(panel('Trace')).findByText('The artwork changed after Cleanup: re-run Cleanup')).toBeTruthy()
     })
@@ -1633,14 +1942,14 @@ describe('cleanup stage', () => {
       expect(within(panel('Cleanup')).getByText(pending)).toBeTruthy()
     })
 
-    it('compares touch-ups with the cleanup\'s own result, not the raster before cleanup', async () => {
+    it('compares the Edited image with the Cleaned one, not the raster before cleanup', async () => {
       serveTouchUps([touched, cleanupRevision, paletteRevision, revision])
       window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=touch-1`)
       render(createElement((await import('./App')).default))
       const compared = () => (workspace() as { compareBefore?: string[] } | null)?.compareBefore
       await vi.waitFor(() => expect(compared()?.[0]).toBe('flattened-cleanup-1'))
       expect(workspace()?.layers?.find(layer => layer.id === 'flattened-cleanup-1')?.name).toMatch(/before touch-ups/)
-      expect(pressedView('Cleaned')).toBe('true')
+      expect(pressedView('Edited')).toBe('true')
     })
 
     it('says which touch-ups the last Cleanup run replayed and where the skipped ones are', async () => {
@@ -1657,7 +1966,7 @@ describe('cleanup stage', () => {
       serveTouchUps([merged, replayed, paletteRevision, revision])
       window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=merge-1`)
       render(createElement((await import('./App')).default))
-      await vi.waitFor(() => expect(pressedView('Edited')).toBe('true'))
+      await vi.waitFor(() => expect(pressedView('Flattened')).toBe('true'))
       expect(screen.queryByText(/Last Cleanup run/)).toBeNull()
     })
   })
@@ -1895,10 +2204,7 @@ describe('the before-cleanup raster across trace runs', () => {
       preferred.length = 0
 
       // Navigating to the older run (stepping would also switch to the Traced view).
-      act(() => {
-        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-1`)
-        window.dispatchEvent(new HashChangeEvent('hashchange'))
-      })
+      pickRevision('trace-1')
       await vi.waitFor(() => expect(pendingRuns['trace-1']).toBeDefined())
       expect(shown()?.loading).toBe(true)
       await act(async () => pendingRuns['trace-1']())
@@ -2001,10 +2307,7 @@ describe('shown artwork stays consistent across cleanups', () => {
     }
   }
   function navigate(revisionId: string) {
-    act(() => {
-      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=${revisionId}`)
-      window.dispatchEvent(new HashChangeEvent('hashchange'))
-    })
+    pickRevision(revisionId)
   }
 
   it('keeps the previous artwork, view and no editable raster until a jump to another cleanup has loaded', async () => {
@@ -2089,37 +2392,38 @@ describe('shown artwork stays consistent across cleanups', () => {
     expect(history.every(entry => !entry.layers.includes('clean-3') && entry.preferred === 'flat-P')).toBe(true)
     await act(async () => release['before:cleanup-3']())
     await vi.waitFor(() => expect(shown()?.layers?.some(layer => layer.id === 'clean-3')).toBe(true))
-    // Flattened is the pre-edit original; Edited is the edited raster the cleanup started from.
+    // Flattened is the edited raster the cleanup started from; the pre-edit original
+    // stays on offer to compare with.
     expect(pressed('Flattened')).toBe('true')
-    expect(shown()?.preferredLayerId).toBe('flat-P')
-    expect(shown()?.layers?.find(layer => layer.id === 'flat-P')?.name).toContain('flattened (original)')
+    expect(shown()?.preferredLayerId).toBe('flat-E')
+    expect(shown()?.layers?.find(layer => layer.id === 'flat-P')?.name).toContain('flattened (before edits)')
     for (const entry of history.filter(entry => entry.layers.includes('clean-3'))) {
       expect(entry.layers).toEqual(expect.arrayContaining(['flat-P', 'flat-E']))
-      expect(entry.preferred).toBe('flat-P')
+      expect(entry.preferred).toBe('flat-E')
     }
-    fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Edited' }))
-    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-E'))
+    expect(pressed('Edited')).toBeNull()
     // The palette's original is reused, not looked up again, for the same flatten.
     navigate('cleanup-1'); navigate('cleanup-3')
     await vi.waitFor(() => expect(shown()?.layers?.some(layer => layer.id === 'clean-3')).toBe(true))
     expect(mocks.artifacts.mock.calls.filter(call => call[0] === 'palette-1')).toHaveLength(1)
   })
 
-  it('reports a failed pre-edit lookup, never shows another raster as Flattened, and retries', async () => {
+  it('reports a failed pre-edit lookup, still shows the edited raster as Flattened, and retries', async () => {
     fail.add('own:palette-1')
-    await openAt('edit-1', 'Edited')
+    await openAt('edit-1', 'Flattened')
     expect((await screen.findByRole('alert')).textContent).toContain('before the edits')
+    // Flattened is the edited raster (no cleanup is current); only the original to
+    // compare with is missing.
     await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-E'))
-    // The edited raster is not passed off as the Flattened original.
-    expect(pressed('Flattened')).toBeNull()
-    expect(history.some(entry => entry.preferred === undefined && entry.layers.includes('flat-E'))).toBe(false)
+    expect(pressed('Edited')).toBeNull()
+    expect(shown()?.layers?.some(layer => layer.id === 'flat-P')).toBe(false)
     // The next revision change with the same flatten looks it up again.
     navigate('cleanup-3')
-    await vi.waitFor(() => expect(pressed('Flattened')).toBe('false'))
+    await vi.waitFor(() => expect(shown()?.layers?.find(layer => layer.id === 'flat-P')?.name).toContain('flattened (before edits)'))
     expect(mocks.artifacts.mock.calls.filter(call => call[0] === 'palette-1')).toHaveLength(2)
     expect(screen.queryByRole('alert')).toBeNull()
     fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Flattened' }))
-    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-P'))
+    await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('flat-E'))
   })
 
   it('clears only the error its own lookup reported', async () => {
@@ -2252,7 +2556,7 @@ describe('shown artwork stays consistent across cleanups', () => {
     await screen.findByText('Traced image: 610 × 410 px')
   })
 
-  it('keeps the Live preview switch, paused, on a revision with no flattened image and through the jump away', async () => {
+  it('keeps the Live preview switch, paused, on a revision with no flattened image and through the flatten that leaves it', async () => {
     main['revision-1'] = [artifact('source')]
     try {
       window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
@@ -2260,16 +2564,16 @@ describe('shown artwork stays consistent across cleanups', () => {
       await vi.waitFor(() => expect(livePreview()).toBeDefined())
       expect(tracedSizeOf()).toBeNull()
       expect(previewPaused()).toBe(true)
-      hold.add('main:cleanup-1')
+      hold.add('main:palette-2')
       previews = []; history = []
-      navigate('cleanup-1')
-      await vi.waitFor(() => expect(release['main:cleanup-1']).toBeDefined())
-      await act(async () => release['main:cleanup-1']())
+      await landFlatten('palette-2')
+      await vi.waitFor(() => expect(release['main:palette-2']).toBeDefined())
+      await act(async () => release['main:palette-2']())
       await vi.waitFor(() => expect(previewPaused()).toBe(false))
       // Handed to the canvas on every render of the jump: the switch never unmounts.
       expect(history.length).toBeGreaterThan(0)
       expect(previews).toHaveLength(history.length)
-      expect(tracedSizeOf()).toEqual({ width: 600, height: 400 })
+      expect(tracedSizeOf()).toEqual({ width: 640, height: 430 })
     } finally { delete main['revision-1'] }
   })
 
@@ -2456,10 +2760,7 @@ describe('editor pixels right after an area or pencil edit', () => {
     return width
   }
   function navigate(revisionId: string) {
-    act(() => {
-      window.history.replaceState(null, '', `/#stage=edit&project=${project.id}&revision=${revisionId}`)
-      window.dispatchEvent(new HashChangeEvent('hashchange'))
-    })
+    pickRevision(revisionId)
   }
 
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -2999,10 +3300,7 @@ describe('stepping trace runs while their artifacts load', () => {
     await openNewestRun('Traced')
     await vi.waitFor(() => expect(mocks.inkscapeHandoff).toHaveBeenCalledWith('trace-9', expect.anything()))
     await screen.findByRole('button', { name: 'Validate and reimport' })
-    act(() => {
-      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=palette-1`)
-      window.dispatchEvent(new HashChangeEvent('hashchange'))
-    })
+    pickRevision('palette-1')
     await vi.waitFor(() => expect(release).toBeDefined())
     // The untraced revision is selected but not loaded: no handoff, no reimport form.
     expect(screen.queryByRole('button', { name: 'Validate and reimport' })).toBeNull()
@@ -3438,24 +3736,27 @@ describe('stepping trace runs while their artifacts load', () => {
     it('says it is loading, never that there is no flatten, while a flattened revision loads', async () => {
       mocks.effectiveArtifacts.mockImplementation(async (id: string) => {
         if (id === 'revision-1') return [artifact('source')]
-        if (id === 'trace-9') await new Promise<void>(resolve => { release = resolve })
+        if (id === 'palette-1') {
+          await new Promise<void>(resolve => { release = resolve })
+          return [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')]
+        }
         return run(id)
       })
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true } }))
-      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
-      render(createElement((await import('./App')).default))
-      const panel = screen.getByRole('tabpanel', { name: 'Trace' })
-      await vi.waitFor(() => expect(panel.textContent).toContain('Flatten this revision to choose a layer order.'))
-      act(() => {
-        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-9`)
-        window.dispatchEvent(new HashChangeEvent('hashchange'))
-      })
-      await vi.waitFor(() => expect(release).toBeDefined())
-      expect(panel.textContent).not.toContain('Flatten this revision')
-      expect(panel.textContent).toContain('Loading the selected revision…')
-      await act(async () => release!())
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Orange', 'Navy']))
-      expect(panel.textContent).not.toContain('Flatten this revision')
+      palettes['palette-1'] = palettes['trace-9']
+      try {
+        localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true } }))
+        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
+        render(createElement((await import('./App')).default))
+        const panel = screen.getByRole('tabpanel', { name: 'Trace' })
+        await vi.waitFor(() => expect(panel.textContent).toContain('Flatten this revision to choose a layer order.'))
+        await landFlatten('palette-1')
+        await vi.waitFor(() => expect(release).toBeDefined())
+        expect(panel.textContent).not.toContain('Flatten this revision')
+        expect(panel.textContent).toContain('Loading the selected revision…')
+        await act(async () => release!())
+        await vi.waitFor(() => expect(listed(panel)).toEqual(['Orange', 'Navy']))
+        expect(panel.textContent).not.toContain('Flatten this revision')
+      } finally { delete palettes['palette-1'] }
     })
 
     it('starts one job per button however often it is clicked while the start is pending', async () => {

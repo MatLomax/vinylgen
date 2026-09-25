@@ -27,7 +27,9 @@ from vinylgen.reporting import create_report
 from vinylgen.tracing import ensure_palette_names, resolve_colour
 
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
-from .touch_ups import TOUCH_UPS_FILE, replay_message, replay_touch_ups, touch_ups_bytes
+from .touch_ups import (CLEANED_FLATTENED_FILE, CLEANED_LABELS_FILE, TOUCH_UPS_FILE,
+                        cleaned_labels_bytes, replay_message, replay_touch_ups,
+                        touch_ups_bytes)
 
 CLEANUP_AUDIT = "cleanup.json"
 CLEANUP_CHANGES_OVERLAY = "cleanup-changes-overlay.png"
@@ -105,6 +107,8 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
     (``PendingTouchUp.spec`` form, oldest first) are then replayed on the cleaned
     labels (``touch_ups.replay_touch_ups``); the audit's ``touch_ups`` records what was
     replayed and skipped, and ``touch-ups.npz`` holds the replayed ones' pixels. When
+    the replayed touch-ups change the raster, ``cleaned-labels.npz`` and
+    ``cleaned-flattened.png`` hold the cleanup's own result before them. When
     the run changes pixels, ``segmentation.npz`` (labels and automatic protection),
     ``flattened.png`` and ``report.png`` are rewritten; ``cleanup-changes-overlay.png``
     records the pixels the cleanup changed (``write_changes_overlay``), never the
@@ -152,9 +156,13 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
     # as they were, to tell whether the run changed any pixel.
     result = cleaned if changed else bundle.labels.copy() if touch_ups else bundle.labels
     replay = None
-    (subject_dir / TOUCH_UPS_FILE).unlink(missing_ok=True)
+    for stale in (TOUCH_UPS_FILE, CLEANED_LABELS_FILE, CLEANED_FLATTENED_FILE):
+        (subject_dir / stale).unlink(missing_ok=True)
+    own_result: np.ndarray | None = None
     if any(touch_up.get("replays", True) for touch_up in touch_ups or ()):
         tick(0.75, "Replaying touch-ups")
+        # The cleanup's own result, before the touch-ups replay on it: the Cleaned image.
+        own_result = result.copy()
         entries, arrays, skipped, partly = replay_touch_ups(result, touch_ups, len(palette), omitted)
         total = sum(1 for touch_up in touch_ups if touch_up.get("replays", True))
         replayed = sum(1 for entry in entries if not entry.get("waiting"))
@@ -182,6 +190,11 @@ def clean_subject(subject_dir: Path, settings: CleanupSettings,
         tick(0.9, "Rendering palette report")
         legend = sorted(palette, key=lambda row: -float(row["share_percent"]))
         create_report(flattened, legend).save(subject_dir / "report.png", compress_level=1)
+    if own_result is not None and not np.array_equal(own_result, result):
+        # The replayed touch-ups changed the raster: keep the Cleaned image without them.
+        (subject_dir / CLEANED_LABELS_FILE).write_bytes(cleaned_labels_bytes(own_result))
+        Image.fromarray(bundle.palette_rgb[own_result].astype(np.uint8), "RGB").save(
+            subject_dir / CLEANED_FLATTENED_FILE, compress_level=1)
     audit = {
         "algorithm_version": CLEANUP_ALGORITHM_VERSION,
         "raster_dimensions": [width, height],

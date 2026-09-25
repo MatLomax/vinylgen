@@ -168,6 +168,17 @@ describe('canvasCompareBefore', () => {
     expect(canvasCompareBefore('palette', 'flattened', false, { ...images, preEdit: undefined, all: ['raster', 'source'] })).toEqual(['source', 'raster'])
   })
 
+  it('puts the view before the edited one first on Palette and Edit (editReference)', () => {
+    // Editing the Edited image: the Cleaned one first; editing the Cleaned image: the
+    // Flattened one; the pre-edit original and the rest follow, each listed once.
+    expect(canvasCompareBefore('edit', 'edited', false, { ...images, editReference: 'cleaned', all: ['source', 'cleaned', 'pre-edit'] }))
+      .toEqual(['cleaned', 'pre-edit', 'source'])
+    expect(canvasCompareBefore('palette', 'cleaned', false, { ...images, editReference: 'pre-cleanup', all: ['pre-cleanup', 'source'] }))
+      .toEqual(['pre-cleanup', 'pre-edit', 'source'])
+    // Still nothing while a point is picked.
+    expect(canvasCompareBefore('edit', 'edited', true, { ...images, editReference: 'cleaned' })).toEqual([])
+  })
+
   it('offers nothing while the canvas shows something other than its stage result, or a point is picked', () => {
     expect(canvasCompareBefore('upload', 'source', false, { ...images, originalSource: undefined })).toEqual([])
     expect(canvasCompareBefore('flatten', 'source', false, images)).toEqual([])

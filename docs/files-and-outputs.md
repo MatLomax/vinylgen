@@ -216,7 +216,10 @@ a label edit's cleaned raster is skipped, its `before-cleanup-flattened`,
 `before-cleanup-report` artifacts (the raster before cleanup as a rename or
 recolour on the cleaned raster left it) resolve as `flattened`, `segmentation`,
 `palette` and `report`; elsewhere they are never returned, so
-an export never packages them. A revision's `touch-ups` artifact is its own and
+an export never packages them. The `cleaned-flattened` and `cleaned-labels`
+artifacts (the Cleaned image behind touch-ups, below) are skipped with an older
+cleaned raster and by the `before_cleanup` lookup, belong to the cleanup concern,
+and an export never packages them. A revision's `touch-ups` artifact is its own and
 never inherited. The overlay belongs to the cleanup concern with the
 `cleanup-audit`: a re-flatten, merge or source upscale after the cleanup hides
 it with the rest of that cleanup, a trace or touch-up of the cleanup keeps it,
@@ -275,7 +278,11 @@ replayed and kept touch-ups, in their original order, as its own
 painted in the colour each run removes) and the pixels they paint in a
 `touch-ups` artifact (`touch-ups.npz`), and `cleanup.json` carries the same
 under `touch_ups`, with `raster_changed` saying whether the run rewrote the
-raster. While a cleanup is current, label edits read and build on its cleaned raster;
+raster. When the replayed touch-ups changed the raster, the run also keeps its own
+result before them, the Cleaned image the web app shows behind the touch-ups:
+`cleaned-labels` (`cleaned-labels.npz`, member `labels`, int16) and
+`cleaned-flattened` (`cleaned-flattened.png`, those labels in the palette's
+colours). While a cleanup is current, label edits read and build on its cleaned raster;
 otherwise the raster from before any cleanup (the `before_cleanup` lookup). A
 label edit on the cleaned raster records `settings.cleaned_raster`; each area
 recolour or pencil stroke in it is a touch-up, listed in `settings.touch_ups`
@@ -289,7 +296,11 @@ int32) or `<i>_origin`, `<i>_size` (the region's bounding box, x/y and
 width/height) and `<i>_mask` (the box's pixels, row-major, `numpy.packbits`),
 `<i>` the entry's index. A rename or recolour on the cleaned raster also writes
 the `before-cleanup-*` artifacts above: the palette alone for a rename, the
-palette, segmentation, flattened raster and report for a recolour. Every label
+palette, segmentation, flattened raster and report for a recolour. A recolour
+on the cleaned raster while touch-ups are shown (a replayed one, or a label edit
+with touch-ups since the current cleanup) also writes `cleaned-flattened`: the
+Cleaned image in the new colours, from the nearest `cleaned-labels` since that
+cleanup, else the labels of the revision before the oldest touch-up since it. Every label
 edit that changes its raster's pixels or colours writes that raster's
 `report.png`. Palette revisions, merges, area or pencil edits made
 without a current cleanup, and upscaled sources mark cleanup stale (a rename,

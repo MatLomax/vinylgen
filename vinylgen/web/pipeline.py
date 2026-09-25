@@ -23,8 +23,9 @@ from vinylgen.tracing import ensure_palette_names, resolve_colour
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
-from .store import Store
-from .touch_ups import TOUCH_UPS_FILE, TOUCH_UPS_KIND, pending_touch_ups
+from .store import CLEANED_IMAGE_KINDS, Store
+from .touch_ups import (CLEANED_FLATTENED_FILE, CLEANED_LABELS_FILE, TOUCH_UPS_FILE,
+                        TOUCH_UPS_KIND, pending_touch_ups)
 
 
 Progress = Callable[[float, str], None]
@@ -134,6 +135,9 @@ CLEANUP_FILES = {
     "cleanup-changes-overlay": "cleanup-changes-overlay.png",
     # Written only when the run replayed a touch-up (web.touch_ups).
     TOUCH_UPS_KIND: TOUCH_UPS_FILE,
+    # Written only when replayed touch-ups changed the raster: the cleanup's own result
+    # before them (store.CLEANED_IMAGE_KINDS).
+    "cleaned-flattened": CLEANED_FLATTENED_FILE, "cleaned-labels": CLEANED_LABELS_FILE,
 }
 TRACE_FILES = {
     "palette": "palette.json",
@@ -661,7 +665,9 @@ class PipelineRunner:
         progress(0.3, "Packaging immutable artifacts")
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
             # An earlier export zip is not part of the artwork, so it is never nested.
-            packaged = [row for row in artifacts.values() if row["kind"] != "export"]
+            # Nor is the Cleaned image behind the touch-ups, a view of the working state.
+            packaged = [row for row in artifacts.values()
+                        if row["kind"] != "export" and row["kind"] not in CLEANED_IMAGE_KINDS]
             for row in sorted(packaged, key=lambda item: (item["kind"], item["filename"])):
                 output.write(self.store.artifact_path(row["id"]), arcname=row["filename"])
         palette_settings, trace_settings = _effective_settings(self.store, parent_id)

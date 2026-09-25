@@ -1370,6 +1370,80 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(self.revision(again)["settings"]["touch_up_replay"]["message"],
                          "Replayed 3 of 3 touch-ups")
 
+    async def cleaned_image(self, revision_id: str) -> np.ndarray | None:
+        """The effective ``cleaned-flattened`` image of ``revision_id``, if any."""
+        row = (await self.artifacts(revision_id, effective=True)).get("cleaned-flattened")
+        return None if row is None else np.asarray(Image.open(io.BytesIO(await self.download(row))))
+
+    async def test_the_cleaned_image_excludes_replayed_touch_ups_and_follows_recolours(self) -> None:
+        project, flattened, colour = await self.three_colour_project()
+        uncleaned = await self.labels(flattened)
+        keeping = {"width_mm": 80, "cleanup": True, "min_region_area": 4}
+        kept = (await self.run_job("cleanup", project["id"], flattened,
+                                   cleanup=keeping))["result_revision_id"]
+        # No touch-up yet: no Cleaned image of its own.
+        self.assertIsNone(await self.cleaned_image(kept))
+        touched = await self.edit(project, kept, [
+            {"tool": "paint_pixels", "target_label": colour["green"], "pixels": [[1, 1]]}])
+        self.assertIsNone(await self.cleaned_image(touched))
+        # A recolour while touch-ups are shown recolours the Cleaned image (the raster
+        # before the touch-up) too.
+        recoloured = await self.edit(project, touched, [
+            {"tool": "recolour_colour", "label": colour["navy"], "rgb": [1, 2, 3]}])
+        palette_rgb = (await self.bundle((await self.artifacts(recoloured, effective=True))["segmentation"])).palette_rgb
+        self.assertEqual(palette_rgb[colour["navy"]].tolist(), [1, 2, 3])
+        np.testing.assert_array_equal(await self.cleaned_image(recoloured), palette_rgb[uncleaned])
+
+        # A re-run that removes the speck and replays the stroke keeps its own result,
+        # without the stroke, as the Cleaned image.
+        removing = {**keeping, "width_mm": 40}
+        rerun = (await self.run_job("cleanup", project["id"], recoloured,
+                                    cleanup=removing))["result_revision_id"]
+        own = uncleaned.copy()
+        own[2, 30:32] = colour["navy"]
+        shown = own.copy()
+        shown[1, 1] = colour["green"]
+        np.testing.assert_array_equal(await self.labels(rerun), shown)
+        rows = await self.artifacts(rerun)
+        with np.load(self.app.state.store.artifact_path(rows["cleaned-labels"]["id"])) as data:
+            np.testing.assert_array_equal(data["labels"], own)
+        np.testing.assert_array_equal(await self.cleaned_image(rerun), palette_rgb[own])
+        # A recolour after the re-run recolours it again; a rename writes no copy.
+        again = await self.edit(project, rerun, [
+            {"tool": "recolour_colour", "label": colour["orange"], "rgb": [9, 8, 7]}])
+        self.assertIn("cleaned-flattened", await self.artifacts(again))
+        palette_rgb[colour["orange"]] = [9, 8, 7]
+        np.testing.assert_array_equal(await self.cleaned_image(again), palette_rgb[own])
+        renamed = await self.edit(project, again, [{"tool": "rename_colour", "label": 0, "name": "Ink"}])
+        self.assertNotIn("cleaned-flattened", await self.artifacts(renamed))
+        # A cleanup with no replayed change, and a before-cleanup lookup, resolve none.
+        plain = (await self.run_job("cleanup", project["id"], flattened,
+                                    cleanup=removing))["result_revision_id"]
+        self.assertIsNone(await self.cleaned_image(plain))
+        before = {row["kind"] for row in (await self.client.get(
+            f"/api/revisions/{again}/effective-artifacts?before_cleanup=true")).json()}
+        self.assertFalse({"cleaned-flattened", "cleaned-labels"} & before)
+        # An export never packages it.
+        traced = (await self.run_job("trace", project["id"], renamed))["result_revision_id"]
+        validated = (await self.run_job("validate", project["id"], traced))["result_revision_id"]
+        exported = (await self.run_job("export", project["id"], validated))["result_revision_id"]
+        archive = await self.download((await self.artifacts(exported))["export"])
+        with zipfile.ZipFile(io.BytesIO(archive)) as packaged:
+            self.assertFalse({"cleaned-flattened.png", "cleaned-labels.npz"} & set(packaged.namelist()))
+
+    async def test_a_batch_with_the_first_touch_up_and_a_recolour_recolours_the_cleaned_image(self) -> None:
+        project, flattened, colour = await self.three_colour_project()
+        kept = (await self.run_job("cleanup", project["id"], flattened, cleanup={
+            "width_mm": 80, "cleanup": True, "min_region_area": 4}))["result_revision_id"]
+        own = await self.labels(kept)
+        mixed = await self.edit(project, kept, [
+            {"tool": "paint_pixels", "target_label": colour["green"], "pixels": [[1, 1]]},
+            {"tool": "recolour_colour", "label": colour["navy"], "rgb": [1, 2, 3]}])
+        palette_rgb = (await self.bundle((await self.artifacts(mixed, effective=True))["segmentation"])).palette_rgb
+        self.assertEqual(palette_rgb[colour["navy"]].tolist(), [1, 2, 3])
+        # The Cleaned image is the labels before the batch's touch-up, in the new colours.
+        np.testing.assert_array_equal(await self.cleaned_image(mixed), palette_rgb[own])
+
     async def test_replayed_touch_ups_follow_their_colours_across_a_merge(self) -> None:
         project, flattened, colour = await self.three_colour_project()
         uncleaned = await self.labels(flattened)

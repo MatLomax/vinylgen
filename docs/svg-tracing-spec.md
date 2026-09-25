@@ -421,9 +421,9 @@ widening is an approximation (see above), green and blue highlights can include
 approximation noise near regions that continue beyond the crop.
 
 The highlights always compare against the revision's current raster, the cleaned
-one when a cleanup is active, whichever view the canvas shows: with the Flattened
-or Edited view selected (the raster before cleanup) they still describe changes
-from the cleaned raster.
+one with its touch-ups when a cleanup is active, whichever view the canvas shows:
+with the Flattened view (the raster before cleanup) or, behind touch-ups, the
+Cleaned view selected, they still describe changes from that current raster.
 
 It is always drawn while the live preview is on. What the shown revision's
 Cleanup run has already changed is a separate whole-image overlay, the
