@@ -103,11 +103,11 @@ describe('node culling and drawing', () => {
     }
   })
 
-  it('outlines each type in its colour inside a black ring that touches the outline', () => {
+  it('outlines each type in its colour inside a black ring that touches the outline, both 70% opaque', () => {
     const context = recorder()
     drawNodeMarkers(context, [layer], { x: 0, y: 0, scale: 1 }, { width: 4000, height: 3000 }, 1)
     expect(context.calls.filter(call => call.name === 'stroke').map(call => call.args[0])).toEqual(
-      ['#000', NODE_MARKER_COLOURS.cusp, '#000', NODE_MARKER_COLOURS.symmetric, '#000', NODE_MARKER_COLOURS.smooth])
+      ['#000000b3', `${NODE_MARKER_COLOURS.cusp}b3`, '#000000b3', `${NODE_MARKER_COLOURS.symmetric}b3`, '#000000b3', `${NODE_MARKER_COLOURS.smooth}b3`])
     expect(context.fillStyle).toBe('rgba(255, 255, 255, .1)')
     // The ring's centreline sits one outline width outside the marker's, so the two strokes abut.
     const line = context.lineWidth

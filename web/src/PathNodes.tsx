@@ -215,6 +215,9 @@ export type NodeLayer = { index: NodeIndex; scaleX: number; scaleY: number; offs
 const NODE_MARKER_LINE = 1.25
 // Each node type's outline colour, on the canvas and in the legend.
 export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff4775', symmetric: '#40b4ff', smooth: '#ffe23d' }
+// Opacity of both a marker's coloured outline and its black ring.
+export const NODE_MARKER_BORDER_OPACITY = .7
+const BORDER_ALPHA_HEX = Math.round(NODE_MARKER_BORDER_OPACITY * 255).toString(16).padStart(2, '0')
 
 // A node type's marker centred on (x, y), grown outward by `grow` CSS px on every side.
 function traceMarker(context: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'closePath' | 'rect' | 'arc'>, type: number, x: number, y: number, grow: number) {
@@ -270,12 +273,12 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
     if (!points.length) return
     context.beginPath()
     for (const [x, y] of points) traceMarker(context, type, x, y, NODE_MARKER_LINE)
-    context.strokeStyle = '#000'
+    context.strokeStyle = `#000000${BORDER_ALPHA_HEX}`
     context.stroke()
     context.beginPath()
     for (const [x, y] of points) traceMarker(context, type, x, y, 0)
     context.fill()
-    context.strokeStyle = NODE_MARKER_COLOURS[NODE_TYPES[type]]
+    context.strokeStyle = `${NODE_MARKER_COLOURS[NODE_TYPES[type]]}${BORDER_ALPHA_HEX}`
     context.stroke()
   })
   return shapes.reduce((total, points) => total + points.length, 0)
@@ -336,12 +339,12 @@ export function committedLayer(index: NodeIndex, stage: ImageSize): NodeLayer | 
 // The marker shape of a node type, drawn in the legend at the canvas markers' size.
 export function NodeShape({ type }: { type: NodeType }) {
   const r = NODE_MARKER_RADIUS, d = NODE_MARKER_LINE, k = r * 1.25, size = 2 * (k + d * Math.SQRT2) + 3, c = size / 2
-  const shape = (grow: number, style: { fill: string; stroke: string }) => type === 'cusp'
+  const shape = (grow: number, style: { fill: string; stroke: string; strokeOpacity: number }) => type === 'cusp'
     ? <polygon points={`${c},${c - k - grow * Math.SQRT2} ${c + k + grow * Math.SQRT2},${c} ${c},${c + k + grow * Math.SQRT2} ${c - k - grow * Math.SQRT2},${c}`} {...style} />
     : type === 'symmetric' ? <rect x={c - r * .85 - grow} y={c - r * .85 - grow} width={2 * (r * .85 + grow)} height={2 * (r * .85 + grow)} {...style} />
       : <circle cx={c} cy={c} r={r + grow} {...style} />
   return <svg className={`node-shape ${type}`} width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-    {shape(d, { fill: 'none', stroke: '#000' })}
-    {shape(0, { fill: 'rgba(255, 255, 255, .1)', stroke: NODE_MARKER_COLOURS[type] })}
+    {shape(d, { fill: 'none', stroke: '#000', strokeOpacity: NODE_MARKER_BORDER_OPACITY })}
+    {shape(0, { fill: 'rgba(255, 255, 255, .1)', stroke: NODE_MARKER_COLOURS[type], strokeOpacity: NODE_MARKER_BORDER_OPACITY })}
   </svg>
 }
