@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
 import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
-import { NODE_MARKER_RADIUS, useTracedNodes, committedLayer, drawNodeMarkers, forEachNodeIn, indexNodes, parseTracedNodes, subpathNodes, type NodeLayer } from './PathNodes'
+import { NODE_MARKER_COLOURS, NODE_MARKER_RADIUS, useTracedNodes, committedLayer, drawNodeMarkers, forEachNodeIn, indexNodes, parseTracedNodes, subpathNodes, type NodeLayer } from './PathNodes'
 
 const SODIPODI = 'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd'
 const svgDocument = (body: string, viewBox = '0 0 1000 700') =>
@@ -17,6 +17,17 @@ const svgDocument = (body: string, viewBox = '0 0 1000 700') =>
 const COMMITTED = svgDocument(`
   <g id="layer-red"><path id="a" d="M100 100 L300 100 C400 100 400 300 300 300 L100 100 Z" sodipodi:nodetypes="cscz"/></g>
   <g id="layer-blue"><path id="b" d="M300 100 L500 100 L300 300 Z" sodipodi:nodetypes="zccz"/></g>`)
+
+// The calls of the marker pass (the paths that are filled), leaving out the black ring
+// drawn around each marker's outline.
+function markerPass<T extends { name: string }>(calls: T[]): T[] {
+  const passes: T[][] = []
+  for (const call of calls) {
+    if (call.name === 'beginPath') passes.push([])
+    else passes[passes.length - 1]?.push(call)
+  }
+  return passes.filter(pass => pass.some(call => call.name === 'fill')).flat()
+}
 
 describe('path node parsing', () => {
   it('lays out nodes per subpath the way Inkscape counts them', () => {
@@ -62,7 +73,8 @@ describe('node culling and drawing', () => {
       calls, fillStyle: '', strokeStyle: '', lineWidth: 1, lineJoin: 'miter' as CanvasLineJoin,
       setTransform: log('setTransform'), clearRect: (...args: unknown[]) => { calls.length = 0; calls.push({ name: 'clearRect', args }) },
       beginPath: log('beginPath'), moveTo: log('moveTo'), lineTo: log('lineTo'), closePath: log('closePath'),
-      rect: log('rect'), arc: log('arc'), fill: log('fill'), stroke: log('stroke'),
+      rect: log('rect'), arc: log('arc'), fill: log('fill'),
+      stroke: () => { calls.push({ name: 'stroke', args: [context.strokeStyle] }) },
     }
     return context
   }
@@ -80,15 +92,29 @@ describe('node culling and drawing', () => {
       const context = recorder()
       const drawn = drawNodeMarkers(context, [layer], { x: 0, y: 0, scale }, { width: 4000, height: 3000 }, 1)
       expect(drawn).toBe(4)
-      const rects = context.calls.filter(call => call.name === 'rect')
-      const arcs = context.calls.filter(call => call.name === 'arc')
+      const rects = markerPass(context.calls).filter(call => call.name === 'rect')
+      const arcs = markerPass(context.calls).filter(call => call.name === 'arc')
       // The symmetric node at (300,100) is the square; the smooth node at (100,100) the circle.
       expect(rects).toEqual([{ name: 'rect', args: [300 * scale - NODE_MARKER_RADIUS * .85, 100 * scale - NODE_MARKER_RADIUS * .85, NODE_MARKER_RADIUS * 1.7, NODE_MARKER_RADIUS * 1.7] }])
       expect(arcs).toEqual([{ name: 'arc', args: [100 * scale, 100 * scale, NODE_MARKER_RADIUS, 0, Math.PI * 2] }])
       // Two cusps, each a closed four-point rhombus.
-      expect(context.calls.filter(call => call.name === 'closePath')).toHaveLength(2)
-      expect(context.calls.filter(call => call.name === 'lineTo')).toHaveLength(6)
+      expect(markerPass(context.calls).filter(call => call.name === 'closePath')).toHaveLength(2)
+      expect(markerPass(context.calls).filter(call => call.name === 'lineTo')).toHaveLength(6)
     }
+  })
+
+  it('outlines each type in its colour inside a black ring that touches the outline', () => {
+    const context = recorder()
+    drawNodeMarkers(context, [layer], { x: 0, y: 0, scale: 1 }, { width: 4000, height: 3000 }, 1)
+    expect(context.calls.filter(call => call.name === 'stroke').map(call => call.args[0])).toEqual(
+      ['#000', NODE_MARKER_COLOURS.cusp, '#000', NODE_MARKER_COLOURS.symmetric, '#000', NODE_MARKER_COLOURS.smooth])
+    expect(context.fillStyle).toBe('rgba(255, 255, 255, .1)')
+    // The ring's centreline sits one outline width outside the marker's, so the two strokes abut.
+    const line = context.lineWidth
+    const arcs = context.calls.filter(call => call.name === 'arc')
+    expect(arcs.map(call => call.args[2])).toEqual([NODE_MARKER_RADIUS + line, NODE_MARKER_RADIUS])
+    const squares = context.calls.filter(call => call.name === 'rect')
+    expect(squares.map(call => call.args[2])).toEqual([2 * (NODE_MARKER_RADIUS * .85 + line), NODE_MARKER_RADIUS * 1.7])
   })
 
   it('culls nodes outside the viewport and honours clip and exclude rectangles', () => {
@@ -173,7 +199,7 @@ describe('Trace canvas Nodes overlay', () => {
     const request = pending.find(entry => entry.url === '/traced.svg')!
     await act(async () => { request.resolve({ ok: true, status: 200, text: async () => COMMITTED }) })
   }
-  const markers = () => drawn.filter(call => call.name === 'rect' || call.name === 'arc' || call.name === 'closePath').length
+  const markers = () => markerPass(drawn).filter(call => call.name === 'rect' || call.name === 'arc' || call.name === 'closePath').length
 
   it('offers the Nodes switch only on a canvas given a traced SVG, and fetches it only once switched on', () => {
     prepare()
@@ -198,7 +224,7 @@ describe('Trace canvas Nodes overlay', () => {
     expect(markers()).toBe(4)
     // A zoom redraws at the same marker size.
     fireEvent.click(screen.getByLabelText('Zoom in'))
-    expect(drawn.find(call => call.name === 'arc')?.args[2]).toBe(NODE_MARKER_RADIUS)
+    expect(markerPass(drawn).find(call => call.name === 'arc')?.args[2]).toBe(NODE_MARKER_RADIUS)
     fireEvent.click(nodesSwitch())
     expect(container.querySelector('canvas.node-overlay')).toBeNull()
     expect(screen.queryByRole('list', { name: 'Node types' })).toBeNull()
@@ -250,7 +276,7 @@ describe('Trace canvas Nodes overlay', () => {
     expect(screen.getByAltText('Live trace preview')).toBeTruthy()
     // Fake timers also hold animation frames: run the redraw.
     act(() => { vi.advanceTimersByTime(20) })
-    const tips = drawn.filter(call => call.name === 'moveTo').map(call => call.args)
+    const tips = markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args)
     const k = NODE_MARKER_RADIUS * 1.25
     // The preview's three cusps, at traced (400,400), (450,400), (400,450) on screen;
     // the committed (300,100), (500,100) (on the window's edge) and (300,300) fall in its
@@ -282,12 +308,12 @@ describe('Trace canvas Nodes overlay', () => {
     act(() => { vi.advanceTimersByTime(20) })
     expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
     // Three cusp rhombi, one symmetric square and four smooth circles, all the preview's.
-    expect(drawn.filter(call => call.name === 'closePath')).toHaveLength(3)
-    expect(drawn.filter(call => call.name === 'rect')).toHaveLength(1)
-    expect(drawn.filter(call => call.name === 'arc')).toHaveLength(4)
+    expect(markerPass(drawn).filter(call => call.name === 'closePath')).toHaveLength(3)
+    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(1)
+    expect(markerPass(drawn).filter(call => call.name === 'arc')).toHaveLength(4)
     // The preview's cusp at traced (400,400) sits at scale 1.2 from (-200,-120).
     const k = NODE_MARKER_RADIUS * 1.25
-    expect(drawn.filter(call => call.name === 'moveTo').map(call => call.args)).toContainEqual([280, 360 - k])
+    expect(markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args)).toContainEqual([280, 360 - k])
     // The legend counts the preview's nodes, and says where they are marked.
     const legend = screen.getByRole('list', { name: 'Node types' })
     expect([...legend.querySelectorAll('li')].map(item => item.textContent)).toEqual(['Cusp node3', 'Symmetric node1', 'Smooth node4'])
@@ -336,8 +362,8 @@ describe('Trace canvas Nodes overlay', () => {
     // The committed nodes inside the window stay drawn: the cusps at (300,300) and
     // (500,100) and the symmetric node at (300,100), at scale 1.2 from (-200,-120).
     const k = NODE_MARKER_RADIUS * 1.25
-    expect(drawn.filter(call => call.name === 'moveTo').map(call => call.args).sort()).toEqual([[160, 240 - k], [400, 0 - k]].sort())
-    expect(drawn.filter(call => call.name === 'rect')).toHaveLength(1)
+    expect(markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args).sort()).toEqual([[160, 240 - k], [400, 0 - k]].sort())
+    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(1)
   })
 })
 

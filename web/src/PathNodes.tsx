@@ -211,6 +211,25 @@ export function forEachNodeIn(index: NodeIndex, rect: Rect, visit: (node: number
 // their edges.
 export type NodeLayer = { index: NodeIndex; scaleX: number; scaleY: number; offsetX: number; offsetY: number; clip?: Rect; exclude?: Rect }
 
+// Outline width of a marker, in CSS px; the black ring around it is as wide.
+const NODE_MARKER_LINE = 1.25
+// Each node type's outline colour, on the canvas and in the legend.
+export const NODE_MARKER_COLOURS: Record<NodeType, string> = { cusp: '#ff3b30', symmetric: '#2f7bff', smooth: '#ffd60a' }
+
+// A node type's marker centred on (x, y), grown outward by `grow` CSS px on every side.
+function traceMarker(context: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'closePath' | 'rect' | 'arc'>, type: number, x: number, y: number, grow: number) {
+  const r = NODE_MARKER_RADIUS
+  if (type === 0) {
+    const k = r * 1.25 + grow * Math.SQRT2
+    context.moveTo(x, y - k); context.lineTo(x + k, y); context.lineTo(x, y + k); context.lineTo(x - k, y); context.closePath()
+  } else if (type === 1) {
+    const h = r * .85 + grow
+    context.rect(x - h, y - h, 2 * h, 2 * h)
+  } else {
+    context.moveTo(x + r + grow, y); context.arc(x, y, r + grow, 0, Math.PI * 2)
+  }
+}
+
 type MarkerContext = Pick<CanvasRenderingContext2D, 'setTransform' | 'clearRect' | 'beginPath' | 'moveTo' | 'lineTo' | 'closePath' | 'rect' | 'arc' | 'fill' | 'stroke'> & { fillStyle: unknown; strokeStyle: unknown; lineWidth: number; lineJoin: CanvasLineJoin }
 
 /**
@@ -225,7 +244,7 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
   if (!transform.scale) return 0
   context.setTransform(dpr, 0, 0, dpr, 0, 0)
   const r = NODE_MARKER_RADIUS
-  const margin = (r + 2) / transform.scale
+  const margin = (r * 1.25 + 2 * NODE_MARKER_LINE) / transform.scale
   const view: Rect = { x0: -transform.x / transform.scale - margin, y0: -transform.y / transform.scale - margin,
     x1: (viewport.width - transform.x) / transform.scale + margin, y1: (viewport.height - transform.y) / transform.scale + margin }
   const shapes: [number, number][][] = [[], [], []]
@@ -242,25 +261,21 @@ export function drawNodeMarkers(context: MarkerContext, layers: NodeLayer[], tra
       shapes[types[node]].push([transform.x + sx * transform.scale, transform.y + sy * transform.scale])
     })
   }
-  // One path per shape, filled then outlined, keeps tens of thousands of markers cheap.
-  context.lineWidth = 1.25
+  // One path per shape and pass keeps tens of thousands of markers cheap: first the black
+  // ring just outside the outline, then the faint fill and the type's coloured outline.
+  context.lineWidth = NODE_MARKER_LINE
   context.lineJoin = 'miter'
   context.fillStyle = 'rgba(255, 255, 255, .1)'
-  context.strokeStyle = '#fff'
   shapes.forEach((points, type) => {
     if (!points.length) return
     context.beginPath()
-    for (const [x, y] of points) {
-      if (type === 0) {
-        const k = r * 1.25
-        context.moveTo(x, y - k); context.lineTo(x + k, y); context.lineTo(x, y + k); context.lineTo(x - k, y); context.closePath()
-      } else if (type === 1) {
-        context.rect(x - r * .85, y - r * .85, r * 1.7, r * 1.7)
-      } else {
-        context.moveTo(x + r, y); context.arc(x, y, r, 0, Math.PI * 2)
-      }
-    }
+    for (const [x, y] of points) traceMarker(context, type, x, y, NODE_MARKER_LINE)
+    context.strokeStyle = '#000'
+    context.stroke()
+    context.beginPath()
+    for (const [x, y] of points) traceMarker(context, type, x, y, 0)
     context.fill()
+    context.strokeStyle = NODE_MARKER_COLOURS[NODE_TYPES[type]]
     context.stroke()
   })
   return shapes.reduce((total, points) => total + points.length, 0)
@@ -320,10 +335,13 @@ export function committedLayer(index: NodeIndex, stage: ImageSize): NodeLayer | 
 
 // The marker shape of a node type, drawn in the legend at the canvas markers' size.
 export function NodeShape({ type }: { type: NodeType }) {
-  const r = NODE_MARKER_RADIUS, k = r * 1.25, size = 2 * k + 3, c = size / 2
+  const r = NODE_MARKER_RADIUS, d = NODE_MARKER_LINE, k = r * 1.25, size = 2 * (k + d * Math.SQRT2) + 3, c = size / 2
+  const shape = (grow: number, style: { fill: string; stroke: string }) => type === 'cusp'
+    ? <polygon points={`${c},${c - k - grow * Math.SQRT2} ${c + k + grow * Math.SQRT2},${c} ${c},${c + k + grow * Math.SQRT2} ${c - k - grow * Math.SQRT2},${c}`} {...style} />
+    : type === 'symmetric' ? <rect x={c - r * .85 - grow} y={c - r * .85 - grow} width={2 * (r * .85 + grow)} height={2 * (r * .85 + grow)} {...style} />
+      : <circle cx={c} cy={c} r={r + grow} {...style} />
   return <svg className={`node-shape ${type}`} width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-    {type === 'cusp' ? <polygon points={`${c},${c - k} ${c + k},${c} ${c},${c + k} ${c - k},${c}`} />
-      : type === 'symmetric' ? <rect x={c - r * .85} y={c - r * .85} width={r * 1.7} height={r * 1.7} />
-        : <circle cx={c} cy={c} r={r} />}
+    {shape(d, { fill: 'none', stroke: '#000' })}
+    {shape(0, { fill: 'rgba(255, 255, 255, .1)', stroke: NODE_MARKER_COLOURS[type] })}
   </svg>
 }

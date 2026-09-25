@@ -823,5 +823,5 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 .node-legend ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .node-legend li { display: flex; align-items: center; gap: 8px; }
 .node-legend .node-count { margin-inline-start: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.node-legend .node-shape { flex: 0 0 auto; fill: rgba(255, 255, 255, .1); stroke: #fff; stroke-width: 1.25; }
+.node-legend .node-shape { flex: 0 0 auto; stroke-width: 1.25; stroke-linejoin: miter; }
 .node-legend .node-status { margin: 0; font-size: 12px; }
