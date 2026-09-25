@@ -7,8 +7,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from scipy import ndimage
 
 from vinylgen.contracts import SegmentationBundle, TraceSettings
+from vinylgen.curve_fit import shared_boundary_components
 from vinylgen import trace_window
 from vinylgen.svg_writer import INKSCAPE, SVG
 from vinylgen.trace_window import (
@@ -151,14 +153,16 @@ class WindowTraceTests(unittest.TestCase):
                              preview_margin(px_settings()))
         self.assertEqual(crop, Window(47, 37, 246, 236))
         boundaries = window_boundaries(segmentation, [0, 1, 2], crop)
-        # The boundary graph is crop-local: the crop's right edge is x = crop.width.
+        # The boundary graph is in image coordinates: it spans the crop's own edges.
         xs = [point[0] for chain in boundaries.track.chains for point in chain.points]
-        self.assertEqual((min(xs), max(xs)), (0.0, float(crop.width)))
+        ys = [point[1] for chain in boundaries.track.chains for point in chain.points]
+        self.assertEqual((min(xs), max(xs)), (float(crop.x), float(crop.right)))
+        self.assertEqual((min(ys), max(ys)), (float(crop.y), float(crop.bottom)))
         svg = ET.fromstring(render_window_svg(
             boundaries, window, [0, 1, 2], palette, px_settings({}), 0.0))
         self.assertEqual(svg.attrib["viewBox"], "150 140 40 30")
-        group = next(svg.iter(f"{{{SVG}}}g"))
-        self.assertEqual(group.attrib["transform"], "translate(47 37)")
+        # The paths are already in image px: nothing in the document moves them.
+        self.assertFalse([element for element in svg.iter() if "transform" in element.attrib])
         # Every colour inside the window is drawn, each shape a separately fitted path.
         paths = layer_paths(svg)
         self.assertEqual(len(paths), 3)
@@ -222,6 +226,69 @@ def speckled_segmentation(size: int = 160) -> PreviewSegmentation:
 
 PALETTE = [{"index": index, "name": f"C{index}", "hex": hex_value}
            for index, hex_value in enumerate(["#000000", "#C81E1E", "#1E1EC8"])]
+
+
+def blob_segmentation(seed: int = 5, size: int = 96) -> PreviewSegmentation:
+    """Smooth random blobs of three colours with uneven costs, so every sample sits
+    off the pixel grid by a non-dyadic offset."""
+    rng = np.random.default_rng(seed)
+    field = ndimage.gaussian_filter(rng.normal(size=(size, size)), 6)
+    labels = np.digitize(field, np.quantile(field, [0.4, 0.75])).astype(np.int16)
+    costs = rng.uniform(20.0, 60.0, size=(size, size, 3)).astype(np.float32)
+    np.put_along_axis(costs, labels[..., None], 0.0, axis=2)
+    return PreviewSegmentation(labels=labels, protected_features=np.zeros(labels.shape, bool),
+                               palette_rgb=np.array([[0, 0, 0], [200, 30, 30], [30, 30, 200]],
+                                                    dtype=np.uint8),
+                               palette_costs=costs.astype(np.float16))
+
+
+class UncutChainTests(unittest.TestCase):
+    """A boundary the crop does not cut is the full trace's boundary, fitted identically."""
+
+    @staticmethod
+    def uncut(chain, crop: Window, width: int, height: int) -> bool:
+        # A sample within 1 px of a crop edge that is not an image edge involves a
+        # pixel outside the crop.
+        points = np.asarray(chain.points)
+        return not (((points[:, 0] < crop.x + 1) & (crop.x > 0)).any()
+                    or ((points[:, 0] > crop.right - 1) & (crop.right < width)).any()
+                    or ((points[:, 1] < crop.y + 1) & (crop.y > 0)).any()
+                    or ((points[:, 1] > crop.bottom - 1) & (crop.bottom < height)).any())
+
+    def test_uncut_chains_match_the_whole_image_exactly(self):
+        segmentation = blob_segmentation()
+        size = segmentation.width
+        settings = px_settings({})
+        whole = window_boundaries(segmentation, [0, 1, 2], Window(0, 0, size, size))
+        _, whole_fits, _ = shared_boundary_components(
+            whole.track, [0, 1, 2], settings, fitter=whole.fitter_for(settings, 0.0))
+        # Chain 81ce0fd284d6681f9031 is a closed ring that the crop-local preview (its
+        # samples translated to the crop) fitted differently from the full trace.
+        for crop, required in ((Window(16, 16, 64, 64), "81ce0fd284d6681f9031"),
+                               (Window(5, 7, 80, 70), "81ce0fd284d6681f9031"),
+                               (Window(33, 0, 63, 96), None)):
+            with self.subTest(crop=crop):
+                boundaries = window_boundaries(segmentation, [0, 1, 2], crop)
+                render_window_svg(boundaries, crop, [0, 1, 2], PALETTE, settings, 0.0)
+                _, crop_fits, _ = shared_boundary_components(
+                    boundaries.track, [0, 1, 2], settings,
+                    fitter=boundaries.fitter_for(settings, 0.0))
+                by_identity = {chain.identity: chain for chain in boundaries.track.chains}
+                checked = set()
+                for chain in whole.track.chains:
+                    if not self.uncut(chain, crop, size, size):
+                        continue
+                    # The same identity, samples, anchors and colours, bit for bit ...
+                    self.assertEqual(by_identity.get(chain.identity), chain)
+                    # ... and the same fit, exactly.
+                    self.assertEqual(crop_fits[chain.identity].start,
+                                     whole_fits[chain.identity].start)
+                    self.assertEqual(crop_fits[chain.identity].primitives,
+                                     whole_fits[chain.identity].primitives)
+                    checked.add(chain.identity)
+                self.assertGreaterEqual(len(checked), 2)
+                if required:
+                    self.assertIn(required, checked)
 
 
 class CancellationTests(unittest.TestCase):

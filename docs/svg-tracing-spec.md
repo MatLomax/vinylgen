@@ -308,7 +308,8 @@ bounding box meets the window, and every node inside it with its node type,
 matches the reference within 1e-5 px. The difference the margin controls is
 counted per boundary chain: a chain the crop cuts (it has a sample within 1 px of
 a crop edge that is not an image edge) is compared, inside the window, against
-the same whole chain fitted in the crop's own coordinates.
+the same whole chain fitted from the same coordinates, so the count is what the
+split alone changes.
 
 **Result.** At the defaults, with windows showing a margin-caused difference
 out of 28 and the median cold preview (boundaries plus fit) of the 600 × 600
@@ -332,13 +333,29 @@ shows more difference in view than 8, so the margin stays at 8 reaches.
 Shrinking it trades agreement for speed: 4 reaches is 30 to 50% faster on the
 large images and makes no difference on the corpus.
 
-**Translation noise.** Separately from the margin, the preview traces in
-crop-local coordinates, and the chain fitter is not translation-invariant. A
-chain the crop does not cut can still fit differently, because its samples
-differ from the whole image's by about 1e-13 px and near-ties then resolve
-differently (for example, which end of an exactly flat run takes an axis-extreme
-node). At 8 reaches, 190 of the 252 corpus windows and 2 (`phoenix-4x-regen-2`) to 27 (`fox-table`) of 28 per large
-image showed such differences. No margin removes them.
+**Uncut chains are exact.** The chain fitter is not translation-invariant: a
+chain whose samples are translated, or differ by about 1e-13 px, can fit
+differently where near-ties resolve the other way (for example, which end of an
+exactly flat run takes an axis-extreme node). So the preview builds its crop in
+image coordinates (`shared_boundary_polygons` with `origin` at the crop's
+corner): each sample is formed as the whole image forms it, integer grid position
+in image px plus the same sub-pixel offset, and a chain's identity is its image
+grid path. A chain the crop does not cut, meaning none of its samples lies on
+or within 1 px of a crop edge that is not an image edge (a chain ending at a
+junction on that edge counts as cut: the junction's other colours fall outside
+the crop, so it becomes an endpoint), is then the full trace's chain bit for
+bit (samples, anchors, colours, identity), and since a chain's fit depends only
+on its own samples, anchors and settings, it fits exactly as in the full trace
+before protected-feature recovery; chains the full trace re-fits in a trace
+fallback are not matched, since the preview skips recovery.
+Measured at the current margin over the same images, windows and three settings
+(`.tmp/preview-coords/measure3.py`, 2026-09-26): no uncut chain differs
+from the full trace (fits compared for float equality; 339,154 checks, one per
+uncut chain in view per window and setting), and every window that
+still differs has a cut chain that differs. Windows agreeing in full at the
+defaults (of 28): corpus 51 of 252, `sourceup` 20, `fox-table` 17,
+`fox-owl-table-2` 8, `phoenix-4x-regen-2` 21; over all three settings, 386 of
+756 corpus windows.
 
 ## Cutter cleanup (raster labels)
 

@@ -213,12 +213,15 @@ whole image when solid underlayers or an overlap make order matter, otherwise
 palette order). It
 traces the window plus a hidden margin (at least 64 px, growing with the
 resolved fit windows) through the real vector stage:
-`shared_boundary_polygons` on the crop, the canonical chain fitter with the
+`shared_boundary_polygons` on the crop in image coordinates (its `origin`), so
+every boundary the crop does not cut is the full trace's chain bit for bit and
+fits identically, the canonical chain fitter with the
 trace settings resolved to pixels on the whole image's longer side, the same overlap-buffer or solid-underlayer
 construction (`underlayer_geometry`, `overlap_layer_components`) and the SVG
 layer writer, returning the variant the form's settings select (overlap with
-solid underlayers or a positive overlap, otherwise edge to edge). Its SVG's
-`viewBox` is the window, so the margin is clipped from view. Previews run one
+solid underlayers or a positive overlap, otherwise edge to edge). Its paths are
+in image px and its SVG's `viewBox` is the window, so the margin is clipped from
+view. Previews run one
 at a time on a dedicated background thread, never on the event loop. A
 request whose client disconnected stops at its next checkpoint: one before the
 segmentation's cost field is decompressed, inside the boundary build (between
@@ -235,14 +238,12 @@ re-fits cached boundaries. The Live preview switch is remembered in the browser
 across stage changes and reloads. The app's startup submits a warm-up trace to
 the preview thread, which compiles the Numba kernels without delaying startup or
 health. A preview
-differs from a full run in four documented ways: boundaries crossing the crop
+differs from a full run in three documented ways: boundaries crossing the crop
 edge are split there, so their fit can differ along the run between their cusps,
 into the window too (the margin moves most of it out of view, never all of it;
 [measurement](svg-tracing-spec.md#preview-margin-measurement)), and underlayer
-adjacency and overlap buffers see only the crop; the crop is traced in
-crop-local coordinates, and the chain fitter is not translation-invariant, so an
-uncut boundary can still fit differently where near-ties resolve the other way;
-validation and protected-feature recovery are skipped; and nothing is saved. "Trace and validate" still creates the revision. When the window's
+adjacency and overlap buffers see only the crop; validation and protected-feature
+recovery are skipped; and nothing is saved. "Trace and validate" still creates the revision. When the window's
 margin reaches every image edge, the preview is the full trace path for path.
 
 The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served

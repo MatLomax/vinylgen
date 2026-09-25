@@ -3,14 +3,16 @@
 The preview reuses the real vector stage on a crop: the shared-boundary graph of
 the window plus a hidden margin, the canonical chain fitter with the requested
 trace settings, the same overlap/solid-underlayer construction and the same SVG
-layer writer. Four things differ from a full trace, all by construction:
+layer writer. The crop is built and fitted in image coordinates, so every sample
+of a boundary the crop does not cut (none of its samples within 1 px of a crop
+edge that is not an image edge) is bit-identical to the full trace's, and the
+chain fitter, which depends only on a chain's own samples, anchors and settings,
+fits it exactly as the full trace does before protected-feature recovery. Three things differ from a full trace, all
+by construction:
 
 - Boundaries crossing the crop edge are split there, so their fit can differ
   along the whole run between their cusps, into the visible window too. The
   margin pushes most of that away from the window, never all of it.
-- The crop is traced in crop-local coordinates, and the chain fitter is not
-  translation-invariant: a boundary the crop does not cut can still fit
-  differently where near-ties resolve the other way.
 - Layer order, when it can matter, is inferred from the whole image (it is a
   whole-image decision), but underlayer adjacency and overlap buffers only see the
   crop.
@@ -185,7 +187,7 @@ class PreviewSegmentation:
 
 @dataclass
 class WindowBoundaries:
-    """The shared-boundary graph of one crop, in crop-local px, and its fit caches."""
+    """The shared-boundary graph of one crop, in traced-image px, and its fit caches."""
 
     crop: Window
     partition: dict[int, object]
@@ -212,14 +214,17 @@ class WindowBoundaries:
 
 def window_boundaries(segmentation: PreviewSegmentation, included: list[int],
                       crop: Window, checkpoint: Checkpoint | None = None) -> WindowBoundaries:
-    """Build the exact shared-boundary partition of ``crop`` (no simplification)."""
+    """Build the exact shared-boundary partition of ``crop`` (no simplification), in
+    image coordinates: each chain the crop does not cut (none of its samples within
+    1 px of a crop edge that is not an image edge) is the full trace's chain."""
     rows = slice(crop.y, crop.bottom)
     columns = slice(crop.x, crop.right)
     labels = np.ascontiguousarray(segmentation.labels[rows, columns])
     costs = segmentation.palette_costs[rows, columns].astype(np.float32)
     protected = np.ascontiguousarray(segmentation.protected_features[rows, columns])
     partition, track, topology = shared_boundary_polygons(
-        labels, included, costs, protected_features=protected, checkpoint=checkpoint)
+        labels, included, costs, protected_features=protected, checkpoint=checkpoint,
+        origin=(crop.x, crop.y))
     fault = partition_watertight_fault(topology, float(crop.width * crop.height))
     if fault is not None:
         raise RuntimeError(fault)
@@ -231,9 +236,9 @@ def render_window_svg(boundaries: WindowBoundaries, window: Window, order: list[
                       checkpoint: Checkpoint | None = None) -> str:
     """Fit the crop's chains and write the variant ``settings`` selects as SVG.
 
-    The document's ``viewBox`` is ``window`` in traced-image px, so drawn at the
-    window's size and position over the image it registers exactly; the hidden
-    margin around it falls outside the view box. ``checkpoint`` runs before each
+    The paths are in traced-image px and the document's ``viewBox`` is ``window``,
+    so drawn at the window's size and position over the image it registers
+    exactly; the hidden margin around it falls outside the view box. ``checkpoint`` runs before each
     chain fit and each layer and may raise to abandon the render.
     """
     check = checkpoint or (lambda: None)
@@ -246,13 +251,12 @@ def render_window_svg(boundaries: WindowBoundaries, window: Window, order: list[
     variant = preview_variant(settings)
     layer_geometry = (underlayer_geometry(
         boundaries.partition, order, solid_underlayers=settings.solid_underlayers,
-        overlap_px=overlap_px, canvas=box(0, 0, crop.width, crop.height))
+        overlap_px=overlap_px, canvas=box(crop.x, crop.y, crop.right, crop.bottom))
         if variant == "overlap" else {})
     root = ET.Element(f"{{{SVG}}}svg", {
         "version": "1.1",
         "viewBox": f"{window.x} {window.y} {window.width} {window.height}",
         "preserveAspectRatio": "none"})
-    group = ET.SubElement(root, f"{{{SVG}}}g", {"transform": f"translate({crop.x} {crop.y})"})
     junctions = cusp_anchor_keys(boundaries.track)
     for position, index in enumerate(order):
         check()
@@ -263,5 +267,5 @@ def render_window_svg(boundaries: WindowBoundaries, window: Window, order: list[
                 chain_fits, settings, overlap_px, fitter)
         else:
             layer_components = edge_components
-        add_layer(group, palette[index], layer_components, "", "preview", variant, 0.0, junctions)
+        add_layer(root, palette[index], layer_components, "", "preview", variant, 0.0, junctions)
     return ET.tostring(root, encoding="unicode")

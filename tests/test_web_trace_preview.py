@@ -150,8 +150,8 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
                                         "height": 260 + PREVIEW_MARGIN_PX})
         svg = ET.fromstring(body["svg"])
         self.assertEqual(svg.attrib["viewBox"], "400 0 220 260")
-        self.assertEqual(next(svg.iter(f"{{{SVG}}}g")).attrib["transform"],
-                         f"translate({400 - PREVIEW_MARGIN_PX} 0)")
+        # Paths are in image px, so nothing in the document moves them.
+        self.assertFalse([element for element in svg.iter() if "transform" in element.attrib])
         self.assertEqual(len(service._boundaries.keys()), 1)
         # A settings-only change re-fits the cached boundaries of the same window. On
         # this 620 px fixture the change is coarser, not finer: tighter tolerances

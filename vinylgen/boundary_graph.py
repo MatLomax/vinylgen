@@ -278,6 +278,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                              palette_costs: np.ndarray,
                              protected_features: np.ndarray | None = None,
                              checkpoint: Callable[[], None] | None = None,
+                             origin: tuple[int, int] = (0, 0),
                              ) -> tuple[dict[int, object], SharedBoundaryTrack, dict]:
     """Build the exact dense evidence for a shared-boundary planar partition.
 
@@ -289,6 +290,14 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     ``checkpoint``, when given, is called between phases and every few hundred
     chains; it may raise to abandon the build (the live preview cancels a
     superseded window this way). It never affects the result.
+
+    ``origin`` is the image position ``(x, y)`` of ``labels[0, 0]`` when the
+    arrays are a crop of a larger image. Samples, anchors, chain identities,
+    faces and the canvas are then in that image's coordinates, and each sample
+    is formed exactly as it would be from the whole image: a boundary the crop
+    does not cut (none of its samples within 1 px of a crop edge that is not an
+    image edge; a junction on that edge loses its outside colours and becomes an
+    endpoint) gets the same chain, bit for bit, as in a whole-image build.
     """
     check = checkpoint or (lambda: None)
     height, width = labels.shape
@@ -442,8 +451,11 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         edge_pair_hi = np.empty(0, dtype=np.int64)
         endpoint_keys = np.empty(0, dtype=np.int64)
 
-    fitted_x = (endpoint_keys // height_stride).astype(np.float64)
-    fitted_y = (endpoint_keys % height_stride).astype(np.float64)
+    origin_x, origin_y = int(origin[0]), int(origin[1])
+    # The integer grid position is moved to the image before it becomes a float,
+    # so a sample is the whole image's ``float(x) + offset``, not a translated one.
+    fitted_x = (endpoint_keys // height_stride + origin_x).astype(np.float64)
+    fitted_y = (endpoint_keys % height_stride + origin_y).astype(np.float64)
     if x_keys.size:
         fitted_x[np.searchsorted(endpoint_keys, x_keys)] += x_means
     if y_keys.size:
@@ -501,7 +513,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
             if _eid(chain[index], chain[index + 1]) in protected_ids)
         lines.append(line)
         identity_source = f"{pair[0]}:{pair[1]}|" + ";".join(
-            f"{x},{y}" for x, y in chain)
+            f"{x + origin_x},{y + origin_y}" for x, y in chain)
         identity = hashlib.sha256(identity_source.encode("ascii")).hexdigest()[:20]
         anchors: list[BoundaryAnchor] = []
         if chain[0] != chain[-1]:
@@ -541,16 +553,19 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     faces = list(polygonize(unary_union(lines)))
     check()
     by_colour: dict[int, list[Polygon]] = {index: [] for index in included}
-    for face in faces:
+
+    def face_colour(face) -> int:
         point = face.representative_point()
-        x = min(width - 1, max(0, int(math.floor(point.x))))
-        y = min(height - 1, max(0, int(math.floor(point.y))))
-        index = int(labels[y, x])
+        x = min(width - 1, max(0, int(math.floor(point.x)) - origin_x))
+        y = min(height - 1, max(0, int(math.floor(point.y)) - origin_y))
+        return int(labels[y, x])
+
+    face_colours = [face_colour(face) for face in faces]
+    for face, index in zip(faces, face_colours):
         if index in by_colour:
             by_colour[index].append(face)
-    included_face_list = [face for face in faces if int(labels[
-        min(height - 1, max(0, int(math.floor(face.representative_point().y)))),
-        min(width - 1, max(0, int(math.floor(face.representative_point().x))))]) in included]
+    included_face_list = [face for face, index in zip(faces, face_colours)
+                          if index in included]
     # The per-colour unions and the whole-partition union are independent GEOS
     # work that releases the GIL, so they run on threads; the coverage union
     # follows once every colour geometry exists.
@@ -562,7 +577,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                     else Polygon() for index in by_colour}
         covered = unary_union(list(geometry.values()))
         included_faces = included_future.result()
-    canvas = box(0, 0, width, height)
+    canvas = box(origin_x, origin_y, origin_x + width, origin_y + height)
     diagnostics = {"boundary_chains": len(inventory_pairs), "polygonized_faces": len(faces),
                    "uncovered_area": float(canvas.difference(covered).area),
                    "partition_gap_area": float(included_faces.difference(covered).area),
