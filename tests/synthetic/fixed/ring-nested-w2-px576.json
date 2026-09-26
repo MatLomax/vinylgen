@@ -1,0 +1,129 @@
+{
+ "case_id": "ring-nested-w2-px576",
+ "min_feature_px": 2.0,
+ "tags": [
+  "ring",
+  "fixed-px",
+  "stroke"
+ ],
+ "scene": {
+  "width": 576,
+  "height": 576,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       288.25,
+       288.25
+      ],
+      "radius": 201.6,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": [
+     [
+      {
+       "type": "arc",
+       "centre": [
+        288.25,
+        288.25
+       ],
+       "radius": 199.6,
+       "start": 0.0,
+       "sweep": 6.283185307179586
+      }
+     ]
+    ]
+   },
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       288.25,
+       288.25
+      ],
+      "radius": 197.6,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": [
+     [
+      {
+       "type": "arc",
+       "centre": [
+        288.25,
+        288.25
+       ],
+       "radius": 195.6,
+       "start": 0.0,
+       "sweep": 6.283185307179586
+      }
+     ]
+    ]
+   },
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       288.25,
+       288.25
+      ],
+      "radius": 193.6,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": [
+     [
+      {
+       "type": "arc",
+       "centre": [
+        288.25,
+        288.25
+       ],
+       "radius": 191.6,
+       "start": 0.0,
+       "sweep": 6.283185307179586
+      }
+     ]
+    ]
+   }
+  ],
+  "family": "ring",
+  "params": {
+   "sweep": "fixed-px",
+   "size": 576,
+   "nested": true,
+   "width_px": 2.0,
+   "gap_px": 2.0
+  }
+ }
+}

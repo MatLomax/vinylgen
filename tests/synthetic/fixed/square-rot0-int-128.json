@@ -1,0 +1,94 @@
+{
+ "case_id": "square-rot0-int-128",
+ "min_feature_px": 76.0,
+ "tags": [
+  "rectangle",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 128,
+  "height": 128,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "green",
+    "rgb": [
+     34,
+     139,
+     76
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       26.0,
+       26.0
+      ],
+      "p1": [
+       102.0,
+       26.0
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       102.0,
+       26.0
+      ],
+      "p1": [
+       102.0,
+       102.0
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       102.0,
+       102.0
+      ],
+      "p1": [
+       26.0,
+       102.0
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       26.0,
+       102.0
+      ],
+      "p1": [
+       26.0,
+       26.0
+      ]
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "rectangle",
+  "params": {
+   "sweep": "scaled",
+   "size": 128,
+   "kind": "square",
+   "rotation_deg": 0.0,
+   "phase": "int",
+   "half_width_px": 38.0,
+   "half_height_px": 38.0
+  }
+ }
+}

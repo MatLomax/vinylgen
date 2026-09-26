@@ -1,0 +1,79 @@
+{
+ "case_id": "polygon-3-128",
+ "min_feature_px": 72.96000000000001,
+ "tags": [
+  "regular-polygon",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 128,
+  "height": 128,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "orange",
+    "rgb": [
+     236,
+     116,
+     36
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       64.0,
+       15.36
+      ],
+      "p1": [
+       106.1234756400751,
+       88.32
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       106.1234756400751,
+       88.32
+      ],
+      "p1": [
+       21.876524359924915,
+       88.32000000000002
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       21.876524359924915,
+       88.32000000000002
+      ],
+      "p1": [
+       64.0,
+       15.36
+      ]
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "regular-polygon",
+  "params": {
+   "sweep": "scaled",
+   "size": 128,
+   "sides": 3
+  }
+ }
+}

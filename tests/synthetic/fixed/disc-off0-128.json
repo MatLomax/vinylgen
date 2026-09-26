@@ -1,0 +1,57 @@
+{
+ "case_id": "disc-off0-128",
+ "min_feature_px": 76.8,
+ "tags": [
+  "disc",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 128,
+  "height": 128,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "navy",
+    "rgb": [
+     32,
+     44,
+     98
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       64.0,
+       64.0
+      ],
+      "radius": 38.4,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "disc",
+  "params": {
+   "sweep": "scaled",
+   "size": 128,
+   "offset_px": 0.0,
+   "radius_px": 38.4
+  }
+ }
+}

@@ -1,0 +1,67 @@
+{
+ "case_id": "crescent-rot0-128",
+ "min_feature_px": 20.479999999999997,
+ "tags": [
+  "line-meets-arc",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 128,
+  "height": 128,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "sky",
+    "rgb": [
+     96,
+     170,
+     226
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       77.824,
+       64.0
+      ],
+      "radius": 51.2,
+      "start": 1.0852782044993055,
+      "sweep": 4.112628898180976
+     },
+     {
+      "type": "arc",
+      "centre": [
+       93.184,
+       64.0
+      ],
+      "radius": 46.080000000000005,
+      "start": -1.3845360232183404,
+      "sweep": -3.5141132607429055
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "line-meets-arc",
+  "params": {
+   "sweep": "scaled",
+   "size": 128,
+   "shape": "crescent",
+   "rotation_deg": 0.0
+  }
+ }
+}

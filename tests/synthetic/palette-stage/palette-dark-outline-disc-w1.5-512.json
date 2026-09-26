@@ -1,0 +1,86 @@
+{
+ "case_id": "palette-dark-outline-disc-w1.5-512",
+ "min_feature_px": 1.5,
+ "tags": [
+  "palette-stage",
+  "dark-outline",
+  "fixed-px"
+ ],
+ "scene": {
+  "width": 512,
+  "height": 512,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   },
+   {
+    "name": "gold",
+    "rgb": [
+     240,
+     190,
+     40
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       256.25,
+       256.25
+      ],
+      "radius": 155.1,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": []
+   },
+   {
+    "colour": 2,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       256.25,
+       256.25
+      ],
+      "radius": 153.6,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "palette-stage",
+  "params": {
+   "size": 512,
+   "outline_width_px": 1.5,
+   "expect": {
+    "survive": [
+     0,
+     1,
+     2
+    ]
+   }
+  }
+ }
+}

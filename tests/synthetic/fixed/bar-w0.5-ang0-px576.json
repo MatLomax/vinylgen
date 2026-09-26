@@ -1,0 +1,91 @@
+{
+ "case_id": "bar-w0.5-ang0-px576",
+ "min_feature_px": 0.5,
+ "tags": [
+  "thin-bar",
+  "fixed-px",
+  "stroke"
+ ],
+ "scene": {
+  "width": 576,
+  "height": 576,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       86.65,
+       288.0
+      ],
+      "p1": [
+       489.85,
+       288.0
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       489.85,
+       288.0
+      ],
+      "p1": [
+       489.85,
+       288.5
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       489.85,
+       288.5
+      ],
+      "p1": [
+       86.65,
+       288.5
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       86.65,
+       288.5
+      ],
+      "p1": [
+       86.65,
+       288.0
+      ]
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "thin-bar",
+  "params": {
+   "sweep": "fixed-px",
+   "size": 576,
+   "angle_deg": 0.0,
+   "width_px": 0.5
+  }
+ }
+}

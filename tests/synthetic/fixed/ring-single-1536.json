@@ -1,0 +1,71 @@
+{
+ "case_id": "ring-single-1536",
+ "min_feature_px": 23.04,
+ "tags": [
+  "ring",
+  "scaled",
+  "stroke"
+ ],
+ "scene": {
+  "width": 1536,
+  "height": 1536,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       768.25,
+       768.25
+      ],
+      "radius": 537.5999999999999,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": [
+     [
+      {
+       "type": "arc",
+       "centre": [
+        768.25,
+        768.25
+       ],
+       "radius": 514.56,
+       "start": 0.0,
+       "sweep": 6.283185307179586
+      }
+     ]
+    ]
+   }
+  ],
+  "family": "ring",
+  "params": {
+   "sweep": "scaled",
+   "size": 1536,
+   "nested": false,
+   "width_px": 23.04,
+   "gap_px": null
+  }
+ }
+}

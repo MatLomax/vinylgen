@@ -1,0 +1,89 @@
+{
+ "case_id": "stadium-rot0-128",
+ "min_feature_px": 46.08,
+ "tags": [
+  "line-meets-arc",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 128,
+  "height": 128,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "sky",
+    "rgb": [
+     96,
+     170,
+     226
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       38.4,
+       40.96
+      ],
+      "p1": [
+       89.6,
+       40.96
+      ]
+     },
+     {
+      "type": "arc",
+      "centre": [
+       89.6,
+       64.0
+      ],
+      "radius": 23.04,
+      "start": -1.5707963267948966,
+      "sweep": 3.141592653589793
+     },
+     {
+      "type": "line",
+      "p0": [
+       89.6,
+       87.03999999999999
+      ],
+      "p1": [
+       38.4,
+       87.03999999999999
+      ]
+     },
+     {
+      "type": "arc",
+      "centre": [
+       38.4,
+       64.0
+      ],
+      "radius": 23.04,
+      "start": 1.5707963267948966,
+      "sweep": 3.141592653589793
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "line-meets-arc",
+  "params": {
+   "sweep": "scaled",
+   "size": 128,
+   "shape": "stadium",
+   "rotation_deg": 0.0
+  }
+ }
+}

@@ -1,0 +1,67 @@
+{
+ "case_id": "lens-rot0-1536",
+ "min_feature_px": 537.5999999999999,
+ "tags": [
+  "line-meets-arc",
+  "scaled",
+  "shape"
+ ],
+ "scene": {
+  "width": 1536,
+  "height": 1536,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "sky",
+    "rgb": [
+     96,
+     170,
+     226
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       499.20000000000005,
+       768.0
+      ],
+      "radius": 537.5999999999999,
+      "start": -1.0471975511965979,
+      "sweep": 2.0943951023931957
+     },
+     {
+      "type": "arc",
+      "centre": [
+       1036.8,
+       768.0
+      ],
+      "radius": 537.5999999999999,
+      "start": 2.0943951023931953,
+      "sweep": 2.0943951023931957
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "line-meets-arc",
+  "params": {
+   "sweep": "scaled",
+   "size": 1536,
+   "shape": "lens",
+   "rotation_deg": 0.0
+  }
+ }
+}

@@ -1,0 +1,81 @@
+{
+ "case_id": "outline-disc-1536",
+ "min_feature_px": 9.216000000000001,
+ "tags": [
+  "outline",
+  "scaled",
+  "stroke"
+ ],
+ "scene": {
+  "width": 1536,
+  "height": 1536,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   },
+   {
+    "name": "gold",
+    "rgb": [
+     240,
+     190,
+     40
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       768.25,
+       768.25
+      ],
+      "radius": 470.01599999999996,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": []
+   },
+   {
+    "colour": 2,
+    "outline": [
+     {
+      "type": "arc",
+      "centre": [
+       768.25,
+       768.25
+      ],
+      "radius": 460.79999999999995,
+      "start": 0.0,
+      "sweep": 6.283185307179586
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "outline",
+  "params": {
+   "sweep": "scaled",
+   "size": 1536,
+   "kind": "disc",
+   "width_px": 9.216000000000001
+  }
+ }
+}
