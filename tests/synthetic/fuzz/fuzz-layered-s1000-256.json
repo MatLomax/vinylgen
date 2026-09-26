@@ -1,6 +1,6 @@
 {
  "case_id": "fuzz-layered-s1000-256",
- "min_feature_px": 3.111,
+ "min_feature_px": 3.114,
  "tags": [
   "fuzz",
   "layered"
@@ -1324,7 +1324,7 @@
      "carrier": true
     }
    ],
-   "min_feature_px": 3.111
+   "min_feature_px": 3.114
   }
  }
 }

@@ -1,6 +1,6 @@
 {
  "case_id": "fuzz-polygon-s1025-512",
- "min_feature_px": 105.707,
+ "min_feature_px": 98.529,
  "tags": [
   "fuzz",
   "polygon"
@@ -141,7 +141,7 @@
     "twist": -0.949107,
     "min_interior_angle_deg": 11.2866
    },
-   "min_feature_px": 105.707
+   "min_feature_px": 98.529
   }
  }
 }

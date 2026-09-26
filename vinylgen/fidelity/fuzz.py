@@ -765,19 +765,6 @@ _REMOVED_PX = 0.05
 _ERODED_NOISE_PX = 0.02
 
 
-def _runs(mask: np.ndarray) -> list[np.ndarray]:
-    """Index runs of consecutive True values in a cyclic boolean array."""
-    if mask.all():
-        return [np.arange(len(mask))]
-    if not mask.any():
-        return []
-    shift = int(np.flatnonzero(~mask)[0])
-    rolled = np.roll(mask, -shift)
-    edges = np.diff(np.concatenate([[0], rolled.astype(np.int8), [0]]))
-    starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
-    return [(np.arange(a, b) + shift) % len(mask) for a, b in zip(starts, stops)]
-
-
 def _is_noise(polygon: Polygon) -> bool:
     """Empty after a further ``_ERODED_NOISE_PX`` erosion: too thin to be told
     apart from a buffer artefact."""
@@ -796,15 +783,42 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
       a narrow strip splits it, a narrow stretch between a hole and the outside
       (or another hole) opens, or the whole component (a small blob, a narrow gap
       or sliver) vanishes; or
-    - opening (erosion, then dilation back by ``r``) removes a stretch of the
-      component's boundary that protrudes farther from the opened shape than a
-      corner tip would: an arm that erodes away without splitting anything. A
-      corner tip of interior angle ``a`` loses exactly ``r (1 / sin(a / 2) - 1)``;
-      the allowance uses the sharpest true corner (corner, junction or edge
-      point, tip angle ``180 - turn_deg``, at least 0.5 degree) within 0.05 px
-      of the removed stretch, or 30 degrees when there is none, plus 0.5 px. The
-      boundary is sampled every 0.5 px; a sample farther than 0.05 px from the
-      opened shape is removed, and consecutive removed samples form a stretch.
+    - opening (erosion, then dilation back by ``r``) removes part of the
+      component's boundary by more than a tip could lose: an arm that erodes
+      away without splitting anything. The boundary is sampled every 0.5 px; a
+      sample's loss ``p`` is its distance from the opened shape (0 within 0.05 px
+      of it), and the feature is lost when some sample has
+      ``p > allowance + 0.5 px``.
+
+    Opening by ``r`` removes only tips from a shape with no feature narrower than
+    ``2r``: a true corner's eroded tip, or a smooth tip, taken to be at least 30
+    degrees (``S = r (1 / sin 15deg - 1)``, about ``2.86 r``). A true corner
+    (corner, junction or edge point on the component's boundary) with tip angle
+    ``a = 180 - turn_deg`` (at least 0.5 degree) has its tip replaced by the
+    radius-``r`` arc tangent to both sides ``t = r cot(a / 2)`` from the apex, so
+    the apex loses ``A = r (1 / sin(a / 2) - 1)`` and the loss falls
+    monotonically along each side (``sqrt(r^2 + (t - s)^2) - r`` at ``s`` from
+    the apex) to 0 at ``t``. The allowance at a sample ``x`` is
+    ``max(R(x), T(x))``:
+
+    - ``R(x) = min(S, min_c (A_c + |x - c|))``: no sample loses more than a
+      smooth tip, and since ``p`` is 1-Lipschitz, nothing within ``|x - c|`` of
+      a corner whose own tip loses at most ``A_c`` loses more than
+      ``A_c + |x - c|``. This finds an arm's square end (its end corners lose
+      the arm's length) and bounds loss beside an obtuse corner without
+      attributing loss far from the corner to it.
+    - ``T(x) = max_c min(A_c, the least loss on the boundary from c's apex to x,
+      either way round)``: a corner's eroded tip never loses more farther from
+      its apex, so loss reached from the apex without first falling is that
+      tip's, whatever the curvature of its sides; loss behind a dip (an arm
+      beside the corner) is not. This keeps a corner sharper than 30 degrees,
+      and a compound tip (a blunt corner on a sharper corner's side), from
+      counting as narrow.
+
+    Both terms are continuous in the geometry and in ``r`` (minima and maxima of
+    distances and losses), so no removal is attributed to a corner merely because
+    it reaches the corner, and a small change of the geometry moves the estimate
+    by a correspondingly small amount.
 
     The radius is scanned from 0.05 px in steps of 25% until the first loss, then
     bisected eight times; the result is twice that radius.
@@ -825,17 +839,23 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
     Error and limits: the numerical error is about 0.06 px plus 0.2% (the 0.01 px
     simplification, a part lost up to 0.02 px of radius early as noise, 16-segment
     quarter circles in the buffers, bisection). By construction acute corners do
-    not count as narrow (their width is zero at the apex); corner fidelity is measured by the corner metrics instead. An arm
-    shorter than its tip allowance beyond its base (about 3r for a smooth end,
-    more beside a sharp corner) is not detected, so the estimate can exceed the
-    width of a short stub; conversely a smooth end sharper than a 30 degree tip
-    registers at its tip width, which underestimates. The scan assumes the first
-    loss is the narrowest one; a feature lost only between two scan radii is
-    found at the next.
+    not count as narrow (their width is zero at the apex); corner fidelity is
+    measured by the corner metrics instead. A round-ended arm is detected only
+    once it protrudes more than ``S`` (about 3r) beyond the opened shape, so the
+    estimate can exceed the width of a short stub, and an arm whose loss falls
+    continuously from a corner's apex is judged as that corner's tip; a
+    square-ended arm is found through its own end corners (``A`` is about 0.41r
+    at 90 degrees). ``A`` is the loss of the sharpest sector at the corner, so for
+    a colour whose sector there is blunter or concave the bound is looser than it
+    could be. A tip whose sides curve inward, or a compound tip, loses more at
+    its apex than ``A`` and registers once the excess exceeds 0.5 px, which
+    underestimates; so does a smooth end sharper than 30 degrees. The scan assumes
+    the first loss is the narrowest one; a feature lost only between two scan
+    radii is found at the next.
     """
-    tips = [(corner.point, max(0.5, 180.0 - corner.turn_deg)) for corner in truth.corners]
-    tip_points = shapely.points([point for point, _ in tips]) if tips else None
-    tip_angles = np.asarray([angle for _, angle in tips])
+    corner_xy = np.asarray([corner.point for corner in truth.corners], dtype=float).reshape(-1, 2)
+    corner_tip = np.radians([max(0.5, 180.0 - corner.turn_deg) for corner in truth.corners])
+    corner_points = shapely.points(corner_xy)
     components = []
     for geometry in truth.colour_geometry.values():
         simplified = shapely.normalize(geometry).simplify(_SIMPLIFY)
@@ -843,15 +863,24 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
             if isinstance(part, Polygon) and part.area > _NOISE_AREA_PX:
                 part = Polygon(part.exterior, [ring for ring in part.interiors
                                                if Polygon(ring).area > _NOISE_AREA_PX])
-                samples = [shapely.get_coordinates(shapely.segmentize(ring, _SAMPLE_PX))[:-1]
-                           for ring in (part.exterior, *part.interiors)]
-                components.append((part, [(coords, shapely.points(coords))
-                                          for coords in samples]))
+                # The true corners on the component's boundary: exact on the
+                # truth outline, which the simplification moves by at most 0.01 px.
+                own = shapely.distance(part.boundary, corner_points) <= _REMOVED_PX
+                rings = []
+                for ring in (part.exterior, *part.interiors):
+                    coords = shapely.get_coordinates(shapely.segmentize(ring, _SAMPLE_PX))[:-1]
+                    on_ring = own & (shapely.distance(ring, corner_points) <= _REMOVED_PX)
+                    apexes = np.asarray([int(np.argmin(np.hypot(*(coords - point).T)))
+                                         for point in corner_xy[on_ring]], dtype=int)
+                    rings.append((coords, shapely.points(coords), apexes, corner_tip[on_ring]))
+                components.append((part, rings, corner_xy[own], corner_tip[own]))
     if not components:
         return 0.0
+    smooth_half = math.radians(_SMOOTH_TIP_DEG) / 2.0
 
     def lost(radius: float) -> bool:
-        for component, rings in components:
+        smooth_loss = radius * (1.0 / math.sin(smooth_half) - 1.0)
+        for component, rings, corners, tips in components:
             eroded = component.buffer(-radius, quad_segs=_QUAD_SEGS)
             parts = [part for part in shapely.get_parts(eroded)
                      if not part.is_empty and not _is_noise(part)]
@@ -863,24 +892,29 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
             opened = parts[0].buffer(radius, quad_segs=_QUAD_SEGS)
             kept = opened.buffer(_REMOVED_PX, quad_segs=2)
             shapely.prepare(kept)
-            for coords, points in rings:
-                distance = np.zeros(len(points))
-                outside = ~shapely.contains_xy(kept, coords[:, 0], coords[:, 1])
-                distance[outside] = shapely.distance(points[outside], opened)
-                for run in _runs(distance > _REMOVED_PX):
-                    protrusion = float(distance[run].max())
-                    if protrusion <= _PROTRUSION_SLACK:
-                        continue
-                    angle = _SMOOTH_TIP_DEG
-                    if tip_points is not None:
-                        stretch = (shapely.points(coords[run[0]]) if len(run) == 1
-                                   else shapely.linestrings(coords[run]))
-                        near = shapely.distance(tip_points, stretch) <= _REMOVED_PX
-                        if near.any():
-                            angle = float(tip_angles[near].min())
-                    allowance = radius * (1.0 / math.sin(math.radians(angle) / 2.0) - 1.0)
-                    if protrusion > allowance + _PROTRUSION_SLACK:
-                        return True
+            apex_loss = radius * (1.0 / np.sin(tips / 2.0) - 1.0)
+            for coords, points, apexes, apex_tips in rings:
+                removed = ~shapely.contains_xy(kept, coords[:, 0], coords[:, 1])
+                if not removed.any():
+                    continue
+                loss = np.zeros(len(coords))
+                loss[removed] = shapely.distance(points[removed], opened)
+                allowance = np.full(int(removed.sum()), smooth_loss)
+                if len(corners):
+                    apart = np.hypot(coords[removed, 0, None] - corners[None, :, 0],
+                                     coords[removed, 1, None] - corners[None, :, 1])
+                    allowance = np.minimum(allowance, (apex_loss + apart).min(axis=1))
+                    tip = np.zeros(len(coords))
+                    steps = np.arange(len(coords))
+                    for apex, angle in zip(apexes, apex_tips):
+                        cap = radius * (1.0 / math.sin(angle / 2.0) - 1.0)
+                        for order in ((apex + steps) % len(coords), (apex - steps) % len(coords)):
+                            falling = np.empty(len(coords))
+                            falling[order] = np.minimum.accumulate(loss[order])
+                            tip = np.maximum(tip, np.minimum(falling, cap))
+                    allowance = np.maximum(allowance, tip[removed])
+                if (loss[removed] > allowance + _PROTRUSION_SLACK).any():
+                    return True
         return False
 
     low, high = 0.0, _FEATURE_START

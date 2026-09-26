@@ -261,6 +261,62 @@ class MinFeatureTest(unittest.TestCase):
         self.assertGreater(feature([Region(1, polygon(points))]), 15.0)
 
 
+def _nudged(truth, apex, offset):
+    """``truth`` with the outline vertex at the true corner ``apex`` (in every
+    colour's geometry) and the corner itself moved by ``offset``."""
+    def ring(coords):
+        return [(x + offset[0], y + offset[1]) if math.dist((x, y), apex) < 1e-6 else (x, y)
+                for x, y in coords]
+    geometry = {}
+    for colour, part in truth.colour_geometry.items():
+        polygons = [Polygon(ring(piece.exterior.coords), [ring(hole.coords) for hole in piece.interiors])
+                    for piece in shapely.get_parts(part)]
+        geometry[colour] = polygons[0] if len(polygons) == 1 else shapely.MultiPolygon(polygons)
+    corners = [replace(corner, point=(apex[0] + offset[0], apex[1] + offset[1]))
+               if math.dist(corner.point, apex) < 1e-6 else corner for corner in truth.corners]
+    return replace(truth, colour_geometry=geometry, corners=corners)
+
+
+class MinFeatureContinuityTest(unittest.TestCase):
+    """A small change of the geometry beside a true corner changes the estimate by
+    a correspondingly small amount: the corner's allowance is continuous in where
+    a removed stretch lies relative to it."""
+
+    NUDGES = ((0.01, 0.0), (-0.01, 0.0), (0.0, 0.01), (0.0, -0.01))
+
+    def assert_close(self, nudged: float, expected: float):
+        # The estimate's own stated numerical error (0.06 px + 0.2%).
+        self.assertAlmostEqual(nudged, expected, delta=0.06 + 0.002 * expected)
+
+    def test_cornered_blob_corner_beside_a_removed_lobe(self):
+        # fuzz_case(1029, 1024): the lobe's removed stretch reaches the 135 degree
+        # corner at (688.2, 118.3), which is concave for the lobe's colour.
+        _, truth = fuzz.fuzz_scene(1029, 1024, "cornered-blob")
+        apex = min((corner.point for corner in truth.corners),
+                   key=lambda point: math.dist(point, (688.24, 118.32)))
+        self.assertLess(math.dist(apex, (688.24, 118.32)), 0.01)
+        expected = estimate_min_feature_px(truth)
+        for offset in self.NUDGES:
+            with self.subTest(offset=offset):
+                self.assert_close(estimate_min_feature_px(_nudged(truth, apex, offset)), expected)
+
+    def test_arm_beside_a_convex_corner(self):
+        # A 6 px arm on a body's top edge, its side 3 px from the body's 90 degree
+        # corner: the corner's eroded tip and the removed arm form one stretch.
+        def estimate(offset: float, round_end: bool) -> float:
+            left = 150.0 - 6.0 - 3.0 + offset
+            arm = [Region(1, rectangle(left, 40, left + 6.0, 101))]
+            if round_end:
+                arm.append(Region(1, circle((left + 3.0, 40), 3.0)))
+            return feature([Region(1, rectangle(60, 100, 150, 190)), *arm])
+        for round_end in (False, True):
+            expected = estimate(0.0, round_end)
+            with self.subTest(round_end=round_end):
+                self.assertAlmostEqual(expected, 6.0, delta=0.1)
+                for offset in (0.01, -0.01, 0.5, 1.0):
+                    self.assert_close(estimate(offset, round_end), expected)
+
+
 def _restarted(ring, shift: int, reverse: bool) -> list:
     coords = list(ring.coords)[:-1]
     if reverse:
@@ -296,12 +352,12 @@ class RingStartInvarianceTest(unittest.TestCase):
         return expected
 
     def test_cornered_blob_whose_estimate_followed_the_start_vertex(self):
-        # fuzz_case(1029, 1024): restarting its rings once moved the estimate
-        # between 72.575 and 96.162 px (a sub-0.01 px erosion sliver was counted
-        # as a split, and whether it appeared followed the simplification's
-        # start-anchored vertex choice).
+        # fuzz_case(1029, 1024): a sub-0.01 px erosion sliver counted as a split
+        # made the estimate follow the simplification's start-anchored vertex
+        # choice. Its first loss is the 56 degree edge point at (404.8, 0), whose
+        # inward-curving side makes it lose more than a straight-sided tip.
         _, truth = fuzz.fuzz_scene(1029, 1024, "cornered-blob")
-        self.assertAlmostEqual(self.assert_invariant(truth), 96.162, delta=0.001)
+        self.assertAlmostEqual(self.assert_invariant(truth), 122.175, delta=0.001)
 
     def test_neck_between_two_discs(self):
         regions = [Region(1, circle((70, 128), 40)), Region(1, circle((186, 128), 40)),
