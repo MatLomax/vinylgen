@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CANVAS_COMPARE_STORAGE_KEY, ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
+import { CANVAS_COMPARE_STORAGE_KEY, ImageWorkspace, NARROW_CANVAS_WIDTH, type WorkspaceLayer } from './ImageWorkspace'
 import { splitPositionInImage } from './workspace'
 import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
@@ -17,6 +17,16 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
   localStorage.clear()
 })
+
+// Every observed element reports this width (and a fixed height) as soon as it is observed.
+function stubCanvasWidth(width: number) {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) { this.callback([{ target, contentRect: { width, height: 600 } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver) }
+    unobserve() {}
+    disconnect() {}
+  })
+}
 
 afterEach(() => {
   cleanup()
@@ -109,10 +119,19 @@ describe('main canvas comparison', () => {
     expect(compareGroup()).toBeNull()
   })
 
-  describe('at 1024px and below', () => {
-    beforeEach(() => {
-      vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query === '(max-width: 1024px)', addEventListener: vi.fn(), removeEventListener: vi.fn() })))
-    })
+  // The canvas's own width decides, not the window's: a narrow window still has an
+  // inline control in a wide canvas.
+  it('keeps the control inline in a canvas at least NARROW_CANVAS_WIDTH wide, whatever the window', () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
+    stubCanvasWidth(NARROW_CANVAS_WIDTH)
+    const { container } = prepare({ compareBefore: ['source'] })
+    expect(compareGroup()).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Compare: / })).toBeNull()
+    expect(container.querySelector('.image-workspace')?.classList.contains('narrow-canvas')).toBe(false)
+  })
+
+  describe(`in a canvas narrower than NARROW_CANVAS_WIDTH`, () => {
+    beforeEach(() => stubCanvasWidth(NARROW_CANVAS_WIDTH - 1))
     const toggle = () => screen.getByRole('button', { name: /^Compare: / })
 
     it('collapses into a toolbar button opening the control as a popover outside the toolbar row', () => {

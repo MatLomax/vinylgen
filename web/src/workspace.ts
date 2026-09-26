@@ -29,6 +29,11 @@ export function fitTransform(viewWidth: number, viewHeight: number, imageWidth: 
   }
 }
 
+/** Keep a view's scale when its viewport resizes, holding the image point at the viewport's centre. */
+export function keepCentre(transform: ViewTransform, from: ImageSize, to: ImageSize): ViewTransform {
+  return { ...transform, x: transform.x + (to.width - from.width) / 2, y: transform.y + (to.height - from.height) / 2 }
+}
+
 /** Convert a viewport-relative comparison divider to the image's local coordinates. */
 export function splitPositionInImage(viewWidth: number, splitPercent: number, imageWidth: number, transform: ViewTransform) {
   if (!imageWidth || !transform.scale) return 0

@@ -1,6 +1,6 @@
 import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { LoaderCircle, Maximize, Pause, Play, ZoomIn, ZoomOut } from 'lucide-react'
-import { clamp, defaultComparePair, distance, fitTransform, gridsRegister, lineageRegisters, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type UpscaleLineage, type ViewTransform } from './workspace'
+import { clamp, defaultComparePair, distance, fitTransform, keepCentre, gridsRegister, lineageRegisters, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type UpscaleLineage, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { useTracePreview, type LivePreviewOptions } from './TracePreview'
 import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
@@ -52,9 +52,12 @@ function storedCompareMode(): CompareMode {
     return value === 'split' || value === 'blink' ? value : 'single'
   } catch { return 'single' }
 }
-// The widths at which the canvas's Compare control is a toolbar button opening a popover.
-const NARROW_CANVAS_QUERY = '(max-width: 1024px)'
-const narrowCanvasNow = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(NARROW_CANVAS_QUERY).matches
+// The canvas column width below which its Compare control is a toolbar button opening a
+// popover. It is the canvas's own width, not the window's: the stage rail and the stage
+// settings panel collapse independently of the window.
+export const NARROW_CANVAS_WIDTH = 600
+// A press that moves less than this (in CSS pixels) is a tap, not a drag.
+const TAP_DISTANCE = 5
 function storeCompareMode(mode: CompareMode) {
   try { localStorage.setItem(CANVAS_COMPARE_STORAGE_KEY, mode) } catch { /* storage unavailable */ }
 }
@@ -78,6 +81,21 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const readout = useRef<HTMLDivElement>(null)
   const [readoutFlip, setReadoutFlip] = useState({ x: false, y: false })
   const [transform, setTransform] = useState<ViewTransform>({ x: 0, y: 0, scale: 1 })
+  // Whether the view is still the fitted one. A resize refits a fitted view (so a panel
+  // collapsing enlarges the image) and otherwise keeps the user's zoom and centre.
+  const fitted = useRef(true)
+  const viewportSize = useRef<ImageSize | null>(null)
+  function moveView(update: (value: ViewTransform) => ViewTransform) {
+    fitted.current = false
+    setTransform(update)
+  }
+  // A one-pointer pan still within a tap's distance of where it started is a tap's jitter:
+  // it moves the image but leaves the view fitted.
+  function panView(pointerId: number, update: (value: ViewTransform) => ViewTransform) {
+    const start = pointerStarts.current.get(pointerId), here = pointers.current.get(pointerId)
+    if (start && here && distance(start, here) < TAP_DISTANCE) setTransform(update)
+    else moveView(update)
+  }
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [beforeId, setBeforeId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).beforeId)
   const [afterId, setAfterId] = useState(() => defaultComparePair(layers.filter(layer => layer.role === 'image').map(layer => layer.id), preferredLayerId).afterId)
@@ -91,7 +109,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const [sessionMode, setSessionMode] = useState<CompareMode>('single')
   useEffect(() => { setSessionMode('single') }, [compareRemembered, compareKey])
   const chosenMode = compareRemembered ? canvasMode : sessionMode
-  const [narrowCanvas, setNarrowCanvas] = useState(narrowCanvasNow)
+  const root = useRef<HTMLDivElement>(null)
+  const [narrowCanvas, setNarrowCanvas] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
   const comparePanel = useRef<HTMLDivElement>(null)
   const compareToggle = useRef<HTMLButtonElement>(null)
@@ -360,20 +379,24 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     if (!element || !size.width || !size.height || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(entries => {
       const bounds = entries[0]?.contentRect
-      if (bounds?.width && bounds.height) {
-        setTransform(fitTransform(bounds.width, bounds.height, size.width, size.height))
-      }
+      if (!bounds?.width || !bounds.height) return
+      const previous = viewportSize.current
+      const next = { width: bounds.width, height: bounds.height }
+      viewportSize.current = next
+      if (fitted.current || !previous) setTransform(fitTransform(next.width, next.height, size.width, size.height))
+      else setTransform(value => keepCentre(value, previous, next))
     })
     observer.observe(element)
     return () => observer.disconnect()
   }, [size.width, size.height])
 
   function fit(width = size.width, height = size.height) {
+    fitted.current = true
     setTransform(fitTransform(viewport.current?.clientWidth ?? 0, viewport.current?.clientHeight ?? 0, width, height))
   }
 
   function zoomCentre(factor: number) {
-    setTransform(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, factor))
+    moveView(value => zoomAt(value, { x: (viewport.current?.clientWidth ?? 0) / 2, y: (viewport.current?.clientHeight ?? 0) / 2 }, factor))
   }
 
   // Record which URL the Before <img> settled on (the one it actually holds), and take
@@ -451,9 +474,10 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       const [a, b] = [...pointers.current.values()]
       const centre = midpoint(a, b)
       const zoomed = zoomAt(gesture.current.transform, gesture.current.centre, distance(a, b) / gesture.current.distance)
-      setTransform({ ...zoomed, x: zoomed.x + centre.x - gesture.current.centre.x, y: zoomed.y + centre.y - gesture.current.centre.y })
+      const pinched = { ...zoomed, x: zoomed.x + centre.x - gesture.current.centre.x, y: zoomed.y + centre.y - gesture.current.centre.y }
+      moveView(() => pinched)
     } else if (panningPointer.current) {
-      setTransform(value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
+      panView(event.pointerId, value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
     } else if (paintMode && onPaint) {
       if (!painting.current) return
       const pixel = imagePixel(event.clientX, event.clientY)
@@ -464,14 +488,14 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       }
       lastPaint.current = pixel
     } else if (pointers.current.size === 1) {
-      setTransform(value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
+      panView(event.pointerId, value => ({ ...value, x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }))
     }
   }
 
   function pointerUp(event: PointerEvent<HTMLDivElement>) {
     const start = pointerStarts.current.get(event.pointerId)
     const end = localPoint(event.clientX, event.clientY)
-    if (onSelectPoint && start && distance(start, end) < 5 && size.width && size.height) {
+    if (onSelectPoint && start && distance(start, end) < TAP_DISTANCE && size.width && size.height) {
       const x = Math.floor((end.x - transform.x) / transform.scale)
       const y = Math.floor((end.y - transform.y) / transform.scale)
       if (x >= 0 && y >= 0 && x < size.width && y < size.height) onSelectPoint([x, y])
@@ -493,7 +517,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
     if (!element) return
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
-      setTransform(value => zoomAt(value, localPoint(event.clientX, event.clientY), Math.exp(-event.deltaY * 0.0015)))
+      moveView(value => zoomAt(value, localPoint(event.clientX, event.clientY), Math.exp(-event.deltaY * 0.0015)))
     }
     element.addEventListener('wheel', wheel, { passive: false })
     return () => element.removeEventListener('wheel', wheel)
@@ -712,16 +736,19 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // the inspector, split draws the After (the shown image) left of the divider and the
   // Before right of it; blink alternates the two.
   const hiddenWhileComparing = inspections.some(inspectionOn) || nodesOn || Boolean(overlay) || Boolean(tracePreview.stageLayer || cleanupLivePreview.stageLayer)
-  // At 1024px and below the control is one toolbar button opening it as a popover
-  // positioned from the canvas (outside the toolbar row, which clips), so the toolbar
-  // stays one row; above, it sits inline in the toolbar.
+  // In a canvas narrower than NARROW_CANVAS_WIDTH the control is one toolbar button
+  // opening it as a popover positioned from the canvas (outside the toolbar row, which
+  // clips), so the toolbar stays one row; wider, it sits inline in the toolbar.
   useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia(NARROW_CANVAS_QUERY)
-    const changed = (event: MediaQueryListEvent) => setNarrowCanvas(event.matches)
-    query.addEventListener?.('change', changed)
-    return () => query.removeEventListener?.('change', changed)
-  }, [])
+    const element = root.current
+    if (!element || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width) setNarrowCanvas(width < NARROW_CANVAS_WIDTH)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [hasImages])
   const popover = editorMode && narrowCanvas
   const compareWord = !canvasBefore ? 'Unavailable' : chosenMode === 'single' ? 'Off' : chosenMode === 'split' ? 'Split' : 'Blink'
   const insideCompare = (node: EventTarget | null) => node instanceof Node && Boolean(comparePanel.current?.contains(node) || compareToggle.current?.contains(node))
@@ -758,7 +785,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
 
   if (!visible.length) return <div className="image-workspace empty-workspace"><span>◆</span><h2>Image workspace</h2><p>Import an image to inspect it here.</p></div>
 
-  return <div className={`image-workspace ${editorMode ? 'palette-canvas' : ''}`}>
+  return <div ref={root} className={`image-workspace ${editorMode ? 'palette-canvas' : ''} ${popover ? 'narrow-canvas' : ''}`}>
     <p className="visually-hidden" aria-live="polite">{announcement}</p>
     <div className="viewport-toolbar" inert={sheetOpen}><span>{loading ? 'Loading…' : before?.name}</span>{popover ? compareToggleButton : canvasCompare}<strong>{editorMode ? canvasLabel : mode === 'single' ? 'Inspect' : mode === 'split' ? 'Split comparison' : 'Blink comparison'}</strong>{onClose && <button className="inspector-close" onClick={onClose}>Close inspector</button>}{!editorMode && <button ref={controlsButton} onClick={() => setSheetOpen(true)}>Controls</button>}</div>
     {/* While the popover is open a transparent backdrop covers the page beneath it: a

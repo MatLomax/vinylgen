@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, Eraser, Layers3, Palette, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
+import { Download, Eraser, Layers3, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
 import { api, followJob, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
@@ -9,6 +9,8 @@ import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
+import { StagePanel } from './StagePanel'
+import { ICON_RAIL_QUERY, OVERLAY_PANEL_QUERY, PHONE_QUERY, SETTINGS_PANEL_STORAGE_KEY, STAGE_RAIL_STORAGE_KEY, panelModeFor, storeChoice, storedChoice, useMediaQuery } from './shellLayout'
 import { palettePointsForRevision } from './sourceGrid'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
 import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, isPixelRecord, layerOrderMatters, legacyCleanupSettings, normalizeTraceSettings, pixelRecordInUnits, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
@@ -677,7 +679,20 @@ export default function App() {
   const [pencilBusyProjects, setPencilBusyProjects] = useState<string[]>([])
   const pencilBusy = Boolean(selected) && pencilBusyProjects.includes(selected!)
   const [pencilError, setPencilError] = useState('')
-  const [desktopWorkflow, setDesktopWorkflow] = useState(() => window.innerWidth > 700)
+  const phone = useMediaQuery(PHONE_QUERY)
+  const overlayPanel = useMediaQuery(OVERLAY_PANEL_QUERY)
+  const iconRail = useMediaQuery(ICON_RAIL_QUERY)
+  // The stage rail shows icons only below 1280px until the user expands or collapses it;
+  // that choice is remembered. The settings panel beside the canvas remembers whether it
+  // is open; over the canvas it opens closed, except that arriving at Create or Upload
+  // opens it (their settings are the stage's only way forward); a phone's drawer opens
+  // collapsed.
+  const [railChoice, setRailChoice] = useState(() => storedChoice(STAGE_RAIL_STORAGE_KEY, ['expanded', 'collapsed'] as const))
+  const railExpanded = railChoice ? railChoice === 'expanded' : !iconRail
+  const [pushPanelOpen, setPushPanelOpen] = useState(() => storedChoice(SETTINGS_PANEL_STORAGE_KEY, ['open', 'closed'] as const) !== 'closed')
+  const [overlayPanelOpen, setOverlayPanelOpen] = useState(() => stage === 'create' || stage === 'upload')
+  useEffect(() => { if (stage === 'create' || stage === 'upload') setOverlayPanelOpen(true) }, [stage])
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [upscaleOpen, setUpscaleOpen] = useState(false)
   const stageScroll = useRef<Partial<Record<WorkflowStage, number>>>({})
   const loadedProject = useRef<string | null>(null)
@@ -872,11 +887,6 @@ export default function App() {
 
   useEffect(() => { api.projects().then(list => { projectsKnown.current = true; setProjects(list) }).catch(e => setError(String(e))) }, [])
   useEffect(() => { api.health().then(health => setMaxUploadBytes(health.max_upload_bytes)).catch(() => { /* keep the default cap */ }) }, [])
-  useEffect(() => {
-    const syncWorkflowOrientation = () => setDesktopWorkflow(window.innerWidth > 700)
-    window.addEventListener('resize', syncWorkflowOrientation)
-    return () => window.removeEventListener('resize', syncWorkflowOrientation)
-  }, [])
   useEffect(() => job ? followJob(job.id, next => {
     setError('')
     setJob(next)
@@ -1692,21 +1702,48 @@ export default function App() {
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-stage-button="${nextStage}"]`)?.focus())
   }
 
-  return <main>
+  // A phone shows the canvas (with the settings as a drawer beneath it) on the canvas
+  // stages, and while artwork loads or a job runs.
+  const canvasShown = ['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || Boolean(selectionMode) || busy || projectLoading || uploading
+  const panelMode = panelModeFor(phone, overlayPanel, canvasShown)
+  const panelOpen = panelMode === 'push' ? pushPanelOpen : panelMode === 'overlay' ? overlayPanelOpen : panelMode === 'drawer' ? drawerOpen : true
+  function setPanelOpen(open: boolean) {
+    if (panelMode === 'push') { setPushPanelOpen(open); storeChoice(SETTINGS_PANEL_STORAGE_KEY, open ? 'open' : 'closed') }
+    else if (panelMode === 'overlay') setOverlayPanelOpen(open)
+    else if (panelMode === 'drawer') setDrawerOpen(open)
+  }
+  function toggleRail() {
+    const next = railExpanded ? 'collapsed' : 'expanded'
+    setRailChoice(next)
+    storeChoice(STAGE_RAIL_STORAGE_KEY, next)
+  }
+  const stageLabel = WORKFLOW_STAGES.find(item => item.id === stage)?.label ?? ''
+  // Each pipeline stage's run button, with the reasons it is locked: in its settings, and
+  // on a phone's collapsed drawer.
+  const runActions = {
+    flatten: { label: 'Flatten image', disabled: !revision || busy || startingJob || Boolean(selectedUnavailable), run: () => runPipeline('palette'), describedBy: lockedBy('flatten-lock-reason') },
+    cleanup: { label: 'Run cleanup', disabled: !revision || !selectedHasSegmentation || busy || startingJob || Boolean(cleanupRunBlocked), run: () => runPipeline('cleanup'),
+      describedBy: [lockedBy('cleanup-lock-reason'), cleanupRunBlocked ? 'cleanup-remove-reason' : undefined].filter(Boolean).join(' ') || undefined },
+    trace: { label: 'Trace and validate', disabled: !revision || !selectedHasSegmentation || busy || startingJob || cleanupStale, run: () => runPipeline('trace'), describedBy: lockedBy('trace-lock-reason') },
+  }
+  const peekAction = stage === 'flatten' || stage === 'cleanup' || stage === 'trace' ? runActions[stage] : undefined
+
+  return <main className={phone ? 'rail-strip' : railExpanded ? 'rail-expanded' : 'rail-collapsed'}>
     <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{stage !== 'upload' && viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => openProject(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
-      <nav className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={desktopWorkflow ? 'vertical' : 'horizontal'}>
-        {WORKFLOW_STAGES.map(item => <button key={item.id} id={`workflow-tab-${item.id}`} type="button" role="tab" aria-label={item.label} data-stage-button={item.id} aria-selected={stage === item.id} aria-controls={`workflow-panel-${item.id}`} tabIndex={stage === item.id ? 0 : -1} onKeyDown={event => navigateStageByKey(event, item.id)} onClick={() => navigateStage(item.id)}><item.icon aria-hidden="true"/><span><strong>{item.label}</strong><small>{item.description}</small></span>{(item.id === 'flatten' || item.id === 'cleanup' || item.id === 'trace') && busy && <i className="stage-running" aria-label="Job running" />}</button>)}
+      <nav id="workflow-nav" className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={phone ? 'horizontal' : 'vertical'}>
+        {WORKFLOW_STAGES.map(item => <button key={item.id} id={`workflow-tab-${item.id}`} type="button" role="tab" aria-label={item.label} title={!phone && !railExpanded ? item.label : undefined} data-stage-button={item.id} aria-selected={stage === item.id} aria-controls={`workflow-panel-${item.id}`} tabIndex={stage === item.id ? 0 : -1} onKeyDown={event => navigateStageByKey(event, item.id)} onClick={() => navigateStage(item.id)}><item.icon aria-hidden="true"/><span><strong>{item.label}</strong><small>{item.description}</small></span>{(item.id === 'flatten' || item.id === 'cleanup' || item.id === 'trace') && busy && <i className="stage-running" aria-label="Job running" />}</button>)}
       </nav>
+      <button type="button" className="rail-toggle" aria-controls="workflow-nav" aria-expanded={railExpanded} aria-label={railExpanded ? 'Collapse stage rail' : 'Expand stage rail'} title={railExpanded ? 'Collapse stage rail' : 'Expand stage rail'} onClick={toggleRail}>{railExpanded ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}<span>Collapse</span></button>
     </div>
     <p className="visually-hidden" aria-live="polite" aria-atomic="true">{WORKFLOW_STAGES.find(item => item.id === stage)?.label} stage</p>
-    <section className="mobile-context" aria-label="Current work"><div className="mobile-context-head"><strong>{WORKFLOW_STAGES.find(item => item.id === stage)?.label}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></div>{artworkStageActive && availableViews.length > 1 && <div className="mobile-view-switch">{viewToggle()}</div>}</section>
+    <section className="mobile-context" aria-label="Current work"><div className="mobile-context-head"><strong>{stageLabel}</strong><span>{projects.find(project => project.id === selected)?.name || 'No project selected'}</span></div>{artworkStageActive && availableViews.length > 1 && <div className="mobile-view-switch">{viewToggle()}</div>}</section>
     {error && <p className="error global-error" role="alert">{error}</p>}
     {error && error === loadError && <button type="button" className="secondary global-retry" onClick={retryLoad}>Retry loading</button>}
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
-    <section className={`workspace workflow-${stage}`}>
-      <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || selectionMode || busy || projectLoading || uploading ? 'mobile-stage-active' : ''}`} data-stage="artwork">
+    <section className={`workspace workflow-${stage} panel-${panelMode} ${panelOpen ? 'panel-open' : 'panel-closed'}`}>
+      <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${canvasShown ? 'mobile-stage-active' : ''}`} data-stage="artwork">
         {stage === 'upload' || stage === 'flatten' || stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
@@ -1763,7 +1800,7 @@ export default function App() {
               ? <LoadingOverlay title="Uploading" message={uploadFraction !== null ? `Uploading image… ${Math.round(uploadFraction * 100)}%` : 'Processing image…'} progress={uploadFraction} elapsedSeconds={elapsedSeconds} progressLabel="Upload progress" />
               : null}
       </div>
-      <aside>
+      <StagePanel mode={panelMode} open={panelOpen} onOpenChange={setPanelOpen} stageLabel={stageLabel} peekAction={peekAction}>
         <section id="workflow-panel-create" role="tabpanel" aria-labelledby="workflow-tab-create" className={`side-section create-section workflow-surface ${stage === 'create' ? 'mobile-stage-active' : ''}`} data-stage="create">
         <h2>Create artwork</h2>
         <form className="generation-form" key={sourceRevision?.id ?? 'new-source'} onSubmit={generateImage}>
@@ -1789,7 +1826,7 @@ export default function App() {
         <div className="section-heading"><h2>Flatten colours</h2><span>{revision ? 'Ready' : 'Choose a project'}</span></div><p className="section-intro">Turn the source into an exact limited-colour raster. Review preservation exceptions before running.</p>
         <div className="job">
           {!revision && <p className="stage-guidance">Choose an active project in the header first.</p>}
-          <button disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => runPipeline('palette')}>Flatten image</button>
+          <button disabled={runActions.flatten.disabled} aria-describedby={runActions.flatten.describedBy} onClick={runActions.flatten.run}>{runActions.flatten.label}</button>
           {sourceRevision && <button type="button" className="secondary" disabled={busy || Boolean(selectedUnavailable)} aria-describedby={lockedBy('flatten-lock-reason')} onClick={() => setUpscaleOpen(true)}>Upscale source…</button>}
           {lockReason('flatten-lock-reason')}
         </div>
@@ -1800,14 +1837,14 @@ export default function App() {
         </section>
         <section id="workflow-panel-cleanup" role="tabpanel" aria-labelledby="workflow-tab-cleanup" className={`side-section pipeline-section workflow-surface ${stage === 'cleanup' ? 'mobile-stage-active' : ''}`} data-stage="cleanup">
           <div className="section-heading"><h2>Clean up for cutting</h2><span>{readiness}</span></div><p className="section-intro">Set the physical size and removed colour the trace uses, and remove or widen details too small to cut.</p>
-          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || startingJob || Boolean(cleanupRunBlocked)} aria-describedby={[lockedBy('cleanup-lock-reason'), cleanupRunBlocked ? 'cleanup-remove-reason' : undefined].filter(Boolean).join(' ') || undefined} onClick={() => runPipeline('cleanup')}>Run cleanup</button>{lockReason('cleanup-lock-reason')}{cleanupRunBlocked && <p id="cleanup-remove-reason" className="stage-guidance lock-reason">{cleanupRunBlocked}</p>}</div>
+          <div className="job"><button disabled={runActions.cleanup.disabled} aria-describedby={runActions.cleanup.describedBy} onClick={runActions.cleanup.run}>{runActions.cleanup.label}</button>{lockReason('cleanup-lock-reason')}{cleanupRunBlocked && <p id="cleanup-remove-reason" className="stage-guidance lock-reason">{cleanupRunBlocked}</p>}</div>
           {replayMessage && <p className="stage-guidance touch-up-replay" role="status">{replayMessage}</p>}
           <PipelineControls stage="cleanup" palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} cleanup={cleanupSettings} setCleanup={setCleanupSettings} baseCleanup={baselineCleanup} paletteColours={editorPalette} removalPaletteCurrent={paletteRevision === revision} removalBlocked={removeBlocked} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setCleanupSettings(DEFAULT_CLEANUP_SETTINGS)} iterationCount={cleanupIterations.length} iterationIndex={cleanupStep} onStep={stepCleanup} onCommitDraft={() => persistDraft('cleanup')} />
         </section>
         <section id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace" className={`side-section pipeline-section workflow-surface ${stage === 'trace' ? 'mobile-stage-active' : ''}`} data-stage="trace">
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{readiness}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', true)}>Re-run Cleanup with its last settings</button></div>}
-          <div className="job"><button disabled={!revision || !selectedHasSegmentation || busy || startingJob || cleanupStale} aria-describedby={lockedBy('trace-lock-reason')} onClick={() => runPipeline('trace')}>Trace and validate</button>{lockReason('trace-lock-reason')}</div>
+          <div className="job"><button disabled={runActions.trace.disabled} aria-describedby={runActions.trace.describedBy} onClick={runActions.trace.run}>{runActions.trace.label}</button>{lockReason('trace-lock-reason')}</div>
           <PipelineControls stage="trace" removedIndex={removedIndex} automaticOrder={automaticOrder} layerOrderLocked={!revision || paletteRevision === revision || (artifactsCurrent && !flattened) ? automaticOrderLock
             : tracedGridError && tracedGridError.revision === revision ? `Palette unavailable: ${tracedGridError.message}`
               : selectedUnavailable ?? 'Loading the selected revision…'} onRetryLayerOrder={automaticOrderLock && automaticOrderError?.revision === revision ? () => setAutomaticOrderAttempt(attempt => attempt + 1) : null} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
@@ -1834,7 +1871,7 @@ export default function App() {
               : <PencilEditor palette={editorPalette} removedIndex={removedIndex} activeLabel={pencilLabel} onPickColour={setPencilLabel} paintedCount={paintedCells.size} onApply={commitPencil} onDiscard={() => setPaintedCells(new Map())} onUndo={undoRegion} canUndo={Boolean(current?.parent_revision_id)} busy={pencilBusy} error={pencilError} disabled={!editSelectable || pixelsRevision !== revision} disabledHint={!editSelectable ? `Switch to the ${editableLabel} image to paint pixels.` : selectedUnavailable ?? 'Loading the artwork…'} lockedHint={canvasComparing ? COMPARE_EDIT_LOCK : undefined} />}
           </>}
         </section>
-      </aside>
+      </StagePanel>
     </section>
     <section id="workflow-panel-export" role="tabpanel" aria-labelledby="workflow-tab-export" className={`workflow-surface export-surface ${stage === 'export' ? 'mobile-stage-active' : ''}`} data-stage="export">
       {!handoff && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}

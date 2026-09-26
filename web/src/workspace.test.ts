@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultComparePair, fitTransform, lineageRegisters, gridsRegister, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
+import { defaultComparePair, fitTransform, keepCentre, lineageRegisters, gridsRegister, pixelLine, sameImageSize, splitPositionInImage, zoomAt } from './workspace'
 
 describe('shared workspace transform', () => {
   it('keeps the pixel under the pointer registered while zooming', () => {
@@ -19,6 +19,15 @@ describe('shared workspace transform', () => {
       expect(fitted.x).toBeGreaterThanOrEqual(15.999999)
       expect(fitted.y).toBeGreaterThanOrEqual(15.999999)
     }
+  })
+
+  it('keeps the image pixel at the viewport centre, at the same scale, through a resize', () => {
+    const view = { x: -120, y: 40, scale: 3 }
+    const from = { width: 800, height: 600 }, to = { width: 1100, height: 520 }
+    const centred = keepCentre(view, from, to)
+    expect(centred.scale).toBe(3)
+    expect((to.width / 2 - centred.x) / centred.scale).toBeCloseTo((from.width / 2 - view.x) / view.scale)
+    expect((to.height / 2 - centred.y) / centred.scale).toBeCloseTo((from.height / 2 - view.y) / view.scale)
   })
 
   it('clamps extreme zoom gestures', () => {
