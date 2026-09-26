@@ -341,6 +341,15 @@ class RenderCacheTests(unittest.TestCase):
         self.assertEqual(rgb.tobytes(), raster.render_rgb(self.case.scene).tobytes())
         self.assertEqual((labels.dtype, rgb.dtype), (np.int16, np.uint8))
 
+    def test_the_rgb_tier_carries_the_case_noise_the_regression_tests_trace(self):
+        from vinylgen.fidelity import families
+        case = next(case for case in families.palette_stage_set()
+                    if case.scene.params.get("noise") and case.scene.width <= 128)
+        for tiers in (("rgb",), ("labels", "rgb")):
+            sweep._RENDER_CACHE.clear()
+            rgb = sweep._render(case, "rgb", tiers)
+            self.assertEqual(rgb.tobytes(), families.render_case_rgb(case).tobytes(), tiers)
+
     def test_a_single_tier_sweep_renders_only_that_tier(self):
         from vinylgen.fidelity import raster
         with mock.patch.object(raster, "render_labels_and_rgb") as pair:

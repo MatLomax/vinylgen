@@ -750,7 +750,12 @@ def render_case_rgb(case: Case) -> np.ndarray:
     seeded noise, when ``scene.params["noise"]`` is ``{"seed", "amplitude"}``:
     independent integers uniform on [-amplitude, amplitude] per pixel channel from
     ``numpy.random.default_rng(seed)``, added and clipped to 0..255."""
-    rgb = render_rgb(case.scene)
+    return with_case_noise(case, render_rgb(case.scene))
+
+
+def with_case_noise(case: Case, rgb: np.ndarray) -> np.ndarray:
+    """``rgb``, an anti-aliased render of ``case``, with the case's seeded noise
+    added as ``render_case_rgb`` describes; unchanged for a case without noise."""
     noise = case.scene.params.get("noise")
     if not noise:
         return rgb

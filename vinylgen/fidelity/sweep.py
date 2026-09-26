@@ -134,6 +134,11 @@ def _render(case, tier: str, tiers=()):
         rendered["labels"] = render_labels(case.scene)
     else:
         rendered["rgb"] = render_rgb(case.scene)
+    if "rgb" in rendered:
+        # The RGB tier traces what the palette stage would receive: the render with
+        # the case's seeded noise, exactly as the regression tests trace it.
+        from vinylgen.fidelity.families import with_case_noise
+        rendered["rgb"] = with_case_noise(case, rendered["rgb"])
     dtypes = {"labels": np.int16, "rgb": np.uint8}
     # The requested render goes in last, so it is the most recently used.
     for name in sorted(rendered, key=lambda name: name == tier):
