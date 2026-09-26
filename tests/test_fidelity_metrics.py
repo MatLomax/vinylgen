@@ -10,6 +10,7 @@ from shapely.geometry import Point, box
 from vinylgen.contracts import TraceSettings
 from vinylgen.fidelity.harness import trace_labels, trace_rgb
 from vinylgen.fidelity.metrics import DISTANCE_ERROR_BOUND, measure
+from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
 from vinylgen.fidelity.truth import SceneTruth, TrueCorner
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,8 +71,8 @@ def circle_d(cx, cy, r, reverse=False) -> str:
 
 
 def circle_polygon(cx, cy, r):
-    """A circle flattened to at most 0.01 px chord error, as truths are."""
-    vertices = math.ceil(math.pi / math.acos(1.0 - 0.01 / r))
+    """A circle flattened to at most ``FLATTEN_TOLERANCE`` chord error, as truths are."""
+    vertices = math.ceil(math.pi / math.acos(1.0 - FLATTEN_TOLERANCE / r))
     return Point(cx, cy).buffer(r, quad_segs=math.ceil(vertices / 4))
 
 
@@ -150,9 +151,10 @@ class FidelityMetricTests(unittest.TestCase):
             + (3 * (1 - t) * t * t)[:, None] * p2 + (t ** 3)[:, None] * p3
         radial = float(np.abs(np.hypot(*curve.T) - r).max())
         self.assertGreater(radial, 0.02)
-        # The truth polygon itself sits up to 0.01 px inside the analytic circle.
+        # The truth polygon itself sits up to FLATTEN_TOLERANCE inside the analytic
+        # circle, which DISTANCE_ERROR_BOUND includes.
         self.assertLessEqual(abs(result["boundary"]["hausdorff_px"] - radial),
-                             DISTANCE_ERROR_BOUND + 0.01)
+                             DISTANCE_ERROR_BOUND)
         self.assertGreater(result["area"]["per_colour"]["1"]["iou"], 0.999)
         nodes = result["nodes"]
         self.assertEqual(nodes["per_path_total"], 12)

@@ -257,9 +257,10 @@ run is accepted when its chord is at least this long, so at 1 px or less every
 unit step of a pixel staircase is a straight run and the provisional-corner test
 puts a cusp between each pair: the default 2‰ would do that on every image of
 500 px or less. The synthetic fidelity corpus measured it (fixed set and pinned
-fuzz cases below 500 px, default settings): with no floor the hard-edged tier
-had 10358 kinks and a corner F1 of 0.10, and the anti-aliased tier 1813 kinks
-and 0.17. A floor of exactly 1 px left the hard-edged tier unchanged. The floor
+fuzz cases below 500 px, default settings; a kink then counted as a cusp farther
+than max(2 px, 2 per mille) from every true corner): with no floor the
+hard-edged tier had 10358 kinks and a corner F1 of 0.10, and the anti-aliased
+tier 1813 kinks and 0.17. A floor of exactly 1 px left the hard-edged tier unchanged. The floor
 just above one step gave 136 kinks and 0.34, and 50 kinks and 0.42. Floors of
 1.25 to 2 px lost more real corners than they removed kinks. The web form's
 pixel hint says when the length is held above one step.

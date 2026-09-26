@@ -11,19 +11,25 @@ Objective
 Every traced case gets an error score ``E`` and a node excess; an evaluation
 (one settings point over a fixed case subset) averages them.
 
-Per case, with ``r = 0.5 px + (longer side) / 1000`` (the error budget the
-regression bounds use: half a pixel of quantisation plus the default maximum
-deviation of 1 per mille; fixed per case, never taken from the settings under
+Every term is judged with the synthetic regression bounds
+(``vinylgen/fidelity/bounds.py``, through the sweep's per-case summary). Per case,
+with ``r = D`` (``bounds.boundary_bound``: the default maximum deviation, resolved
+on the case's canvas, plus sqrt(2) / 2 px of quantisation plus the metric's own
+error; the limit the regression ``hausdorff`` assertion holds the boundary to;
+fixed per case from the default settings, never taken from the settings under
 test, so the tuner cannot widen its own yardstick)::
 
-    h = min(10, Hausdorff / r)            worst boundary distance, in budgets
-    m = min(10, mean distance / r)        typical boundary distance, in budgets
+    h = min(10, local Hausdorff / r)      worst boundary distance off the vertex
+                                           discs and zones, in budgets
+    m = min(10, local mean distance / r)  typical boundary distance there
     a = min(10, (misassigned area / truth boundary length) / r)
                                            mean displacement implied by wrong area,
                                            which also catches wrong-colour fills
-    c = missed required corners / max(1, required corners)
+    c = missed required vertices / max(1, required vertices)
+                                           a required vertex has no cusp within R(c)
     k = min(10, log2(1 + kinks / max(1, ideal nodes)))
-    t = mismatched colours / colours      topology: polygon or hole count differs
+                                           kinks as the ``kinks`` assertion counts them
+    t = mismatched colours / colours      topology off the discs and zones differs
     s = 1 if the edge or overlap SVG failed the trace stage's structural validation
 
     E = 1 h + 2 m + 1 a + 2 c + 1 k + 4 t + 4 s
@@ -36,13 +42,16 @@ a rounded corner leaves at the default budget. Kinks are log-compressed rather
 than capped linearly: a staircase trace has tens of kinks per ideal node, and a
 linear cap would make every such trace score the same, leaving the search no
 slope to follow; one kink on a four-node disc costs 0.32, a kink at every
-staircase step of a small disc (about 40 per ideal node) about 5.4. A topology
-error or an invalid SVG is structural, so either costs 4 per case (2 for one
-wrong colour of two), more than any single distance term at its budget. Distance
-terms are capped at 10 budgets so one runaway case cannot swamp the mean. A case
-below the resolution floor (``sweep.FEATURE_FLOOR_PX``) is scored on ``a``,
-``t`` and ``s`` only. A failed trace scores ``FAILURE_ERROR``, every term at its
-maximum.
+staircase step of a small disc (about 40 per ideal node) about 5.4. A cusp on a
+round tight enough for the trace to sharpen (radius up to about
+``bounds.SHARPENING_RADIUS_FACTOR`` times the sharpening allowance plus ``Q``)
+is no kink, as in the regression assertion; every larger round keeps the slope.
+A topology error or an invalid SVG is structural, so either costs 4 per case (2
+for one wrong colour of two), more than any single distance term at its budget.
+Distance terms are capped at 10 budgets so one runaway case cannot swamp the
+mean. A case whose whole boundary lies in the vertex discs and zones (the sweep
+row's ``sub_resolution``) is scored on ``a``, ``t`` and ``s`` only. A failed
+trace scores ``FAILURE_ERROR``, every term at its maximum.
 
 Node economy: ``N`` is the geometric mean over cases of ``max(1, boundary nodes
 / ideal nodes)`` (cases with no ideal nodes are left out). The ideal count is
@@ -115,17 +124,12 @@ DEFAULT_NODE_WEIGHT = 1.0
 
 # --- objective --------------------------------------------------------------------------
 
-def error_reference_px(size: int) -> float:
-    """The per-case error budget ``r`` in px (module docstring)."""
-    return 0.5 + float(size) / 1000.0
-
-
 def error_terms(row: dict) -> dict:
     """The objective's terms for one result row (module docstring)."""
     if not row["ok"]:
         return {"failed": True}
     s = row["summary"]
-    ref = error_reference_px(row["size"])
+    ref = float(s["bound_px"])
 
     def distance(value):
         return DISTANCE_CAP if value is None else min(DISTANCE_CAP, float(value) / ref)
@@ -139,7 +143,7 @@ def error_terms(row: dict) -> dict:
              "structural": 1.0 if s.get("structural_failures") else 0.0}
     if not row.get("sub_resolution"):
         terms.update(
-            hausdorff=distance(s["hausdorff_px"]), mean=distance(s["mean_px"]),
+            hausdorff=distance(s["local_hausdorff_px"]), mean=distance(s["local_mean_px"]),
             corners=(s["required_corners"] - s["required_found"]) / max(1, s["required_corners"]),
             kinks=min(KINK_CAP, math.log2(1.0 + s["kinks"] / max(1, s["ideal_nodes"]))))
     return terms
@@ -481,6 +485,39 @@ def sample_pool(pool: list, count: int | None, seed: int) -> list:
     return [pool[index] for index in sorted(chosen)]
 
 
+def held_out_grid(exclude_ids, sizes: list[int] | None, count: int, seed: int) -> list:
+    """Up to ``count`` analytic ``families.full_grid()`` cases never trained on (no
+    id in ``exclude_ids``, which holds the fixed set), on canvases whose longer
+    side is in ``sizes`` (all when None). Stratified: the cases are grouped by
+    family and size, each group shuffled with ``seed``, and the groups taken in
+    turn one case at a time, so every (family, size) is covered before any
+    repeats."""
+    from vinylgen.fidelity import families
+    excluded = set(exclude_ids)
+    groups: dict[tuple[str, int], list] = {}
+    for case in families.full_grid():
+        if case.case_id in excluded:
+            continue
+        size = sweep.case_size(case)
+        if sizes and size not in set(sizes):
+            continue
+        groups.setdefault((sweep.case_family(case), size), []).append(case)
+    rng = random.Random(seed)
+    ordered = []
+    for key in sorted(groups):
+        members = sorted(groups[key], key=lambda case: case.case_id)
+        rng.shuffle(members)
+        ordered.append(members)
+    chosen = []
+    depth = 0
+    while len(chosen) < count and any(depth < len(members) for members in ordered):
+        for members in ordered:
+            if depth < len(members) and len(chosen) < count:
+                chosen.append(members[depth])
+        depth += 1
+    return chosen
+
+
 def build_cases(entries, fixed_by_id: dict, pool=None) -> list:
     fuzz = [(entry[1], entry[2]) for entry in entries if entry[0] == "fuzz"]
     built = iter(sweep.fuzz_cases([seed for seed, _ in fuzz], [size for _, size in fuzz],
@@ -490,25 +527,32 @@ def build_cases(entries, fixed_by_id: dict, pool=None) -> list:
 
 # --- held-out before/after ------------------------------------------------------------------
 
-def family_scores(rows: list[dict]) -> dict:
-    """Per family (and ``all``): cases, E, N and the headline sweep numbers."""
-    groups: dict[str, list[dict]] = {"all": list(rows)}
+def held_out_scores(rows: list[dict]) -> dict:
+    """``{"all": scores, "family": {name: scores}, "size": {px: scores}}``
+    (``group_scores``)."""
+    families: dict[str, list[dict]] = {}
+    sizes: dict[int, list[dict]] = {}
     for row in rows:
-        groups.setdefault(row["family"], []).append(row)
-    result = {}
-    for name, members in groups.items():
-        stats = sweep.group_stats(members)
-        result[name] = {**score_rows(members), "cases": len(members),
-                        "hausdorff_median_px": stats["hausdorff_px"]["median"],
-                        "hausdorff_max_px": stats["hausdorff_px"]["max"],
-                        "mean_boundary_px": stats["mean_boundary_px"],
-                        "required_corner_recall": stats["required_corner_recall"],
-                        "cusp_precision": stats["cusp_precision"],
-                        "corner_f1": stats["corner_f1"],
-                        "kinks": stats["kinks"]["total"],
-                        "topology_mismatches": stats["topology"]["cases_mismatched"],
-                        "structural_failures": stats["trace_audit"]["structural_failures"]}
-    return result
+        families.setdefault(row["family"], []).append(row)
+        sizes.setdefault(int(row["size"]), []).append(row)
+    return {"all": group_scores(rows),
+            "family": {name: group_scores(members) for name, members in sorted(families.items())},
+            "size": {str(size): group_scores(members) for size, members in sorted(sizes.items())}}
+
+
+def group_scores(rows: list[dict]) -> dict:
+    """Cases, E, N and the headline sweep numbers of one group of rows."""
+    stats = sweep.group_stats(rows)
+    return {**score_rows(rows), "cases": len(rows),
+            "hausdorff_median_px": stats["hausdorff_px"]["median"],
+            "hausdorff_max_px": stats["hausdorff_px"]["max"],
+            "mean_boundary_px": stats["mean_boundary_px"],
+            "required_corner_recall": stats["required_corner_recall"],
+            "cusp_precision": stats["cusp_precision"],
+            "corner_f1": stats["corner_f1"],
+            "kinks": stats["kinks"]["total"],
+            "topology_mismatches": stats["topology"]["cases_mismatched"],
+            "structural_failures": stats["trace_audit"]["structural_failures"]}
 
 
 # --- real images ------------------------------------------------------------------------
@@ -738,8 +782,12 @@ def report_markdown(meta: dict, evaluations: list[dict], front: list[int], curre
              f"{_f(meta.get('wall_seconds'), 5)} s",
              f"- Training pool: fixed set ({meta['fixed_count']} cases) + fuzz seeds "
              f"{meta['train']} at sizes {meta['fuzz_sizes']} px; subset seed {meta['subset_seed']}",
-             f"- Held-out: fuzz seeds {meta['held_out']} ({meta['held_out_count']} cases), never "
-             "trained on",
+             f"- Held-out, never trained on: fuzz seeds {meta['held_out']} at sizes "
+             f"{meta.get('held_out_fuzz_sizes', meta['fuzz_sizes'])} px "
+             f"({meta['held_out_count']} cases) and {len(meta.get('held_out_grid', []))} analytic "
+             "grid cases outside the fixed set"
+             + (f" at sizes {meta['held_out_grid_sizes']} px" if meta.get("held_out_grid_sizes")
+                else ""),
              f"- Case source: {meta['case_source']}; trace code hash `{meta['code_hash']}`",
              "- Objective (vinylgen/fidelity/tune.py): per case E = 1 h + 2 m + 1 a + 2 c + 1 k + "
              "4 t + 4 s (budget-normalised Hausdorff, mean distance and area displacement, missed "
@@ -782,24 +830,30 @@ def report_markdown(meta: dict, evaluations: list[dict], front: list[int], curre
               for row in weights_table]
     lines.append("")
     if held_out:
-        lines += ["## Held-out before/after (fuzz seeds not used in training)", "",
-                  "Each cell is current -> proposed.", "",
-                  "| family | cases | E | N | Hausdorff median px | required corner recall | "
+        lines += ["## Held-out before/after (cases not used in training)", "",
+                  "Held-out fuzz seeds and analytic grid cases outside the fixed set. Each cell "
+                  "is current -> proposed.", ""]
+        header = ("| {kind} | cases | E | N | Hausdorff median px | required corner recall | "
                   "cusp precision | corner F1 | kinks | topology mismatches | "
-                  "structural failures |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|"]
-        for family in held_out["current"]:
-            b, a = held_out["current"][family], held_out["proposed"].get(family, {})
+                  "structural failures |")
+        for kind, title in (("family", "By family"), ("size", "By canvas size (px)")):
+            lines += [f"### {title}", "", header.format(kind=kind),
+                      "|---|---|---|---|---|---|---|---|---|---|---|"]
+            groups = {"all": held_out["current"]["all"], **held_out["current"][kind]}
+            after_groups = {"all": held_out["proposed"]["all"], **held_out["proposed"][kind]}
+            for name, b in groups.items():
+                a = after_groups.get(name, {})
 
-            def pair(key):
-                return f"{_f(b.get(key))} -> {_f(a.get(key))}"
+                def pair(key):
+                    return f"{_f(b.get(key))} -> {_f(a.get(key))}"
 
-            lines.append(f"| {family} | {b['cases']} | {pair('error')} | {pair('nodes')} | "
-                         f"{pair('hausdorff_median_px')} | {pair('required_corner_recall')} | "
-                         f"{pair('cusp_precision')} | {pair('corner_f1')} | "
-                         f"{pair('kinks')} | {pair('topology_mismatches')} | "
-                         f"{pair('structural_failures')} |")
-        lines += ["", "Full sweeps: `held-out/current/summary.md`, `held-out/proposed/summary.md`.", ""]
+                lines.append(f"| {name} | {b['cases']} | {pair('error')} | {pair('nodes')} | "
+                             f"{pair('hausdorff_median_px')} | {pair('required_corner_recall')} | "
+                             f"{pair('cusp_precision')} | {pair('corner_f1')} | "
+                             f"{pair('kinks')} | {pair('topology_mismatches')} | "
+                             f"{pair('structural_failures')} |")
+            lines.append("")
+        lines += ["Full sweeps: `held-out/current/summary.md`, `held-out/proposed/summary.md`.", ""]
     else:
         lines += ["## Held-out before/after", "", "Skipped (no held-out cases).", ""]
     if real:

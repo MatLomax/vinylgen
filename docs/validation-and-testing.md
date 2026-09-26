@@ -41,8 +41,10 @@ regression-tested against synthetic scenes whose exact vector truth is known
   rounded rectangles, polygons, stars, line-meets-arc shapes, rings, thin bars,
   arcs and outlines, pies, T- and Y-junctions, targets and corner-only contact,
   in a sweep scaled with the canvas and a fixed-pixel sweep, plus palette-stage
-  RGB scenes (near shades, accents, dark outlines, noise). `fuzz.py` draws seeded
-  random polygons, blobs, cornered blobs and layered multi-colour scenes.
+  RGB scenes (near shades, accents, dark outlines below the usage cutoff with and
+  without whole-colour preservation, noise), each inferred with the palette
+  settings its scene names. `fuzz.py` draws seeded random polygons, blobs,
+  cornered blobs and layered multi-colour scenes.
 - The fixed regression set (`tests/synthetic/fixed/`), the palette-stage set
   (`tests/synthetic/palette-stage/`) and the pinned fuzz cases
   (`tests/synthetic/fuzz/`, listed in `tests/synthetic/fuzz-seeds.json` with
@@ -57,16 +59,49 @@ regression-tested against synthetic scenes whose exact vector truth is known
   topology.
 
 `tests/test_synthetic_fidelity.py` traces every committed case in both tiers
-with the product defaults and asserts bounds derived from first principles: the
-resolved max deviation plus √2/2 px of pixel quantisation for boundary distance
-outside corner discs, a cusp at every corner the raster can decide, no kinks,
-at most twice the ideal node count plus four, truth topology for features at
-least √2 px wide, and misassigned area within the deviation tube. Features
-narrower than 2 px are held to topology and area only. An assertion that fails
-against today's tracer is listed in `tests/synthetic/expected-failures.json`
-under the worklog task that tracks its cause; it runs as an expected failure,
-an unexpected pass fails the run (the entry must then be removed), and the table
-rejects any slug that is not a real task.
+with the product defaults and asserts bounds derived from first principles in
+`vinylgen/fidelity/bounds.py`, the one yardstick the sweep and tuner use too:
+
+- boundary distance within `D`, the resolved max deviation plus √2/2 px of pixel
+  quantisation plus the metric's own error, outside the discs round the true
+  vertices and the narrow zones;
+- a cusp within `R(c)` of every vertex the raster can decide, where `R(c)` is the
+  farthest point of the intersection of the `D`-bands of the vertex's true
+  branches (about `D` at a nearly straight corner, growing only at a sharp tip,
+  capped by where tangent branches separate and by the side lengths);
+- no kinks, and at most twice the ideal node count plus four;
+- truth topology, compared beyond a band round the discs and zones and only for
+  colours whose count is stable across band widths `D`, `2D` and `3D`;
+- per colour, a symmetric difference with the truth within the area of its
+  `D`-tube, asserted only where that area is below the colour's own, so a trace
+  that drops it fails;
+- raster evidence: every four-connected region of the label map the trace
+  received (the hard-edged render, or the palette stage's `segmentation.npz` in
+  the RGB tier) has traced area of its colour, and each colour's traced area
+  matches its pixels within the tube its tolerance allows; in the RGB tier every
+  scene colour the area check cannot hold must survive the palette stage unless
+  it removes it by design.
+
+A per-case test checks that every scene colour is held by the area or the
+evidence check. The resolution floors (2 px for geometry, √2 px for topology)
+apply locally: each colour's parts narrower than the floor (the colour less its
+morphological opening) are excluded, buffered by `D`, and everything else is
+asserted in full; an assertion with nothing left to hold is reported as a skip
+with its reason. The palette stage's small-region cleanup and whole-colour usage
+cutoff (replayed on the true areas, including the two-colour minimum and
+whole-colour preservation) are excluded the same way in the RGB tier. The RGB
+tier's quantisation has no derivable bound and reuses √2/2 px: over the RGB cases
+whose `hausdorff` assertion holds, the local boundary distance exceeds the max
+deviation plus the metric's error by at most 0.67 px (`ellipse-a8-rot45-128`,
+2026-09-26), a 0.04 px margin.
+
+An assertion that fails against today's tracer is listed in
+`tests/synthetic/expected-failures.json` under the worklog task that tracks its
+cause; it runs as an expected failure (only its `AssertionError` counts: any
+other exception while checking it is an error), and an unexpected pass fails the
+run, so the entry must then be removed. The table test checks each slug's form
+and rejects `synthetic-finding-` placeholder slugs; worklog is not available to
+the tests, so that a slug names a real task is checked by hand.
 
 ### Full-image bucket
 
@@ -92,13 +127,18 @@ The sweep traces any selection of cases (`--fixed`, `--grid`, `--palette-stage`,
 `--fuzz A:B`, `--sizes`, `--tag`) with given settings and writes per-case rows
 and per-family, per-tag and per-size summaries to `.tmp/fidelity/sweep-*/`.
 Corner recall is always reported beside cusp precision and their F1, since a
-staircase whose every node is a cusp finds every corner. The tuner runs a
-resumable compass search over the eight trace lengths and the corner threshold
-on its own copy of the defaults, scores training seeds and the fixed set against
-an error budget the settings cannot loosen, and writes the accuracy/node-count
-Pareto front, a proposed settings diff, a before/after table on held-out seeds,
-and before/after traces of the nine real images to `.tmp/fidelity/tune-*/`. It
-only proposes: defaults change through a reviewed commit.
+staircase whose every node is a cusp finds every corner; vertices, kinks and the
+boundary distance are classified by the regression bounds, so the sweep counts
+exactly what the tests assert. The tuner runs a resumable compass search over
+the eight trace lengths and the corner threshold on its own copy of the
+defaults, scores training seeds and the fixed set against the regression bound
+`D` of the default settings (which the settings under test cannot loosen), and
+writes the accuracy/node-count Pareto front, a proposed settings diff, a
+before/after table per family and per canvas size on held-out cases (fuzz seeds
+outside the training range, including canvas sizes training never uses, and
+analytic grid cases outside the fixed set, from 64 px up), and before/after
+traces of the nine real images to `.tmp/fidelity/tune-*/`. It only proposes:
+defaults change through a reviewed commit.
 
 ### Other coverage
 

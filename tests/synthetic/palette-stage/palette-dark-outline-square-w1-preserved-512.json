@@ -1,0 +1,162 @@
+{
+ "case_id": "palette-dark-outline-square-w1-preserved-512",
+ "min_feature_px": 1.0,
+ "tags": [
+  "palette-stage",
+  "dark-outline",
+  "fixed-px"
+ ],
+ "scene": {
+  "width": 512,
+  "height": 512,
+  "palette": [
+   {
+    "name": "paper",
+    "rgb": [
+     238,
+     232,
+     218
+    ]
+   },
+   {
+    "name": "black",
+    "rgb": [
+     22,
+     22,
+     26
+    ]
+   },
+   {
+    "name": "gold",
+    "rgb": [
+     240,
+     190,
+     40
+    ]
+   }
+  ],
+  "background": 0,
+  "regions": [
+   {
+    "colour": 1,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       101.65,
+       101.65
+      ],
+      "p1": [
+       410.85,
+       101.65
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       410.85,
+       101.65
+      ],
+      "p1": [
+       410.85,
+       410.85
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       410.85,
+       410.85
+      ],
+      "p1": [
+       101.65,
+       410.85
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       101.65,
+       410.85
+      ],
+      "p1": [
+       101.65,
+       101.65
+      ]
+     }
+    ],
+    "holes": []
+   },
+   {
+    "colour": 2,
+    "outline": [
+     {
+      "type": "line",
+      "p0": [
+       102.65,
+       102.65
+      ],
+      "p1": [
+       409.85,
+       102.65
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       409.85,
+       102.65
+      ],
+      "p1": [
+       409.85,
+       409.85
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       409.85,
+       409.85
+      ],
+      "p1": [
+       102.65,
+       409.85
+      ]
+     },
+     {
+      "type": "line",
+      "p0": [
+       102.65,
+       409.85
+      ],
+      "p1": [
+       102.65,
+       102.65
+      ]
+     }
+    ],
+    "holes": []
+   }
+  ],
+  "family": "palette-stage",
+  "params": {
+   "size": 512,
+   "outline_width_px": 1.0,
+   "palette_options": {
+    "preserved_colour_points": [
+     [
+      410,
+      256
+     ]
+    ]
+   },
+   "expect": {
+    "survive": [
+     0,
+     1,
+     2
+    ]
+   }
+  }
+ }
+}

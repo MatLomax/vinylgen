@@ -10,7 +10,10 @@ Writes .tmp/fidelity/tune-<timestamp>/ (or --out, which must not hold a run):
   pareto.json         the accuracy/node-count front, the proposal and the current defaults
   pareto.png          the trade-off plot
   proposed-trace.json the proposal as an svg_trace.py --config
-  held-out/{current,proposed}/  sweeps of the held-out fuzz seeds (cases.jsonl, summary.*)
+  held-out/{current,proposed}/  sweeps of the held-out cases (cases.jsonl, summary.*):
+                      fuzz seeds outside the training range, at every held-out size,
+                      and analytic grid cases outside the fixed set
+  held-out/families.json  held-out scores per family and per canvas size
   real-images/<subject>/{palette,current,proposed}/  the images/*.png subjects, palette
                       stage once, traced with each set (traced.png previews)
   real-images/contact.png   flattened | current | proposed, one row per subject
@@ -22,7 +25,7 @@ moves where the search starts, and its changes appear in the proposed diff.
 Examples:
   .venv/bin/python scripts/fidelity_tune.py
   .venv/bin/python scripts/fidelity_tune.py --max-evals 6 --cases-per-eval 8 --sizes 128 \\
-      --fuzz-sizes 256 --held-out-count 24
+      --fuzz-sizes 256 --held-out-count 24 --held-out-grid-count 24 --held-out-grid-sizes 64 128
   .venv/bin/python scripts/fidelity_tune.py --resume .tmp/fidelity/tune-20260926-120000 --max-evals 120
 """
 
@@ -45,6 +48,12 @@ from vinylgen.fidelity import sweep, tune  # noqa: E402
 DEFAULT_CASES_PER_EVAL = 48
 DEFAULT_HELD_OUT = 200
 DEFAULT_FUZZ_SIZES = (512, 1536)
+# Held-out fuzz seeds also run on canvases the training fuzz never uses.
+DEFAULT_HELD_OUT_FUZZ_SIZES = (256, 512, 1024, 1536)
+DEFAULT_HELD_OUT_GRID = 150
+# Every scaled grid size below 2048 px, and the fixed-px canvas: small canvases
+# (64 and 256 px) the fixed training set never uses included.
+DEFAULT_HELD_OUT_GRID_SIZES = (64, 128, 256, 512, 576, 1024, 1536)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -66,11 +75,23 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--held-out", metavar="START:STOP",
                    help="held-out fuzz seeds (default: tuning.held_out in fuzz-seeds.json)")
     p.add_argument("--held-out-count", type=int, default=DEFAULT_HELD_OUT,
-                   help=f"use the first N held-out seeds (default {DEFAULT_HELD_OUT}; 0 skips "
-                        "the held-out table)")
+                   help=f"use the first N held-out fuzz seeds (default {DEFAULT_HELD_OUT}; with "
+                        "--held-out-grid-count 0 as well, 0 skips the held-out table)")
     p.add_argument("--fuzz-sizes", type=int, nargs="+", default=list(DEFAULT_FUZZ_SIZES),
-                   metavar="PX", help="canvas sizes of fuzzer cases; each seed gets one, fixed "
-                                      "by the seed (default 512 1536)")
+                   metavar="PX", help="canvas sizes of training fuzzer cases; each seed gets "
+                                      "one, fixed by the seed (default 512 1536)")
+    p.add_argument("--held-out-fuzz-sizes", type=int, nargs="+",
+                   default=list(DEFAULT_HELD_OUT_FUZZ_SIZES), metavar="PX",
+                   help="canvas sizes of held-out fuzzer cases, one per seed as for training "
+                        "(default 256 512 1024 1536)")
+    p.add_argument("--held-out-grid-count", type=int, default=DEFAULT_HELD_OUT_GRID,
+                   help="analytic grid cases outside the fixed set in the held-out evaluation, "
+                        "stratified over family and size (default "
+                        f"{DEFAULT_HELD_OUT_GRID}; 0 skips them)")
+    p.add_argument("--held-out-grid-sizes", type=int, nargs="+",
+                   default=list(DEFAULT_HELD_OUT_GRID_SIZES), metavar="PX",
+                   help="canvas sizes (longer side) of held-out grid cases (default 64 128 256 "
+                        "512 576 1024 1536)")
     p.add_argument("--sizes", type=int, nargs="+", metavar="PX",
                    help="keep only fixed-set cases whose longer side is one of these")
     p.add_argument("--no-fixed", action="store_true", help="train on fuzz seeds only")
@@ -131,6 +152,15 @@ def configure(args) -> tuple[Path, dict]:
     subset = tune.sample_pool(pool, args.cases_per_eval or None, args.subset_seed)
     if not subset:
         raise ValueError("the training subset is empty")
+    # Held-out grid cases exclude the whole fixed set (training draws from it),
+    # whether or not this run trains on it.
+    from vinylgen.fidelity import families
+    fixed_ids = {case.case_id for case in families.fixed_set()}
+    grid = tune.held_out_grid(fixed_ids, args.held_out_grid_sizes,
+                              max(0, args.held_out_grid_count), args.subset_seed)
+    trained = {entry[1] for entry in subset if entry[0] == "fixed"}
+    if trained & {case.case_id for case in grid}:
+        raise ValueError("training and held-out grid cases overlap")
     out = args.out or sweep.new_run_dir("tune")
     out.mkdir(parents=True, exist_ok=True)
     config = {"base_settings": tune.base_record(settings), "cleanup": asdict(cleanup),
@@ -139,7 +169,10 @@ def configure(args) -> tuple[Path, dict]:
               "cases_per_eval": len(subset), "subset_seed": args.subset_seed,
               "subset": subset, "fixed_count": len(fixed), "fixed_sizes": args.sizes,
               "train": [train.start, train.stop], "held_out": [held_out.start, held_out.stop],
-              "fuzz_sizes": list(args.fuzz_sizes), "jobs": args.jobs,
+              "fuzz_sizes": list(args.fuzz_sizes),
+              "held_out_fuzz_sizes": list(args.held_out_fuzz_sizes),
+              "held_out_grid": [case.case_id for case in grid],
+              "held_out_grid_sizes": list(args.held_out_grid_sizes), "jobs": args.jobs,
               "code_hash": sweep.code_hash(), "git_head": git_head(),
               "case_source": ("fuzz.fuzz_case()" if not fixed
                               else "families.fixed_set() + fuzz.fuzz_case()")}
@@ -220,12 +253,18 @@ def main() -> None:
 
         held_out = None
         seeds = range(*config["held_out"])
+        fuzz_sizes = config.get("held_out_fuzz_sizes", config["fuzz_sizes"])
+        grid_ids = config.get("held_out_grid", [])
         for label in ("current", "proposed"):
             shutil.rmtree(out / "held-out" / label, ignore_errors=True)
-        if len(seeds):
-            log(f"held-out before/after on {len(seeds)} fuzz seeds")
+        if len(seeds) or grid_ids:
+            log(f"held-out before/after on {len(seeds)} fuzz seeds and {len(grid_ids)} grid cases")
             held_cases = sweep.fuzz_cases(
-                seeds, [tune.seed_size(seed, config["fuzz_sizes"]) for seed in seeds], pool=pool)
+                seeds, [tune.seed_size(seed, fuzz_sizes) for seed in seeds], pool=pool)
+            if grid_ids:
+                from vinylgen.fidelity import families
+                by_id = {case.case_id: case for case in families.full_grid()}
+                held_cases += [by_id[case_id] for case_id in grid_ids]
             held_out = {}
             for label, settings in (("current", current_settings), ("proposed", proposed_settings)):
                 began = time.perf_counter()
@@ -237,11 +276,12 @@ def main() -> None:
                     "cases": len(held_cases), "tiers": config["tiers"], "jobs": config["jobs"],
                     "wall_seconds": time.perf_counter() - began,
                     "selection": {"fuzz": f"{seeds.start}:{seeds.stop}",
-                                  "fuzz_sizes": config["fuzz_sizes"]},
+                                  "fuzz_sizes": fuzz_sizes, "grid": len(grid_ids),
+                                  "grid_sizes": config.get("held_out_grid_sizes")},
                     "code_hash": sweep.code_hash(),
                     "settings_changed": sweep.settings_changed(settings),
                     "settings": asdict(settings)})
-                held_out[label] = tune.family_scores(rows)
+                held_out[label] = tune.held_out_scores(rows)
             (out / "held-out" / "families.json").write_text(json.dumps(held_out, indent=2) + "\n")
 
         real = None

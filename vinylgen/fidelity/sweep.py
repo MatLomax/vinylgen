@@ -11,23 +11,27 @@ scratch render is uuid-named, so concurrent cases never share a file.
 ``aggregate`` summarises rows per tier and per family, tag and size, and
 ``write_sweep`` writes ``cases.jsonl``, ``summary.json`` and ``summary.md``.
 
-Measurement policy (fixed per case, never derived from the settings under test,
-so a tuner cannot loosen its own yardstick):
+Measurement policy: every trace is judged with ``vinylgen/fidelity/bounds.py``,
+the bounds the synthetic regression tests assert (fixed per case from the default
+trace settings, never derived from the settings under test, so a tuner cannot
+loosen its own yardstick):
 
-- ``corner_radius_px``: a true corner is found when a cusp lies within
-  ``max(2 px, 2 per mille of the longer side)``. 2 px covers the half-pixel
-  quantisation of a hard-edged boundary on either side; the per-mille part covers
-  a corner the fitter places up to its default maximum deviation (1 per mille)
-  off, twice over.
-- Required corners: every junction and edge point, and every ``corner`` whose
-  turn is at least ``REFERENCE_CORNER_TURN_DEG`` (the shipped corner threshold,
-  60 degrees). Shallower true corners may legitimately be drawn smooth; a cusp
-  on one is still no kink.
-- Sub-resolution cases: a case whose ``min_feature_px`` is below
-  ``FEATURE_FLOOR_PX`` (2 px: narrower features have at most one interior pixel
-  across them, so their two boundaries cannot be placed independently) is
-  flagged ``sub_resolution``; the tuning objective scores it on area and
-  topology only (``Case`` docstring).
+- a true vertex is found when a cusp lies within its radius ``R(c)``; required
+  vertices are the junctions, edge points and corners whose turn the raster can
+  decide, outside the narrow and palette zones (``bounds.corner_roles``);
+- a kink is a cusp away from every required or optional vertex's ``R(c)``,
+  outside the zones and not on a sharpenable round (``bounds.evaluate``), so
+  cusp precision counts exactly what the ``kinks`` assertion rejects;
+- the local Hausdorff and mean boundary distance leave out the vertex discs and
+  the zones, as the ``hausdorff`` assertion does, and ``bound_px`` (``D``) is the
+  per-case error budget the tuner normalises by;
+- a case whose whole boundary lies in the discs and zones (features below the
+  resolution floor, or removed by the palette stage by design) is flagged
+  ``sub_resolution``; the tuning objective scores it on area and topology only
+  (``tune`` docstring).
+
+The rgb tier infers each case's palette with its ``families.case_palette_settings``,
+as the regression tests do.
 """
 
 from __future__ import annotations
@@ -62,16 +66,7 @@ from vinylgen.contracts import (
 ROOT = Path(__file__).resolve().parents[2]
 FIDELITY_TMP = ROOT / ".tmp" / "fidelity"
 TIERS = ("labels", "rgb")
-REFERENCE_CORNER_TURN_DEG = 60.0
-FEATURE_FLOOR_PX = 2.0
-CORNER_RADIUS_MIN_PX = 2.0
-CORNER_RADIUS_PER_MILLE = 2.0
 WORKER_DIED = "worker process died"
-
-
-def corner_radius_px(width: int, height: int) -> float:
-    """The corner-match radius of a case (see the module docstring)."""
-    return max(CORNER_RADIUS_MIN_PX, CORNER_RADIUS_PER_MILLE * max(width, height) / 1000.0)
 
 
 def case_family(case) -> str:
@@ -98,6 +93,7 @@ def case_size(case) -> int:
 # seeds stays bounded.
 CACHE_ENTRIES = 96
 _TRUTH_CACHE: OrderedDict = OrderedDict()
+_BOUNDS_CACHE: OrderedDict = OrderedDict()
 _RENDER_CACHE: OrderedDict = OrderedDict()
 
 
@@ -115,6 +111,12 @@ def _cached(cache: OrderedDict, key, make):
 def _truth(case):
     from vinylgen.fidelity.truth import scene_truth
     return _cached(_TRUTH_CACHE, case.case_id, lambda: scene_truth(case.scene))
+
+
+def _bounds(case, tier: str):
+    from vinylgen.fidelity.bounds import case_bounds
+    return _cached(_BOUNDS_CACHE, (case.case_id, tier),
+                   lambda: case_bounds(case, tier, _truth(case)))
 
 
 def _render(case, tier: str, tiers=()):
@@ -148,15 +150,6 @@ def _render(case, tier: str, tiers=()):
     return _RENDER_CACHE[key]
 
 
-def _required_corners(truth) -> list:
-    return [corner for corner in truth.corners
-            if corner.kind != "corner" or corner.turn_deg >= REFERENCE_CORNER_TURN_DEG]
-
-
-def _topology_mismatches(topology: dict) -> int:
-    return sum(1 for row in topology.values() if row["traced"] != row["truth"])
-
-
 _DENSE_FALLBACK = re.compile(r"(\d+) shared boundaries required a reported dense fallback")
 
 
@@ -175,16 +168,16 @@ def audit_summary(audit: dict) -> dict:
             "dense_fallbacks": fallbacks, "warnings": len(audit.get("warnings", []))}
 
 
-def summarise_measure(result: dict, truth) -> dict:
-    """The flat per-case numbers the summaries and the tuning objective read."""
+def summarise_measure(result: dict, evaluation: dict) -> dict:
+    """The flat per-case numbers the summaries and the tuning objective read:
+    ``metrics.measure``'s raw distances, areas and nodes, and the regression
+    bounds' verdicts (``bounds.summary_numbers``)."""
+    from vinylgen.fidelity.bounds import summary_numbers
     boundary, area, nodes = result["boundary"], result["area"], result["nodes"]
     # Colour boundaries are sampled on both sides, so the truth's boundary length
     # is half its sample count times the spacing.
     length = boundary["truth_samples"] * boundary["sample_spacing_px"] / 2.0
-    required = _required_corners(truth)
-    missed_required = sum(1 for miss in result["corners"]["misses"]
-                          if miss["kind"] != "corner"
-                          or miss["turn_deg"] >= REFERENCE_CORNER_TURN_DEG)
+    judged = summary_numbers(evaluation)
     return {
         "hausdorff_px": boundary["hausdorff_px"], "mean_px": boundary["mean_px"],
         "p95_px": boundary["p95_px"], "hausdorff_per_mille": boundary["hausdorff_per_mille"],
@@ -192,18 +185,29 @@ def summarise_measure(result: dict, truth) -> dict:
         "misassigned_fraction": area["misassigned_fraction"],
         "boundary_length_px": length,
         "area_offset_px": area["misassigned_px"] / length if length > 0 else None,
-        "corners_true": result["corners"]["true"], "corners_found": result["corners"]["found"],
-        "corner_recall": result["corners"]["recall"],
-        "required_corners": len(required),
-        "required_found": len(required) - missed_required,
-        "kinks": result["kinks"]["count"],
-        "cusps": nodes["types"]["cusp"],
+        **judged,
+        "corner_recall": (judged["corners_found"] / judged["corners_true"]
+                          if judged["corners_true"] else None),
         "nodes": nodes["boundary"], "ideal_nodes": nodes["ideal"],
         "node_ratio": nodes["ratio_to_ideal"],
-        "colours": len(result["topology"]),
-        "topology_mismatches": _topology_mismatches(result["topology"]),
         "unmatched_layers": len(area["unmatched_layers"]),
     }
+
+
+def judged_measure(result: dict, evaluation: dict) -> dict:
+    """``metrics.measure``'s result with its corner and kink sections replaced by
+    the regression bounds' (each vertex with its role, radius and nearest cusp;
+    each cusp with whether it is a kink)."""
+    corners = evaluation["corners"]
+    cusps = evaluation["cusps"]
+    kinks = [cusp for cusp in cusps if cusp["kink"]]
+    return {**result,
+            "corners": {"true": len(corners), "found": sum(1 for c in corners if c["found"]),
+                        "vertices": corners},
+            "kinks": {"count": len(kinks), "kinks": kinks, "cusps": len(cusps),
+                      "cusp_precision": ((len(cusps) - len(kinks)) / len(cusps)
+                                         if cusps else None)},
+            "local_boundary": evaluation["local_hausdorff"]}
 
 
 def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: str,
@@ -212,14 +216,14 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
     ``asdict`` records; a fresh ``TraceSettings`` is built from them here, so no
     caller-held settings object is ever handed to the trace stage. ``tiers`` names
     every tier the sweep traces the case in, so a render can serve them all."""
+    from vinylgen.fidelity.bounds import evaluate
+    from vinylgen.fidelity.families import case_palette_settings
     from vinylgen.fidelity.harness import trace_labels, trace_rgb
     from vinylgen.fidelity.metrics import measure
     width, height = case.scene.width, case.scene.height
     row = {"case_id": case.case_id, "tier": tier, "family": case_family(case),
            "tags": list(case.tags), "size": case_size(case), "width": width, "height": height,
-           "min_feature_px": float(case.min_feature_px),
-           "sub_resolution": float(case.min_feature_px) < FEATURE_FLOOR_PX,
-           "corner_radius_px": corner_radius_px(width, height),
+           "min_feature_px": float(case.min_feature_px), "sub_resolution": None,
            "ok": False, "error": None}
     started = time.perf_counter()
     case_dir = Path(work_dir) / tier / case.case_id
@@ -227,23 +231,30 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
         trace_settings = TraceSettings(**settings)
         cleanup_settings = CleanupSettings(**cleanup) if cleanup else None
         palette = case.scene.palette
+        bounds = _bounds(case, tier)
+        row["sub_resolution"] = not bounds.geometric
+        row["bound_px"] = bounds.bound
         if tier == "labels":
             run = trace_labels((_render(case, tier, tiers), palette), case_dir, trace_settings,
                                cleanup_settings, subject=case.case_id)
         elif tier == "rgb":
             run = trace_rgb((_render(case, tier, tiers), palette), case_dir, trace_settings,
+                            palette_options=case_palette_settings(case),
                             cleanup=cleanup_settings, subject=case.case_id)
         else:
             raise ValueError(f"unknown tier {tier!r}")
         truth = _truth(case)
         measured = time.perf_counter()
-        result = measure(run.edge_svg, truth, palette, corner_radius=row["corner_radius_px"],
-                         colour_map=run.colour_map)
+        # A negative radius and distance list every vertex's and cusp's nearest
+        # distance; the bounds classify them.
+        result = measure(run.edge_svg, truth, palette, corner_radius=-1.0,
+                         smooth_min_distance=-1.0, colour_map=run.colour_map)
+        evaluation = evaluate(case, tier, run, truth, bounds, evidence=False, measured=result)
         row.update(ok=True, palette_seconds=run.palette_seconds, trace_seconds=run.trace_seconds,
                    measure_seconds=time.perf_counter() - measured,
                    palette_unmatched=len(run.unmatched),
-                   summary={**summarise_measure(result, truth), **audit_summary(run.audit)},
-                   measure=result)
+                   summary={**summarise_measure(result, evaluation), **audit_summary(run.audit)},
+                   measure=judged_measure(result, evaluation))
         if keep:
             row["subject_dir"] = str(run.subject_dir)
     except Exception as error:  # a failed trace is a result, never a crash of the sweep
@@ -314,8 +325,7 @@ def run_cases(cases, tiers, settings: TraceSettings, work_dir: Path, *,
                 row = {"case_id": case.case_id, "tier": tier, "family": case_family(case),
                        "tags": list(case.tags), "size": case_size(case),
                        "width": case.scene.width, "height": case.scene.height,
-                       "min_feature_px": float(case.min_feature_px),
-                       "sub_resolution": float(case.min_feature_px) < FEATURE_FLOOR_PX,
+                       "min_feature_px": float(case.min_feature_px), "sub_resolution": None,
                        "ok": False, "error": f"{WORKER_DIED}: {error}", "seconds": 0.0}
             rows.append(row)
             if on_row:
@@ -364,21 +374,26 @@ def _f1(recall: float | None, precision: float | None) -> float | None:
 def group_stats(rows: list[dict]) -> dict:
     """Aggregate numbers for one group of rows.
 
-    Hausdorff: median, p95 and max over cases (px). Boundary distance: the mean of
-    the per-case mean distances (px). Misassigned area: the mean per-case fraction
-    of the canvas. Corner recall: pooled (all found over all true), for all true
-    corners and for the required ones. Cusp precision: pooled cusp nodes lying
-    within the match radius of a true corner over all cusp nodes. Corner F1: the
+    Hausdorff: median, p95 and max over cases (px) of the boundary distance off
+    the vertex discs and zones (the regression ``hausdorff`` quantity; cases whose
+    whole boundary lies in them are left out). Boundary distance: the mean of the
+    per-case mean distances over the same samples (px). Misassigned area: the mean
+    per-case fraction of the canvas. Corner recall: pooled (all found over all
+    true), for all true vertices and for the required ones, each found within its
+    ``R(c)``. Cusp precision: pooled cusp nodes that are no kink (``bounds``) over
+    all cusp nodes. Corner F1: the
     harmonic mean of corner recall and cusp precision; recall alone is satisfied
     for free by a staircase trace whose every node is a cusp, so it is only read
     together with precision. Kinks: total and per case. Node ratio: the
     geometric mean of boundary nodes over ideal nodes (ratios compound, so the
     geometric mean weighs a halving and a doubling equally), plus the median.
     Topology: cases with any colour whose traced polygon or hole count differs
-    from the truth's, and the mismatched colours in total.
+    from the truth's off the vertex discs and zones, and the mismatched colours in
+    total.
     """
     ok = [row for row in rows if row["ok"]]
-    hausdorff = _values(ok, "hausdorff_px")
+    geometric = [row for row in ok if not row.get("sub_resolution")]
+    hausdorff = _values(geometric, "local_hausdorff_px")
     corners_true = sum(row["summary"]["corners_true"] for row in ok)
     corners_found = sum(row["summary"]["corners_found"] for row in ok)
     required = sum(row["summary"]["required_corners"] for row in ok)
@@ -394,7 +409,7 @@ def group_stats(rows: list[dict]) -> dict:
         "sub_resolution": sum(1 for row in rows if row.get("sub_resolution")),
         "hausdorff_px": {"median": _stat(hausdorff, "median"), "p95": _stat(hausdorff, "p95"),
                          "max": _stat(hausdorff, "max")},
-        "mean_boundary_px": _stat(_values(ok, "mean_px"), "mean"),
+        "mean_boundary_px": _stat(_values(geometric, "local_mean_px"), "mean"),
         "misassigned_fraction": _stat(_values(ok, "misassigned_fraction"), "mean"),
         "corner_recall": recall,
         "required_corner_recall": required_found / required if required else None,
@@ -480,17 +495,19 @@ def summary_markdown(summary: dict, meta: dict) -> str:
              f"jobs: {meta.get('jobs')}; wall time: {_fmt(meta.get('wall_seconds'), 4)} s",
              f"- Settings: `{json.dumps(meta.get('settings_changed', {}))}` over the "
              "current defaults",
-             "- Corner match radius: max(2 px, 2 per mille of the longer side); required "
-             f"corners: junctions, edge points and corners turning at least "
-             f"{REFERENCE_CORNER_TURN_DEG:g} degrees.",
-             "- Hausdorff statistics are over cases; mean dist is the mean of per-case mean "
-             "boundary distances; misassigned % is the mean per-case share of the canvas; "
-             "recall is pooled over corners; cusp precision is pooled over cusp nodes (those "
-             "within the match radius of a true corner); corner F1 combines the two, since "
-             "a staircase whose every node is a cusp scores full recall; node ratio is the geometric mean of boundary "
-             "nodes over ideal nodes; topology mismatches, structural failures (edge or overlap "
-             "SVG failed the trace stage's validation) and semantic failures (its feature audit) "
-             "count cases; dense fallbacks count boundaries.",
+             "- Judged with the synthetic regression bounds (vinylgen/fidelity/bounds.py): a "
+             "vertex is found by a cusp within its radius R(c); required vertices are the "
+             "junctions, edge points and raster-decidable corners outside the narrow and "
+             "palette zones; a kink is a cusp the kinks assertion rejects.",
+             "- Hausdorff statistics are over cases, off the vertex discs and zones; mean dist "
+             "is the mean of per-case mean boundary distances over the same samples; "
+             "misassigned % is the mean per-case share of the canvas; recall is pooled over "
+             "vertices; cusp precision is pooled over cusp nodes (those that are no kink); "
+             "corner F1 combines the two, since a staircase whose every node is a cusp scores "
+             "full recall; node ratio is the geometric mean of boundary nodes over ideal "
+             "nodes; topology mismatches, structural failures (edge or overlap SVG failed the "
+             "trace stage's validation) and semantic failures (its feature audit) count cases; "
+             "dense fallbacks count boundaries.",
              f"- Selection: `{json.dumps(meta.get('selection', {}))}`",
              f"- Code: `{meta.get('code_hash', '-')}` (hash of the trace path's source)", ""]
     for tier, tier_summary in summary.items():
@@ -540,7 +557,7 @@ def cleanup_changed(cleanup: CleanupSettings | None) -> dict:
 # code are never mixed silently. The tuner's own module is left out: its
 # objective is recomputed from stored per-case numbers.
 _TRACE_PATH_GLOBS = ("vinylgen/*.py", "vinylgen/fidelity/harness.py",
-                     "vinylgen/fidelity/metrics.py", "vinylgen/fidelity/truth.py",
+                     "vinylgen/fidelity/metrics.py", "vinylgen/fidelity/bounds.py", "vinylgen/fidelity/truth.py",
                      "vinylgen/fidelity/raster.py", "vinylgen/fidelity/scene.py",
                      "vinylgen/fidelity/cases.py", "vinylgen/fidelity/families.py",
                      "vinylgen/fidelity/fuzz.py", "vinylgen/fidelity/sweep.py")

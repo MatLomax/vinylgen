@@ -101,8 +101,8 @@ class TrueCorner:
 class SceneTruth:
     """``colour_geometry`` maps each palette index to its visible area after
     occlusion (a shapely Polygon or MultiPolygon in pixel coordinates, y down),
-    with curves flattened to at most 0.01 px chord error; together they
-    partition the canvas. ``corners`` lists every visible corner, junction and
+    with curves flattened to at most ``FLATTEN_TOLERANCE`` (0.001 px) chord
+    error; together they partition the canvas. ``corners`` lists every visible corner, junction and
     edge point. ``ideal_nodes`` is the node count of the visible boundaries in
     their own segment representation, with arcs split into pieces of at most
     90 degrees (a full circle is 4 nodes, a square 4)."""

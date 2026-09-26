@@ -28,8 +28,13 @@ def summary(**overrides) -> dict:
               "required_corners": 4, "required_found": 4, "kinks": 0, "cusps": 4, "nodes": 8,
               "ideal_nodes": 4, "node_ratio": 2.0, "colours": 2, "topology_mismatches": 0,
               "unmatched_layers": 0, "structural_failures": 0, "semantic_passed": True,
-              "dense_fallbacks": 0, "warnings": 0}
+              "dense_fallbacks": 0, "warnings": 0, "bound_px": 1.74, "geometric": True,
+              "nodes_outside_zones": 8}
     values.update(overrides)
+    # The judged distances (off the vertex discs and zones) follow the raw ones
+    # unless a test sets them.
+    values.setdefault("local_hausdorff_px", values["hausdorff_px"])
+    values.setdefault("local_mean_px", values["mean_px"])
     if "area_offset_px" not in overrides and values["boundary_length_px"]:
         values["area_offset_px"] = values["misassigned_px"] / values["boundary_length_px"]
     return values
@@ -126,11 +131,21 @@ class ObjectiveTests(unittest.TestCase):
             self.assertEqual(errors, sorted(errors), key)
             self.assertEqual(len(set(errors)), len(errors), key)
 
-    def test_distance_is_normalised_by_the_case_budget(self):
-        small = tune.error_terms(row(size=100, hausdorff_px=0.6))["hausdorff"]
-        large = tune.error_terms(row(size=2000, hausdorff_px=0.6))["hausdorff"]
-        self.assertAlmostEqual(small, 1.0)  # budget 0.5 + 0.1 px
-        self.assertAlmostEqual(large, 0.24)  # budget 0.5 + 2 px
+    def test_distance_is_normalised_by_the_regression_bound(self):
+        # The budget is the case's D (bounds.boundary_bound), the limit the
+        # regression hausdorff assertion holds; the raw Hausdorff is not read.
+        small = tune.error_terms(row(bound_px=0.6, hausdorff_px=9.0, local_hausdorff_px=0.6))
+        large = tune.error_terms(row(bound_px=2.5, local_hausdorff_px=0.6))
+        self.assertAlmostEqual(small["hausdorff"], 1.0)
+        self.assertAlmostEqual(large["hausdorff"], 0.24)
+
+    def test_the_budget_is_the_regression_bound_of_the_default_settings(self):
+        from vinylgen.fidelity import bounds
+        for size in (128, 576, 1536):
+            lengths = bounds.resolved_lengths(size, size)
+            self.assertAlmostEqual(bounds.boundary_bound(float(lengths.max_deviation)),
+                                   max(1.0, size / 1000.0) + math.sqrt(2) / 2
+                                   + bounds.DISTANCE_ERROR_BOUND)
 
     def test_sub_resolution_cases_score_area_topology_and_structure_only(self):
         terms = tune.error_terms(row(sub_resolution=True, hausdorff_px=50.0, kinks=9))
@@ -418,8 +433,9 @@ class TuneCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as name:
             out = Path(name) / "run"
             common = ["--no-fixed", "--train", "1000:1001", "--held-out", "5000:5001",
-                      "--fuzz-sizes", "96", "--cases-per-eval", "0", "--jobs", "1",
-                      "--no-real-images"]
+                      "--fuzz-sizes", "96", "--held-out-fuzz-sizes", "80",
+                      "--held-out-grid-count", "2", "--held-out-grid-sizes", "64",
+                      "--cases-per-eval", "0", "--jobs", "1", "--no-real-images"]
             self.run_main(*common, "--max-evals", "2", "--out", str(out),
                           "--set", "nodes_at_bends=false")
             for artefact in ("run.json", "evaluations.jsonl", "pareto.json", "pareto.png",
@@ -431,6 +447,18 @@ class TuneCommandTests(unittest.TestCase):
             self.assertEqual(len(evaluations), 3)
             report = (out / "report.md").read_text()
             self.assertIn("plus one for the current defaults", report)
+            # Held-out: one fuzz seed at a size training never used, and two
+            # analytic grid cases outside the fixed set, reported per family and size.
+            run = json.loads((out / "run.json").read_text())
+            self.assertEqual(len(run["held_out_grid"]), 2)
+            from vinylgen.fidelity import families
+            fixed_ids = {case.case_id for case in families.fixed_set()}
+            self.assertFalse(set(run["held_out_grid"]) & fixed_ids)
+            held = json.loads((out / "held-out" / "families.json").read_text())
+            self.assertEqual(held["current"]["all"]["cases"], 3)
+            self.assertEqual(set(held["current"]["size"]), {"64", "80"})
+            self.assertIn("fuzz-", " ".join(held["current"]["family"]))
+            self.assertIn("### By canvas size (px)", report)
             self.assertIn("| nodes_at_bends | True | False |", report)
             with self.assertRaises(SystemExit):
                 self.run_main(*common, "--max-evals", "2", "--out", str(out))

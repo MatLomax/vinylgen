@@ -9,8 +9,8 @@ node, ``s`` a Vinylgen symmetric node, ``z`` a Vinylgen smooth node.
 Coordinates are pixels of the traced raster (the SVG ``viewBox``), y down, as the
 truth's are.
 
-Error bounds, relative to the truth polygons as given (whose curves are
-themselves within 0.01 px of the analytic scene):
+Error bounds, relative to the analytic scene (the truth polygons are its curves
+flattened to ``scene.FLATTEN_TOLERANCE``, 0.001 px chord error):
 
 - Traced cubics are flattened to at most ``CHORD_TOLERANCE`` (0.01 px) chord
   error.
@@ -20,11 +20,13 @@ themselves within 0.01 px of the analytic scene):
   distance to the other side's polyline by at most half the spacing (0.02 px),
   and the supremum over a polyline exceeds the maximum over its samples by at
   most the same, so every boundary distance, and the Hausdorff distance, mean
-  and p95 built from them, is within ``DISTANCE_ERROR_BOUND`` (0.03 px: half the
-  spacing plus the traced flattening) of the exact value.
-- Areas: flattening moves a traced boundary by at most 0.01 px, so a colour's
-  traced area is within 0.01 px times its traced boundary length of the exact
-  area; IoU and symmetric difference inherit that.
+  and p95 built from them, is within ``DISTANCE_ERROR_BOUND`` (0.031 px: half the
+  spacing, the traced flattening and the truth's own flattening) of the exact
+  distance to the analytic scene.
+- Areas: flattening moves a traced boundary by at most 0.01 px and a true one by
+  at most 0.001 px, so a colour's traced area is within 0.01 px times its traced
+  boundary length, and its true area within 0.001 px times its true boundary
+  length, of the exact areas; IoU and symmetric difference inherit that.
 """
 
 from __future__ import annotations
@@ -39,13 +41,14 @@ from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
+from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
 from vinylgen.fidelity.truth import SceneTruth
 from vinylgen.node_types import parse_path
 from vinylgen.svg_writer import INKSCAPE, SODIPODI, SVG
 
 CHORD_TOLERANCE = 0.01
 SAMPLE_SPACING = 0.04
-DISTANCE_ERROR_BOUND = SAMPLE_SPACING / 2 + CHORD_TOLERANCE
+DISTANCE_ERROR_BOUND = SAMPLE_SPACING / 2 + CHORD_TOLERANCE + FLATTEN_TOLERANCE
 # Two written node positions are one node when they agree to this many decimals
 # (the tracer writes ten significant digits, and a shared boundary is written
 # from one fit in both of its colour layers).

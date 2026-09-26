@@ -19,8 +19,9 @@ Entry points:
   representative parameter spread, plus fixed-px cases for the families whose
   parameter is a pixel size;
 - ``palette_stage_set()``: RGB scenes for the palette-stage tier (near-identical
-  shades, small high-contrast accents, dark thin outlines, seeded noise), rendered
-  with ``render_case_rgb``.
+  shades, small high-contrast accents, dark thin outlines with and without
+  whole-colour preservation, seeded noise), rendered with ``render_case_rgb`` and
+  inferred with ``case_palette_settings``.
 
 ``min_feature_px`` is the narrowest feature a case draws, computed analytically
 per family (see each generator): a disc's diameter, an ellipse's minor axis, a
@@ -42,7 +43,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vinylgen.contracts import TraceSettings
+from vinylgen.contracts import PaletteSettings, TraceSettings
 from vinylgen.fidelity.cases import Case
 from vinylgen.fidelity.raster import render_rgb
 from vinylgen.fidelity.scene import (Arc, EllipticalArc, Line, Outline, Region, Scene,
@@ -671,7 +672,9 @@ def palette_stage_set() -> list[Case]:
     become one colour, ``survive`` palette indices that should stay their own
     colour, ``fold`` palette indices the whole-colour usage cutoff should fold
     into another colour. ``scene.params["noise"]`` (``seed``, ``amplitude``), when present,
-    is applied by ``render_case_rgb``."""
+    is applied by ``render_case_rgb``; ``scene.params["palette_options"]``, when
+    present, holds ``PaletteSettings`` fields the case is inferred with
+    (``case_palette_settings``)."""
     s = PALETTE_STAGE_CANVAS
     c = (s / 2 + 0.25, s / 2 + 0.25)
     cases = []
@@ -725,6 +728,27 @@ def palette_stage_set() -> list[Case]:
             _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
             {"outline_width_px": width, "expect": {"survive": [0, 2], "fold": [1]}}))
 
+    # The same outlines under the usage cutoff with whole-colour preservation at a
+    # source pixel on the outline (``--preserve-colour-at``): the cutoff exempts the
+    # preserved colour, so the outline survives.
+    for kind, width in (("disc", 1.5), ("square", 1.0)):
+        inner = 0.3 * s
+        if kind == "disc":
+            regions = [Region(1, circle(c, inner + width)), Region(2, circle(c, inner))]
+        else:
+            regions = [Region(1, _place(rectangle(-inner - width, -inner - width, inner + width,
+                                                  inner + width), c)),
+                       Region(2, _place(rectangle(-inner, -inner, inner, inner), c))]
+        # The pixel whose centre row passes through the outline's middle on the
+        # right-hand side; its whole square lies inside the outline.
+        point = [int(math.floor(c[0] + inner + width / 2.0)), int(math.floor(c[1]))]
+        cases.append(_palette_case(
+            f"palette-dark-outline-{kind}-w{_tok(width)}-preserved-512", s,
+            _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
+            {"outline_width_px": width,
+             "palette_options": {"preserved_colour_points": [point]},
+             "expect": {"survive": [0, 1, 2]}}))
+
     # Light seeded noise over clean scenes, at three canvas sizes.
     for size, amplitude, seed in ((128, 3, 11), (512, 4, 12), (1536, 6, 13)):
         centre = (size / 2 + 0.25, size / 2 + 0.25)
@@ -743,6 +767,20 @@ def palette_stage_set() -> list[Case]:
         _pie_regions(c, radius, 6, 0.0), 2 * radius * math.sin(math.pi / 6), "noise",
         {"noise": {"seed": 14, "amplitude": 5}, "expect": {"survive": list(range(7))}}))
     return cases
+
+
+def case_palette_settings(case: Case) -> PaletteSettings:
+    """The palette settings ``case`` is inferred with: the defaults, with the
+    fields of ``scene.params["palette_options"]`` (point lists as tuples)."""
+    options = dict(case.scene.params.get("palette_options") or {})
+    for name in ("protected_component_points", "preserved_colour_points"):
+        if name in options:
+            options[name] = tuple(tuple(int(v) for v in point) for point in options[name])
+    if "distinct_colour_point_pairs" in options:
+        options["distinct_colour_point_pairs"] = tuple(
+            tuple(tuple(int(v) for v in point) for point in pair)
+            for pair in options["distinct_colour_point_pairs"])
+    return PaletteSettings(**options)
 
 
 def render_case_rgb(case: Case) -> np.ndarray:
