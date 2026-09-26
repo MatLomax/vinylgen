@@ -14,12 +14,13 @@ import sys
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import shapely
 from shapely.geometry import LineString, Point, box
 
-from vinylgen.fidelity.raster import coverage, render_labels, render_rgb
+from vinylgen.fidelity.raster import coverage, render_labels, render_labels_and_rgb, render_rgb
 from vinylgen.fidelity.scene import (FLATTEN_TOLERANCE, Arc, Cubic, EllipticalArc, Line,
                                      Outline, Region, Scene, circle, ellipse, polygon,
                                      rectangle, segment_intersections, wedge)
@@ -208,6 +209,35 @@ class RasterTests(unittest.TestCase):
         expected = [encode(0.5 * linear(a) + 0.5 * linear(b))
                     for a, b in zip(PALETTE[2]["rgb"], PALETTE[0]["rgb"])]
         np.testing.assert_array_equal(rgb[0, 5], expected)
+
+    def test_one_coverage_pass_renders_labels_and_rgb_identically(self):
+        scene = mixed_scene()
+        for supersample in (16, 4, 1):
+            labels, rgb = render_labels_and_rgb(scene, supersample)
+            self.assertEqual(labels.dtype, np.int16)
+            self.assertEqual(rgb.dtype, np.uint8)
+            self.assertEqual(labels.tobytes(), render_labels(scene, supersample).tobytes())
+            self.assertEqual(rgb.tobytes(), render_rgb(scene, supersample).tobytes())
+
+    def test_coverage_counts_every_colour_in_bands_and_pixels(self):
+        # Several bands (2 rows each at this width and supersample; the last is 1),
+        # regions spanning band edges, an unused palette colour and a region
+        # running off the canvas: each fraction is its colour's subsamples / s^2.
+        scene = Scene(40, 9, PALETTE, 0, [Region(1, rectangle(-5, 1.25, 20.5, 7.5)),
+                                          Region(2, rectangle(10.25, 3.5, 45, 12))])
+        with mock.patch("vinylgen.fidelity.raster._BAND_SUBSAMPLES", 2 * 4 * 4 * 40):
+            fractions = coverage(scene, 4)
+        self.assertEqual(fractions.shape, (4, 9, 40))
+        np.testing.assert_array_equal(fractions[3], 0.0)
+        np.testing.assert_array_equal(fractions.sum(axis=0), 1.0)
+        # Pixel (row 1, col 0): colour 1 covers y >= 1.25, 3 of the 4 subsample rows.
+        self.assertEqual(fractions[1, 1, 0], 0.75)
+        # Pixel (row 3, col 10): colour 2 covers x >= 10.25 and y >= 3.5, 3 x 2 of 16;
+        # colour 1 covers the rest.
+        self.assertEqual(fractions[2, 3, 10], 6 / 16)
+        self.assertEqual(fractions[1, 3, 10], 10 / 16)
+        self.assertEqual(fractions[2, 8, 39], 1.0)
+        self.assertEqual(fractions[0, 0, 30], 1.0)
 
     def test_renders_are_byte_identical_across_runs_and_processes(self):
         scene = mixed_scene()

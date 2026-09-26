@@ -1,6 +1,6 @@
 {
  "case_id": "fuzz-cornered-blob-s1021-256",
- "min_feature_px": 18.43,
+ "min_feature_px": 18.396,
  "tags": [
   "fuzz",
   "cornered-blob"
@@ -133,7 +133,7 @@
      }
     ]
    },
-   "min_feature_px": 18.43
+   "min_feature_px": 18.396
   }
  }
 }

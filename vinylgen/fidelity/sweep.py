@@ -93,8 +93,9 @@ def case_size(case) -> int:
 
 # Per-process caches: a worker that measures the same case again (every tuning
 # evaluation traces the same subset) renders and derives its truth once. Each
-# holds at most ``CACHE_ENTRIES`` cases, least recently used out first, so a long
-# sweep over thousands of seeds stays bounded.
+# holds at most ``CACHE_ENTRIES`` entries (a case's truth, or one tier's render
+# of a case), least recently used out first, so a long sweep over thousands of
+# seeds stays bounded.
 CACHE_ENTRIES = 96
 _TRUTH_CACHE: OrderedDict = OrderedDict()
 _RENDER_CACHE: OrderedDict = OrderedDict()
@@ -116,13 +117,30 @@ def _truth(case):
     return _cached(_TRUTH_CACHE, case.case_id, lambda: scene_truth(case.scene))
 
 
-def _render(case, tier: str):
-    from vinylgen.fidelity.raster import render_labels, render_rgb
-    if tier == "labels":
-        return _cached(_RENDER_CACHE, (case.case_id, tier),
-                       lambda: np.asarray(render_labels(case.scene), dtype=np.int16))
-    return _cached(_RENDER_CACHE, (case.case_id, tier),
-                   lambda: np.asarray(render_rgb(case.scene), dtype=np.uint8))
+def _render(case, tier: str, tiers=()):
+    """``case`` rendered for ``tier``. When the sweep also traces the case in the
+    other tier (named in ``tiers``) and that render is not cached yet, one coverage
+    pass renders both and caches both."""
+    from vinylgen.fidelity.raster import render_labels, render_labels_and_rgb, render_rgb
+    key = (case.case_id, tier)
+    if key in _RENDER_CACHE:
+        _RENDER_CACHE.move_to_end(key)
+        return _RENDER_CACHE[key]
+    other = "rgb" if tier == "labels" else "labels"
+    rendered = {}
+    if other in tiers and (case.case_id, other) not in _RENDER_CACHE:
+        rendered["labels"], rendered["rgb"] = render_labels_and_rgb(case.scene)
+    elif tier == "labels":
+        rendered["labels"] = render_labels(case.scene)
+    else:
+        rendered["rgb"] = render_rgb(case.scene)
+    dtypes = {"labels": np.int16, "rgb": np.uint8}
+    # The requested render goes in last, so it is the most recently used.
+    for name in sorted(rendered, key=lambda name: name == tier):
+        _RENDER_CACHE[(case.case_id, name)] = np.asarray(rendered[name], dtype=dtypes[name])
+    while len(_RENDER_CACHE) > CACHE_ENTRIES:
+        _RENDER_CACHE.popitem(last=False)
+    return _RENDER_CACHE[key]
 
 
 def _required_corners(truth) -> list:
@@ -184,10 +202,11 @@ def summarise_measure(result: dict, truth) -> dict:
 
 
 def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: str,
-             keep: bool = True) -> dict:
+             keep: bool = True, tiers=()) -> dict:
     """Trace and measure one case in one tier. ``settings`` and ``cleanup`` are
     ``asdict`` records; a fresh ``TraceSettings`` is built from them here, so no
-    caller-held settings object is ever handed to the trace stage."""
+    caller-held settings object is ever handed to the trace stage. ``tiers`` names
+    every tier the sweep traces the case in, so a render can serve them all."""
     from vinylgen.fidelity.harness import trace_labels, trace_rgb
     from vinylgen.fidelity.metrics import measure
     width, height = case.scene.width, case.scene.height
@@ -204,10 +223,10 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
         cleanup_settings = CleanupSettings(**cleanup) if cleanup else None
         palette = case.scene.palette
         if tier == "labels":
-            run = trace_labels((_render(case, tier), palette), case_dir, trace_settings,
+            run = trace_labels((_render(case, tier, tiers), palette), case_dir, trace_settings,
                                cleanup_settings, subject=case.case_id)
         elif tier == "rgb":
-            run = trace_rgb((_render(case, tier), palette), case_dir, trace_settings,
+            run = trace_rgb((_render(case, tier, tiers), palette), case_dir, trace_settings,
                             cleanup=cleanup_settings, subject=case.case_id)
         else:
             raise ValueError(f"unknown tier {tier!r}")
@@ -270,12 +289,14 @@ def run_cases(cases, tiers, settings: TraceSettings, work_dir: Path, *,
         if pool is None:
             rows = []
             for case, tier in jobs_list:
-                row = run_case(case, tier, record, cleanup_record, str(work_dir), keep)
+                row = run_case(case, tier, record, cleanup_record, str(work_dir), keep,
+                               tuple(tiers))
                 rows.append(row)
                 if on_row:
                     on_row(row)
             return rows
-        futures = [pool.submit(run_case, case, tier, record, cleanup_record, str(work_dir), keep)
+        futures = [pool.submit(run_case, case, tier, record, cleanup_record, str(work_dir), keep,
+                               tuple(tiers))
                    for case, tier in jobs_list]
         rows = []
         for (case, tier), future in zip(jobs_list, futures):

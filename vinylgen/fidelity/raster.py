@@ -74,9 +74,13 @@ def _coverage_counts(scene: Scene, supersample: int) -> np.ndarray:
     n = len(scene.palette)
     counts = np.zeros((n, height, width), dtype=np.int32)
     crossings = [_region_crossings(region, s, width, height) for region in scene.regions]
-    colours_present = sorted({scene.background, *(r.colour for r in scene.regions)})
     band = max(1, _BAND_SUBSAMPLES // (s * s * width))
     sub_width = width * s
+    # ``bins`` holds each subsample's band-pixel index times ``n``, so ``bins + labels``
+    # is its (pixel, colour) bin and one bincount counts every colour in every pixel
+    # of the band.
+    sub_rows = np.arange(min(band, height) * s) // s
+    bins = ((sub_rows[:, None] * width + np.arange(sub_width) // s) * n).astype(np.intp)
     for top in range(0, height, band):
         rows = min(band, height - top)
         row_lo, row_hi = top * s, (top + rows) * s
@@ -98,9 +102,9 @@ def _coverage_counts(scene: Scene, supersample: int) -> np.ndarray:
             inside = np.bitwise_xor.accumulate(flips, axis=1)[:, :-1].view(bool)
             window = labels[r0:r1, c0:c1]
             window[inside] = region.colour
-        blocks = labels.reshape(rows, s, width, s)
-        for colour in colours_present:
-            counts[colour, top:top + rows] = (blocks == colour).sum(axis=(1, 3), dtype=np.int32)
+        keys = bins[:rows * s] + labels
+        tally = np.bincount(keys.ravel(), minlength=rows * width * n)
+        counts[:, top:top + rows] = tally.reshape(rows, width, n).transpose(2, 0, 1)
     return counts
 
 
@@ -123,7 +127,10 @@ def stacking_rank(scene: Scene) -> list[int]:
 def render_labels(scene: Scene, supersample: int = 16) -> np.ndarray:
     """int16 (H, W) label map: each pixel takes the colour with the largest
     coverage; equal coverage goes to the colour higher in the stack."""
-    counts = _coverage_counts(scene, supersample)
+    return _labels_from_counts(scene, _coverage_counts(scene, supersample))
+
+
+def _labels_from_counts(scene: Scene, counts: np.ndarray) -> np.ndarray:
     rank = stacking_rank(scene)
     order = sorted(range(len(rank)), key=lambda colour: (-rank[colour], colour))
     best = np.argmax(counts[order], axis=0)
@@ -144,7 +151,18 @@ def render_rgb(scene: Scene, supersample: int = 16) -> np.ndarray:
     """uint8 (H, W, 3) anti-aliased render: palette colours blended by coverage
     in linear light, encoded back to sRGB and rounded half to even
     (``numpy.rint``). A fully covered pixel reproduces its palette RGB exactly."""
-    fractions = coverage(scene, supersample)
+    return _rgb_from_fractions(scene, coverage(scene, supersample))
+
+
+def _rgb_from_fractions(scene: Scene, fractions: np.ndarray) -> np.ndarray:
     linear = srgb_to_linear(np.asarray([row["rgb"] for row in scene.palette]))
     blended = np.tensordot(fractions, linear, axes=([0], [0]))
     return np.rint(linear_to_srgb(blended) * 255.0).astype(np.uint8)
+
+
+def render_labels_and_rgb(scene: Scene, supersample: int = 16) -> tuple[np.ndarray, np.ndarray]:
+    """``(render_labels(scene, supersample), render_rgb(scene, supersample))``,
+    byte for byte, from one coverage pass."""
+    counts = _coverage_counts(scene, supersample)
+    labels = _labels_from_counts(scene, counts)
+    return labels, _rgb_from_fractions(scene, counts / float(supersample * supersample))

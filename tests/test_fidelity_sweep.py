@@ -9,6 +9,8 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 from vinylgen import contracts
 from vinylgen.contracts import TraceSettings
 from vinylgen.fidelity import sweep, tune
@@ -322,6 +324,40 @@ class SettingsParsingTests(unittest.TestCase):
             path.write_text(json.dumps(config))
             parsed, _ = sweep.settings_from_options(path, [])
         self.assertEqual(sweep.effective_record(parsed), sweep.effective_record(proposed))
+
+
+class RenderCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(mock.patch.dict(sweep._RENDER_CACHE, clear=True))
+        self.case = hand_built_cases()[0]
+
+    def test_both_tiers_come_from_one_coverage_pass(self):
+        from vinylgen.fidelity import raster
+        with mock.patch.object(raster, "_coverage_counts", wraps=raster._coverage_counts) as spy:
+            labels = sweep._render(self.case, "labels", ("labels", "rgb"))
+            rgb = sweep._render(self.case, "rgb", ("labels", "rgb"))
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(labels.tobytes(), raster.render_labels(self.case.scene).tobytes())
+        self.assertEqual(rgb.tobytes(), raster.render_rgb(self.case.scene).tobytes())
+        self.assertEqual((labels.dtype, rgb.dtype), (np.int16, np.uint8))
+
+    def test_a_single_tier_sweep_renders_only_that_tier(self):
+        from vinylgen.fidelity import raster
+        with mock.patch.object(raster, "render_labels_and_rgb") as pair:
+            sweep._render(self.case, "labels", ("labels",))
+        pair.assert_not_called()
+        self.assertEqual(list(sweep._RENDER_CACHE), [(self.case.case_id, "labels")])
+
+    def test_the_cache_stays_bounded(self):
+        with mock.patch.object(sweep, "CACHE_ENTRIES", 3):
+            cases = hand_built_cases()
+            for case in cases:
+                sweep._render(case, "rgb", ("labels", "rgb"))
+            # Each case cached both tiers; only the three most recent entries remain,
+            # the requested render the most recent of its pair.
+            self.assertEqual(list(sweep._RENDER_CACHE),
+                             [(cases[0].case_id, "rgb"), (cases[1].case_id, "labels"),
+                              (cases[1].case_id, "rgb")])
 
 
 class EndToEndSweepTests(unittest.TestCase):

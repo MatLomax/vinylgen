@@ -762,6 +762,7 @@ _SIMPLIFY = 0.01
 _QUAD_SEGS = 16
 _SAMPLE_PX = 0.5
 _REMOVED_PX = 0.05
+_ERODED_NOISE_PX = 0.02
 
 
 def _runs(mask: np.ndarray) -> list[np.ndarray]:
@@ -775,6 +776,12 @@ def _runs(mask: np.ndarray) -> list[np.ndarray]:
     edges = np.diff(np.concatenate([[0], rolled.astype(np.int8), [0]]))
     starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
     return [(np.arange(a, b) + shift) % len(mask) for a, b in zip(starts, stops)]
+
+
+def _is_noise(polygon: Polygon) -> bool:
+    """Empty after a further ``_ERODED_NOISE_PX`` erosion: too thin to be told
+    apart from a buffer artefact."""
+    return polygon.buffer(-_ERODED_NOISE_PX, quad_segs=2).is_empty
 
 
 def estimate_min_feature_px(truth: SceneTruth) -> float:
@@ -802,13 +809,23 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
     The radius is scanned from 0.05 px in steps of 25% until the first loss, then
     bisected eight times; the result is twice that radius.
 
-    Pieces and holes smaller than 1e-6 px^2 are overlay noise of the truth
-    geometry and are ignored.
+    The result depends only on the geometry, never on where its rings start or
+    which way they run: each colour's geometry is normalised (``shapely.normalize``:
+    every ring starts at its least vertex and runs a fixed way) before it is
+    simplified, since the simplification always keeps a ring's first vertex.
 
-    Error and limits: the numerical error is about 0.02 px plus 0.2% (the 0.01 px
-    simplification, 16-segment quarter circles in the buffers, bisection). By
-    construction acute corners do not count as narrow (their width is zero at
-    the apex); corner fidelity is measured by the corner metrics instead. An arm
+    Pieces and holes smaller than 1e-6 px^2 are overlay noise of the truth
+    geometry and are ignored. So are eroded parts and eroded holes thinner than
+    0.02 px (empty after a further 0.02 px erosion), and the opening dilates the
+    one remaining part: a negative buffer of a finely flattened acute corner can
+    leave a detached speck (thousandths of a pixel across, growing with ``r``, so
+    no true erosion) near the eroded tip, which is not a feature. A true hole of
+    the erosion is never that thin: erosion grows holes by ``r``.
+
+    Error and limits: the numerical error is about 0.06 px plus 0.2% (the 0.01 px
+    simplification, a part lost up to 0.02 px of radius early as noise, 16-segment
+    quarter circles in the buffers, bisection). By construction acute corners do
+    not count as narrow (their width is zero at the apex); corner fidelity is measured by the corner metrics instead. An arm
     shorter than its tip allowance beyond its base (about 3r for a smooth end,
     more beside a sharp corner) is not detected, so the estimate can exceed the
     width of a short stub; conversely a smooth end sharper than a 30 degree tip
@@ -821,7 +838,8 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
     tip_angles = np.asarray([angle for _, angle in tips])
     components = []
     for geometry in truth.colour_geometry.values():
-        for part in shapely.get_parts(shapely.make_valid(geometry.simplify(_SIMPLIFY))):
+        simplified = shapely.normalize(geometry).simplify(_SIMPLIFY)
+        for part in shapely.get_parts(shapely.make_valid(simplified)):
             if isinstance(part, Polygon) and part.area > _NOISE_AREA_PX:
                 part = Polygon(part.exterior, [ring for ring in part.interiors
                                                if Polygon(ring).area > _NOISE_AREA_PX])
@@ -835,10 +853,14 @@ def estimate_min_feature_px(truth: SceneTruth) -> float:
     def lost(radius: float) -> bool:
         for component, rings in components:
             eroded = component.buffer(-radius, quad_segs=_QUAD_SEGS)
-            parts = [part for part in shapely.get_parts(eroded) if not part.is_empty]
-            if len(parts) != 1 or len(parts[0].interiors) != len(component.interiors):
+            parts = [part for part in shapely.get_parts(eroded)
+                     if not part.is_empty and not _is_noise(part)]
+            if len(parts) != 1:
                 return True
-            opened = eroded.buffer(radius, quad_segs=_QUAD_SEGS)
+            holes = sum(1 for ring in parts[0].interiors if not _is_noise(Polygon(ring)))
+            if holes != len(component.interiors):
+                return True
+            opened = parts[0].buffer(radius, quad_segs=_QUAD_SEGS)
             kept = opened.buffer(_REMOVED_PX, quad_segs=2)
             shapely.prepare(kept)
             for coords, points in rings:

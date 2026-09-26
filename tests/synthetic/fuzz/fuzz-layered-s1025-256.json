@@ -1,6 +1,6 @@
 {
  "case_id": "fuzz-layered-s1025-256",
- "min_feature_px": 0.283,
+ "min_feature_px": 0.278,
  "tags": [
   "fuzz",
   "layered"
@@ -1001,7 +1001,7 @@
      "carrier": true
     }
    ],
-   "min_feature_px": 0.283
+   "min_feature_px": 0.278
   }
  }
 }

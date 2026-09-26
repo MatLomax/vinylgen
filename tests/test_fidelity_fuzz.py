@@ -4,7 +4,8 @@ Covers determinism (in process and across processes), kind forcing, the committe
 pinned cases regenerating byte for byte, validity of every accepted outline
 (shapely simplicity and validity over 300 seeds), the truth partition and
 colour-share floor of accepted scenes, the rejection and fallback paths, the
-palette constraints, and the minimum-feature estimate on shapes of known width.
+palette constraints, and the minimum-feature estimate on shapes of known width and its
+invariance to where rings start and which way they run.
 """
 
 import hashlib
@@ -14,6 +15,7 @@ import os
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -257,6 +259,64 @@ class MinFeatureTest(unittest.TestCase):
                   (apex[0] + length * math.cos(tip / 2), apex[1] + length * math.sin(tip / 2))]
         # The triangle is at most 2 * 200 * sin(5 deg) = 34.9 px wide at its base.
         self.assertGreater(feature([Region(1, polygon(points))]), 15.0)
+
+
+def _restarted(ring, shift: int, reverse: bool) -> list:
+    coords = list(ring.coords)[:-1]
+    if reverse:
+        coords.reverse()
+    shift %= len(coords)
+    return coords[shift:] + coords[:shift]
+
+
+def _restarted_geometry(geometry, shift: int, reverse: bool):
+    polygons = [Polygon(_restarted(part.exterior, shift, reverse),
+                        [_restarted(ring, shift, reverse) for ring in part.interiors])
+                for part in shapely.get_parts(geometry)]
+    return polygons[0] if len(polygons) == 1 else shapely.MultiPolygon(polygons)
+
+
+class RingStartInvarianceTest(unittest.TestCase):
+    """The estimate is a function of the geometry alone: restarting every ring at
+    another vertex or reversing it never changes it."""
+
+    def assert_invariant(self, truth, shifts=(1, 7, 40)):
+        expected = estimate_min_feature_px(truth)
+        for reverse in (False, True):
+            for shift in (0, *shifts):
+                if shift == 0 and not reverse:
+                    continue
+                with self.subTest(shift=shift, reverse=reverse):
+                    geometry = {colour: _restarted_geometry(part, shift, reverse)
+                                for colour, part in truth.colour_geometry.items()}
+                    for colour, part in geometry.items():
+                        self.assertTrue(part.equals(truth.colour_geometry[colour]))
+                    restarted = replace(truth, colour_geometry=geometry)
+                    self.assertEqual(estimate_min_feature_px(restarted), expected)
+        return expected
+
+    def test_cornered_blob_whose_estimate_followed_the_start_vertex(self):
+        # fuzz_case(1029, 1024): restarting its rings once moved the estimate
+        # between 72.575 and 96.162 px (a sub-0.01 px erosion sliver was counted
+        # as a split, and whether it appeared followed the simplification's
+        # start-anchored vertex choice).
+        _, truth = fuzz.fuzz_scene(1029, 1024, "cornered-blob")
+        self.assertAlmostEqual(self.assert_invariant(truth), 96.162, delta=0.001)
+
+    def test_neck_between_two_discs(self):
+        regions = [Region(1, circle((70, 128), 40)), Region(1, circle((186, 128), 40)),
+                   Region(1, rectangle(70, 124, 186, 132))]
+        truth = scene_truth(Scene(256, 256, PALETTE, 0, regions))
+        self.assertAlmostEqual(self.assert_invariant(truth), 8.0, delta=0.05)
+
+    def test_ring_with_a_hole(self):
+        regions = [Region(1, circle((128, 128), 90)), Region(0, circle((150, 120), 40))]
+        truth = scene_truth(Scene(256, 256, PALETTE, 0, regions))
+        self.assert_invariant(truth)
+
+    def test_layered_scene(self):
+        _, truth = fuzz.fuzz_scene(1009, 256, "layered")
+        self.assert_invariant(truth)
 
 
 class PinnedTest(unittest.TestCase):
