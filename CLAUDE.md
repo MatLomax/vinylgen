@@ -60,7 +60,8 @@ readiness is not yet claimed.
 - Generated raster colour count is not trustworthy. Validate exact output
   colours mechanically.
 - Do not force six colours by default. Infer the palette automatically; small,
-  similar shades should merge while small high-contrast accents may survive.
+  similar shades should merge while small high-contrast accents may survive
+  (a whole colour below the usage cutoff still folds unless preserved).
 - For cutter-oriented region cleanup, edge-sharing (four-way) connectivity is
   authoritative. Corner-only contact does not make one physical vinyl region.
 - Avoid naïvely tiling connected-component cleanup: shapes crossing tile seams
@@ -120,9 +121,12 @@ outputs/<subject>/
   exact hex values and pixel-area percentages ordered descending.
 - `outputs/contact.png` is a review contact sheet and may be regenerated.
 
-Palette flattening may fold tiny similar-colour anti-alias fragments, but must
-not delete high-contrast detail merely because it is small. Cutter-oriented
-area/width removal and widening remain explicit trace-stage operations.
+Palette flattening may fold tiny similar-colour anti-alias fragments, but
+small-region cleanup must not delete high-contrast detail merely because it is
+small. The whole-colour usage cutoff is separate: it folds every colour below
+the cutoff, high-contrast and protected thin features included, unless
+whole-colour preservation exempts it. Cutter-oriented area/width removal and
+widening remain explicit trace-stage operations.
 
 ## Terminology
 

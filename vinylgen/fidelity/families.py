@@ -669,7 +669,8 @@ def palette_stage_set() -> list[Case]:
     """RGB scenes for the palette-stage tier. ``scene.params["expect"]`` names the
     intended palette outcome: ``merge`` lists palette index pairs that should
     become one colour, ``survive`` palette indices that should stay their own
-    colour. ``scene.params["noise"]`` (``seed``, ``amplitude``), when present,
+    colour, ``fold`` palette indices the whole-colour usage cutoff should fold
+    into another colour. ``scene.params["noise"]`` (``seed``, ``amplitude``), when present,
     is applied by ``render_case_rgb``."""
     s = PALETTE_STAGE_CANVAS
     c = (s / 2 + 0.25, s / 2 + 0.25)
@@ -707,7 +708,10 @@ def palette_stage_set() -> list[Case]:
          Region(2, circle(c, accent))], 2 * accent, "accent",
         {"expect": {"survive": [0, 1, 2]}, "accent_share": 0.015}))
 
-    # Dark thin outlines (the palette stage's thin-feature protection evidence).
+    # Dark thin outlines (the palette stage's thin-feature protection evidence),
+    # each covering 0.5-0.95 % of the canvas. Only explicit whole-colour
+    # preservation exempts a colour from the 1 % usage cutoff, so the outline
+    # colour folds although it is protected evidence.
     for kind, width in (("disc", 1.5), ("square", 1.0), ("disc", 2.5)):
         inner = 0.3 * s
         if kind == "disc":
@@ -719,7 +723,7 @@ def palette_stage_set() -> list[Case]:
         cases.append(_palette_case(
             f"palette-dark-outline-{kind}-w{_tok(width)}-512", s,
             _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
-            {"outline_width_px": width, "expect": {"survive": [0, 1, 2]}}))
+            {"outline_width_px": width, "expect": {"survive": [0, 2], "fold": [1]}}))
 
     # Light seeded noise over clean scenes, at three canvas sizes.
     for size, amplitude, seed in ((128, 3, 11), (512, 4, 12), (1536, 6, 13)):
