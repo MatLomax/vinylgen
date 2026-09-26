@@ -7,7 +7,12 @@ tests start immediately instead of extending the tail. Workers are persistent
 spawned processes, so each pays the numpy/numba import cost once. A unit whose
 worker dies is retried, then run alone and reported as an error if it dies again.
 
-Usage: run_tests.py [-j N] [-v] [--durations N] [test names ...]
+The default run discovers ``tests/`` only, so it never touches ``tests/fullimage/``.
+That directory is the opt-in full-image bucket: real-corpus and sourceup checks
+that need the full image corpus or a `.tmp` baseline, selected only with
+``--full-image``.
+
+Usage: run_tests.py [-j N] [-v] [--durations N] [--full-image] [test names ...]
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
+FULLIMAGE = TESTS / "fullimage"
 DURATIONS_FILE = ROOT / ".tmp" / "test-durations.json"
 
 
@@ -85,7 +91,9 @@ class _Result(unittest.TestResult):
 
 def _worker_init() -> None:
     os.chdir(ROOT)
-    for path in (str(TESTS), str(ROOT)):
+    # FULLIMAGE is always added (not only for --full-image runs) so a worker can
+    # resolve a full-image module name whichever bucket dispatched the unit.
+    for path in (str(TESTS), str(ROOT), str(FULLIMAGE)):
         if path not in sys.path:
             sys.path.insert(0, path)
 
@@ -181,13 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--durations", type=int, default=0, metavar="N",
                         help="show the N slowest tests")
+    parser.add_argument("--full-image", action="store_true",
+                        help="run only the opt-in full-image bucket (tests/fullimage/)"
+                             " instead of the default tests/ discovery")
     parser.add_argument("names", nargs="*", help="test names; default discovers tests/")
     args = parser.parse_args(argv)
 
     _worker_init()
     loader = unittest.defaultTestLoader
-    suite = (loader.loadTestsFromNames(args.names) if args.names
-             else loader.discover(str(TESTS), top_level_dir=str(TESTS)))
+    if args.names:
+        suite = loader.loadTestsFromNames(args.names)
+    elif args.full_image:
+        suite = loader.discover(str(FULLIMAGE), top_level_dir=str(FULLIMAGE))
+    else:
+        suite = loader.discover(str(TESTS), top_level_dir=str(TESTS))
     units, local = _units(suite)
     previous = _load_durations()
     units.sort(key=lambda unit: sum(previous.get(name, 1.0) for name in unit), reverse=True)
@@ -248,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     details = ", ".join(f"{label}={count}" for label, count in counts.items() if count)
     print(f"\n{'FAILED' if bad else 'OK'}{f' ({details})' if details else ''}")
 
-    if not args.names:
+    if not args.names and not args.full_image:
         durations = {r["id"]: r["seconds"] for r in records if r["outcome"] != "skip"}
         DURATIONS_FILE.parent.mkdir(exist_ok=True)
         DURATIONS_FILE.write_text(json.dumps(durations, indent=0, sort_keys=True))

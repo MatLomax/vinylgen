@@ -11,27 +11,17 @@ from __future__ import annotations
 
 import importlib.util
 import math
-import os
 import struct
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 
 from vinylgen import validation as fast
 
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
 _REFERENCE_PATH = Path(__file__).resolve().parent / "oracles" / "validation_reference.py"
-_SOURCEUP_PATH = _REPO_ROOT / "outputs" / "sourceup" / "source.png"
-_CORPUS_ROOT = _REPO_ROOT / ".tmp" / "stroke-baseline" / "after"
-_CORPUS_SUBJECTS = (
-    "cosmic-jellyfish", "crashed-ring", "crashed-spacecraft", "desert-mech",
-    "desert-rocket", "floating-castle", "griffin-castle", "kraken-lighthouse",
-    "sky-whale-city",
-)
 
 
 def _load_reference():
@@ -43,23 +33,6 @@ def _load_reference():
 
 
 reference = _load_reference()
-
-
-def _skip_slow() -> bool:
-    """Real-image oracle checks take minutes; they run only when asked for."""
-    return os.environ.get("VINYLGEN_SLOW_TESTS") != "1"
-
-
-def _corpus_source(subject: str) -> np.ndarray:
-    path = _CORPUS_ROOT / subject / "source.png"
-    return np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
-
-
-def _require_corpus() -> None:
-    if _skip_slow():
-        raise unittest.SkipTest("set VINYLGEN_SLOW_TESTS=1 to run real-image oracle checks")
-    if not _CORPUS_ROOT.is_dir():
-        raise unittest.SkipTest(f"corpus directory missing: {_CORPUS_ROOT}")
 
 
 def _float_bits(value: float) -> bytes:
@@ -115,19 +88,6 @@ class LuminanceBitExactnessTest(unittest.TestCase):
         self._assert_identical(rng.uniform(0, 255, size=(20, 24, 3)).astype(np.float64))
         self._assert_identical(rng.uniform(0, 255, size=(8, 8, 3)).astype(np.float32))
 
-    def test_corpus_sources(self) -> None:
-        _require_corpus()
-        for subject in _CORPUS_SUBJECTS:
-            with self.subTest(subject=subject):
-                self._assert_identical(_corpus_source(subject))
-
-    @unittest.skipIf(_skip_slow(), "set VINYLGEN_SLOW_TESTS=1 to run real-image oracle checks")
-    def test_sourceup(self) -> None:
-        if not _SOURCEUP_PATH.exists():
-            self.skipTest(f"sourceup source missing: {_SOURCEUP_PATH}")
-        rgb = np.asarray(Image.open(_SOURCEUP_PATH).convert("RGB"), dtype=np.uint8)
-        self._assert_identical(rgb)
-
 
 class RidgeStrengthBitExactnessTest(unittest.TestCase):
     def _assert_identical(self, luminance: np.ndarray, maximum_half_width: int) -> None:
@@ -158,20 +118,6 @@ class RidgeStrengthBitExactnessTest(unittest.TestCase):
             with self.subTest(maximum_half_width=maximum_half_width):
                 self._assert_identical(image, maximum_half_width)
 
-    def test_corpus_luminances(self) -> None:
-        _require_corpus()
-        for subject in _CORPUS_SUBJECTS:
-            with self.subTest(subject=subject):
-                luminance = reference._luminance(_corpus_source(subject))
-                self._assert_identical(luminance, 4)
-
-    @unittest.skipIf(_skip_slow(), "set VINYLGEN_SLOW_TESTS=1 to run real-image oracle checks")
-    def test_sourceup_luminance(self) -> None:
-        if not _SOURCEUP_PATH.exists():
-            self.skipTest(f"sourceup source missing: {_SOURCEUP_PATH}")
-        rgb = np.asarray(Image.open(_SOURCEUP_PATH).convert("RGB"), dtype=np.uint8)
-        self._assert_identical(reference._luminance(rgb), 4)
-
     def test_concurrent_thread_pool_callers_match_reference(self) -> None:
         """The trace CLI validates independent subjects on a thread pool, so the
         kernel is entered from several Python threads at once."""
@@ -196,15 +142,6 @@ class SourceThinFeatureMaskTest(unittest.TestCase):
                 actual = fast.source_thin_feature_mask(image)
                 self.assertEqual(expected.dtype, actual.dtype)
                 self.assertTrue(np.array_equal(expected, actual))
-
-    def test_corpus_sources(self) -> None:
-        _require_corpus()
-        for subject in _CORPUS_SUBJECTS:
-            with self.subTest(subject=subject):
-                image = _corpus_source(subject)
-                self.assertTrue(np.array_equal(
-                    reference.source_thin_feature_mask(image),
-                    fast.source_thin_feature_mask(image)))
 
 
 def _protected_fixture():

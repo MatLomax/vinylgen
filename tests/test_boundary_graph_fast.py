@@ -1,6 +1,5 @@
 import functools
 import importlib.util
-import os
 import sys
 import unittest
 from pathlib import Path
@@ -9,24 +8,9 @@ import numpy as np
 import shapely
 
 from vinylgen.boundary_graph import shared_boundary_polygons
-from vinylgen.contracts import SegmentationBundle
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _REFERENCE_PATH = Path(__file__).resolve().parent / "oracles" / "boundary_graph_reference.py"
-_CORPUS_ROOT = _REPO_ROOT / ".tmp" / "stroke-baseline" / "after"
-_SOURCEUP_NPZ = _REPO_ROOT / "outputs" / "sourceup" / "segmentation.npz"
-
-_CORPUS_SUBJECTS = (
-    "cosmic-jellyfish", "crashed-ring", "crashed-spacecraft", "desert-mech",
-    "desert-rocket", "floating-castle", "griffin-castle", "kraken-lighthouse",
-    "sky-whale-city",
-)
-
-
-def _require_slow_tests() -> None:
-    """Real-image oracle checks take minutes; they run only when asked for."""
-    if os.environ.get("VINYLGEN_SLOW_TESTS") != "1":
-        raise unittest.SkipTest("set VINYLGEN_SLOW_TESTS=1 to run real-image oracle checks")
 
 
 def _load_reference():
@@ -139,16 +123,18 @@ def _fuzz_cases():
         yield index, kind, (labels, included, palette_costs, protected_features)
 
 
-class BoundaryGraphFastTests(unittest.TestCase):
-    def _compare(self, labels, included, palette_costs, protected_features):
-        expected = _reference().shared_boundary_polygons(
-            labels.copy(), included, palette_costs,
-            protected_features=protected_features)
-        produced = shared_boundary_polygons(
-            labels.copy(), included, palette_costs,
-            protected_features=protected_features)
-        _assert_equal(self, produced, expected)
+def _compare(test, labels, included, palette_costs, protected_features):
+    """Shared by the fuzz cases here and the real-image bucket's corpus checks."""
+    expected = _reference().shared_boundary_polygons(
+        labels.copy(), included, palette_costs,
+        protected_features=protected_features)
+    produced = shared_boundary_polygons(
+        labels.copy(), included, palette_costs,
+        protected_features=protected_features)
+    _assert_equal(test, produced, expected)
 
+
+class BoundaryGraphFastTests(unittest.TestCase):
     def _fuzz_shard(self, shard):
         checked = 0
         for index, kind, inputs in _fuzz_cases():
@@ -157,36 +143,9 @@ class BoundaryGraphFastTests(unittest.TestCase):
             if (index // 4) % _FUZZ_SHARDS != shard:
                 continue
             with self.subTest(case=index, kind=kind, shape=inputs[0].shape):
-                self._compare(*inputs)
+                _compare(self, *inputs)
             checked += 1
         self.assertEqual(checked, _FUZZ_CASES // _FUZZ_SHARDS)
-
-    def test_corpus_subjects_match_reference(self):
-        _require_slow_tests()
-        if not _CORPUS_ROOT.is_dir():
-            raise unittest.SkipTest(f"corpus baseline absent at {_CORPUS_ROOT}")
-        checked = 0
-        for subject in _CORPUS_SUBJECTS:
-            npz = _CORPUS_ROOT / subject / "segmentation.npz"
-            if not npz.exists():
-                continue
-            bundle = SegmentationBundle.load(npz)
-            included = list(range(bundle.palette_rgb.shape[0]))
-            with self.subTest(subject=subject):
-                self._compare(bundle.labels, included, bundle.palette_costs,
-                              bundle.protected_features)
-            checked += 1
-        if not checked:
-            raise unittest.SkipTest("no corpus segmentation bundles present")
-
-    def test_sourceup_matches_reference(self):
-        _require_slow_tests()
-        if not _SOURCEUP_NPZ.exists():
-            raise unittest.SkipTest(f"sourceup bundle absent at {_SOURCEUP_NPZ}")
-        bundle = SegmentationBundle.load(_SOURCEUP_NPZ)
-        included = list(range(bundle.palette_rgb.shape[0]))
-        self._compare(bundle.labels, included, bundle.palette_costs,
-                      bundle.protected_features)
 
 
 for _shard in range(_FUZZ_SHARDS):

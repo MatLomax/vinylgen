@@ -1,13 +1,10 @@
 import math
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from scipy import ndimage
 
-from vinylgen.colour import srgb_to_lab
 from vinylgen.ridge import two_sided_dark_ridge_response
 
 
@@ -70,14 +67,6 @@ class RidgeKernelBitExactnessTest(unittest.TestCase):
 
     def test_structured_line_image(self) -> None:
         self._assert_identical(_structured_lines(160, 120, 7))
-
-    def test_real_desert_rocket_l_channel(self) -> None:
-        path = Path("images/desert-rocket.png")
-        rgb = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
-        height, width, _ = rgb.shape
-        lab = srgb_to_lab(rgb.reshape(-1, 3))
-        lightness = lab[:, 0].reshape(height, width).astype(np.float32)
-        self._assert_identical(lightness)
 
     def test_concurrent_thread_pool_callers_match_reference(self) -> None:
         """The palette CLI flattens independent images on a thread pool, so the

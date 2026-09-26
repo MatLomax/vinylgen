@@ -1,7 +1,5 @@
-import json
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -87,11 +85,6 @@ class SrgbToLabKernelBitExactnessTest(unittest.TestCase):
             with self.subTest(count=count):
                 rgb = rng.uniform(0.0, 255.0, size=(count, 3))
                 self._assert_identical(rgb)
-
-    def test_real_desert_rocket_image(self) -> None:
-        path = Path("images/desert-rocket.png")
-        rgb = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
-        self._assert_identical(rgb.reshape(-1, 3))
 
     def test_concurrent_thread_pool_callers_match_reference(self) -> None:
         rng = np.random.default_rng(101)
@@ -276,12 +269,6 @@ class NearestPaletteLabelsKernelBitExactnessTest(unittest.TestCase):
         rng = np.random.default_rng(11)
         image = rng.integers(0, 256, size=(4096, 2048, 3)).astype(np.uint8)
         palette = rng.integers(0, 256, size=(7, 3)).astype(np.int32)
-        self._assert_identical(image, palette)
-
-    def test_real_flattened_image(self) -> None:
-        image = np.asarray(Image.open("outputs/desert-rocket/flattened.png").convert("RGB"))
-        report = json.loads(Path("outputs/desert-rocket/palette.json").read_text())
-        palette = np.asarray([row["rgb"] for row in report["palette"]], dtype=np.int32)
         self._assert_identical(image, palette)
 
     def test_concurrent_thread_pool_callers_match_reference(self) -> None:
