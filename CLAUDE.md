@@ -103,8 +103,11 @@ python3 svg_trace.py outputs
 The regression suite's inputs are the synthetic ground-truth corpus under
 `tests/synthetic/` (see [Validation and testing](docs/validation-and-testing.md)).
 An assertion failing against today's tracer is an expected failure in
-`tests/synthetic/expected-failures.json` naming its worklog task; fixing that
-cause means removing its entries.
+`tests/synthetic/expected-failures.json` naming its worklog task and recording
+its failing measurements. A measurement that gets worse or better fails the run;
+re-record deliberately with `scripts/record_expected_failures.py` (it refuses a
+worse value without `--allow-worse`), and a cause that is fixed has its passing
+entries removed.
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold
 regions fold into a touching colour unless they are confident, coherent thin

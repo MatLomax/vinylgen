@@ -29,8 +29,15 @@ def summary(**overrides) -> dict:
               "ideal_nodes": 4, "node_ratio": 2.0, "colours": 2, "topology_mismatches": 0,
               "unmatched_layers": 0, "structural_failures": 0, "semantic_passed": True,
               "dense_fallbacks": 0, "warnings": 0, "bound_px": 1.74, "geometric": True,
-              "nodes_outside_zones": 8}
+              "evidence_tolerance_px": 2.0, "evidence_distance_px": 0.0,
+              "evidence_regions": 2, "evidence_missing_regions": 0,
+              "required_scene_colours": 0, "absent_scene_colours": 0}
     values.update(overrides)
+    # The zone-aware node counts follow the whole-boundary ones, and the area
+    # ratio the misassigned area over a 100 px^2 limit, unless a test sets them.
+    values.setdefault("nodes_outside_zones", values["nodes"])
+    values.setdefault("ideal_nodes_outside_zones", values["ideal_nodes"])
+    values.setdefault("area_ratio", values["misassigned_px"] / 100.0)
     # The judged distances (off the vertex discs and zones) follow the raw ones
     # unless a test sets them.
     values.setdefault("local_hausdorff_px", values["hausdorff_px"])
@@ -120,14 +127,20 @@ class ObjectiveTests(unittest.TestCase):
     def test_error_increases_with_every_error_measure(self):
         base = tune.case_error(row(kinks=0, topology_mismatches=0))
         worse = {"hausdorff_px": 2.0, "mean_px": 0.8, "misassigned_px": 90.0,
-                 "required_found": 2, "kinks": 3, "topology_mismatches": 1}
+                 "required_found": 2, "kinks": 3, "topology_mismatches": 1,
+                 "evidence_distance_px": 5.0, "evidence_missing_regions": 1,
+                 "absent_scene_colours": 1}
         for key, value in worse.items():
             with self.subTest(key=key):
                 self.assertGreater(tune.case_error(row(**{key: value})), base)
 
     def test_error_is_monotone_along_each_distance(self):
-        for key in ("hausdorff_px", "mean_px", "area_offset_px"):
-            errors = [tune.case_error(row(**{key: value})) for value in (0.0, 0.2, 0.5, 1.0, 3.0)]
+        for key in ("hausdorff_px", "mean_px", "area_ratio", "evidence_distance_px"):
+            # The hausdorff term is the worse of the truth and evidence distances,
+            # so the evidence distance is varied with no truth distance.
+            others = {"local_hausdorff_px": 0.0} if key == "evidence_distance_px" else {}
+            errors = [tune.case_error(row(**{key: value}, **others))
+                      for value in (0.0, 0.2, 0.5, 1.0, 3.0)]
             self.assertEqual(errors, sorted(errors), key)
             self.assertEqual(len(set(errors)), len(errors), key)
 
@@ -147,9 +160,27 @@ class ObjectiveTests(unittest.TestCase):
                                    max(1.0, size / 1000.0) + math.sqrt(2) / 2
                                    + bounds.DISTANCE_ERROR_BOUND)
 
-    def test_sub_resolution_cases_score_area_topology_and_structure_only(self):
-        terms = tune.error_terms(row(sub_resolution=True, hausdorff_px=50.0, kinks=9))
-        self.assertEqual(set(terms), {"area", "topology", "structural"})
+    def test_sub_resolution_cases_have_no_truth_distance_corner_or_kink_term(self):
+        terms = tune.error_terms(row(sub_resolution=True, hausdorff_px=50.0, kinks=9,
+                                     evidence_distance_px=1.0))
+        self.assertEqual(set(terms), {"area", "topology", "evidence", "structural", "hausdorff"})
+        self.assertAlmostEqual(terms["hausdorff"], 0.5)  # the evidence distance alone
+
+    def test_the_hausdorff_term_reads_the_worse_of_truth_and_evidence(self):
+        terms = tune.error_terms(row(bound_px=2.0, local_hausdorff_px=1.0,
+                                     evidence_tolerance_px=2.0, evidence_distance_px=3.0))
+        self.assertAlmostEqual(terms["hausdorff"], 1.5)
+
+    def test_a_dropped_evidence_region_costs_like_a_topology_error(self):
+        terms = tune.error_terms(row(evidence_regions=4, evidence_missing_regions=1))
+        self.assertAlmostEqual(terms["evidence"], 0.25)
+        self.assertAlmostEqual(tune.case_error(row(evidence_regions=4, evidence_missing_regions=1))
+                               - tune.case_error(row()), tune.WEIGHTS["evidence"] * 0.25)
+
+    def test_node_excess_reads_the_counts_outside_the_zones(self):
+        score = tune.score_rows([row("a", nodes=40, ideal_nodes=10, nodes_outside_zones=8,
+                                     ideal_nodes_outside_zones=4)])
+        self.assertAlmostEqual(score["nodes"], 2.0)
 
     def test_kink_term_keeps_its_slope_on_staircase_traces(self):
         # A staircase trace has tens of kinks per ideal node; fewer kinks must
@@ -164,7 +195,9 @@ class ObjectiveTests(unittest.TestCase):
 
     def test_failure_scores_worst(self):
         worst = row(hausdorff_px=1e6, mean_px=1e6, misassigned_px=1e9, required_found=0,
-                    kinks=10 ** 7, topology_mismatches=2, structural_failures=2)
+                    kinks=10 ** 7, topology_mismatches=2, structural_failures=2,
+                    evidence_regions=3, evidence_missing_regions=3, required_scene_colours=2,
+                    absent_scene_colours=2)
         self.assertAlmostEqual(tune.case_error(worst), tune.FAILURE_ERROR)
         self.assertEqual(tune.case_error(row(ok=False)), tune.FAILURE_ERROR)
 

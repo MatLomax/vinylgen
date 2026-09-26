@@ -59,19 +59,38 @@ regression-tested against synthetic scenes whose exact vector truth is known
   topology.
 
 `tests/test_synthetic_fidelity.py` traces every committed case in both tiers
-with the product defaults and asserts bounds derived from first principles in
-`vinylgen/fidelity/bounds.py`, the one yardstick the sweep and tuner use too:
+with the product defaults and asserts the bounds in
+`vinylgen/fidelity/bounds.py`, the one yardstick the sweep and tuner use too.
+In the RGB tier the truth is the scene after the palette stage's whole-colour
+replacements: the colours a case expects to merge are merged, and a colour the
+usage cutoff may fold (its replay on the true areas folds it) is recoloured to
+the colour it actually folded into, read from the run, because a thin feature's
+inferred colour is a blend whose share and nearest surviving colour differ from
+the scene colour's. Every boundary that survives a merge or fold is asserted in
+full. A scene colour that survives only as an inferred colour matching no scene
+colour (a thin feature's anti-alias blend) has that colour judged as it
+geometrically, while the topology, evidence and palette checks still report the
+mismatch. The assertions:
 
 - boundary distance within `D`, the resolved max deviation plus √2/2 px of pixel
   quantisation plus the metric's own error, outside the discs round the true
-  vertices and the narrow zones;
+  vertices and the narrow zones; and everywhere, each traced layer's boundary
+  within `e` of its label's boundary in the label map the trace received, both
+  ways (`e` is the max deviation or sharpening allowance, plus half a pixel, plus
+  the RGB tier's sub-pixel crossing offset, plus the metric's error), which holds
+  features below the resolution floor in place;
 - a cusp within `R(c)` of every vertex the raster can decide, where `R(c)` is the
   farthest point of the intersection of the `D`-bands of the vertex's true
   branches (about `D` at a nearly straight corner, growing only at a sharp tip,
   capped by where tangent branches separate and by the side lengths);
-- no kinks, and at most twice the ideal node count plus four;
-- truth topology, compared beyond a band round the discs and zones and only for
-  colours whose count is stable across band widths `D`, `2D` and `3D`;
+- no kinks, and at most twice the ideal node count of the boundary outside the
+  zones plus four (the ideal segmentation's vertex nodes whose traced node can
+  lie outside the zones, and its interior nodes that can fall on the parts of
+  its runs outside them);
+- truth topology per colour, compared beyond a band round the discs and zones:
+  a polygon or hole count that is the same for every band width from `D` to `3D`
+  (sampled every `D/4`) is asserted exactly, one that varies is asserted to lie
+  within its range over those widths;
 - per colour, a symmetric difference with the truth within the area of its
   `D`-tube, asserted only where that area is below the colour's own, so a trace
   that drops it fails;
@@ -85,23 +104,59 @@ with the product defaults and asserts bounds derived from first principles in
 A per-case test checks that every scene colour is held by the area or the
 evidence check. The resolution floors (2 px for geometry, √2 px for topology)
 apply locally: each colour's parts narrower than the floor (the colour less its
-morphological opening) are excluded, buffered by `D`, and everything else is
-asserted in full; an assertion with nothing left to hold is reported as a skip
-with its reason. The palette stage's small-region cleanup and whole-colour usage
-cutoff (replayed on the true areas, including the two-colour minimum and
-whole-colour preservation) are excluded the same way in the RGB tier. The RGB
-tier's quantisation has no derivable bound and reuses √2/2 px: over the RGB cases
-whose `hausdorff` assertion holds, the local boundary distance exceeds the max
-deviation plus the metric's error by at most 0.67 px (`ellipse-a8-rot45-128`,
-2026-09-26), a 0.04 px margin.
+morphological opening) are excluded from the truth assertions, buffered by `D`,
+and everything else is asserted in full; an assertion with nothing left to hold
+is reported as a skip with its reason. The palette stage's small-region cleanup
+(and a colour that may fold but covers no pixel centre) is excluded the same way
+in the RGB tier, as a zone round the region itself.
+
+Most of these bounds are derived from the trace stage's guarantees and the
+raster's geometry: the label-map tier's quantisation, `D`, `R(c)`, which corners
+are decidable, the local floors, the area tube, the evidence tolerance `e` and
+the ideal node count. The rest are not, and `bounds.py` says so where each is
+defined:
+
+- The RGB tier's quantisation has no derivable bound and reuses √2/2 px as a
+  measured baseline. Measured over all 146 RGB runs (2026-09-26), the local
+  boundary distance exceeds the max deviation plus the metric's error by at most
+  0.67 px (`ellipse-a8-rot45-128`, a 0.04 px margin) in every run whose
+  `hausdorff` assertion holds. Six runs exceed √2/2, all of them expected
+  failures with a tracked cause: the thin ring of `ring-nested-w2-px576`
+  (3.54 px), the many-colour junctions of `palette-noise-a5-pie-6-512` (1.50 px),
+  `pie-6-ph0-512` (1.28 px) and `pie-8-ph7-1536` (1.02 px),
+  `fuzz-layered-s1015-512` (0.99 px, sub-pixel trace lengths) and the folded
+  outline of `palette-dark-outline-disc-w1.5-512` (0.77 px).
+- The node limit's factor 2 and constant 4 are an allowance for the fitter not
+  being a global optimum, chosen rather than derived.
+- The topology bands sample the widths from `D` to `3D` every `D/4` rather than
+  searching them continuously.
+- Which colours the palette stage folds, and into what, is read from the run.
+- The palette matching threshold (`harness.MATCH_DELTA_E`, 12 ΔE) is chosen.
 
 An assertion that fails against today's tracer is listed in
 `tests/synthetic/expected-failures.json` under the worklog task that tracks its
-cause; it runs as an expected failure (only its `AssertionError` counts: any
-other exception while checking it is an error), and an unexpected pass fails the
-run, so the entry must then be removed. The table test checks each slug's form
-and rejects `synthetic-finding-` placeholder slugs; worklog is not available to
-the tests, so that a slug names a real task is checked by hand.
+cause, with the measurements the assertion compares against its bound (for
+example the boundary distances and the length beyond them, the missed-vertex,
+kink, node and missing-region counts, and the excess areas; `bounds.MEASUREMENTS`
+lists them). It runs as an expected failure only while it still fails and every
+measurement equals the recorded one: a count may not change at all, and a length
+or area by at most 0.001 px or 0.01 px². The pipeline is deterministic (two
+independent traces of the whole corpus gave identical measurements), so the
+tolerance only has to absorb floating-point drift. A worse measurement is a
+regression the entry would otherwise hide, and a better one leaves the recorded
+value too loose, so either fails the run, as does an unexpected pass. Any other
+exception while checking it is an error. Re-record with:
+
+```bash
+.venv/bin/python scripts/record_expected_failures.py
+```
+
+It traces the corpus, updates every entry's measurements, removes entries that
+now pass, and refuses to record a worse measurement unless `--allow-worse` is
+given; `--task TIER/CASE:ASSERTION=SLUG` adds an entry for a new failure. The
+table test checks each entry's form and measurements and rejects
+`synthetic-finding-` placeholder slugs; worklog is not available to the tests,
+so that a slug names a real task is checked by hand.
 
 ### Full-image bucket
 
@@ -131,8 +186,12 @@ staircase whose every node is a cusp finds every corner; vertices, kinks and the
 boundary distance are classified by the regression bounds, so the sweep counts
 exactly what the tests assert. The tuner runs a resumable compass search over
 the eight trace lengths and the corner threshold on its own copy of the
-defaults, scores training seeds and the fixed set against the regression bound
-`D` of the default settings (which the settings under test cannot loosen), and
+defaults, scores training seeds and the fixed set with the regression
+assertions' own measures, each normalised by its bound under the default
+settings (which the settings under test cannot loosen): boundary distance to the
+truth and to the evidence, per-colour area, missed vertices, kinks, topology,
+dropped evidence regions and colours, and nodes against the ideal count outside
+the zones, and
 writes the accuracy/node-count Pareto front, a proposed settings diff, a
 before/after table per family and per canvas size on held-out cases (fuzz seeds
 outside the training range, including canvas sizes training never uses, and

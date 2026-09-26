@@ -46,7 +46,8 @@ import numpy as np
 from vinylgen.contracts import PaletteSettings, TraceSettings
 from vinylgen.fidelity.cases import Case
 from vinylgen.fidelity.raster import render_rgb
-from vinylgen.fidelity.scene import (Arc, EllipticalArc, Line, Outline, Region, Scene,
+from vinylgen.fidelity.scene import (FLATTEN_TOLERANCE, Arc, EllipticalArc, Line, Outline,
+                                     Region, Scene,
                                      circle, ellipse, polygon, rectangle, segment_end,
                                      segment_start)
 from vinylgen.trace_lengths import resolve_trace_lengths
@@ -728,10 +729,13 @@ def palette_stage_set() -> list[Case]:
             _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
             {"outline_width_px": width, "expect": {"survive": [0, 2], "fold": [1]}}))
 
-    # The same outlines under the usage cutoff with whole-colour preservation at a
-    # source pixel on the outline (``--preserve-colour-at``): the cutoff exempts the
-    # preserved colour, so the outline survives.
-    for kind, width in (("disc", 1.5), ("square", 1.0)):
+    # Outlines under the usage cutoff with whole-colour preservation at a source
+    # pixel on the outline (``--preserve-colour-at``): the cutoff exempts the
+    # preserved colour, so the outline survives. The point is a pixel whose whole
+    # square lies inside the outline, as a user clicking the outline would pick:
+    # the square is 1.5 px wide because a 1 px outline at this canvas's
+    # quarter-pixel offset (409.85-410.85 on the right) contains no whole pixel.
+    for kind, width in (("disc", 1.5), ("square", 1.5)):
         inner = 0.3 * s
         if kind == "disc":
             regions = [Region(1, circle(c, inner + width)), Region(2, circle(c, inner))]
@@ -739,9 +743,8 @@ def palette_stage_set() -> list[Case]:
             regions = [Region(1, _place(rectangle(-inner - width, -inner - width, inner + width,
                                                   inner + width), c)),
                        Region(2, _place(rectangle(-inner, -inner, inner, inner), c))]
-        # The pixel whose centre row passes through the outline's middle on the
-        # right-hand side; its whole square lies inside the outline.
-        point = [int(math.floor(c[0] + inner + width / 2.0)), int(math.floor(c[1]))]
+        point = _pixel_inside_band(regions[0].outline, regions[1].outline,
+                                   int(math.floor(c[1])), int(math.floor(c[0] + inner)))
         cases.append(_palette_case(
             f"palette-dark-outline-{kind}-w{_tok(width)}-preserved-512", s,
             _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
@@ -767,6 +770,20 @@ def palette_stage_set() -> list[Case]:
         _pie_regions(c, radius, 6, 0.0), 2 * radius * math.sin(math.pi / 6), "noise",
         {"noise": {"seed": 14, "amplitude": 5}, "expect": {"survive": list(range(7))}}))
     return cases
+
+
+def _pixel_inside_band(outer: Outline, inner: Outline, row: int, start: int) -> list[int]:
+    """The first pixel of ``row``, from column ``start`` rightwards, whose whole
+    square lies between ``outer`` and ``inner`` (each flattened, the inner outline
+    grown by the flattening tolerance so its inscribed chords never count a pixel
+    as inside that the true curve cuts)."""
+    from shapely.geometry import Polygon, box
+    band = Polygon(outer.flatten(FLATTEN_TOLERANCE)).difference(
+        Polygon(inner.flatten(FLATTEN_TOLERANCE)).buffer(FLATTEN_TOLERANCE))
+    for column in range(start, start + 8):
+        if band.contains(box(column, row, column + 1, row + 1)):
+            return [column, row]
+    raise ValueError(f"no pixel of row {row} from column {start} lies wholly inside the band")
 
 
 def case_palette_settings(case: Case) -> PaletteSettings:

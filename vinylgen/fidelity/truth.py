@@ -49,6 +49,10 @@ merged run of arcs with total sweep ``S``, ``ceil(S / 90deg) - 1`` interior node
 (``ceil(S / 90deg)`` for a closed run with no vertex: a full circle is 4). Cubics
 and lines add no interior nodes. A square is 4, a disc 4, a disc partly covered
 by a square counts its visible arc pieces plus the square's vertices.
+``ideal_vertices`` and ``ideal_runs`` are that segmentation's geometry: the
+remaining vertices, and every merged run as a polyline with its cumulative sweep,
+so the ideal count of any part of the boundary can be read off
+(``bounds.zone_ideal_nodes``).
 
 Bounds
 ------
@@ -112,6 +116,22 @@ class SceneTruth:
     colour_geometry: dict[int, object]
     corners: list[TrueCorner] = field(default_factory=list)
     ideal_nodes: int = 0
+    ideal_vertices: np.ndarray = field(default_factory=lambda: np.empty((0, 2)))
+    ideal_runs: list["IdealRun"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class IdealRun:
+    """One merged run of the ideal segmentation (module docstring): ``points``
+    along it (``(n, 2)``, a closed run ending on its start), ``sweep`` the
+    cumulative absolute sweep in radians at each point (0 throughout for lines and
+    cubics), ``conic`` whether it is a run of arcs, and ``closed`` whether it is a
+    closed run with no vertex on it."""
+
+    points: np.ndarray
+    sweep: np.ndarray
+    conic: bool
+    closed: bool
 
 
 # --- truth extraction ------------------------------------------------------------------
@@ -521,8 +541,21 @@ def _conic_sweep(segment, t0: float, t1: float) -> float:
     return abs(segment.sweep) * (t1 - t0)
 
 
+# The ideal runs are sampled at most this far apart along their length.
+_RUN_SAMPLE_PX = 0.25
+
+
+def _piece_points(segment, t0: float, t1: float) -> np.ndarray:
+    coarse = segment.point(np.linspace(t0, t1, 17))
+    length = float(np.hypot(*np.diff(coarse, axis=0).T).sum())
+    count = max(2, math.ceil(length / _RUN_SAMPLE_PX) + 1)
+    return segment.point(np.linspace(t0, t1, count))
+
+
 def _ideal_nodes(truth: _Truth, vertices: list[Point], locals_: list[_Local],
-                 vertex_kinds: dict[int, str]) -> int:
+                 vertex_kinds: dict[int, str]) -> tuple[int, np.ndarray, list[IdealRun]]:
+    """The ideal node count, the positions of its vertex nodes and its merged runs
+    (module docstring)."""
     hits: dict[tuple[int, int], set[float]] = {}
     for local in locals_:
         for ring_id, index, t in local.hits:
@@ -600,14 +633,64 @@ def _ideal_nodes(truth: _Truth, vertices: list[Point], locals_: list[_Local],
             run["sweep"] += _conic_sweep(segment, piece[2], piece[3])
         if piece[4] not in merged_vertices or piece[5] not in merged_vertices:
             run["open"] = True
-    nodes = sum(1 for vertex in ends_at if vertex not in merged_vertices)
+    node_vertices = [vertex for vertex in ends_at if vertex not in merged_vertices]
+    nodes = len(node_vertices)
     for run in runs.values():
         if run["conic"]:
             quarters = max(1, math.ceil(run["sweep"] / (math.pi / 2) - 1e-9))
             nodes += quarters - 1 if run["open"] else quarters
         elif not run["open"]:
             nodes += 1
-    return nodes
+    positions = np.asarray([vertices[vertex] for vertex in sorted(node_vertices)],
+                           dtype=np.float64).reshape(-1, 2)
+    return nodes, positions, _run_geometry(truth, pieces, find, ends_at, merged_vertices,
+                                           runs)
+
+
+def _run_geometry(truth: _Truth, pieces: list, find, ends_at: dict[int, list[int]],
+                  merged_vertices: set[int], runs: dict[int, dict]) -> list[IdealRun]:
+    """Every merged run as one polyline: its pieces chained end to end through the
+    merged vertices, from a vertex end for an open run."""
+    members: dict[int, list[int]] = {}
+    for number in range(len(pieces)):
+        members.setdefault(find(number), []).append(number)
+    result = []
+    for root, numbers in members.items():
+        run = runs[root]
+        start = next((number for number in numbers
+                      if pieces[number][4] not in merged_vertices
+                      or pieces[number][5] not in merged_vertices), numbers[0])
+        # Walk from the start piece's unmerged end (either end on a closed run).
+        at = pieces[start][4] if pieces[start][4] not in merged_vertices else pieces[start][5]
+        if pieces[start][4] in merged_vertices and pieces[start][5] in merged_vertices:
+            at = pieces[start][4]
+        points, sweeps, total = [], [], 0.0
+        visited = set()
+        number = start
+        while number is not None and number not in visited:
+            visited.add(number)
+            ring_id, index, t0, t1, first, last = pieces[number]
+            segment = truth.rings[ring_id].outline.segments[index]
+            piece = _piece_points(segment, t0, t1)
+            if first != at:
+                piece = piece[::-1]
+                first, last = last, first
+            conic = segment.carrier() is not None
+            step = _conic_sweep(segment, t0, t1) / (len(piece) - 1) if conic else 0.0
+            offset = 1 if points else 0
+            for k in range(offset, len(piece)):
+                points.append(piece[k])
+                sweeps.append(total + step * k)
+            total += step * (len(piece) - 1)
+            at = last
+            if at not in merged_vertices:
+                break
+            following = [other for other in ends_at[at] if other != number]
+            number = following[0] if following else None
+        result.append(IdealRun(points=np.asarray(points, dtype=np.float64),
+                               sweep=np.asarray(sweeps, dtype=np.float64),
+                               conic=bool(run["conic"]), closed=not run["open"]))
+    return result
 
 
 def _same_key(a, b) -> bool:
@@ -638,6 +721,8 @@ def scene_truth(scene) -> SceneTruth:
         kinds[index] = kind
         corners.append(TrueCorner(point, turn, kind))
     corners.sort(key=lambda corner: (round(corner.point[1], 6), round(corner.point[0], 6)))
+    ideal_nodes, ideal_vertices, ideal_runs = _ideal_nodes(truth, vertices, locals_, kinds)
     return SceneTruth(width=scene.width, height=scene.height,
                       colour_geometry=_colour_geometry(scene), corners=corners,
-                      ideal_nodes=_ideal_nodes(truth, vertices, locals_, kinds))
+                      ideal_nodes=ideal_nodes, ideal_vertices=ideal_vertices,
+                      ideal_runs=ideal_runs)

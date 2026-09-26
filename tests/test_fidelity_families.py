@@ -154,6 +154,48 @@ class CaseTests(unittest.TestCase):
             for case in cases:
                 self.assertEqual(self.truth(case.case_id).corners, [])
 
+    def test_every_preservation_point_is_a_pixel_wholly_inside_its_colour(self):
+        preserving = [c for c in self.palette_stage
+                      if (c.scene.params.get("palette_options") or {}).get(
+                          "preserved_colour_points")]
+        self.assertTrue(preserving)
+        for case in preserving:
+            rgb = families.render_case_rgb(case)
+            for x, y in case.scene.params["palette_options"]["preserved_colour_points"]:
+                with self.subTest(case=case.case_id, point=(x, y)):
+                    pixel = box(x, y, x + 1, y + 1)
+                    owners = [index for index, geometry
+                              in self.truth(case.case_id).colour_geometry.items()
+                              if geometry.buffer(1e-9).contains(pixel)]
+                    self.assertEqual(len(owners), 1, "the pixel straddles a colour boundary")
+                    # Full coverage: the anti-aliased render is the colour itself.
+                    self.assertEqual(rgb[y, x].tolist(),
+                                     list(case.scene.palette[owners[0]]["rgb"]))
+
+    def test_the_ideal_segmentation_geometry_counts_the_ideal_nodes(self):
+        from shapely.geometry import Polygon
+        from vinylgen.fidelity.bounds import zone_ideal_nodes
+        for case in self.cases:
+            with self.subTest(case=case.case_id):
+                truth = self.truth(case.case_id)
+                self.assertEqual(zone_ideal_nodes(truth, Polygon()), truth.ideal_nodes)
+        # A disc (4 ideal nodes, 90 degrees apart at any phase) with a zone over
+        # its right-hand quarter of diameter: the part outside sweeps 240 degrees,
+        # which holds at most floor(240 / 90) + 1 = 3 of them.
+        disc = next(c for c in self.fixed if c.case_id == "disc-off0-128")
+        truth = self.truth(disc.case_id)
+        x0, y0, x1, y1 = truth.colour_geometry[1].bounds
+        zone = box(x1 - (x1 - x0) / 4.0, 0, truth.width, truth.height)
+        self.assertEqual(zone_ideal_nodes(truth, zone), 3)
+        # A square's corner counts while its radius reaches outside the zone.
+        square = next(c for c in self.fixed if c.case_id == "square-rot0-int-128")
+        truth = self.truth(square.case_id)
+        corner = truth.corners[0].point
+        small = box(corner[0] - 1, corner[1] - 1, corner[0] + 1, corner[1] + 1)
+        self.assertEqual(zone_ideal_nodes(truth, small, {}, 2.0), 4)
+        self.assertEqual(zone_ideal_nodes(truth, small, {}, 0.5), 3)
+        self.assertEqual(zone_ideal_nodes(truth, box(0, 0, truth.width, truth.height)), 0)
+
     def test_noise_is_seeded_and_bounded(self):
         noisy = [c for c in self.palette_stage if "noise" in c.scene.params]
         self.assertTrue(noisy)

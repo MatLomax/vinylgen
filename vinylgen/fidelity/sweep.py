@@ -22,13 +22,22 @@ loosen its own yardstick):
 - a kink is a cusp away from every required or optional vertex's ``R(c)``,
   outside the zones and not on a sharpenable round (``bounds.evaluate``), so
   cusp precision counts exactly what the ``kinks`` assertion rejects;
-- the local Hausdorff and mean boundary distance leave out the vertex discs and
-  the zones, as the ``hausdorff`` assertion does, and ``bound_px`` (``D``) is the
-  per-case error budget the tuner normalises by;
-- a case whose whole boundary lies in the discs and zones (features below the
-  resolution floor, or removed by the palette stage by design) is flagged
-  ``sub_resolution``; the tuning objective scores it on area and topology only
-  (``tune`` docstring).
+- the local Hausdorff and mean boundary distance to the truth leave out the
+  vertex discs and the zones, as the ``hausdorff`` assertion does, and
+  ``bound_px`` (``D``) is the per-case error budget the tuner normalises by; the
+  boundary distance to the raster evidence the trace received holds everywhere,
+  with its own budget ``evidence_tolerance_px`` (``e``);
+- nodes are counted outside the zones against the ideal count of the boundary
+  outside them (``nodes_outside_zones``, ``ideal_nodes_outside_zones``), and
+  area, evidence regions and surviving colours as the ``area`` and ``evidence``
+  assertions count them (``bounds.summary_numbers``);
+- a case whose whole truth boundary lies in the discs and zones (features below
+  the resolution floor, or removed by the palette stage by design) is flagged
+  ``sub_resolution``; the tuning objective scores its truth-distance, corner,
+  kink and node terms as zero (``tune`` docstring).
+
+In the rgb tier the truth is the scene after the palette stage's merges and folds
+(``bounds.case_truth``), so the bounds are derived per run.
 
 The rgb tier infers each case's palette with its ``families.case_palette_settings``,
 as the regression tests do.
@@ -113,8 +122,13 @@ def _truth(case):
     return _cached(_TRUTH_CACHE, case.case_id, lambda: scene_truth(case.scene))
 
 
-def _bounds(case, tier: str):
+def _bounds(case, tier: str, run):
+    """The regression bounds of ``case`` in ``tier`` for ``run``. The rgb tier's
+    depend on the palette stage's folds in the run, so only the labels tier's are
+    cached."""
     from vinylgen.fidelity.bounds import case_bounds
+    if tier != "labels":
+        return case_bounds(case, tier, _truth(case), run=run)
     return _cached(_BOUNDS_CACHE, (case.case_id, tier),
                    lambda: case_bounds(case, tier, _truth(case)))
 
@@ -216,7 +230,7 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
     ``asdict`` records; a fresh ``TraceSettings`` is built from them here, so no
     caller-held settings object is ever handed to the trace stage. ``tiers`` names
     every tier the sweep traces the case in, so a render can serve them all."""
-    from vinylgen.fidelity.bounds import evaluate
+    from vinylgen.fidelity.bounds import colour_map, evaluate
     from vinylgen.fidelity.families import case_palette_settings
     from vinylgen.fidelity.harness import trace_labels, trace_rgb
     from vinylgen.fidelity.metrics import measure
@@ -231,9 +245,6 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
         trace_settings = TraceSettings(**settings)
         cleanup_settings = CleanupSettings(**cleanup) if cleanup else None
         palette = case.scene.palette
-        bounds = _bounds(case, tier)
-        row["sub_resolution"] = not bounds.geometric
-        row["bound_px"] = bounds.bound
         if tier == "labels":
             run = trace_labels((_render(case, tier, tiers), palette), case_dir, trace_settings,
                                cleanup_settings, subject=case.case_id)
@@ -243,13 +254,15 @@ def run_case(case, tier: str, settings: dict, cleanup: dict | None, work_dir: st
                             cleanup=cleanup_settings, subject=case.case_id)
         else:
             raise ValueError(f"unknown tier {tier!r}")
-        truth = _truth(case)
         measured = time.perf_counter()
+        bounds = _bounds(case, tier, run)
+        row["sub_resolution"] = not bounds.geometric
+        row["bound_px"] = bounds.bound
         # A negative radius and distance list every vertex's and cusp's nearest
         # distance; the bounds classify them.
-        result = measure(run.edge_svg, truth, palette, corner_radius=-1.0,
-                         smooth_min_distance=-1.0, colour_map=run.colour_map)
-        evaluation = evaluate(case, tier, run, truth, bounds, evidence=False, measured=result)
+        result = measure(run.edge_svg, bounds.truth, palette, corner_radius=-1.0,
+                         smooth_min_distance=-1.0, colour_map=colour_map(bounds, run))
+        evaluation = evaluate(case, tier, run, bounds, measured=result)
         row.update(ok=True, palette_seconds=run.palette_seconds, trace_seconds=run.trace_seconds,
                    measure_seconds=time.perf_counter() - measured,
                    palette_unmatched=len(run.unmatched),

@@ -11,28 +11,34 @@ Objective
 Every traced case gets an error score ``E`` and a node excess; an evaluation
 (one settings point over a fixed case subset) averages them.
 
-Every term is judged with the synthetic regression bounds
-(``vinylgen/fidelity/bounds.py``, through the sweep's per-case summary). Per case,
-with ``r = D`` (``bounds.boundary_bound``: the default maximum deviation, resolved
-on the case's canvas, plus sqrt(2) / 2 px of quantisation plus the metric's own
-error; the limit the regression ``hausdorff`` assertion holds the boundary to;
-fixed per case from the default settings, never taken from the settings under
-test, so the tuner cannot widen its own yardstick)::
+Every term except ``s`` is one of the synthetic regression assertions'
+measures (``vinylgen/fidelity/bounds.py``, through the sweep's per-case summary,
+``bounds.summary_numbers``), normalised by the bound that assertion holds it to,
+so a term of 1 is a case at its regression limit. The bounds are fixed per case
+from the default settings, never taken from the settings under test, so the
+tuner cannot widen its own yardstick. Per case, with ``D`` the ``hausdorff``
+assertion's truth-distance bound and ``e`` its evidence-distance bound::
 
-    h = min(10, local Hausdorff / r)      worst boundary distance off the vertex
-                                           discs and zones, in budgets
-    m = min(10, local mean distance / r)  typical boundary distance there
-    a = min(10, (misassigned area / truth boundary length) / r)
-                                           mean displacement implied by wrong area,
-                                           which also catches wrong-colour fills
+    h = min(10, max(truth distance off the vertex discs and zones / D,
+                    evidence distance / e))
+                                           the ``hausdorff`` assertion's worst point
+    m = min(10, mean truth distance off the discs and zones / D)
+                                           the same distances' mean
+    a = min(10, max over asserted colours of symmetric difference / its limit,
+                and misassigned area / its limit)
+                                           the ``area`` assertion
     c = missed required vertices / max(1, required vertices)
-                                           a required vertex has no cusp within R(c)
-    k = min(10, log2(1 + kinks / max(1, ideal nodes)))
-                                           kinks as the ``kinks`` assertion counts them
-    t = mismatched colours / colours      topology off the discs and zones differs
+                                           the ``corners`` assertion
+    k = min(10, log2(1 + kinks / max(1, ideal nodes outside the zones)))
+                                           the ``kinks`` assertion's count
+    t = colours whose topology is outside the truth's / colours
+                                           the ``topology`` assertion
+    v = evidence regions without traced area / evidence regions
+        + scene colours missing from the palette / colours required to survive
+                                           the ``evidence`` assertion's counts
     s = 1 if the edge or overlap SVG failed the trace stage's structural validation
 
-    E = 1 h + 2 m + 1 a + 2 c + 1 k + 4 t + 4 s
+    E = 1 h + 2 m + 1 a + 2 c + 1 k + 4 t + 4 v + 4 s
 
 Weights: ``m`` runs at roughly a third of ``h`` on a sound trace, so doubling it
 lets the whole boundary count as much as its worst point. ``a`` counts once: it
@@ -46,21 +52,25 @@ staircase step of a small disc (about 40 per ideal node) about 5.4. A cusp on a
 round tight enough for the trace to sharpen (radius up to about
 ``bounds.SHARPENING_RADIUS_FACTOR`` times the sharpening allowance plus ``Q``)
 is no kink, as in the regression assertion; every larger round keeps the slope.
-A topology error or an invalid SVG is structural, so either costs 4 per case (2
-for one wrong colour of two), more than any single distance term at its budget.
-Distance terms are capped at 10 budgets so one runaway case cannot swamp the
-mean. A case whose whole boundary lies in the vertex discs and zones (the sweep
-row's ``sub_resolution``) is scored on ``a``, ``t`` and ``s`` only. A failed
-trace scores ``FAILURE_ERROR``, every term at its maximum.
+A topology error, a dropped region or colour, or an invalid SVG is structural,
+so each costs up to 4 per case (2 for one wrong colour of two), more than any
+single distance term at its budget: dropping a thin region the raster carries
+costs the tuner as the regression tests count it. Distance terms are capped at
+10 budgets so one runaway case cannot swamp the mean. A case whose whole truth
+boundary lies in the vertex discs and zones (the sweep row's
+``sub_resolution``) has no truth distance, corner, kink or node term; its ``h``
+is the evidence distance alone. A failed trace scores ``FAILURE_ERROR``, every
+term at its maximum.
 
 Node economy: ``N`` is the geometric mean over cases of ``max(1, boundary nodes
-/ ideal nodes)`` (cases with no ideal nodes are left out). The ideal count is
-already the fewest nodes that represent the truth exactly, so fewer earns no
-credit: the error terms judge what the missing nodes cost. The scalar objective
-at node weight ``w`` is ``J = E + w * log2(N)``: doubling the node excess costs
-``w`` error units. Every evaluation keeps its ``(E, N)`` pair, and the Pareto
-front over them is reported, so the trade-off can be re-read at any weight
-without re-tracing.
+outside the zones / ideal nodes outside the zones)``, the two numbers the
+``nodes`` assertion compares (cases with no ideal node outside the zones are left
+out). The ideal count is already the fewest nodes that represent the truth
+exactly, so fewer earns no credit: the error terms judge what the missing nodes
+cost. The scalar objective at node weight ``w`` is ``J = E + w * log2(N)``:
+doubling the node excess costs ``w`` error units. Every evaluation keeps its
+``(E, N)`` pair, and the Pareto front over them is reported, so the trade-off can
+be re-read at any weight without re-tracing.
 
 Search
 ------
@@ -115,9 +125,11 @@ IMAGES_DIR = ROOT / "images"
 DISTANCE_CAP = 10.0
 KINK_CAP = 10.0
 WEIGHTS = {"hausdorff": 1.0, "mean": 2.0, "area": 1.0, "corners": 2.0, "kinks": 1.0,
-           "topology": 4.0, "structural": 4.0}
+           "topology": 4.0, "evidence": 4.0, "structural": 4.0}
+# The evidence term's two fractions each reach 1.
+EVIDENCE_CAP = 2.0
 FAILURE_ERROR = (DISTANCE_CAP * (WEIGHTS["hausdorff"] + WEIGHTS["mean"] + WEIGHTS["area"])
-                 + KINK_CAP * WEIGHTS["kinks"]
+                 + KINK_CAP * WEIGHTS["kinks"] + EVIDENCE_CAP * WEIGHTS["evidence"]
                  + WEIGHTS["corners"] + WEIGHTS["topology"] + WEIGHTS["structural"])
 DEFAULT_NODE_WEIGHT = 1.0
 
@@ -129,23 +141,24 @@ def error_terms(row: dict) -> dict:
     if not row["ok"]:
         return {"failed": True}
     s = row["summary"]
-    ref = float(s["bound_px"])
 
-    def distance(value):
-        return DISTANCE_CAP if value is None else min(DISTANCE_CAP, float(value) / ref)
+    def budgets(value, bound):
+        return DISTANCE_CAP if value is None else min(DISTANCE_CAP, float(value) / float(bound))
 
-    if s["boundary_length_px"] > 0:
-        area = distance(s["area_offset_px"])
-    else:
-        area = DISTANCE_CAP if s["misassigned_px"] > 0.5 else 0.0
-    terms = {"area": area,
+    evidence = budgets(s["evidence_distance_px"], s["evidence_tolerance_px"])
+    terms = {"area": min(DISTANCE_CAP, float(s["area_ratio"])),
              "topology": s["topology_mismatches"] / s["colours"] if s["colours"] else 0.0,
-             "structural": 1.0 if s.get("structural_failures") else 0.0}
+             "evidence": (s["evidence_missing_regions"] / max(1, s["evidence_regions"])
+                          + s["absent_scene_colours"] / max(1, s["required_scene_colours"])),
+             "structural": 1.0 if s.get("structural_failures") else 0.0,
+             "hausdorff": evidence}
     if not row.get("sub_resolution"):
         terms.update(
-            hausdorff=distance(s["local_hausdorff_px"]), mean=distance(s["local_mean_px"]),
+            hausdorff=max(evidence, budgets(s["local_hausdorff_px"], s["bound_px"])),
+            mean=budgets(s["local_mean_px"], s["bound_px"]),
             corners=(s["required_corners"] - s["required_found"]) / max(1, s["required_corners"]),
-            kinks=min(KINK_CAP, math.log2(1.0 + s["kinks"] / max(1, s["ideal_nodes"]))))
+            kinks=min(KINK_CAP, math.log2(1.0 + s["kinks"]
+                                          / max(1, s["ideal_nodes_outside_zones"]))))
     return terms
 
 
@@ -157,14 +170,15 @@ def case_error(row: dict) -> float:
 
 
 def case_log_node_excess(row: dict) -> float | None:
-    """ln(max(1, boundary nodes / ideal nodes)), or None for a failed trace or a
-    truth with no ideal nodes."""
+    """ln(max(1, boundary nodes / ideal nodes)), both outside the zones as the
+    ``nodes`` assertion counts them, or None for a failed trace or a case with no
+    ideal node outside the zones."""
     if not row["ok"]:
         return None
     s = row["summary"]
-    if not s["ideal_nodes"]:
+    if not s["ideal_nodes_outside_zones"]:
         return None
-    return math.log(max(1.0, s["nodes"] / s["ideal_nodes"]))
+    return math.log(max(1.0, s["nodes_outside_zones"] / s["ideal_nodes_outside_zones"]))
 
 
 def score_rows(rows: list[dict]) -> dict:

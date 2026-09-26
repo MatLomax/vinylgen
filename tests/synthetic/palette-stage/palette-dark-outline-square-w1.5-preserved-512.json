@@ -1,6 +1,6 @@
 {
- "case_id": "palette-dark-outline-square-w1-preserved-512",
- "min_feature_px": 1.0,
+ "case_id": "palette-dark-outline-square-w1.5-preserved-512",
+ "min_feature_px": 1.5,
  "tags": [
   "palette-stage",
   "dark-outline",
@@ -43,45 +43,45 @@
      {
       "type": "line",
       "p0": [
-       101.65,
-       101.65
+       101.15,
+       101.15
       ],
       "p1": [
-       410.85,
-       101.65
+       411.35,
+       101.15
       ]
      },
      {
       "type": "line",
       "p0": [
-       410.85,
-       101.65
+       411.35,
+       101.15
       ],
       "p1": [
-       410.85,
-       410.85
+       411.35,
+       411.35
       ]
      },
      {
       "type": "line",
       "p0": [
-       410.85,
-       410.85
+       411.35,
+       411.35
       ],
       "p1": [
-       101.65,
-       410.85
+       101.15,
+       411.35
       ]
      },
      {
       "type": "line",
       "p0": [
-       101.65,
-       410.85
+       101.15,
+       411.35
       ],
       "p1": [
-       101.65,
-       101.65
+       101.15,
+       101.15
       ]
      }
     ],
@@ -141,7 +141,7 @@
   "family": "palette-stage",
   "params": {
    "size": 512,
-   "outline_width_px": 1.0,
+   "outline_width_px": 1.5,
    "palette_options": {
     "preserved_colour_points": [
      [
