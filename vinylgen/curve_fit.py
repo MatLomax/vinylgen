@@ -3595,9 +3595,12 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
                        settings: TraceSettings) -> ChainFit:
     """Fit one canonical chain from its samples, anchors, and constraints.
 
-    Only confirmed corners (moved to where their two sides meet)
-    and junction anchors, where three or more colours meet, are cusp nodes:
-    the chain is split there into runs fitted with free end tangents. Every
+    Only confirmed corners (moved to where their two sides meet), junction
+    anchors, where three or more colours meet, and a closed chain's anchor are
+    cusp nodes: the chain is split there into runs fitted with free end
+    tangents. A closed chain carries an anchor only where it leaves a vertex of
+    pair degree other than two and returns to it, so that anchor is its two
+    ends, as an open chain's ends are. Every
     other node is a symmetric node. A recovery fit constraint and any other
     anchor are forced nodes (the fit passes through them), symmetric like the
     rest: the runs on their two sides share one tangent there, a straight run's
@@ -3607,7 +3610,7 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
     ``_fit_section_nb`` keeps every node symmetric. An open chain's two ends
     are where the chain ends.
 
-    A closed chain has no ends: with a cusp it is fitted from its first cusp
+    A closed chain without an anchor has no ends: with a cusp it is fitted from its first cusp
     round to it again, so the fit starts there. With a forced node but no cusp
     it is fitted as a ring from its first forced node. With neither it is
     fitted as a ring from its canonical first sample and then refitted from
@@ -3633,7 +3636,8 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
     count = len(canonical) - 1 if closed else len(canonical)
     interior = range(count) if closed else range(1, count - 1)
     hard = sorted(index for index in interior
-                  if index in corners or canonical[index] in junction_points)
+                  if index in corners or canonical[index] in junction_points
+                  or (closed and canonical[index] in anchor_points))
     hard_set = set(hard)
     forced = sorted(index for index in interior
                     if canonical[index] in forced_points and index not in hard_set)

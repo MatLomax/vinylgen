@@ -25,7 +25,12 @@ class BoundaryAnchor:
 
 @dataclass(frozen=True)
 class SharedBoundaryChain:
-    """One canonical colour interface, reusable in either direction."""
+    """One canonical colour interface, reusable in either direction.
+
+    ``anchors`` are its ends: two for an open chain, one for a closed chain
+    that leaves a vertex of pair degree other than two and returns to it, and
+    none for a ring of degree-two vertices.
+    """
 
     identity: str
     pair: tuple[int, int]
@@ -190,11 +195,22 @@ def component_sizes(mask: np.ndarray) -> list[int]:
 def _walk_edge_chains(ia, ib, deg, indptr, csr_dst, csr_eidx):
     """Deterministic edge-chain traversal over an integer-encoded pair graph.
 
+    A chain is a maximal run of edges whose interior vertices all have pair
+    degree two: it runs from one vertex whose degree is not two to the next (or
+    back to the same one), or it is a ring of degree-two vertices only. So an
+    interface is never split at a degree-two vertex, and the chains are the same
+    whichever edge seeds them.
+
     Edges are provided in ascending ``(ia, ib)`` order so the smallest unused
-    edge is the earliest still-unused index.  Each chain seeds at that edge,
-    starts at its lower-degree endpoint (else its smaller node), and walks to the
+    edge is the earliest still-unused index.  Each chain seeds at that edge.
+    When an end of the seed has degree other than two, the walk starts there
+    (the lower end when both do).  When both ends have degree two, the seed is
+    inside a chain: the walk first traces back from its lower end, away from the
+    seed, to the chain's end and then starts there along the edge it traced
+    back on; if the trace returns to the seed instead, the chain is a ring and
+    starts at the seed's lower end.  From its start the walk goes to the
     smallest available neighbour until it returns to the start or reaches a
-    vertex whose full degree is not two.  Nodes are compact ids whose order
+    vertex whose pair degree is not two.  Nodes are compact ids whose order
     matches the encoded grid-point order, so every minimum reproduces the
     tuple-order minimum of the reference traversal.
     """
@@ -211,17 +227,47 @@ def _walk_edge_chains(ia, ib, deg, indptr, csr_dst, csr_eidx):
             continue
         seed_a = ia[ptr]
         seed_b = ib[ptr]
+        first_edge = -1
+        first_node = -1
         if deg[seed_a] != 2:
             start = seed_a
         elif deg[seed_b] != 2:
             start = seed_b
         else:
             start = seed_a
+            # Trace back from seed_a, away from the seed edge, to the chain's end.
+            # Every edge of this chain is still unused: a walk that had used one
+            # would have continued through its degree-two vertices to the whole chain.
+            cursor = seed_a
+            arrived_by = ptr
+            while True:
+                next_edge = -1
+                next_node = -1
+                for j in range(indptr[cursor], indptr[cursor + 1]):
+                    if csr_eidx[j] != arrived_by:
+                        next_edge = csr_eidx[j]
+                        next_node = csr_dst[j]
+                if next_edge == ptr:
+                    break  # back at the seed: a ring of degree-two vertices
+                if deg[next_node] != 2:
+                    start = next_node
+                    first_edge = next_edge
+                    first_node = cursor
+                    break
+                cursor = next_node
+                arrived_by = next_edge
         chain_starts[n_chains] = n_out
         n_chains += 1
         out_nodes[n_out] = start
         n_out += 1
         current = start
+        if first_edge != -1:
+            # Leave the chain's end along the traced edge, not its smallest edge,
+            # which may belong to another chain meeting there.
+            unused[first_edge] = False
+            out_nodes[n_out] = first_node
+            n_out += 1
+            current = first_node
         while True:
             best = -1
             best_edge = -1
@@ -244,11 +290,13 @@ def _walk_edge_chains(ia, ib, deg, indptr, csr_dst, csr_eidx):
 
 
 def _pair_edge_chains(edge_lo: np.ndarray, edge_hi: np.ndarray
-                      ) -> tuple[np.ndarray, np.ndarray]:
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Chains for one colour pair; inputs sorted ascending by ``(lo, hi)``.
 
-    Returns the encoded grid-point keys visited in traversal order and the start
-    offset of each chain within that flat sequence.
+    Returns the encoded grid-point keys visited in traversal order, the start
+    offset of each chain within that flat sequence, and whether each chain
+    starts at a vertex whose pair degree is not two (a chain end rather than a
+    point on a ring of degree-two vertices).
     """
     nodes = np.unique(np.concatenate((edge_lo, edge_hi)))
     ia = np.searchsorted(nodes, edge_lo).astype(np.int64)
@@ -271,7 +319,7 @@ def _pair_edge_chains(edge_lo: np.ndarray, edge_hi: np.ndarray
     csr_eidx = eidx[order]
     out_nodes, chain_starts = _walk_edge_chains(
         ia, ib, deg, indptr, csr_dst, csr_eidx)
-    return nodes[out_nodes], chain_starts
+    return nodes[out_nodes], chain_starts, deg[out_nodes[chain_starts]] != 2
 
 
 def shared_boundary_polygons(labels: np.ndarray, included: list[int],
@@ -471,6 +519,10 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     inventory_pairs: list[tuple[int, int]] = []
     inventory_grid: list[list[GridPoint]] = []
     inventory_fitted: list[list[Point]] = []
+    # A closed chain that leaves a vertex of pair degree other than two and returns
+    # to it (a loop round one region touching another at a corner) has that vertex
+    # as both of its ends, so it carries an anchor there like any open chain's end.
+    inventory_node_loops: list[bool] = []
     if edge_key_lo.size:
         order = np.lexsort((edge_key_hi, edge_key_lo, edge_pair_hi, edge_pair_lo))
         sorted_pair_lo = edge_pair_lo[order]
@@ -485,7 +537,7 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         for run_start, run_end in zip(starts.tolist(), ends.tolist()):
             check()
             pair = (int(sorted_pair_lo[run_start]), int(sorted_pair_hi[run_start]))
-            keys, chain_starts = _pair_edge_chains(
+            keys, chain_starts, starts_at_end = _pair_edge_chains(
                 sorted_key_lo[run_start:run_end], sorted_key_hi[run_start:run_end])
             key_list = keys.tolist()
             offsets = chain_starts.tolist()
@@ -493,19 +545,24 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
             for index in range(len(offsets) - 1):
                 segment = key_list[offsets[index]:offsets[index + 1]]
                 inventory_pairs.append(pair)
+                inventory_node_loops.append(
+                    segment[0] == segment[-1] and bool(starts_at_end[index]))
                 inventory_grid.append(
                     [(key // height_stride, key % height_stride) for key in segment])
                 inventory_fitted.append([fitted_by_key[key] for key in segment])
 
     incident_colours: dict[GridPoint, set[int]] = {}
-    for pair, chain in zip(inventory_pairs, inventory_grid):
-        for point in (chain[0], chain[-1]) if chain[0] != chain[-1] else ():
-            incident_colours.setdefault(point, set()).update(pair)
+    for pair, chain, node_loop in zip(inventory_pairs, inventory_grid, inventory_node_loops):
+        if chain[0] != chain[-1] or node_loop:
+            for point in (chain[0], chain[-1]):
+                incident_colours.setdefault(point, set()).update(pair)
 
-    for chain_count, (pair, chain, fitted_chain) in enumerate(
-            zip(inventory_pairs, inventory_grid, inventory_fitted)):
+    for chain_count, (pair, chain, fitted_chain, node_loop) in enumerate(
+            zip(inventory_pairs, inventory_grid, inventory_fitted, inventory_node_loops)):
         if chain_count % 256 == 0:
             check()
+        loop_node = chain[0] if node_loop else None
+        loop_node_fitted = fitted_chain[0] if node_loop else None
         chain, fitted_chain = _canonical_samples(chain, fitted_chain)
         line = LineString(fitted_chain)
         protected_edge_indices = tuple(
@@ -517,11 +574,15 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         identity = hashlib.sha256(identity_source.encode("ascii")).hexdigest()[:20]
         anchors: list[BoundaryAnchor] = []
         if chain[0] != chain[-1]:
-            for grid_point, fitted in ((chain[0], fitted_chain[0]),
-                                       (chain[-1], fitted_chain[-1])):
-                colours = incident_colours.get(grid_point, set()) - {outside}
-                kind = "junction" if len(colours) >= 3 else "endpoint"
-                anchors.append(BoundaryAnchor(fitted, kind))
+            ends = ((chain[0], fitted_chain[0]), (chain[-1], fitted_chain[-1]))
+        elif loop_node is not None:
+            ends = ((loop_node, loop_node_fitted),)
+        else:
+            ends = ()
+        for grid_point, fitted in ends:
+            colours = incident_colours.get(grid_point, set()) - {outside}
+            kind = "junction" if len(colours) >= 3 else "endpoint"
+            anchors.append(BoundaryAnchor(fitted, kind))
         first, second = chain[0], chain[1]
         midpoint = ((first[0] + second[0]) / 2.0,
                     (first[1] + second[1]) / 2.0)

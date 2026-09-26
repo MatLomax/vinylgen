@@ -258,19 +258,37 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     chain_records: list[dict] = []
 
     def edge_chains(edges: set[tuple[tuple[int, int], tuple[int, int]]]
-                    ) -> list[list[tuple[int, int]]]:
+                    ) -> list[tuple[list[tuple[int, int]], bool]]:
+        """Each chain with whether it is a loop leaving a vertex of pair degree
+        other than two and returning to it."""
         adjacency: dict[tuple[int, int], list[tuple[int, int]]] = {}
         for a, b in edges:
             adjacency.setdefault(a, []).append(b)
             adjacency.setdefault(b, []).append(a)
         unused = set(edges)
-        result: list[list[tuple[int, int]]] = []
+        result: list[tuple[list[tuple[int, int]], bool]] = []
         while unused:
             seed = min(unused)
             endpoints = [point for point in seed if len(adjacency[point]) != 2]
             start = min(endpoints) if endpoints else seed[0]
             chain = [start]
             current = start
+            if not endpoints:
+                # The seed is inside a chain: trace back from seed[0], away from the
+                # seed, to the chain's end (or around a ring back to the seed), so an
+                # interface is never split at a degree-two vertex.
+                previous, cursor = seed[1], seed[0]
+                while True:
+                    following = next(neighbour for neighbour in adjacency[cursor]
+                                     if neighbour != previous)
+                    if (cursor, following) in (seed, seed[::-1]):
+                        break
+                    if len(adjacency[following]) != 2:
+                        unused.remove(tuple(sorted((following, cursor))))
+                        chain = [following, cursor]
+                        start, current = following, cursor
+                        break
+                    previous, cursor = cursor, following
             while True:
                 candidates = [neighbour for neighbour in adjacency[current]
                               if tuple(sorted((current, neighbour))) in unused]
@@ -282,22 +300,24 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
                 current = neighbour
                 if current == start or len(adjacency[current]) != 2:
                     break
-            result.append(chain)
+            result.append((chain, chain[0] == chain[-1] and len(adjacency[chain[0]]) != 2))
         return result
 
-    chain_inventory = [(pair, chain) for pair in sorted(segments)
-                       for chain in edge_chains(segments[pair])]
+    chain_inventory = [(pair, chain, node_loop) for pair in sorted(segments)
+                       for chain, node_loop in edge_chains(segments[pair])]
     incident_colours: dict[GridPoint, set[int]] = {}
-    for pair, chain in chain_inventory:
-        for point in (chain[0], chain[-1]) if chain[0] != chain[-1] else ():
-            incident_colours.setdefault(point, set()).update(pair)
+    for pair, chain, node_loop in chain_inventory:
+        if chain[0] != chain[-1] or node_loop:
+            for point in (chain[0], chain[-1]):
+                incident_colours.setdefault(point, set()).update(pair)
     def fitted_point(point: tuple[int, int]) -> tuple[float, float]:
         values = vertex_adjustments.get(point, {"x": [], "y": []})
         dx = float(np.mean(values["x"])) if values["x"] else 0.0
         dy = float(np.mean(values["y"])) if values["y"] else 0.0
         return float(point[0]) + dx, float(point[1]) + dy
 
-    for chain_count, (pair, chain) in enumerate(chain_inventory):
+    for chain_count, (pair, chain, node_loop) in enumerate(chain_inventory):
+        loop_node = chain[0] if node_loop else None
         fitted_chain = [fitted_point(point) for point in chain]
         chain, fitted_chain = _canonical_samples(chain, fitted_chain)
         line = LineString(fitted_chain)
@@ -310,11 +330,15 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         identity = hashlib.sha256(identity_source.encode("ascii")).hexdigest()[:20]
         anchors: list[BoundaryAnchor] = []
         if chain[0] != chain[-1]:
-            for grid_point, fitted in ((chain[0], fitted_chain[0]),
-                                       (chain[-1], fitted_chain[-1])):
-                colours = incident_colours.get(grid_point, set()) - {outside}
-                kind = "junction" if len(colours) >= 3 else "endpoint"
-                anchors.append(BoundaryAnchor(fitted, kind))
+            ends = [(chain[0], fitted_chain[0]), (chain[-1], fitted_chain[-1])]
+        elif loop_node is not None:
+            ends = [(loop_node, fitted_point(loop_node))]
+        else:
+            ends = []
+        for grid_point, fitted in ends:
+            colours = incident_colours.get(grid_point, set()) - {outside}
+            kind = "junction" if len(colours) >= 3 else "endpoint"
+            anchors.append(BoundaryAnchor(fitted, kind))
         first, second = chain[0], chain[1]
         midpoint = ((first[0] + second[0]) / 2.0,
                     (first[1] + second[1]) / 2.0)

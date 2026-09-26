@@ -38,6 +38,20 @@ straight runs, continuously turning curves, and corners: direction jumps
 between two smooth sides, straight or curved. Each canonical interface is fitted once, and its neighbour
 consumes the exact reverse of that line/Bézier sequence.
 
+The graph's chains are the colour interfaces split only where they must be. A
+chain is a maximal run of one colour pair's pixel edges whose interior
+vertices all have pair degree two (exactly two of that pair's edges meet
+there): it runs from a vertex of other pair degree to the next, or it is a
+ring of degree-two vertices. Pair degree is not two where the interface ends
+at a third colour or the image edge (degree one) and where two regions of one
+colour touch only at a corner (degree four). The chains are the same whichever
+edge the walk seeds a chain at, so an interface is never split at an arbitrary
+degree-two vertex. Every chain end carries an anchor: a **junction anchor**
+where three or more colours meet, else an **endpoint anchor** (the image edge,
+a corner contact, and in the live preview a crop edge). A loop that leaves a
+vertex of degree four and returns to it is closed but carries one anchor
+there, its two ends; a ring of degree-two vertices carries none.
+
 The two SVG variants are:
 
 - `traced-overlap.svg`: lower layers may extend beneath upper layers by a
@@ -68,7 +82,7 @@ live preview's SVG.
 
 | Character | Vinylgen term | Inkscape name | Rule |
 |---|---|---|---|
-| `c` | cusp node | cusp | The two tangent directions are more than **0.5°** from 180° apart; or both sides are straight lines (always, even when collinear); or the node is a junction anchor, where three or more colours meet, or an endpoint anchor, where a boundary meets the image edge (always). |
+| `c` | cusp node | cusp | The two tangent directions are more than **0.5°** from 180° apart; or both sides are straight lines (always, even when collinear); or the node is a junction anchor, where three or more colours meet, or an endpoint anchor, where a chain ends with fewer than three colours: at the image edge, a corner contact, or in the live preview a crop edge (always). |
 | `s` | symmetric node | smooth | The tangent directions are at 180° within 0.5°, and the handle lengths differ by more than 1%, or one side is a straight line. A line has no handle, so a line next to a collinear curve is `s`, never `z`. |
 | `z` | smooth node | symmetric | Both sides are cubics, the tangents are at 180° within 0.5°, and the handle lengths are equal within **1%** of the longer handle. Two zero-length handles are `s`. |
 
@@ -769,8 +783,9 @@ round within about a pixel of the allowance limit may go either way.
 Terms follow [GLOSSARY.md](../GLOSSARY.md) "Path nodes"; how the written SVG
 labels each node is in [Path node types](#path-node-types).
 
-A node is a **cusp node** only at a confirmed corner or at a junction anchor
-(three or more colours meet). Every other node is a **symmetric node**
+A node is a **cusp node** only at a confirmed corner, at a junction anchor
+(three or more colours meet) or at a chain end (a closed chain's anchor
+included). Every other node is a **symmetric node**
 whatever its local angle: recursive split points, joins between classified
 runs, forced nodes and ring seams. Both sides share one tangent direction;
 handle lengths are fitted independently, so they are not forced equal.
@@ -779,7 +794,9 @@ handle lengths are fitted independently, so they are not forced equal.
   end tangents. An open chain's two ends are where the chain ends; the chain
   that continues from there is fitted on its own. Where a chain ends at the
   image edge (an endpoint anchor), the frame cuts the shape, so that node is a
-  real corner of the cut outline even though no detector confirmed it.
+  real corner of the cut outline even though no detector confirmed it; where
+  it ends at a corner contact (an endpoint anchor where two regions of one
+  colour touch only at a corner), the outline turns there to pass the contact.
 - A recovery fit constraint (and any other anchor inside a chain) is a
   **forced symmetric node**: the fit passes through it and both sides share
   one tangent there. Protected-feature recovery does not need a free tangent
@@ -787,7 +804,9 @@ handle lengths are fitted independently, so they are not forced equal.
   the lost feature, which a symmetric node does; on `sourceup`, the only
   corpus image that needs recovery, the outcome is the same with symmetric
   and with free-tangent constraints.
-- A closed chain with a corner or junction is fitted from its first one round
+- A closed chain's anchor, where the loop leaves a corner contact or junction
+  and returns to it, is a cusp: those are the chain's two ends. A closed chain
+  with a corner, junction or anchor is fitted from its first one round
   to it again, so its path starts there. One with none is fitted as a ring from
   its first forced node (else its canonical first sample), and that seam is a
   symmetric node like any other.

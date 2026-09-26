@@ -5,7 +5,8 @@ Terms follow GLOSSARY.md "Path nodes". Each node gets one character:
 - ``c``, a **cusp node**: the node's two tangent directions are not at 180 degrees
   within ``ANGLE_TOLERANCE_DEG``, or both sides are straight lines, or the node is a
   junction anchor (three or more colours meet there) or an endpoint anchor (a
-  boundary meets the image edge).
+  chain end where fewer than three colours meet: the image edge, a corner contact
+  between two regions of one colour, or a live-preview crop edge).
 - ``s``, a **symmetric node** (Inkscape's *smooth*): the two tangent directions are at
   180 degrees within ``ANGLE_TOLERANCE_DEG`` and the handle lengths differ, or one side
   is a straight line.
@@ -50,9 +51,12 @@ def junction_keys(track) -> frozenset[str]:
 
 def cusp_anchor_keys(track) -> frozenset[str]:
     """The written positions of the anchors that are always cusp nodes: junctions
-    (three or more colours meet) and endpoints (a boundary meets the image edge,
-    which cuts the shape there, so the node is a corner of the cut outline even
-    when the traced edge happens to meet the frame tangentially)."""
+    (three or more colours meet) and endpoints, the other chain ends: where a
+    boundary meets the image edge, which cuts the shape there, so the node is a
+    corner of the cut outline even when the traced edge happens to meet the frame
+    tangentially; where two regions of one colour touch only at a corner, which the
+    outline turns to pass (a closed loop round one of them carries its one anchor
+    there); and in the live preview a crop edge."""
     return frozenset(point_key(anchor.point) for chain in track.chains
                      for anchor in chain.anchors)
 

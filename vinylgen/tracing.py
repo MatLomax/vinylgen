@@ -487,8 +487,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     fault = partition_watertight_fault(topology, float(width * height))
     if fault is not None:
         raise RuntimeError(fault)
-    # Junction anchors (three or more colours) and endpoint anchors (the image
-    # edge) are always cusp nodes in the SVG.
+    # Junction anchors (three or more colours) and endpoint anchors (the other
+    # chain ends: image edge, corner contact) are always cusp nodes in the SVG.
     junctions = cusp_anchor_keys(boundary_track)
     fallback_image = subject_dir / "trace-fallbacks.png"
     fallback_overlay = subject_dir / "trace-fallbacks-overlay.png"

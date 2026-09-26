@@ -187,14 +187,15 @@ SCRATCH = Path(__file__).resolve().parents[1] / ".tmp"
 
 
 def junction_subject(root: Path) -> Path:
-    """An orange block with a green disc across its edge: curves, and junctions where
-    the background, the block and the disc meet."""
+    """An orange block reaching the image's top edge, with a green disc across its
+    right edge: curves, junctions where the background, the block and the disc meet,
+    and endpoints where the block's sides meet the image edge."""
     subject = root / "junctions"
     subject.mkdir()
     height, width = 60, 80
     yy, xx = np.mgrid[0:height, 0:width]
     labels = np.zeros((height, width), dtype=np.int16)
-    labels[10:50, 12:46] = 1
+    labels[:50, 12:46] = 1
     labels[(xx - 46) ** 2 + (yy - 30) ** 2 <= 14 ** 2] = 2
     centres = np.array([[15, 35, 60], [225, 95, 45], [60, 180, 90]], dtype=np.uint8)
     pixels = centres[labels]

@@ -31,7 +31,7 @@ def add_layer(root: ET.Element, row: dict, components: list[dict], transform: st
               subject: str, variant: str, stroke_width: float,
               junctions: Iterable[str]) -> dict:
     """Append one colour's layer of paths; ``junctions`` are the written positions of
-    the junction and image-edge endpoint anchors, which are always cusp nodes
+    the junction and endpoint anchors (every chain end), which are always cusp nodes
     (``vinylgen.node_types.cusp_anchor_keys``)."""
     junctions = frozenset(junctions)
     slug = re.sub(r"[^a-z0-9]+", "-", str(row["name"]).casefold()).strip("-")

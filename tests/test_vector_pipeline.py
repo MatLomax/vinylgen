@@ -5,7 +5,7 @@ import numpy as np
 
 from vinylgen.boundary_graph import assemble_colour_rings, shared_boundary_polygons
 from vinylgen.contracts import TraceSettings
-from vinylgen.curve_fit import HardAnchor, ring_path
+from vinylgen.curve_fit import HardAnchor, SharedChainFitter, ring_path
 
 
 class VectorPipelineTests(unittest.TestCase):
@@ -146,6 +146,57 @@ class VectorPipelineTests(unittest.TestCase):
 
         self.assertTrue(junctions)
         self.assertEqual(len({anchor.point for anchor in junctions}), 1)
+
+    def test_u_shaped_interface_between_two_junctions_is_one_chain(self):
+        # A "C" of colour 1 opening onto a bar of colour 2. Each (0, 1) interface
+        # runs from one three-colour junction round the C to the other. The pair's
+        # smallest edge, (3, 3)-(3, 4), lies inside the outer interface (both of its
+        # ends have pair degree two), so the walk must not split the interface there.
+        labels = np.zeros((12, 12), dtype=np.int16)
+        labels[2:10, 9:] = 2
+        labels[3:9, 3:9] = 1
+        labels[5:7, 5:9] = 0
+        costs = np.ones((12, 12, 3))
+
+        _, track, _ = shared_boundary_polygons(labels, [0, 1, 2], costs)
+        interfaces = sorted((chain for chain in track.chains if chain.pair == (0, 1)),
+                            key=lambda chain: chain.points)
+
+        self.assertEqual(len(interfaces), 2)
+        ends = [(chain.points[0], chain.points[-1]) for chain in interfaces]
+        self.assertEqual(ends, [((9.0, 3.0), (9.0, 9.0)), ((9.0, 5.0), (9.0, 7.0))])
+        for chain in interfaces:
+            self.assertFalse(chain.closed)
+            self.assertEqual([anchor.kind for anchor in chain.anchors], ["junction", "junction"])
+            self.assertIn((3.0, 3.0) if chain is interfaces[0] else (5.0, 5.0),
+                          chain.points[1:-1])
+
+    def test_loop_through_a_corner_contact_is_anchored_there(self):
+        # A disc and one pixel of the same colour touching only at the corner
+        # (16, 16), where the (0, 1) interface has pair degree four. Each of the
+        # two loops leaves that vertex and returns to it, so it is closed but
+        # carries an anchor there, and the fit places a cusp node on it.
+        yy, xx = np.mgrid[0:24, 0:24]
+        labels = ((xx - 10.5) ** 2 + (yy - 10.5) ** 2 <= 49).astype(np.int16)
+        labels[16, 16] = 1
+        costs = np.ones((24, 24, 2))
+
+        _, track, _ = shared_boundary_polygons(labels, [0, 1], costs)
+        loops = [chain for chain in track.chains if chain.pair == (0, 1)]
+
+        self.assertEqual(len(loops), 2)
+        for chain in loops:
+            self.assertTrue(chain.closed)
+            self.assertEqual([(anchor.point, anchor.kind) for anchor in chain.anchors],
+                             [((16.0, 16.0), "endpoint")])
+            fit = SharedChainFitter().fit(
+                chain.points, TraceSettings(length_unit="px"),
+                [HardAnchor(anchor.point, anchor.kind) for anchor in chain.anchors])
+            self.assertEqual(fit.start, (16.0, 16.0))
+            self.assertEqual(fit.primitives[-1][-1], (16.0, 16.0))
+        # Two separate rings, so neither colour's rings leave the corner open.
+        rings = assemble_colour_rings(track, [0, 1])
+        self.assertEqual(len(rings[1]), 2)
 
     def test_chain_identity_is_stable_and_direction_independent(self):
         labels = np.zeros((6, 10), dtype=np.int16)

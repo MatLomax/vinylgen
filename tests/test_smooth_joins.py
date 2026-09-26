@@ -664,15 +664,17 @@ def backtrack(start, primitive) -> float:
 
 def _cusp_nodes(chain, fit: ChainFit) -> set:
     """The nodes allowed to be cusps: the fit's corner nodes (the detector's
-    corners, where a straight-line snap may have moved them) and junction anchors."""
+    corners, where a straight-line snap may have moved them), junction anchors, and
+    a closed chain's anchor (where the loop leaves a vertex and returns: its ends)."""
     return set(fit.corners) | {anchor.point for anchor in chain.anchors
-                               if anchor.kind == "junction"}
+                               if anchor.kind == "junction" or chain.closed}
 
 
 @unittest.skipUnless(os.environ.get("VINYLGEN_SLOW_TESTS") == "1",
                      "set VINYLGEN_SLOW_TESTS=1 to run the corpus join check")
 class CorpusJoinTests(unittest.TestCase):
-    """Every node inside a chain fit is symmetric unless it is a corner or junction."""
+    """Every node inside a chain fit is symmetric unless it is a corner, a junction
+    or a closed chain's anchor."""
 
     def test_only_corners_and_junctions_are_cusps_on_the_corpus(self):
         from vinylgen.boundary_graph import shared_boundary_polygons
