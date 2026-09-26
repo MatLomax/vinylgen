@@ -23,9 +23,86 @@ shard regenerates the same seeded case list and checks its share of it.
 
 `just test` runs this backend suite and the frontend `vitest` suite
 concurrently, printing each one's output whole once both finish; the whole gate
-takes roughly 24 s on the 28-core host.
+takes roughly 95 s on the 28-core host, most of it the synthetic fidelity
+tests tracing every committed case in both tiers.
 
-The current tests cover:
+### Synthetic ground-truth corpus
+
+The default suite reads no real image. Tracing and palette behaviour are
+regression-tested against synthetic scenes whose exact vector truth is known
+(`vinylgen/fidelity/`):
+
+- `scene.py` defines scenes of lines, circular and elliptical arcs and cubics;
+  `raster.py` renders them deterministically to a label map (largest coverage per
+  pixel) or an anti-aliased RGB image (blended in linear light); `truth.py` gives
+  each colour's exact visible geometry, the true corners, junctions and edge
+  points, and the ideal node count.
+- `families.py` generates the analytic families: discs, ellipses, rectangles,
+  rounded rectangles, polygons, stars, line-meets-arc shapes, rings, thin bars,
+  arcs and outlines, pies, T- and Y-junctions, targets and corner-only contact,
+  in a sweep scaled with the canvas and a fixed-pixel sweep, plus palette-stage
+  RGB scenes (near shades, accents, dark outlines, noise). `fuzz.py` draws seeded
+  random polygons, blobs, cornered blobs and layered multi-colour scenes.
+- The fixed regression set (`tests/synthetic/fixed/`), the palette-stage set
+  (`tests/synthetic/palette-stage/`) and the pinned fuzz cases
+  (`tests/synthetic/fuzz/`, listed in `tests/synthetic/fuzz-seeds.json` with
+  disjoint train and held-out tuning seed ranges) are committed as scene JSON and
+  SVG, and tests regenerate them byte-identically. Rasters are regenerated.
+- `harness.py` traces a scene through the real stages: the label-map tier writes
+  a contract-v3 subject from the hard-edged render and runs `trace_subject`; the
+  RGB tier runs the real palette stage on the anti-aliased render first.
+  `metrics.py` measures the emitted `traced-edge.svg` against the truth: boundary
+  distance (Hausdorff, mean, p95), per-colour misassigned area, corner recall,
+  kinks and cusp precision, node count against the ideal, node types and
+  topology.
+
+`tests/test_synthetic_fidelity.py` traces every committed case in both tiers
+with the product defaults and asserts bounds derived from first principles: the
+resolved max deviation plus √2/2 px of pixel quantisation for boundary distance
+outside corner discs, a cusp at every corner the raster can decide, no kinks,
+at most twice the ideal node count plus four, truth topology for features at
+least √2 px wide, and misassigned area within the deviation tube. Features
+narrower than 2 px are held to topology and area only. An assertion that fails
+against today's tracer is listed in `tests/synthetic/expected-failures.json`
+under the worklog task that tracks its cause; it runs as an expected failure,
+an unexpected pass fails the run (the entry must then be removed), and the table
+rejects any slug that is not a real task.
+
+### Full-image bucket
+
+Tests that read real images, `outputs/` or `.tmp` baselines live in
+`tests/fullimage/`, which default discovery does not collect. Run them only when
+there is a reason to test a whole image:
+
+```bash
+.venv/bin/python scripts/run_tests.py --full-image
+```
+
+A full-image test skips when its image or baseline is absent.
+
+### Fidelity sweep and tuning
+
+```bash
+.venv/bin/python scripts/fidelity_sweep.py --fixed --tier both
+.venv/bin/python scripts/fidelity_sweep.py --grid --fuzz 100000:100200 --set minimum_straight_length=3
+.venv/bin/python scripts/fidelity_tune.py --max-evals 60 --cases-per-eval 48
+```
+
+The sweep traces any selection of cases (`--fixed`, `--grid`, `--palette-stage`,
+`--fuzz A:B`, `--sizes`, `--tag`) with given settings and writes per-case rows
+and per-family, per-tag and per-size summaries to `.tmp/fidelity/sweep-*/`.
+Corner recall is always reported beside cusp precision and their F1, since a
+staircase whose every node is a cusp finds every corner. The tuner runs a
+resumable compass search over the eight trace lengths and the corner threshold
+on its own copy of the defaults, scores training seeds and the fixed set against
+an error budget the settings cannot loosen, and writes the accuracy/node-count
+Pareto front, a proposed settings diff, a before/after table on held-out seeds,
+and before/after traces of the nine real images to `.tmp/fidelity/tune-*/`. It
+only proposes: defaults change through a reviewed commit.
+
+### Other coverage
+
+The current tests also cover:
 
 - Similar small shades merging while a tiny high-contrast accent survives
   palette inference.

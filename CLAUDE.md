@@ -85,11 +85,26 @@ python3 palette_infer.py images --min-region-pixels 0 --jobs 1
 # Trace every prepared subject.
 python3 svg_trace.py outputs
 
-# Run the regression suite in parallel (one worker per core; ~15 s). Always use
+# Run the regression suite in parallel (one worker per core; ~95 s). Always use
 # the project virtual environment: the system Python does not include web-test
 # dependencies such as httpx. `-j 1` runs serially; test names narrow the run.
 .venv/bin/python scripts/run_tests.py
+
+# Tests that read real images (images/, outputs/, .tmp baselines) are never part
+# of regression testing; run them only when a full image is genuinely needed.
+.venv/bin/python scripts/run_tests.py --full-image
+
+# Measure trace fidelity on the synthetic ground-truth corpus, or propose tuned
+# trace defaults (proposal only; defaults change through a reviewed commit).
+.venv/bin/python scripts/fidelity_sweep.py --fixed --tier both
+.venv/bin/python scripts/fidelity_tune.py --max-evals 60
 ```
+
+The regression suite's inputs are the synthetic ground-truth corpus under
+`tests/synthetic/` (see [Validation and testing](docs/validation-and-testing.md)).
+An assertion failing against today's tracer is an expected failure in
+`tests/synthetic/expected-failures.json` naming its worklog task; fixing that
+cause means removing its entries.
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold
 regions fold into a touching colour unless they are confident, coherent thin
