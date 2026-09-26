@@ -363,6 +363,39 @@ class TruthTests(unittest.TestCase):
         self.assert_partition(truth)
         self.assert_partition(scaled)
 
+    def test_every_colour_boundary_edge_separates_the_colour_from_another(self):
+        # Layered fuzz scenes whose outlines coincide along edges (s1002 and s1005
+        # among them) once left zero-width slits and spikes in a colour's geometry:
+        # ring edges with the colour on both sides, 15-19 px from any real boundary.
+        from vinylgen.fidelity.fuzz import case_from_json
+        paths = sorted((ROOT / "tests" / "synthetic" / "fuzz").glob("fuzz-layered-*.json"))
+        self.assertTrue(any("s1002-512" in path.name for path in paths))
+        self.assertTrue(any("s1005-1024" in path.name for path in paths))
+        for path in paths:
+            truth = scene_truth(case_from_json(path.read_text(encoding="utf-8")).scene)
+            with self.subTest(case=path.stem):
+                self.assert_partition(truth)
+                for colour, geometry in truth.colour_geometry.items():
+                    polygons = getattr(geometry, "geoms", [geometry])
+                    rings = [np.asarray(ring.coords) for polygon in polygons
+                             for ring in (polygon.exterior, *polygon.interiors)]
+                    for ring in rings:
+                        start, end = ring[:-1], ring[1:]
+                        step = end - start
+                        length = np.hypot(*step.T)
+                        # Edges shorter than the probe offset can put a probe past a
+                        # sharp tip; every slit found was longer than a pixel.
+                        keep = length > 0.01
+                        normal = np.stack((-step[keep, 1], step[keep, 0]), axis=1)
+                        normal /= length[keep, None]
+                        middle = ((start + end) / 2)[keep]
+                        left = shapely.contains(geometry, shapely.points(middle + 1e-3 * normal))
+                        right = shapely.contains(geometry, shapely.points(middle - 1e-3 * normal))
+                        both = np.flatnonzero(left == right)
+                        self.assertEqual(len(both), 0, f"colour {colour}: edges at "
+                                         f"{middle[both][:3].round(3).tolist()} have the "
+                                         "same colour state on both sides")
+
     def test_every_true_corner_is_a_real_vertex_of_the_partition(self):
         truth = scene_truth(mixed_scene())
         self.assertTrue(truth.corners)

@@ -430,34 +430,62 @@ def _snap_to_border(p: Point, width: int, height: int, margin: float) -> Point:
 
 
 def _colour_geometry(scene) -> dict[int, object]:
+    """Each palette colour's visible area, from one noded arrangement of every
+    flattened outline and the canvas frame.
+
+    The arrangement's faces partition the canvas and neighbouring faces share
+    identical edges, so the faces of one colour dissolve exactly. (Chained
+    region overlays do not: where two outlines coincide, the pieces of one colour
+    can meet along edges that differ by rounding, and their union keeps a
+    zero-width slit or spike that is a boundary of the colour with the colour on
+    both sides.) A face takes the colour of the topmost region containing an
+    interior point of it, by even-odd over the region's rings as the rasteriser
+    fills them, or the background. A face below ``_SLIVER_AREA`` (a rounding
+    sliver where outlines coincide) takes the colour of the neighbour it shares
+    the longest edge with.
+    """
     canvas = box(0.0, 0.0, float(scene.width), float(scene.height))
-    shapes = []
+    lines = [canvas.exterior]
+    region_rings = []
     for region in scene.regions:
-        shape = None
+        polygons = []
         for ring in region.rings:
-            polygon = Polygon(ring.flatten(FLATTEN_TOLERANCE))
-            shape = polygon if shape is None else shape.symmetric_difference(polygon)
-        shapes.append(shape)
-    pieces: dict[int, list] = {}
-    cover = None
-    for region, shape in zip(reversed(scene.regions), reversed(shapes)):
-        visible = shape.intersection(canvas)
-        if cover is not None:
-            visible = visible.difference(cover)
-        pieces.setdefault(region.colour, []).append(visible)
-        cover = shape if cover is None else cover.union(shape)
-    background = canvas if cover is None else canvas.difference(cover)
-    pieces.setdefault(scene.background, []).append(background)
+            points = ring.flatten(FLATTEN_TOLERANCE)
+            lines.append(LinearRing(points))
+            polygons.append(Polygon(points))
+        region_rings.append(polygons)
+    noded = shapely.get_parts(shapely.union_all(lines))
+    faces = np.asarray(shapely.get_parts(shapely.polygonize(noded)))
+    inside = shapely.point_on_surface(faces)
+    on_canvas = shapely.contains(canvas, inside)
+    faces, inside = faces[on_canvas], inside[on_canvas]
+    colours = np.full(len(faces), scene.background, dtype=np.int64)
+    for region, polygons in zip(scene.regions, region_rings):
+        parity = np.zeros(len(faces), dtype=bool)
+        for polygon in polygons:
+            parity ^= shapely.contains(polygon, inside)
+        colours[parity] = region.colour
+    areas = shapely.area(faces)
+    whole = np.flatnonzero(areas >= _SLIVER_AREA)
+    slivers = np.flatnonzero(areas < _SLIVER_AREA)
+    if len(slivers) and len(whole):
+        tree = shapely.STRtree(faces[whole])
+        for index in slivers:
+            neighbours = whole[tree.query(faces[index], predicate="intersects")]
+            if len(neighbours):
+                shared = shapely.length(shapely.intersection(
+                    shapely.boundary(faces[neighbours]), faces[index].boundary))
+                colours[index] = colours[neighbours[int(np.argmax(shared))]]
     geometry = {}
-    for colour in sorted(pieces):
-        merged = _without_slivers(_polygonal(shapely.union_all(pieces[colour])))
+    for colour in sorted(set(colours.tolist())):
+        merged = _without_slivers(_polygonal(shapely.union_all(faces[colours == colour])))
         if not merged.is_empty and merged.area > 0.0:
             geometry[colour] = merged
     return geometry
 
 
-# Overlay operations leave numerical slivers (holes and parts of about 1e-13 px²)
-# where flattened outlines coincide; no scene feature is this small.
+# Where flattened outlines coincide, rounding leaves slivers (faces, holes and
+# parts of about 1e-13 px²); no scene feature is this small.
 _SLIVER_AREA = 1e-6
 
 
