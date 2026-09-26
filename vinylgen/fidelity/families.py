@@ -764,7 +764,14 @@ def palette_stage_set() -> list[Case]:
              "expect": {"survive": [0, 1, 2]}}))
     # A 1 px preserved outline: an axis-aligned square on whole pixel edges (an
     # integer centre and half size), so column 409 of the outline's right side is
-    # a whole pixel inside it, which the preservation point clicks.
+    # a whole pixel inside it, which the preservation point clicks. The case holds
+    # palette preservation: the outline lies below the resolution and topology
+    # floors, so its corners, kinks, nodes and truth distance have nothing to hold
+    # and its topology is zoned; the palette assertion (black survives as its own
+    # colour), the evidence assertion (every black region traced, the colour
+    # inferred) and the thin-feature pin (the outline's traced layer on its pixel
+    # centres, in one piece) are what fail when the outline is lost, recoloured,
+    # moved off its pixels or severed.
     width, inner, centre = 1.0, 153.0, (s / 2, s / 2)
     regions = [Region(1, _place(rectangle(-inner - width, -inner - width, inner + width,
                                           inner + width), centre)),
@@ -776,7 +783,10 @@ def palette_stage_set() -> list[Case]:
         _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
         {"outline_width_px": width,
          "palette_options": {"preserved_colour_points": [point]},
-         "expect": {"survive": [0, 1, 2]}}))
+         "expect": {"survive": [0, 1, 2]},
+         "holds": "palette preservation of a 1 px outline below the resolution and "
+                  "topology floors: the palette assertion, the evidence assertion and the "
+                  "thin-feature pin; no geometric assertion has anything to hold"}))
 
     # Light seeded noise over clean scenes, at three canvas sizes.
     for size, amplitude, seed in ((128, 3, 11), (512, 4, 12), (1536, 6, 13)):

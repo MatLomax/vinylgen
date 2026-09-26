@@ -33,7 +33,8 @@ def summary(**overrides) -> dict:
               "evidence_regions": 2, "evidence_missing_regions": 0,
               "required_scene_colours": 0, "absent_scene_colours": 0,
               "evidence_area_ratio": 0.0, "evidence_colours_over": 0, "thin_regions": 2,
-              "misplaced_thin_regions": 0, "fold_target_mismatches": 0}
+              "misplaced_thin_regions": 0, "severed_thin_regions": 0,
+              "fold_target_mismatches": 0}
     values.update(overrides)
     # The zone-aware node counts follow the whole-boundary ones, and the area
     # ratio the misassigned area over a 100 px^2 limit, unless a test sets them.
@@ -134,7 +135,7 @@ class ObjectiveTests(unittest.TestCase):
                  "evidence_distance_px": 5.0, "evidence_missing_regions": 1,
                  "absent_scene_colours": 1, "unmatched_layers": 1,
                  "evidence_area_ratio": 2.0, "misplaced_thin_regions": 1,
-                 "fold_target_mismatches": 1}
+                 "severed_thin_regions": 1, "fold_target_mismatches": 1}
         for key, value in worse.items():
             with self.subTest(key=key):
                 self.assertGreater(tune.case_error(row(**{key: value})), base)

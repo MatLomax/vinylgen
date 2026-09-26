@@ -21,9 +21,9 @@ What is derived and what is not
 Derived from the trace stage's own guarantees and the raster's geometry: the
 label-map tier's quantisation ``Q``; ``D`` and ``e`` in the direction from the
 truth or evidence to the trace; the vertex radii ``R(c)``; which corners are
-decidable; the sharpenable-round radius and its reach ``rho``; the local
-resolution and topology floors; the area tube ``E(c)``; the ideal node count and
-the node limit built on it. Not derived:
+decidable; the sharpenable-round radius of each turn; the local resolution and
+topology floors; the area tube ``E(c)``; the ideal node count; the node limit's
+explicit route and the sample distance it leaves room for. Not derived:
 
 - the rgb tier's ``Q``: a measured baseline (below), reused from the label-map
   tier because the palette stage's anti-alias resolution follows no geometric
@@ -33,13 +33,24 @@ the node limit built on it. Not derived:
   parameter and bounds nothing between samples, so a curve may bow further there.
   The trace is held to the same ``D`` and ``e`` both ways by choice; the measured
   margin is in ``docs/validation-and-testing.md``;
+- the node limit is a geometric requirement, not a claim about the fitter's
+  search: a route of cubics through the true boundary's axis extremes that
+  keeps every boundary sample within the fitter's curve tolerance exists with
+  that many nodes (derived, below), and a trace may use no more. That the
+  fitter finds such a route is not derived: its nodes sit on samples rather than
+  on the truth, it measures a sample's distance at the sample's parameter (at
+  least the geometric distance), and its candidates are the extremes, the
+  inflections and the bends of the smoothed samples, not the route's splits;
 - the node limit's one node per run part cut by a zone: the boundary there
   passes into geometry the ideal segmentation does not describe, so the fitter
   may end a piece at the cut; an allowance, not a derivation;
-- the thin-feature pin ``THIN_RECALL``: the fitter's ``M`` allows a feature no
-  wider than ``M`` to move wholly off its pixels, so holding a thin evidence
-  region to its pixel centres is a requirement, set at the trace stage's own
-  post-fit threshold for a protected component;
+- the tip skip in the sharpenable radius: ``curve_fit._TIP_SKIP_ALLOWANCES``,
+  the trace stage's own setting, read as it is;
+- the thin-feature pin ``THIN_RECALL`` and its one-piece companion: the
+  fitter's ``M`` allows a feature no wider than ``M`` to move wholly off its
+  pixels or break, so holding a thin evidence region to its pixel centres, in
+  one traced piece, is a requirement, set at the trace stage's own post-fit
+  thresholds for a protected component (60% recall, ``viable_pieces == 1``);
 - which colours the palette stage folds and into what, and which survive under an
   unmatched colour (``observed_palette``): read from the run, a fold only among
   the colours the usage cutoff may fold, and the target checked against the
@@ -116,27 +127,34 @@ Quantities
   with ``s`` the distance to the nearest other true vertex, is *optional* (a cusp
   is allowed, not demanded). Every junction and edge point is required: the trace
   always anchors a cusp there.
-- Sharpenable rounds: the trace sharpens a round whose sharp point (where its
-  two sides meet) lies within ``A`` of its drawn edge (GLOSSARY "corner
-  sharpening allowance"), a 90 degree round of radius up to
-  ``SHARPENING_RADIUS_FACTOR * A`` (the sharp point lies ``r (sqrt 2 - 1)`` from
-  the arc), and its corner detector skips that much arc beside a candidate (the
-  tip skip), so a longer round vetoes its own corner. Seen through ``Q``: each
-  side is read from samples within ``Q`` of the true side, so it may lie ``Q``
-  inside it, which moves the two sides' meeting point up to ``Q sqrt 2`` towards
-  the arc, and the drawn edge at the arc may lie ``Q`` outside it. So the trace
-  may sharpen a round of radius up to
-  ``round_radius = SHARPENING_RADIUS_FACTOR * (A + (1 + sqrt 2) Q)`` (2.71
-  sharpening radii at ``A = 1`` px, 2.11 at the 1536 px canvas's ``A``), with its
-  cusp within ``Q sqrt 2`` of the true sharp point, which lies within the round's
-  radius of every point of its arc: all of the round lies within
-  ``rho = round_radius + Q sqrt 2`` of the cusp. A cusp is therefore allowed where
-  a stretch of true boundary turns by at least the threshold as a round of radius
-  ``b`` (its length over its turn in radians; 0 at a single true vertex) of at
-  most ``round_radius``, all within ``b + Q sqrt 2`` of it (``round_turn_near``).
-  A cusp on a larger round (such as a circle of larger radius, whose every
-  stretch is a round of that radius), or farther from a round or vertex than
-  that, is a kink.
+- Sharpenable rounds: a round turning by ``T`` (below 180 degrees) with radius
+  ``r`` has its sharp point (where its two sides meet) ``r (sec(T/2) - 1)`` from
+  its arc. The trace sharpens it only where that point lies within ``A`` of its
+  sample (the move check; GLOSSARY "corner sharpening allowance": a 90 degree
+  round sharpens up to about 2.41 ``A``). Seen through ``Q``: each side is read
+  from samples within ``Q`` of the true side, so it may lie ``Q`` inside it,
+  which moves the sides' meeting point up to ``Q sec(T/2)`` towards the arc, and
+  the drawn edge at the arc may lie ``Q`` outside it. So the trace may sharpen a
+  round of radius up to ``sharpenable_radius(T) = (A + (1 + sec(T/2)) Q) /
+  (sec(T/2) - 1)``: at ``A = 1`` px 16.3 px at 60 degrees, 6.54 at 90 (2.71
+  sharpening radii), 3.12 at 120, 1.55 at 150. Which round that is: the corner
+  detector reads the sides up to its reach (``curve_fit._corner_reach`` of the
+  default settings: the tip skip plus 1.75 spans) from a candidate, so the turn
+  it sees is the *full turn*, the truth's net turn over the stretch extended by
+  that reach on each side; a stretch of a longer round is judged by the full
+  turn, so a circle or a large round is never sharpenable through a piece of it.
+  A round turns one way and holds no true vertex (a corner, junction or edge
+  point is judged by its own disc ``R(c)``). The cusp lies within ``A`` of its
+  sample, a sample within ``Q`` of the round's middle, which lies
+  ``r (sec(T/2) - 1)`` from the sharp point: so a cusp is allowed where a stretch
+  of true boundary turning by at least the threshold, with its radius ``b`` (its
+  length over its turn in radians) at most ``sharpenable_radius`` of its full
+  turn, has its sharp point within ``A + Q + b (sec(T/2) - 1)`` of the cusp
+  (``round_turn_near``). A cusp on a larger round, or away from a sharpenable
+  one's sharp point, is a kink. The rule is the design's: on rasterised fillets
+  the trace puts no cusp on a 90 or 99 degree round of 0.9 to 1.5 times this
+  radius, but does on some 120 to 165 degree rounds of 1.1 to 1.5 times it
+  (``docs/validation-and-testing.md``), which the rule calls kinks.
 
 The truth a trace is judged against
 -----------------------------------
@@ -201,29 +219,42 @@ Assertions (``ASSERTIONS``)
 - ``corners``: every required vertex outside the zones has a cusp node within
   ``R(c)``. A required vertex inside a zone is optional.
 - ``kinks``: every cusp node lies within ``R(c)`` of a required or optional
-  vertex, inside a zone, or on a sharpenable round (a stretch of the truth
-  turning by at least the threshold as a round of radius ``b`` at most
-  ``round_radius``, all within ``b + Q sqrt 2`` of it).
+  vertex, inside a zone, or on a sharpenable round (within ``A + Q`` of a stretch
+  of the truth turning by at least the threshold as a round of radius ``b`` at
+  most ``sharpenable_radius`` of its turn).
 - ``nodes``: boundary nodes outside the zones ``<=`` the node limit
-  (``zone_node_limit``), built on the ideal node count of the boundary outside
-  the zones (``zone_ideal_nodes``: the ideal segmentation's vertex nodes whose
-  traced node can lie outside them, within ``R(c)`` of an anchored vertex or
-  ``D`` of any other, and the ideal segmentation's interior nodes that can fall
-  on the parts of its runs outside them). The ideal segmentation (one cubic per
-  arc of at most 90 degrees, within ``2.7e-4 r`` of the arc; one line per line,
-  which a cubic also draws exactly; one cubic per scene cubic) keeps every
-  sample within ``Q + 2.7e-4 r`` of the curve, below the fitter's curve
-  tolerance (at least 1 px, and ``Q + 2.7e-4 r < 1`` for every radius below
-  1000 px). The fitter takes the fewest pieces over its candidate nodes
-  (``docs/svg-tracing-spec.md``, "Selection"), which include every axis extreme,
-  and seams a closed ring with no anchor at an axis extreme unless that costs a
-  piece. Between consecutive vertices and axis extremes, an arc turns by at most
-  90 degrees and a cubic is a piece of one cubic, so the ideal pieces split at
-  every axis extreme are a route the fitter's search can take. The limit is the
-  vertex nodes, plus on each part of an ideal run outside the zones the larger
-  of its ideal interior nodes and its axis extremes, plus one node per part end
-  the zone cuts (an allowance: see ``What is derived``). A traced count above it
-  is a route that is not minimal over the fitter's own candidates.
+  (``zone_node_limit``), the node count of an explicit route through the
+  boundary outside the zones. Its vertex nodes (``_vertex_nodes``): every node
+  the trace stage must anchor in the label map it received, outside the zones
+  (``evidence_anchors``: a pixel corner where three or more colours meet or two
+  meet corner to corner, and a frame point between two colours; the trace makes
+  every such chain end a cusp, and a many-colour junction splits into several of
+  them over neighbouring pixel corners), and every vertex of the ideal
+  segmentation whose traced node can lie outside the zones (within ``R(c)`` of an
+  anchored vertex or ``D`` of any other) that is a corner, or a junction or edge
+  point no anchor within that radius stands for; a corner-to-corner contact of
+  two colours with no anchor counts two (the raster bridges or parts the two
+  regions, and the outline turns at two pixel corners either way). Then on each
+  part of an ideal run outside them, its axis extremes,
+  the splits the route needs between consecutive nodes (part ends and extremes),
+  and one node per part end a zone cuts. Between two route nodes the route draws
+  the truth with one explicit cubic (``span_cubic_error``: ends on the truth, the
+  truth's end tangents, handle lengths fitted) or, where one cubic does not stay
+  within the span's budget of the truth, with the fewest pieces the greedy split
+  gives (``span_pieces``). The budget (``span_budget``) is the fitter's curve
+  tolerance (``curve_fit._curve_tolerance``: ``curve_fit_tolerance`` capped by
+  ``max_deviation``) less the farthest any boundary sample of the span lies from
+  the truth (at least ``Q``; ``sample_quantisation`` measures it on the
+  hard-edged label render's pixel-edge vertices, which exceed ``Q`` where the
+  truth curves tightly), so every sample lies within the tolerance of the route's
+  curve. The count is derived; it is a geometric requirement on the trace, not a
+  claim that the fitter finds that route (``What is derived``). The ideal
+  segmentation's own pieces (one cubic per arc of at most 90 degrees, split at
+  its own nodes) are not the route: the fitter's candidates include every axis
+  extreme and none of the ideal nodes, and a piece of an arc between extremes
+  can sweep far more than 90 degrees of an ellipse's parameter (155 degrees on
+  ``ellipse-a8-rot17-1536``, whose one-cubic error there is 7 px, so each such
+  span takes two pieces and the limit is 6, not 4).
 - ``topology``: for every colour of the truth or the trace, the polygon and hole
   counts of the traced and the true geometry, each less the vertex discs, the
   topology zone and the palette zone, the structures that decide themselves by
@@ -237,21 +268,26 @@ Assertions (``ASSERTIONS``)
   counted with a band ``2 D`` wide; seen from a band edge ``2 D`` out, a trace
   within ``D`` of the truth shows each structure as the truth does from an edge
   between ``D`` and ``3 D`` out, so the truth is counted at every width from
-  ``D`` to ``3 D`` in steps of ``D / 4`` (``TOPOLOGY_BAND_MULTIPLES``). A count
-  is asserted, to lie within its range over the widths, only where the truth's
-  count at the traced band is the range's minimum, so deleting any one structure
-  it counts fails it; a count whose range reaches below it (structures near the
-  band edge that come and go with the width) cannot decide a single deletion and
-  is not asserted. Each colour and each of its two counts is judged on its own.
-  Located structures: a true piece or hole none of whose rings comes within
-  ``3 D`` of the removed region (*isolated*) is counted the same at every width,
-  and must match exactly one traced structure of its kind, each region within the
-  topology tolerance (``max(D, e)``) of the other; a traced piece or hole whose
-  rings clear the removed region by ``3 D`` plus that tolerance (so its true
-  counterpart would be isolated) must match an isolated true structure.
-  ``topology_mutations`` checks, per case, that the truth itself passes and that
-  every single deletion the assertion claims (an isolated structure, or a
-  structure an asserted count counts) fails it.
+  ``D`` to ``3 D`` in steps of ``D / 4`` (``TOPOLOGY_BAND_MULTIPLES``), and every
+  count of every colour is asserted to lie within its range over the widths: an
+  added structure beyond the range's maximum, or deletions below its minimum,
+  fail. One deletion is decided where the truth's count at the traced band is
+  the range's minimum, one addition where it is the maximum; elsewhere a single
+  change near the band edge is indistinguishable from the band's own effect, and
+  only a change that leaves the range is decided. Located structures: a true
+  piece or hole none of whose rings comes within ``3 D`` of the removed region
+  (*isolated*) is counted the same at every width, and must match exactly one
+  traced structure of its kind, each region within the topology tolerance
+  (``max(D, e)``) of the other; a traced piece or hole whose rings clear the
+  removed region by ``3 D`` plus that tolerance (so its true counterpart would be
+  isolated) must match an isolated true structure, so an isolated addition fails
+  whatever the counts. ``topology_mutations`` checks, per case, that the truth
+  itself passes and that every change the truth decides fails: each isolated
+  structure deleted, each counted structure deleted where its count decides one
+  deletion, an isolated addition, an addition near the removed region where its
+  count decides one, and otherwise the smallest multiple deletion or addition
+  that leaves the range; each single change a count cannot decide is reported,
+  with why, never passed.
 - ``area``: per colour ``c``, the symmetric difference of the traced and true
   geometry is at most the area of ``E(c)``: the ``D``-tube round ``c``'s true
   boundary, the discs of the vertices on it and the palette zone near it (with the
@@ -279,7 +315,12 @@ Assertions (``ASSERTIONS``)
   vertex discs, must have at least ``THIN_RECALL`` of the thin pixels' centres
   covered by its traced layer (``thin_regions``): ``e``
   exceeds a one-pixel feature's width, so this is what holds such a feature on
-  its pixels rather than a full width off them.
+  its pixels rather than a full width off them. Such a region must also be
+  covered by exactly one connected piece of its traced layer within ``e`` of its
+  pixels that covers a viable share of its thin pixels' centres (at least
+  ``max(2, 5%)``; ``_covering_pieces``, the trace stage's ``viable_pieces == 1``
+  for a protected component), so a thin feature cut by a gap fails however
+  little area the gap takes.
 - ``palette`` (palette-stage cases): ``scene.params["expect"]`` (see
   ``palette_outcome``).
 
@@ -304,10 +345,12 @@ from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from vinylgen.contracts import TraceSettings
-from vinylgen.fidelity.families import SHARPENING_RADIUS_FACTOR, case_palette_settings
+from vinylgen.curve_fit import _corner_reach, _curve_tolerance
+from vinylgen.fidelity.families import case_palette_settings
 from vinylgen.fidelity.metrics import (DISTANCE_ERROR_BOUND, SAMPLE_SPACING,
                                        _boundary_samples, _geometry_rings, _polygons,
                                        measure, parse_traced_svg, path_geometry)
+from vinylgen.fidelity.raster import render_labels
 from vinylgen.trace_lengths import length_reference, resolve_trace_lengths
 
 TIERS = ("labels", "rgb")
@@ -354,6 +397,13 @@ _NODE_DECIMALS = 6
 def resolved_lengths(width: int, height: int) -> TraceSettings:
     """The default trace lengths in px on this canvas, as the trace stage resolves them."""
     return resolve_trace_lengths(TraceSettings(), length_reference(width, height))
+
+
+def route_tolerance(lengths: TraceSettings) -> float:
+    """The fitter's curve tolerance, which the node limit's explicit route meets:
+    ``curve_fit._curve_tolerance`` (``curve_fit_tolerance`` capped by
+    ``max_deviation``)."""
+    return _curve_tolerance(lengths)
 
 
 def boundary_bound(max_deviation: float) -> float:
@@ -578,70 +628,130 @@ def corner_roles(truth, rings: list[np.ndarray], threshold: float) -> list[dict]
     return rows
 
 
-def round_turn_near(rings: list[np.ndarray], point, round_radius: float,
-                    reach: float) -> float:
-    """The largest net turn (degrees) of a *round* near ``point``: a stretch of
-    true boundary (vertices ``i..j`` of a ring, turning at each) whose radius
-    ``b`` (its length between its first and last vertex over its net turn in
-    radians; 0 for a single vertex, a tangent discontinuity) is at most
-    ``round_radius``, and every vertex of which lies within ``b + reach`` of
-    ``point``. A round of radius ``b`` lies within ``b`` of its sharp point, and a
-    cusp sharpened from it within ``reach`` of that point (module docstring,
-    "Sharpenable rounds")."""
+def sharpenable_radius(turn, allowance: float, quantisation: float = Q_PX):
+    """The largest radius of a round turning by ``turn`` radians (``0 < turn <
+    pi``; a number or an array) the trace may sharpen (module docstring,
+    "Sharpenable rounds"): its sharp point lies ``r (sec(turn / 2) - 1)`` from its
+    arc, and the move check keeps it within ``A`` of its sample, seen through
+    ``Q``: at most ``A + (1 + sec(turn / 2)) Q``."""
+    secant = 1.0 / np.cos(np.asarray(turn, dtype=np.float64) / 2.0)
+    radius = (allowance + (1.0 + secant) * quantisation) / (secant - 1.0)
+    return float(radius) if radius.ndim == 0 else radius
+
+
+def round_window(allowance: float, minimum_turn_deg: float,
+                 quantisation: float = Q_PX) -> float:
+    """How far from a cusp ``round_turn_near`` looks: ``A + Q`` plus the longest
+    sharpenable round turning by at least ``minimum_turn_deg`` (its length
+    ``sharpenable_radius(T) T``, largest at the smallest turn)."""
+    turns = np.radians(np.linspace(max(minimum_turn_deg, 1e-3), 179.9, 400))
+    return allowance + quantisation + float((sharpenable_radius(turns, allowance,
+                                                                  quantisation) * turns).max())
+
+
+def round_turn_near(rings: list[np.ndarray], point, allowance: float,
+                    minimum_turn_deg: float, reach: float, vertices=None,
+                    quantisation: float = Q_PX) -> float:
+    """The largest net turn (degrees) of a *sharpenable round* near ``point``
+    (0 when there is none): a stretch of true boundary (vertices ``i..j`` of a
+    ring, turning at each, all the same way, none of them a true vertex of
+    ``vertices``) turning by ``T``, at least ``minimum_turn_deg`` and
+    below 180 degrees, whose radius ``b`` (its length between its first and last
+    vertex over ``T`` in radians) is at most ``sharpenable_radius`` of its *full
+    turn*, and whose sharp point (where the segments into and out of it meet) lies
+    within ``A + Q + b (sec(T/2) - 1)`` of ``point`` (within ``A`` of a sample
+    within ``Q`` of the round's middle, which lies ``b (sec(T/2) - 1)`` from the
+    sharp point). The full turn is the net turn of the truth over the
+    stretch extended by ``reach`` (the corner detector's reach) on each side,
+    (at least the stretch's own), which must stay below 180 degrees. The full
+    turn is what the corner detector
+    reads there, so a stretch of a longer round is judged by the whole round
+    (module docstring, "Sharpenable rounds")."""
     best = 0.0
     px, py = point
-    window = round_radius + reach
+    low = math.radians(minimum_turn_deg)
+    near_enough = allowance + quantisation
+    window = round_window(allowance, minimum_turn_deg, quantisation)
     for ring in rings:
         closed = ring[:-1] if np.allclose(ring[0], ring[-1]) else ring
         count = len(closed)
         if count < 3:
             continue
         distance = np.hypot(closed[:, 0] - px, closed[:, 1] - py)
-        near = distance <= window
-        if not near.any():
+        if not (distance <= near_enough).any():
             continue
         before = closed - np.roll(closed, 1, axis=0)
         after = np.roll(closed, -1, axis=0) - closed
         turns = np.arctan2(before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0],
                            np.einsum("ij,ij->i", before, after))
         steps = np.hypot(*after.T)
-        # Walk each run of vertices within the window, starting outside it.
-        runs = []
-        if near.all():
-            runs.append(np.arange(count))
-        else:
-            start = int(np.flatnonzero(~near)[0])
-            order = np.roll(np.arange(count), -start)
-            flags = near[order]
-            index = 0
-            while index < count:
-                if not flags[index]:
-                    index += 1
-                    continue
-                end = index
-                while end + 1 < count and flags[end + 1]:
-                    end += 1
-                runs.append(order[index:end + 1])
-                index = end + 1
-        for run in runs:
-            run_turns = turns[run]
-            run_steps = steps[run]
-            run_distance = distance[run]
-            for i in range(len(run)):
-                total, length, farthest = 0.0, 0.0, 0.0
-                for j in range(i, len(run)):
-                    if j > i:
-                        length += run_steps[j - 1]
-                    total += run_turns[j]
-                    farthest = max(farthest, run_distance[j])
-                    turn = abs(total)
-                    if turn <= 1e-12:
-                        continue
-                    bend = length / turn
-                    if bend > round_radius:
-                        continue
-                    if farthest <= bend + reach:
-                        best = max(best, math.degrees(min(turn, 2.0 * math.pi)))
+        # The ring three times over, so every stretch and its extension by the
+        # reach can be read in one direction: cumulative turn up to and including
+        # each vertex, and arc length at each vertex.
+        turn_sum = np.cumsum(np.tile(turns, 3))
+        arc = np.concatenate(([0.0], np.cumsum(np.tile(steps, 3))))[:3 * count]
+        # A round turns one way and holds no true vertex (a corner, junction or
+        # edge point, judged by its own disc).
+        sign = np.tile(np.sign(np.where(np.abs(turns) > 1e-12, turns, 0.0)), 3)
+        vertex = np.zeros(count, dtype=bool)
+        if vertices is not None and len(vertices):
+            vertex = cKDTree(np.asarray(vertices, dtype=np.float64).reshape(-1, 2)).query(
+                closed)[0] <= 1e-6
+        vertex = np.tile(vertex, 3)
+        perimeter = float(steps.sum())
+        if 2.0 * reach >= perimeter:
+            continue
+        inside = distance <= window
+        # For each vertex, how many vertices from it on (itself included, round
+        # the ring) lie within the window.
+        run = np.zeros(2 * count, dtype=np.int64)
+        doubled = np.concatenate([inside, inside])
+        for k in range(2 * count - 1, -1, -1):
+            run[k] = (run[k + 1] + 1 if k + 1 < 2 * count else 1) if doubled[k] else 0
+        for i in np.flatnonzero(inside):
+            start = count + int(i)
+            # The stretch runs from ``start`` along vertices within the window.
+            ends = np.arange(start, start + min(int(run[i]), count))
+            stop = vertex[ends] | (sign[ends] * sign[start] < 0) | (sign[start] == 0)
+            if stop.any():
+                ends = ends[:int(np.argmax(stop))]
+            if not len(ends):
+                continue
+            base = turn_sum[start - 1]
+            total = np.abs(turn_sum[ends] - base)
+            length = arc[ends] - arc[start]
+            usable = (total >= low) & (total < math.pi)
+            if not usable.any():
+                continue
+            ends, total, length = ends[usable], total[usable], length[usable]
+            # The stretch's sharp point: where the segment into its first vertex
+            # and the segment out of its last one meet.
+            head = closed[i] - closed[i - 1]
+            tails = closed[(ends + 1) % count] - closed[ends % count]
+            cross = head[0] * tails[:, 1] - head[1] * tails[:, 0]
+            offset = closed[ends % count] - closed[i]
+            along = np.divide(offset[:, 0] * tails[:, 1] - offset[:, 1] * tails[:, 0], cross,
+                              out=np.full(len(ends), np.inf), where=np.abs(cross) > 1e-12)
+            sharp = closed[i] + along[:, None] * head
+            apart = np.hypot(sharp[:, 0] - px, sharp[:, 1] - py)
+            bend = length / total
+            close = apart <= near_enough + bend * (1.0 / np.cos(total / 2.0) - 1.0)
+            if not close.any():
+                continue
+            ends, total, length, bend = ends[close], total[close], length[close], bend[close]
+            first = np.searchsorted(arc, arc[start] - reach, side="left")
+            last = np.searchsorted(arc, arc[ends] + reach, side="right") - 1
+            # A side turning back (an inflection) lowers the net turn; the round
+            # still turns by its own.
+            full = np.maximum(np.abs(turn_sum[last] - turn_sum[first - 1]), total)
+            valid = full < math.pi
+            if not valid.any():
+                continue
+            radius = np.zeros_like(full)
+            radius[valid] = sharpenable_radius(full[valid], allowance, quantisation)
+            good = valid & (bend <= radius)
+            if good.any():
+                best = max(best, math.degrees(float(total[good].max())))
     return best
 
 
@@ -907,6 +1017,7 @@ class CaseBounds:
     bound: float
     rho: float
     round_radius: float
+    corner_reach: float
     threshold: float
     evidence_tolerance: float
     corners: list[dict]
@@ -935,6 +1046,7 @@ class CaseBounds:
     ideal_nodes: int
     node_limit: int
     topology_truth: dict[str, dict] = field(default_factory=dict)
+    topology_beyond_px: float = 0.0
 
     @property
     def excluded_zone(self):
@@ -949,12 +1061,10 @@ class CaseBounds:
 
     @property
     def topological(self) -> bool:
-        """Whether the topology assertion holds anything: some colour has an
-        isolated structure, or an asserted count whose range reaches above 0."""
-        return any(row["isolated"]
-                   or any(row["asserted"][name] and row[f"{name}_range"][1]
-                          for name in ("polygons", "holes"))
-                   for row in self.topology_truth.values())
+        """Whether the topology assertion holds anything: some of the canvas lies
+        beyond the traced band round the removed region, where a count or an
+        isolated structure can change."""
+        return bool(self.topology_truth) and self.topology_beyond_px > MIN_PIECE_AREA
 
 
 def _inside(geometry, points: np.ndarray) -> np.ndarray:
@@ -1034,12 +1144,218 @@ def _axis_extremes(points: np.ndarray, closed: bool) -> np.ndarray:
     return flags
 
 
-def _run_nodes(run, outside: np.ndarray) -> tuple[int, int]:
+# The explicit route's cubic: Newton reparameterisations per fit, least-squares
+# handle refits, the refinement of the handle lengths tried when the fit misses by
+# at most ``_ROUTE_REFINE`` budgets, and the most equal pieces a span is split
+# into before its count is taken as it stands.
+_ROUTE_NEWTON = 6
+_ROUTE_REFITS = 3
+_ROUTE_REFINE = math.inf
+_ROUTE_MAX_PIECES = 64
+# A span whose samples lie as far from the truth as the tolerance still gets a
+# route, of cubics this close to the truth.
+_ROUTE_MIN_BUDGET = 0.05
+
+
+def _polyline_tangent(points: np.ndarray, index: int, direction: int) -> np.ndarray:
+    """The unit tangent, along the direction of travel, of the polyline ``points``
+    at ``index``, read from the points after it (``direction`` 1) or before it
+    (-1), to second order."""
+    count = len(points)
+    if direction > 0:
+        if index + 2 < count:
+            vector = -3.0 * points[index] + 4.0 * points[index + 1] - points[index + 2]
+        else:
+            vector = points[min(index + 1, count - 1)] - points[index]
+    else:
+        if index - 2 >= 0:
+            vector = 3.0 * points[index] - 4.0 * points[index - 1] + points[index - 2]
+        else:
+            vector = points[index] - points[max(index - 1, 0)]
+    norm = float(np.hypot(*vector))
+    return vector / norm if norm > 0 else np.zeros(2)
+
+
+def _bezier(control: np.ndarray, u: np.ndarray) -> np.ndarray:
+    v = 1.0 - u
+    return (np.outer(v ** 3, control[0]) + np.outer(3 * v * v * u, control[1])
+            + np.outer(3 * v * u * u, control[2]) + np.outer(u ** 3, control[3]))
+
+
+def _reproject(control: np.ndarray, points: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """One Newton step moving each ``u`` towards its point's nearest curve parameter."""
+    v = 1.0 - u
+    first = (np.outer(3 * v * v, control[1] - control[0])
+             + np.outer(6 * v * u, control[2] - control[1])
+             + np.outer(3 * u * u, control[3] - control[2]))
+    second = (np.outer(6 * v, control[2] - 2 * control[1] + control[0])
+              + np.outer(6 * u, control[3] - 2 * control[2] + control[1]))
+    offset = _bezier(control, u) - points
+    numerator = np.einsum("ij,ij->i", offset, first)
+    denominator = np.einsum("ij,ij->i", first, first) + np.einsum("ij,ij->i", offset, second)
+    step = np.divide(numerator, denominator, out=np.zeros_like(u),
+                     where=np.abs(denominator) > 1e-12)
+    return np.clip(u - step, 0.0, 1.0)
+
+
+def _span_error(points: np.ndarray, start: np.ndarray, end: np.ndarray,
+                handles, u: np.ndarray) -> tuple[float, np.ndarray]:
+    """The largest distance from ``points`` to the cubic from the first point to
+    the last with handles ``handles`` long along ``start`` and ``end``, each
+    point measured to the curve point at its Newton-projected parameter (so never
+    less than its geometric distance to the curve), and the parameters."""
+    control = np.asarray([points[0], points[0] + handles[0] * start,
+                          points[-1] - handles[1] * end, points[-1]])
+    for _ in range(_ROUTE_NEWTON):
+        u = _reproject(control, points, u)
+    return float(np.hypot(*(_bezier(control, u) - points).T).max()), u
+
+
+def span_cubic_error(points: np.ndarray, start: np.ndarray, end: np.ndarray,
+                     budget: float = 0.0) -> float:
+    """How closely one explicit cubic draws the polyline ``points`` (a stretch of
+    true boundary): it ends on the stretch's ends with end tangents ``start`` and
+    ``end`` (unit, along the direction of travel), and its handle lengths are the
+    least-squares fit at Newton-improved parameters (Schneider), refined by a
+    Nelder-Mead search when that fit misses ``budget`` by at most
+    ``_ROUTE_REFINE`` times. Returns the largest distance of a point of the
+    stretch to the cubic (0 for a straight stretch, which its chord draws)."""
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) <= 2:
+        return 0.0
+    chord = points[-1] - points[0]
+    length = float(np.hypot(*chord))
+    arc = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(points, axis=0).T))))
+    if arc[-1] <= 0:
+        return 0.0
+    if length > 0:
+        normal = np.asarray([-chord[1], chord[0]]) / length
+        if float(np.abs((points - points[0]) @ normal).max()) <= 1e-9:
+            return 0.0
+    chord_u = arc / arc[-1]
+    candidates = [(arc[-1] / 3.0, arc[-1] / 3.0)]
+    # The tangent lines' meeting point: a conic arc is the affine image of a
+    # circular arc, whose cubic has handles (4/3) tan(turn/4) / tan(turn/2) of the
+    # way to it.
+    cross = start[0] * end[1] - start[1] * end[0]
+    if abs(cross) > 1e-9:
+        reach = ((chord[0] * end[1] - chord[1] * end[0]) / cross,
+                 (start[0] * chord[1] - start[1] * chord[0]) / cross)
+        turn = math.acos(max(-1.0, min(1.0, float(start @ end))))
+        if reach[0] > 0 and reach[1] > 0 and 0 < turn < math.pi:
+            share = 4.0 / 3.0 * math.tan(turn / 4.0) / math.tan(turn / 2.0)
+            candidates.append((share * reach[0], share * reach[1]))
+    u = chord_u.copy()
+    ends = np.asarray([points[0], points[0], points[-1], points[-1]])
+    for _ in range(_ROUTE_REFITS):
+        v = 1.0 - u
+        a1 = np.outer(3 * v * v * u, start)
+        a2 = np.outer(-3 * v * u * u, end)
+        rest = points - _bezier(ends, u)
+        matrix = np.asarray([[np.sum(a1 * a1), np.sum(a1 * a2)],
+                             [np.sum(a1 * a2), np.sum(a2 * a2)]])
+        vector = np.asarray([np.sum(a1 * rest), np.sum(a2 * rest)])
+        if abs(np.linalg.det(matrix)) <= 1e-12 * max(1.0, float(np.abs(matrix).max())) ** 2:
+            break
+        solved = np.linalg.solve(matrix, vector)
+        if not (solved[0] > 1e-6 and solved[1] > 1e-6 and max(solved) < 4.0 * arc[-1]):
+            break
+        candidates.append((float(solved[0]), float(solved[1])))
+        _, u = _span_error(points, start, end, candidates[-1], u)
+    scored = [(_span_error(points, start, end, handles, chord_u.copy())[0], handles)
+              for handles in candidates]
+    error, handles = min(scored)
+    if 0 < budget < error <= _ROUTE_REFINE * budget:
+        from scipy.optimize import minimize
+        # The search reads a subsample; the result is measured on every point.
+        stride = max(1, len(points) // 400)
+        sample = np.vstack([points[::stride], points[-1:]])
+        sample_u = np.concatenate([chord_u[::stride], [1.0]])
+
+        def objective(values):
+            if values[0] <= 0 or values[1] <= 0:
+                return math.inf
+            return _span_error(sample, start, end, values, sample_u.copy())[0]
+
+        found = minimize(objective, np.asarray(handles), method="Nelder-Mead",
+                         options={"xatol": 1e-3, "fatol": 1e-4, "maxiter": 300})
+        if found.x[0] > 0 and found.x[1] > 0:
+            error = min(error, _span_error(points, start, end, found.x, chord_u.copy())[0])
+    return error
+
+
+def span_pieces(points: np.ndarray, start: np.ndarray, end: np.ndarray, budget: float) -> int:
+    """The fewest pieces (greedy; at most ``_ROUTE_MAX_PIECES``) the
+    stretch of true boundary ``points`` splits into so that each piece's explicit
+    cubic (``span_cubic_error``; end tangents ``start`` and ``end`` at the
+    stretch's ends, the stretch's own tangents at the splits) lies within
+    ``budget`` of it."""
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) <= 2:
+        return 1
+    last = len(points) - 1
+
+    def fits(a: int, b: int) -> bool:
+        return span_cubic_error(points[a:b + 1],
+                                start if a == 0 else _polyline_tangent(points, a, 1),
+                                end if b == last else _polyline_tangent(points, b, -1),
+                                budget) <= budget
+
+    if fits(0, last):
+        return 1
+    # Greedy: from each node the farthest point one fitting cubic reaches (found
+    # by bisection), which gives the fewest pieces where every shorter stretch of
+    # a fitting one fits too.
+    pieces, at = 0, 0
+    while at < last and pieces < _ROUTE_MAX_PIECES:
+        low, high = at + 1, last
+        while low < high:
+            middle = (low + high + 1) // 2
+            if fits(at, middle):
+                low = middle
+            else:
+                high = middle - 1
+        at = low
+        pieces += 1
+    return pieces if at >= last else _ROUTE_MAX_PIECES
+
+
+def span_budget(tolerance: float, quantisation) -> float:
+    """How far a route piece's cubic may lie from the truth so that every boundary
+    sample of the span, within ``quantisation`` of the truth (at least ``Q``), lies
+    within ``tolerance`` of it. Never below ``_ROUTE_MIN_BUDGET``."""
+    return max(_ROUTE_MIN_BUDGET, tolerance - max(Q_PX, float(quantisation)))
+
+
+def _route_extra(points: np.ndarray, nodes: list[int], tolerance: float,
+                 quantisation: np.ndarray) -> int:
+    """The nodes the explicit route adds between consecutive route nodes
+    ``nodes`` (increasing indices into ``points``): each span's ``span_pieces``,
+    at the span's ``span_budget`` (``quantisation`` per point), less one."""
+    extra = 0
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        if b - a < 2:
+            continue
+        budget = span_budget(tolerance, quantisation[a:b + 1].max())
+        extra += span_pieces(points[a:b + 1], _polyline_tangent(points, a, 1),
+                             _polyline_tangent(points, b, -1), budget) - 1
+    return extra
+
+
+def _run_nodes(run, outside: np.ndarray, tolerance: float = 0.0,
+               quantisation: np.ndarray | None = None) -> tuple[int, int]:
     """For one ideal run and its points ``outside`` the zone: the ideal interior
     nodes that can lie on its parts outside the zone (``zone_ideal_nodes``), and
-    the interior nodes the fitter's fewest-piece route may need there
-    (``zone_node_limit``): per part, the larger of its ideal nodes and its axis
-    extremes, plus one per part end cut by the zone."""
+    the explicit route's interior nodes there (``zone_node_limit``): per part,
+    its axis extremes, the nodes ``span_pieces`` adds between consecutive route
+    nodes (the part's ends and extremes) so that one cubic per piece lies within
+    ``span_budget`` of the truth, for the fitter's curve ``tolerance`` and the
+    samples' distance to the truth at each run point (``quantisation``, ``Q``
+    where None; no nodes are added when ``tolerance`` is 0), and one per part end
+    the zone cuts. A closed run wholly outside is walked once round from an
+    extreme."""
+    if quantisation is None:
+        quantisation = np.full(len(run.points), Q_PX)
     whole = _quarters(run.sweep[-1]) if run.conic else 1
     interior = whole if run.closed else whole - 1
     if not run.conic and not run.closed:
@@ -1047,11 +1363,26 @@ def _run_nodes(run, outside: np.ndarray) -> tuple[int, int]:
     if not outside.any():
         return 0, 0
     extremes = _axis_extremes(run.points, run.closed)
+
+    def extra(points, nodes, quantised):
+        return _route_extra(points, nodes, tolerance, quantised) if tolerance > 0 else 0
+
     if outside.all():
-        count = int(extremes[:-1].sum()) if run.closed else int(extremes.sum())
-        return interior, max(interior, count)
+        if run.closed:
+            ring = run.points[:-1]
+            marks = np.flatnonzero(extremes[:-1])
+            seam = int(marks[0]) if len(marks) else 0
+            order = np.roll(np.arange(len(ring)), -seam)
+            points = np.vstack([ring[order], ring[order[:1]]])
+            quantised = np.concatenate([quantisation[:-1][order], quantisation[order[:1]]])
+            nodes = sorted(int((m - seam) % len(ring)) for m in marks) or [0]
+            return interior, len(nodes) + extra(points, nodes + [len(ring)], quantised)
+        marks = [int(m) for m in np.flatnonzero(extremes)]
+        return interior, len(marks) + extra(run.points, [0] + marks + [len(run.points) - 1],
+                                            quantisation)
     spacing = run.sweep[-1] / whole if run.conic else math.inf
-    flags, sweep, marks = outside, run.sweep, extremes
+    flags, sweep, marks, points = outside, run.sweep, extremes, run.points
+    quantised = quantisation
     if run.closed:
         # Drop the repeated end and start the walk inside the zone, so no part
         # outside it wraps round the start.
@@ -1059,7 +1390,8 @@ def _run_nodes(run, outside: np.ndarray) -> tuple[int, int]:
         total = run.sweep[-1]
         first = int(np.flatnonzero(~flags)[0])
         order = np.roll(np.arange(len(flags)), -first)
-        flags, marks = flags[order], marks[order]
+        flags, marks, points = flags[order], marks[order], run.points[:-1][order]
+        quantised = quantisation[:-1][order]
         sweep = np.where(order >= first, sweep[order] - sweep[first],
                          sweep[order] + total - sweep[first])
     count, limit = 0, 0
@@ -1081,7 +1413,9 @@ def _run_nodes(run, outside: np.ndarray) -> tuple[int, int]:
             else 0
         count += ideal
         cuts = (0 if starts_run else 1) + (0 if ends_run else 1)
-        limit += max(ideal, int(marks[index:end + 1].sum())) + cuts
+        inner = [int(m) for m in np.flatnonzero(marks[index:end + 1]) + index
+                 if index < m < end]
+        limit += len(inner) + extra(points, [index] + inner + [end], quantised) + cuts
         index = end + 1
     return min(count, interior), limit
 
@@ -1096,6 +1430,83 @@ def _vertices_outside(truth, zone, radii: dict | None, default_radius: float) ->
         radius = (radii or {}).get((round(float(x), 6), round(float(y), 6)), default_radius)
         if not zone.contains(Point(x, y).buffer(max(radius, 1e-9), quad_segs=4)):
             count += 1
+    return count
+
+
+def evidence_anchors(labels: np.ndarray) -> np.ndarray:
+    """The pixel corners of the label map ``labels`` where the trace stage always
+    anchors a cusp node (``boundary_graph``: a chain of one colour pair ends where
+    that pair's boundary does not simply pass through, and ``node_types.
+    cusp_anchor_keys`` makes every chain end a cusp): an inner corner whose four
+    pixels carry three or more colours, or two colours corner to corner; and a
+    frame point between two different frame pixels. The canvas corners are left
+    out, as ``_boundary_nodes`` leaves them out. ``(n, 2)`` as ``(x, y)``."""
+    labels = np.asarray(labels)
+    height, width = labels.shape
+    points = []
+    if height >= 2 and width >= 2:
+        a, b = labels[:-1, :-1], labels[:-1, 1:]
+        c, d = labels[1:, :-1], labels[1:, 1:]
+        # The number of colours among each inner corner's four pixels.
+        colours = 1 + (np.diff(np.sort(np.stack([a, b, c, d]), axis=0), axis=0) != 0).sum(axis=0)
+        diagonal = (colours == 2) & (a == d) & (b == c) & (a != b)
+        ys, xs = np.nonzero((colours >= 3) | diagonal)
+        points.append(np.c_[xs + 1, ys + 1])
+    for line, fixed, horizontal in ((labels[0, :], 0, True), (labels[-1, :], height, True),
+                                    (labels[:, 0], 0, False), (labels[:, -1], width, False)):
+        changes = np.flatnonzero(line[1:] != line[:-1]) + 1
+        if horizontal:
+            points.append(np.c_[changes, np.full(len(changes), fixed)])
+        else:
+            points.append(np.c_[np.full(len(changes), fixed), changes])
+    found = np.vstack(points).astype(np.float64) if points else np.empty((0, 2))
+    return np.unique(found, axis=0) if len(found) else found.reshape(0, 2)
+
+
+def corner_contacts(truth, corners: list[dict]) -> list:
+    """The junctions of ``corners`` where only two colours meet, corner to corner."""
+    found = []
+    for corner in corners:
+        if corner["kind"] != "junction":
+            continue
+        point = Point(corner["point"])
+        colours = [index for index, geometry in truth.colour_geometry.items()
+                   if geometry.distance(point) <= 1e-3]
+        if len(colours) == 2:
+            found.append(corner["point"])
+    return found
+
+
+def _vertex_nodes(truth, zone, radii: dict | None, default_radius: float,
+                  anchors: np.ndarray | None = None, anchored=None, contacts=None) -> int:
+    """The vertex nodes of the node limit outside ``zone``: every forced anchor
+    of the label map (``anchors``, ``evidence_anchors``) outside it, and every
+    vertex of the ideal segmentation whose traced node can lie outside it (its disc
+    of radius ``radii[(x, y)]``, or ``default_radius``, is not inside it) unless it
+    is a junction or edge point (in ``anchored``, points) with an anchor within
+    that radius, which stands for it. A corner is never an anchor. A point where
+    two colours meet corner to corner (in ``contacts``) with no anchor counts two:
+    the raster either bridges the two regions of one colour with a pixel or
+    parts them, and either way the outline turns at two pixel corners there (only
+    a checkerboard of the four pixels makes one anchor instead)."""
+    vertices = np.asarray(truth.ideal_vertices, dtype=np.float64).reshape(-1, 2)
+    anchors = np.empty((0, 2)) if anchors is None else np.asarray(anchors).reshape(-1, 2)
+    if zone is not None and not zone.is_empty:
+        shapely.prepare(zone)
+    count = int((~_inside(zone, anchors)).sum()) if len(anchors) else 0
+    tree = cKDTree(anchors) if len(anchors) else None
+    anchored = {(round(float(x), 6), round(float(y), 6)) for x, y in (anchored or [])}
+    contacts = {(round(float(x), 6), round(float(y), 6)) for x, y in (contacts or [])}
+    for x, y in vertices:
+        radius = (radii or {}).get((round(float(x), 6), round(float(y), 6)), default_radius)
+        if zone is not None and not zone.is_empty \
+                and zone.contains(Point(x, y).buffer(max(radius, 1e-9), quad_segs=4)):
+            continue
+        key = (round(float(x), 6), round(float(y), 6))
+        if key in anchored and tree is not None \
+                and tree.query_ball_point((x, y), max(radius, 1e-9)):
+            continue
+        count += 2 if key in contacts else 1
     return count
 
 
@@ -1116,15 +1527,74 @@ def zone_ideal_nodes(truth, zone, radii: dict | None = None, default_radius: flo
     return count
 
 
-def zone_node_limit(truth, zone, radii: dict | None = None, default_radius: float = 0.0) -> int:
-    """The ``nodes`` assertion's limit (module docstring): the vertex nodes
-    ``zone_ideal_nodes`` counts, and on each part of an ideal run outside the
-    zone the larger of its ideal interior nodes and its axis extremes, plus one
-    node per part end the zone cuts."""
-    count = _vertices_outside(truth, zone, radii, default_radius)
-    for run in truth.ideal_runs:
-        count += _run_nodes(run, ~_inside(zone, run.points))[1]
+def zone_node_limit(truth, zone, radii: dict | None = None, default_radius: float = 0.0,
+                    tolerance: float = 0.0, quantisation: list | None = None,
+                    anchors: np.ndarray | None = None, anchored=None,
+                    contacts=None) -> int:
+    """The ``nodes`` assertion's limit (module docstring, ``nodes``): the vertex
+    nodes (``_vertex_nodes``: the label map's forced ``anchors`` and the ideal
+    vertices none of them stands for, ``anchored`` the junctions and edge points,
+    ``contacts`` the corner-to-corner contacts),
+    and on each part of an ideal run outside
+    the zone the explicit route's interior nodes: its axis extremes, the nodes
+    splitting each span between consecutive route nodes into pieces each drawn by
+    one explicit cubic within the span's ``span_budget`` of the truth
+    (``span_pieces``; ``quantisation``, per run, the samples' distance to the
+    truth at each run point, ``sample_quantisation``), and one node per part end
+    the zone cuts."""
+    count = _vertex_nodes(truth, zone, radii, default_radius, anchors, anchored, contacts)
+    for number, run in enumerate(truth.ideal_runs):
+        count += _run_nodes(run, ~_inside(zone, run.points), tolerance,
+                            None if quantisation is None else quantisation[number])[1]
     return count
+
+
+# Boundary samples farther than this from every ideal run point are not
+# attributed to a run: they belong to a boundary no run describes (the frame, or
+# a boundary the palette stage folds away).
+_SAMPLE_REACH = 2.0
+
+
+def sample_quantisation(truth, labels: np.ndarray) -> list[np.ndarray]:
+    """For each ideal run of ``truth``, per run point, the farthest distance to the
+    truth of the boundary samples nearest that point: the pixel-edge vertices (at
+    unit spacing, off the frame) of the label map ``labels``, each attributed to
+    its nearest ideal run point within ``_SAMPLE_REACH``. 0 where none is."""
+    runs = truth.ideal_runs
+    if not runs:
+        return []
+    height, width = labels.shape
+    vertices = []
+    for geometry in label_geometry(labels).values():
+        for polygon in _polygons(geometry):
+            for ring in [polygon.exterior, *polygon.interiors]:
+                coords = np.asarray(ring.coords)
+                starts, ends = coords[:-1], coords[1:]
+                steps = np.maximum(1, np.round(np.abs(ends - starts).max(axis=1)).astype(int))
+                first = np.repeat(np.cumsum(steps) - steps, steps)
+                fraction = (np.arange(int(steps.sum())) - first) / np.repeat(steps, steps)
+                vertices.append(np.repeat(starts, steps, axis=0)
+                                + np.repeat(ends - starts, steps, axis=0) * fraction[:, None])
+    samples = np.unique(np.round(np.vstack(vertices).reshape(-1, 2), 6), axis=0) \
+        if vertices else np.empty((0, 2))
+    on_frame = ((samples[:, 0] <= 0) | (samples[:, 0] >= width)
+                | (samples[:, 1] <= 0) | (samples[:, 1] >= height))
+    samples = samples[~on_frame]
+    points = np.vstack([run.points for run in runs])
+    owner = np.concatenate([np.full(len(run.points), number)
+                            for number, run in enumerate(runs)])
+    offsets = np.concatenate([[0], np.cumsum([len(run.points) for run in runs])])
+    result = [np.zeros(len(run.points)) for run in runs]
+    if not len(samples):
+        return result
+    distance, nearest = cKDTree(points).query(samples, distance_upper_bound=_SAMPLE_REACH)
+    for d, index in zip(distance, nearest):
+        if not math.isfinite(d):
+            continue
+        number = int(owner[index])
+        local = int(index - offsets[number])
+        result[number][local] = max(result[number][local], float(d))
+    return result
 
 
 def _structures(geometry) -> list[dict]:
@@ -1155,18 +1625,19 @@ def _isolated(structure: dict, near) -> bool:
 
 def _topology_row(geometry, removed, bands) -> dict:
     """The truth's counts with the traced band, the range of each count over every
-    band width, which counts are asserted, and the isolated structures
-    (``topology``)."""
+    band width (every count is asserted to lie in its range), which single
+    changes each count decides (``decides``: a deletion where the traced count is
+    the range's minimum, an addition where it is the maximum), and the isolated
+    structures (``topology``)."""
     rows = [_local_topology(geometry, removed, band) for band in bands]
     traced = rows[TOPOLOGY_BAND_MULTIPLES.index(TOPOLOGY_BAND_TRACED)]
     result = dict(traced)
-    result["asserted"] = {}
+    result["decides"] = {}
     for name in ("polygons", "holes"):
         values = [row[name] for row in rows]
         result[f"{name}_range"] = [min(values), max(values)]
-        # Asserted only where deleting one structure counted at the traced band
-        # takes the count below the range.
-        result["asserted"][name] = min(values) == traced[name]
+        result["decides"][name] = {"deletion": min(values) == traced[name],
+                                   "addition": max(values) == traced[name]}
     result["isolated"] = [row for row in _structures(geometry) if _isolated(row, bands[-1])]
     return result
 
@@ -1185,8 +1656,10 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     allowance = float(lengths.corner_sharpening_allowance)
     bound = boundary_bound(max_deviation)
     threshold = float(TraceSettings().corner_threshold)
-    round_radius = SHARPENING_RADIUS_FACTOR * (allowance + (1.0 + math.sqrt(2.0)) * Q_PX)
-    rho = round_radius + math.sqrt(2.0) * Q_PX
+    # The largest sharpenable radius (a round turning by the threshold) and how
+    # far from a cusp ``round_turn_near`` looks for a round.
+    round_radius = sharpenable_radius(math.radians(threshold), allowance)
+    rho = round_window(allowance, threshold)
     rings = truth_rings(truth)
     vertices = np.asarray([corner.point for corner in truth.corners],
                           dtype=np.float64).reshape(-1, 2)
@@ -1220,6 +1693,13 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
                     else Polygon())
 
     excluded = unary_union([resolution_zone, palette_zone])
+    # The label maps: the hard-edged render, and the one the trace received (the
+    # render in the labels tier, the palette stage's labels in the rgb tier).
+    hard_labels = np.asarray(render_labels(scene))
+    evidence_labels = hard_labels
+    if tier == "rgb" and run is not None:
+        with np.load(run.subject_dir / "segmentation.npz") as bundle:
+            evidence_labels = np.asarray(bundle["labels"])
     centres = np.asarray([c["point"] for c in anchored], dtype=np.float64).reshape(-1, 2)
     radii = np.asarray([c["radius_px"] for c in anchored], dtype=np.float64)
     in_zone = _inside(excluded, centres) if len(centres) else np.zeros(0, dtype=bool)
@@ -1288,6 +1768,7 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     return CaseBounds(
         tier=tier, width=width, height=height, truth=truth, max_deviation=max_deviation,
         allowance=allowance, bound=bound, rho=rho, round_radius=round_radius,
+        corner_reach=float(_corner_reach(lengths)),
         threshold=threshold,
         evidence_tolerance=evidence_tolerance,
         corners=corners, centres=centres, radii=radii, discs=discs,
@@ -1302,8 +1783,15 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
         rings=rings, truth_samples=samples,
         truth_kept=kept, colour_limits=colour_limits, area_region_limit=area_region_limit,
         ideal_nodes=zone_ideal_nodes(truth, excluded, vertex_radii, bound),
-        node_limit=zone_node_limit(truth, excluded, vertex_radii, bound),
-        topology_truth=topology_truth)
+        node_limit=zone_node_limit(truth, excluded, vertex_radii, bound,
+                                   route_tolerance(lengths),
+                                   sample_quantisation(truth, hard_labels),
+                                   evidence_anchors(evidence_labels),
+                                   [c["point"] for c in corners if c["kind"] != "corner"],
+                                   corner_contacts(truth, corners)),
+        topology_truth=topology_truth,
+        topology_beyond_px=float(box(0, 0, width, height).area if far_topology is None
+                                 else box(0, 0, width, height).difference(far_topology).area))
 
 
 # --- raster evidence ------------------------------------------------------------------------------
@@ -1435,12 +1923,14 @@ def evidence_distance(geometry: dict[int, object], palette_hex: list[str],
 
 
 def thin_regions(labels: np.ndarray, palette_hex: list[str], traced_by_fill: dict,
-                 exempt=None) -> list[dict]:
+                 exempt=None, tolerance: float = 0.0) -> list[dict]:
     """Every *thin* four-connected evidence region: one most of whose pixels lie in
     no 2 x 2 block of its own pixels (narrower than the resolution floor along
     most of it), with the fraction of those thin pixels' centres its label's
-    traced layer covers (``recall``); a region whose thin pixels all lie in
-    ``exempt`` (the vertex discs, where a tip or a corner contact leaves a pixel
+    traced layer covers (``recall``) and how many connected pieces of that layer
+    within ``tolerance`` of the region's pixels each cover a viable share of those
+    centres (``pieces``, ``_covering_pieces``); a region whose thin pixels all lie
+    in ``exempt`` (the vertex discs, where a tip or a corner contact leaves a pixel
     no trace is held to) is left out."""
     labels = np.asarray(labels)
     rows = []
@@ -1473,10 +1963,35 @@ def thin_regions(labels: np.ndarray, palette_hex: list[str], traced_by_fill: dic
             order = np.lexsort((xs, ys))
             inside = (shapely.contains_xy(traced, xs + 0.5, ys + 0.5) if not traced.is_empty
                       else np.zeros(len(xs), dtype=bool))
+            mask = component[rows_slice, columns_slice] == region
             rows.append({"label": int(value), "pixels": int(sizes[region]),
                          "pixel": [int(xs[order[0]]), int(ys[order[0]])],
-                         "recall": float(inside.mean())})
+                         "recall": float(inside.mean()),
+                         "pieces": _covering_pieces(traced, mask, rows_slice.start,
+                                                    columns_slice.start, xs, ys, tolerance)})
     return rows
+
+
+def _covering_pieces(traced, region: np.ndarray, top: int, left: int, xs: np.ndarray,
+                     ys: np.ndarray, tolerance: float) -> int:
+    """How many connected pieces of ``traced`` within ``tolerance`` of the pixels
+    of ``region`` (a mask whose first row and column are ``top`` and ``left``)
+    each cover at least ``max(2, 5%)``, capped at all, of the pixel centres
+    ``xs, ys``: the trace stage's own count of the pieces a protected component
+    survives as (``validation``'s ``viable_pieces``), which must be one."""
+    if traced.is_empty or not len(xs):
+        return 0
+    rows, columns = np.nonzero(region)
+    pixels = shapely.union_all(shapely.box(columns + left, rows + top,
+                                           columns + left + 1, rows + top + 1))
+    corridor = pixels.buffer(max(tolerance, 0.0) * _CIRCUMSCRIBE, quad_segs=_BUFFER_SEGMENTS)
+    floor = min(len(xs), max(2, round(0.05 * len(xs))))
+    viable = 0
+    for piece in _polygons(traced.intersection(corridor)):
+        if piece.area > MIN_PIECE_AREA \
+                and int(shapely.contains_xy(piece, xs + 0.5, ys + 0.5).sum()) >= floor:
+            viable += 1
+    return viable
 
 
 def evidence_check(labels: np.ndarray, palette_hex: list[str], traced_by_fill: dict,
@@ -1514,11 +2029,15 @@ def evidence_check(labels: np.ndarray, palette_hex: list[str], traced_by_fill: d
             missing.append({"label": region["label"], "pixels": region["pixels"],
                             "pixel": region["pixel"]})
     lost = {(row["label"], tuple(row["pixel"])) for row in missing}
-    thin = thin_regions(labels, palette_hex, traced_by_fill, exempt)
+    thin = thin_regions(labels, palette_hex, traced_by_fill, exempt, tolerance)
     misplaced = [row for row in thin
                  if row["recall"] < THIN_RECALL and (row["label"], tuple(row["pixel"])) not in lost]
+    judged = lost | {(row["label"], tuple(row["pixel"])) for row in misplaced}
+    severed = [row for row in thin
+               if row["pieces"] != 1 and (row["label"], tuple(row["pixel"])) not in judged]
     return {"tolerance_px": tolerance, "regions": len(regions), "missing_regions": missing,
             "thin_regions": len(thin), "misplaced_thin_regions": misplaced,
+            "severed_thin_regions": severed,
             "colours": colours, "present_labels": sorted(int(k) for k in geometry),
             "distance": evidence_distance(geometry, palette_hex, traced_rings_by_fill,
                                           tolerance, width, height)}
@@ -1546,18 +2065,16 @@ def _same_region(first, second, tolerance: float) -> bool:
 
 def topology_colour_verdict(traced_geometry, truth_row: dict, bounds: "CaseBounds") -> dict:
     """One colour's ``topology`` verdict for ``traced_geometry`` against the
-    truth's row (``_topology_row``): each asserted count within its range over the
-    band widths; each isolated true structure matching exactly one traced structure
-    of its kind within the topology tolerance; and no traced structure whose rings
+    truth's row (``_topology_row``): each count within its range over the band
+    widths; each isolated true structure matching exactly one traced structure of
+    its kind within the topology tolerance; and no traced structure whose rings
     clear the removed region by ``3 D`` plus that tolerance (so its true
     counterpart would be isolated) left unmatched. ``error`` sums how far each
-    asserted count lies outside its range, the unmatched isolated structures and
-    the unexpected traced ones."""
+    count lies outside its range, the unmatched isolated structures and the
+    unexpected traced ones."""
     traced = _local_topology(traced_geometry, bounds.topology_removed, bounds.topology_far)
     error = 0
     for name in ("polygons", "holes"):
-        if not truth_row["asserted"][name]:
-            continue
         low, high = truth_row[f"{name}_range"]
         error += max(0, low - traced[name], traced[name] - high)
     mine = _structures(traced_geometry)
@@ -1581,43 +2098,141 @@ def topology_colour_verdict(traced_geometry, truth_row: dict, bounds: "CaseBound
 
     return {"traced": traced, "truth": {name: truth_row[name] for name in ("polygons", "holes")},
             "ranges": {name: truth_row[f"{name}_range"] for name in ("polygons", "holes")},
-            "asserted": dict(truth_row["asserted"]), "isolated": len(truth_row["isolated"]),
+            "decides": {name: dict(value) for name, value in truth_row["decides"].items()},
+            "isolated": len(truth_row["isolated"]),
             "missing": located(missing), "unexpected": located(unexpected), "error": error}
 
 
+# The added structures of ``topology_mutations``: discs of this many D in radius,
+# kept this many D (plus the opening margin) clear of every boundary and band they
+# must not touch.
+_ADDED_RADIUS = 0.3
+_ADDED_MARGIN = 0.05
+_KIND_COUNT = {"piece": "polygons", "hole": "holes"}
+
+
+def _added_discs(room, count: int, radius: float, margin: float) -> list:
+    """Up to ``count`` disjoint discs of ``radius`` centred in ``room`` (already
+    shrunk so each disc keeps its margins), each ``margin`` clear of the others."""
+    discs = []
+    while len(discs) < count and room is not None and not room.is_empty \
+            and room.area > MIN_PIECE_AREA:
+        centre = room.representative_point()
+        discs.append(centre.buffer(radius, quad_segs=_BUFFER_SEGMENTS))
+        room = room.difference(centre.buffer(2 * radius + margin, quad_segs=_BUFFER_SEGMENTS))
+    return discs
+
+
 def topology_mutations(bounds: "CaseBounds") -> list[dict]:
-    """The topology assertion judged, per colour, on the truth as its own trace
-    (``"truth"``, which must pass) and on every single deletion it claims to
-    catch (each must fail): every isolated structure, and every structure whose
-    deletion changes an asserted count at the traced band (a hole filled with the
-    colour, a piece dropped)."""
+    """The topology assertion judged per colour on the truth as its own trace and
+    on the changes the truth decides. Each row is ``{"colour", "mutation",
+    "expect", "error"}`` (``expect`` "pass" for the truth, "fail" for a change) or
+    ``{"colour", "mutation", "skip"}``, a change the truth cannot decide, with why:
+
+    - deletions: every isolated structure; every structure a count counts where
+      that count decides one deletion (its traced count is its range's minimum);
+      where it does not, that is reported and the smallest deletion leaving the
+      range (``count - minimum + 1`` counted structures at once) is tried;
+    - additions (discs ``_ADDED_RADIUS D`` in radius wholly beyond the traced
+      band: holes in the colour, or pieces of it inside the other colours): one
+      at an isolated place; near the removed region, one where the count decides
+      one addition (its traced count is its range's maximum), otherwise that is
+      reported and the smallest addition leaving the range (``maximum - count +
+      1`` discs) is tried. A change with no room for it on the canvas is reported,
+      never passed."""
     rows = []
+    bound = bounds.bound
+    radius = _ADDED_RADIUS * bound
+    margin = _ADDED_MARGIN * bound + _OPENING_MARGIN
+    canvas = box(0, 0, bounds.width, bounds.height)
+    far, isolation = bounds.topology_far, bounds.topology_isolation
+    removed = bounds.topology_removed
+
+    def judged(colour, text, mutated, truth_row):
+        verdict = topology_colour_verdict(mutated, truth_row, bounds)
+        return {"colour": colour, "mutation": text, "expect": "fail", "error": verdict["error"]}
+
     for colour, truth_row in sorted(bounds.topology_truth.items()):
         geometry = bounds.truth.colour_geometry[int(colour)]
         verdict = topology_colour_verdict(geometry, truth_row, bounds)
-        rows.append({"colour": colour, "mutation": "truth", "error": verdict["error"]})
+        rows.append({"colour": colour, "mutation": "truth", "expect": "pass",
+                     "error": verdict["error"]})
         isolated = {(row["kind"], round(row["point"].x, 6), round(row["point"].y, 6))
                     for row in truth_row["isolated"]}
         pieces = [p for p in _polygons(geometry) if p.area > MIN_PIECE_AREA]
+        counted = {"polygons": [], "holes": []}
         for structure in _structures(geometry):
             if structure["kind"] == "hole":
-                mutated = geometry.union(structure["region"])
+                region = structure["region"]
+                mutated = geometry.union(region)
             else:
-                piece = next(p for p in pieces
-                             if p.representative_point().equals(structure["point"]))
-                mutated = geometry.difference(piece)
+                region = next(p for p in pieces
+                              if p.representative_point().equals(structure["point"]))
+                mutated = geometry.difference(region)
+            name = _KIND_COUNT[structure["kind"]]
+            fewer = _local_topology(mutated, removed, far)[name] < truth_row[name]
+            if fewer:
+                counted[name].append(region)
             key = (structure["kind"], round(structure["point"].x, 6),
                    round(structure["point"].y, 6))
-            counts = _local_topology(mutated, bounds.topology_removed, bounds.topology_far)
-            changes = any(truth_row["asserted"][name] and counts[name] != truth_row[name]
-                          for name in ("polygons", "holes"))
-            if key not in isolated and not changes:
-                continue
-            verdict = topology_colour_verdict(mutated, truth_row, bounds)
-            rows.append({"colour": colour,
-                         "mutation": f"delete the {structure['kind']} at "
-                                     f"({structure['point'].x:.2f}, {structure['point'].y:.2f})",
-                         "error": verdict["error"]})
+            if key in isolated or (fewer and truth_row["decides"][name]["deletion"]):
+                rows.append(judged(colour, f"delete the {structure['kind']} at "
+                                           f"({structure['point'].x:.2f}, "
+                                           f"{structure['point'].y:.2f})", mutated, truth_row))
+
+        for name, kind in (("polygons", "piece"), ("holes", "hole")):
+            low, high = truth_row[f"{name}_range"]
+            count = truth_row[name]
+            label = f"{kind}s"
+            if count and not truth_row["decides"][name]["deletion"]:
+                needed = count - low + 1
+                rows.append({"colour": colour, "mutation": f"delete one counted {kind}",
+                             "skip": f"{label} count {count}, range [{low}, {high}] over the "
+                                     "band widths: one deletion near the band edge is "
+                                     f"undecidable; {needed} at once are tried"})
+                text = f"delete {needed} counted {label} at once"
+                if len(counted[name]) >= needed:
+                    chosen = unary_union(counted[name][:needed])
+                    mutated = (geometry.union(chosen) if kind == "hole"
+                               else geometry.difference(chosen))
+                    rows.append(judged(colour, text, mutated, truth_row))
+                else:
+                    rows.append({"colour": colour, "mutation": text,
+                                 "skip": f"only {len(counted[name])} {label} are counted"})
+            if kind == "hole":
+                host = geometry
+            else:
+                host = canvas.difference(_buffer(geometry, radius + margin))
+            host = host.buffer(-(radius + margin), quad_segs=_BUFFER_SEGMENTS)
+            if far is not None:
+                host = host.difference(_buffer(far, radius + margin))
+            places = [("isolated", host if isolation is None
+                       else host.difference(_buffer(isolation, radius + margin)))]
+            if isolation is not None:
+                places.append(("near the removed region", host.intersection(isolation)))
+            for place, room in places:
+                decided = place == "isolated" or truth_row["decides"][name]["addition"]
+                needed = 1 if decided else high - count + 1
+                where = "at an isolated place" if place == "isolated" else place
+                if not decided:
+                    rows.append({"colour": colour, "mutation": f"add one {kind} {where}",
+                                 "skip": f"{label} count {count}, range [{low}, {high}] over "
+                                         "the band widths: one addition near the band edge "
+                                         f"is undecidable; {needed} at once are tried"})
+                text = f"add {needed} {label if needed > 1 else kind} {where}"
+                discs = _added_discs(room, needed, radius, margin)
+                if len(discs) < needed:
+                    rows.append({"colour": colour, "mutation": text,
+                                 "skip": f"no room for {needed} added {label} {where} beyond "
+                                         "the traced band"})
+                    continue
+                added = unary_union(discs)
+                mutated = geometry.difference(added) if kind == "hole" else geometry.union(added)
+                changed = _local_topology(mutated, removed, far)[name]
+                if changed != count + needed:
+                    raise ArithmeticError(f"colour {colour}: adding {needed} {label} {where} "
+                                          f"counts {changed}, not {count + needed}")
+                rows.append(judged(colour, text, mutated, truth_row))
     return rows
 
 
@@ -1690,8 +2305,9 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     for (x, y), zoned in zip(cusp_points, in_zone):
         near_corner = any(math.hypot(x - c["point"][0], y - c["point"][1]) <= c["radius_px"]
                           for c in anchored)
-        turn = round_turn_near(bounds.rings, (x, y), bounds.round_radius,
-                               math.sqrt(2.0) * Q_PX)
+        turn = round_turn_near(bounds.rings, (x, y), bounds.allowance, bounds.threshold,
+                               bounds.corner_reach,
+                               [corner["point"] for corner in bounds.corners])
         cusps.append({"point": [float(x), float(y)], "near_corner": near_corner,
                       "in_zone": bool(zoned), "truth_turn_deg": turn,
                       "kink": not near_corner and not zoned and turn < bounds.threshold})
@@ -1702,7 +2318,8 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
 
     # Topology outside the discs and zones, every colour of the truth or the trace.
     absent = {"polygons": 0, "holes": 0, "polygons_range": [0, 0], "holes_range": [0, 0],
-              "asserted": {"polygons": True, "holes": True}, "isolated": []}
+              "decides": {name: {"deletion": True, "addition": True}
+                          for name in ("polygons", "holes")}, "isolated": []}
     topology = {}
     for index in sorted(set(truth.colour_geometry) | set(traced_by_colour)):
         if index in bounds.zoned:
@@ -1831,6 +2448,9 @@ def _evidence_problems(result: dict) -> tuple[list[str], float]:
                  f"traced layer covers {100 * row['recall']:.0f}% of its pixel centres "
                  f"(< {100 * THIN_RECALL:.0f}%)"
                  for row in evidence["misplaced_thin_regions"][:6]]
+    problems += [f"thin label {row['label']} region of {row['pixels']} px at {row['pixel']}: "
+                 f"{row['pieces']} traced pieces cover it, not one"
+                 for row in evidence["severed_thin_regions"][:6]]
     problems += [f"colour {colour} folded into {target}, not {replay} as the usage cutoff "
                  f"replay folds it, and is at least D wide"
                  for colour, target, replay in evidence["fold_target_mismatches"]]
@@ -1863,9 +2483,9 @@ def check(name: str, result: dict, case) -> tuple[bool, str]:
     if name == "nodes":
         limit = result["node_limit"]
         count = result["nodes_outside_zones"]
-        return count <= limit, (f"{count} boundary nodes outside the zones (limit {limit}: "
-                                f"{result['ideal_nodes']} ideal, with the axis extremes and "
-                                f"zone cuts the fitter's route may add)")
+        return count <= limit, (f"{count} boundary nodes outside the zones (limit {limit}, "
+                                f"the explicit route through the axis extremes; "
+                                f"{result['ideal_nodes']} ideal)")
     if name == "topology":
         wrong = {colour: row for colour, row in result["topology"].items() if row["error"]}
         unmatched = [row["fill"] for row in result["unmatched_layers"]]
@@ -1873,8 +2493,7 @@ def check(name: str, result: dict, case) -> tuple[bool, str]:
             return ", ".join(f"{kind} at ({x:.1f}, {y:.1f})" for kind, x, y in rows[:4])
 
         return not wrong and not unmatched, "; ".join(
-            [f"colour {colour}: traced {row['traced']}, truth ranges {row['ranges']} "
-             f"(asserted {[n for n, a in row['asserted'].items() if a]})"
+            [f"colour {colour}: traced {row['traced']}, truth ranges {row['ranges']}"
              + (f", isolated true {located(row['missing'])} unmatched" if row["missing"]
                 else "")
              + (f", traced {located(row['unexpected'])} matching no isolated truth"
@@ -1950,7 +2569,8 @@ MEASUREMENTS = {
     "topology": ("wrong_colours", "count_error", "unmatched_layers"),
     "area": ("colours_over", "excess_px2"),
     "evidence": ("missing_regions", "missing_pixels", "colours_over", "excess_px2",
-                 "absent_scene_colours", "misplaced_thin_regions", "fold_target_mismatches"),
+                 "absent_scene_colours", "misplaced_thin_regions", "severed_thin_regions",
+                 "fold_target_mismatches"),
     "palette": ("problems",),
 }
 # The identities of what each assertion finds wrong (``identities``): what an
@@ -1966,7 +2586,7 @@ IDENTITIES = {
                  "unmatched_layers"),
     "area": ("colours_over",),
     "evidence": ("missing_regions", "colours_over", "absent_scene_colours",
-                 "misplaced_thin_regions", "fold_target_mismatches"),
+                 "misplaced_thin_regions", "severed_thin_regions", "fold_target_mismatches"),
     "palette": ("problems",),
 }
 # Numbers in an identity item match within this: its positions are node and
@@ -2026,6 +2646,7 @@ def measurements(name: str, result: dict, case) -> dict[str, float]:
                                     for row in over),
                   "absent_scene_colours": len(evidence["absent_scene_colours"]),
                   "misplaced_thin_regions": len(evidence["misplaced_thin_regions"]),
+                  "severed_thin_regions": len(evidence["severed_thin_regions"]),
                   "fold_target_mismatches": len(evidence["fold_target_mismatches"])}
     elif name == "palette":
         values = {"problems": len(_palette_problems(case, result))}
@@ -2075,6 +2696,9 @@ def identities(name: str, result: dict, case) -> dict[str, list[list]]:
                                            for index in evidence["absent_scene_colours"]],
                   "misplaced_thin_regions": [[row["label"], *row["pixel"], row["pixels"]]
                                              for row in evidence["misplaced_thin_regions"]],
+                  "severed_thin_regions": [[row["label"], *row["pixel"], row["pixels"],
+                                            row["pieces"]]
+                                           for row in evidence["severed_thin_regions"]],
                   "fold_target_mismatches": [list(row)
                                              for row in evidence["fold_target_mismatches"]]}
     elif name == "palette":
@@ -2210,6 +2834,7 @@ def summary_numbers(result: dict) -> dict:
         "evidence_missing_regions": len(evidence["missing_regions"]),
         "thin_regions": evidence["thin_regions"],
         "misplaced_thin_regions": len(evidence["misplaced_thin_regions"]),
+        "severed_thin_regions": len(evidence["severed_thin_regions"]),
         "required_scene_colours": len(evidence["required_scene_colours"]),
         "absent_scene_colours": len(evidence["absent_scene_colours"]),
         "fold_target_mismatches": len(evidence["fold_target_mismatches"]),

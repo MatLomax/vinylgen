@@ -38,7 +38,7 @@ assertion's truth-distance bound and ``e`` its evidence-distance bound::
                                            the ``topology`` assertion
     v = evidence regions without traced area / evidence regions
         + scene colours missing from the palette / colours required to survive
-        + thin evidence regions their layer misplaces / thin evidence regions
+        + thin evidence regions their layer misplaces or severs / thin evidence regions
         + 1 if a fold at least D wide went to another colour than the replay's
                                            the ``evidence`` assertion's counts
     s = 1 if the edge or overlap SVG failed the trace stage's structural validation
@@ -60,10 +60,9 @@ than capped linearly: a staircase trace has tens of kinks per ideal node, and a
 linear cap would make every such trace score the same, leaving the search no
 slope to follow; one kink on a four-node disc costs 0.32, a kink at every
 staircase step of a small disc (about 40 per ideal node) about 5.4. A cusp on a
-round tight enough for the trace to sharpen (radius up to
-``bounds.SHARPENING_RADIUS_FACTOR`` times the sharpening allowance plus
-``(1 + sqrt 2) Q``, the ``kinks`` assertion's ``round_radius``)
-is no kink, as in the regression assertion; every larger round keeps the slope.
+round tight enough for the trace to sharpen (``bounds.sharpenable_radius`` of its
+turn, as the ``kinks`` assertion judges it) is no kink, as in the regression
+assertion; every larger round keeps the slope.
 A topology error, a dropped region or colour, or an invalid SVG is structural,
 so each costs up to 4 per case (2 for one wrong colour of two), more than any
 single distance term at its budget: dropping a thin region the raster carries
@@ -76,10 +75,11 @@ term at its maximum.
 
 Node economy: ``N`` is the geometric mean over cases of ``max(1, boundary nodes
 outside the zones / ideal nodes outside the zones)``: the count the ``nodes``
-assertion bounds, over the ideal count its limit builds on (cases with no ideal
-node outside the zones are left out). The limit itself adds the axis extremes and
-zone cuts the fitter's own route may need; those are the fitter's preferences,
-not the truth's, so the economy measures against the ideal. The ideal count is
+assertion bounds, over the ideal count (cases with no ideal node outside the
+zones are left out). The limit is an explicit route through the axis extremes,
+with the splits its cubics need to stay within the fitter's tolerance less ``Q``
+and the zone cuts; those follow the fitter's candidates and tolerance, not the
+truth alone, so the economy measures against the ideal. The ideal count is
 already the fewest nodes that represent the truth exactly, so fewer earns no
 credit: the error terms judge what the missing nodes cost. The scalar objective
 at node weight ``w`` is ``J = E + w * log2(N)``: doubling the node excess costs
@@ -167,7 +167,8 @@ def error_terms(row: dict) -> dict:
                              / max(1, s["colours"])),
              "evidence": (s["evidence_missing_regions"] / max(1, s["evidence_regions"])
                           + s["absent_scene_colours"] / max(1, s["required_scene_colours"])
-                          + s["misplaced_thin_regions"] / max(1, s["thin_regions"])
+                          + (s["misplaced_thin_regions"] + s["severed_thin_regions"])
+                          / max(1, s["thin_regions"])
                           + min(1, s["fold_target_mismatches"])),
              "structural": 1.0 if s.get("structural_failures") else 0.0,
              "hausdorff": evidence}

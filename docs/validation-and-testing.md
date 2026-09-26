@@ -84,29 +84,66 @@ mismatch. The assertions:
   branches (about `D` at a nearly straight corner, growing only at a sharp tip,
   capped by where tangent branches separate and by the side lengths);
 - no kinks: a cusp away from the vertices and zones is allowed only on a round
-  the trace may sharpen, one of radius at most `2.41 (A + (1 + √2) Q)` (2.71
-  sharpening radii at `A` = 1 px), with the cusp within the round's radius plus
-  `√2 Q` of it; a cusp on a larger round, a circle included, is a kink. The fixed
-  set's rounded rectangles at 3 and 4 sharpening radii must therefore stay round;
-- boundary nodes outside the zones at most the node limit: the ideal
-  segmentation's vertex nodes whose traced node can lie outside the zones, plus
-  on each part of an ideal run outside them the larger of its ideal interior
-  nodes and its axis extremes, plus one node per part end a zone cuts. The
-  fitter takes the fewest pieces over candidates that include every axis
-  extreme, and the ideal pieces split at the extremes are such a route (each
-  within the curve tolerance of the samples), so a count above the limit is a
-  route that is not minimal over the fitter's own candidates;
+  the trace may sharpen: a stretch turning one way by at least the corner
+  threshold, holding no true vertex, whose radius is at most
+  `(A + (1 + sec(T/2)) Q) / (sec(T/2) - 1)` for its full turn `T` (its sharp
+  point within the allowance of its sample, the move check, seen through `Q`),
+  with the cusp within `A + Q` plus the round's own depth of its sharp point. At
+  `A` = 1 px that radius is 16.3 px at 60°, 6.54 px at 90° (2.71 sharpening
+  radii), 3.12 px at 120° and 1.55 px at 150°. The full turn is the truth's net
+  turn over the stretch extended by the corner detector's reach on each side,
+  what the detector reads there, so a piece of a longer round, or of a circle,
+  is judged by the whole round and a cusp on it is a kink. The fixed set's
+  rounded rectangles at 3 and 4 sharpening radii must therefore stay round. On
+  rasterised filleted wedges (512 and 256 px, ten placements each, 2026-09-26)
+  the trace puts no cusp on a 90° or 99° round of 0.9 to 1.5 times this radius,
+  but does on some 120° to 165° rounds of 1.1 to 1.5 times it (up to 6 of 10
+  placements at 165°), which the rule calls kinks: the design sharpens only
+  within the allowance;
+- boundary nodes outside the zones at most the node limit: every node the
+  trace stage must anchor in the label map it received (a pixel corner where
+  three or more colours meet or two meet corner to corner, a frame point between
+  two colours: a many-colour junction splits into several), the ideal
+  segmentation's corners and the junctions and edge points no such anchor stands
+  for, whose traced node can lie outside the zones (two at a corner-to-corner
+  contact with no anchor, which the raster bridges or parts), plus on each part of an ideal run outside them the nodes of an explicit route (its
+  axis extremes, and where one cubic cannot draw the truth between two of them
+  within the span's budget, the fewest greedy splits that can), plus one node
+  per part end a zone cuts. The budget is the fitter's curve tolerance less the
+  farthest the span's pixel-edge samples of the hard-edged render lie from the
+  truth (at least √2/2 px; more where the truth curves tightly), so every sample
+  lies within the tolerance of the route's curves. The count is derived; it is a
+  geometric requirement on the trace, not a claim that the fitter's search finds
+  that route (its nodes sit on samples, its candidates are the smoothed samples'
+  extremes, inflections and bends, and it measures a sample's error at the
+  sample's own parameter). The ideal segmentation's 90° pieces are not such a
+  route: between the axis extremes of a rotated 8:1 ellipse a span sweeps 155°
+  of its parameter and one cubic misses the truth by 7 px, so
+  `ellipse-a8-rot17-1536`'s limit is 6, not 4. On the actual samples of the
+  single-ring disc and ellipse cases, a route with the limit's node count fits
+  every sample within the tolerance (worst 0.998 px of 1.152 px, on
+  `disc-off0.5-1536`, 2026-09-26);
 - truth topology per colour, compared beyond a band round the discs and zones.
-  A polygon or hole count is asserted, to lie within its range over the band
-  widths from `D` to `3D` (sampled every `D/4`), only where the count at the
-  trace's band is the range's minimum, so deleting any one structure it counts
-  fails it; a count whose range reaches below that cannot decide a single
-  deletion and is not asserted. Every true piece or hole whose rings stay `3D`
-  clear of the discs and zones must match exactly one traced piece or hole by
-  location (each within `max(D, e)` of the other), and no traced piece or hole
-  clear of them by `3D` plus that tolerance may be left unmatched. A per-case
-  test checks that the truth itself passes and that every single deletion the
-  assertion claims to catch fails it;
+  Every polygon and hole count of every colour is asserted to lie within its
+  range over the band widths from `D` to `3D` (sampled every `D/4`), so added
+  structures beyond the range's maximum and deletions below its minimum fail.
+  One deletion is decided where the trace's band count is the range's minimum,
+  one addition where it is the maximum; elsewhere a single change near the band
+  edge cannot be told from the band's own effect. Every true piece or hole whose
+  rings stay `3D` clear of the discs and zones must match exactly one traced
+  piece or hole by location (each within `max(D, e)` of the other), and no
+  traced piece or hole clear of them by `3D` plus that tolerance may be left
+  unmatched, so an isolated addition fails whatever the counts. A per-case test
+  checks that the truth itself passes and that every change the truth decides
+  fails: each isolated structure deleted, each counted structure deleted where
+  its count decides one deletion, an isolated addition, an addition near the
+  removed region where its count decides one, and otherwise the smallest
+  multiple deletion or addition that leaves the range. Each single change a
+  count cannot decide is a skipped subtest naming why. Over the corpus's 1,452
+  (run, colour, count) pairs, one deletion is decided for 1,426 and one addition
+  for 1,414; the review's added-structure mutant (a hole or piece added between
+  `2.3D` and `2.7D` from the removed region) fails all 1,145 pairs that decide
+  an addition and have room for it (2026-09-26);
 - per colour, a symmetric difference with the truth within the area of its
   `D`-tube, asserted only where that area is below the colour's own, so a trace
   that drops it fails;
@@ -116,9 +153,13 @@ mismatch. The assertions:
   matches its pixels within the tube its tolerance allows; every thin region
   (most of its pixels in no 2 x 2 block of its own) outside the vertex discs has
   at least 60% of those thin pixels' centres covered by its traced layer, since
-  `e` is wider than a
-  one-pixel feature and would let one move a full width off its pixels; in the
-  RGB tier every scene colour the area check cannot hold must survive the
+  `e` is wider than a one-pixel feature and would let one move a full width off
+  its pixels, and is covered by exactly one connected piece of that layer within
+  `e` of its pixels (a piece counting when it covers at least `max(2, 5%)` of
+  those centres, the trace stage's own `viable_pieces == 1` for a protected
+  component), so a thin feature cut by a gap fails however little area the gap
+  takes (a 1 px bar cut by a 1, 2, 3, 20 or 100 px gap fails it, 2026-09-26);
+  in the RGB tier every scene colour the area check cannot hold must survive the
   palette stage unless it removes it by design, and a folded colour at least `D`
   wide must fold into the colour the usage-cutoff replay on the true areas
   gives (a narrower one's target moves boundaries by less than `D`, and is
@@ -157,11 +198,16 @@ ideal node count and the node limit built on it. The rest are not, and
   holds (2026-09-26), the farthest traced point from the truth is 0.83 `D`
   (`labels/ring-nested-512`, 1.45 px) and from the evidence 0.68 `e`
   (`labels/rrect-x0.8-rot0-1536`, 1.41 px).
-- The node limit's one node per run part a zone cuts is an allowance for the
-  boundary passing into geometry the ideal segmentation does not describe.
-- The thin-region pin's 60% is the trace stage's own post-fit pixel-recall
-  threshold for a protected component, not a derivation: the fitter's max
-  deviation lets a feature no wider than it move wholly off its pixels.
+- The node limit is a geometric requirement: that a route with its node count
+  exists is derived, that the fitter's search finds it is not. Its one node per
+  run part a zone cuts is an allowance for the boundary passing into geometry
+  the ideal segmentation does not describe.
+- The sharpenable radius's tip skip is the trace stage's own setting
+  (`curve_fit._TIP_SKIP_ALLOWANCES`), read as it is.
+- The thin-region pin's 60% and its one-piece companion are the trace stage's
+  own post-fit thresholds for a protected component (pixel recall and
+  `viable_pieces == 1`), not a derivation: the fitter's max deviation lets a
+  feature no wider than it move wholly off its pixels or break.
 - The topology bands sample the widths from `D` to `3D` every `D/4` rather than
   searching them continuously.
 - Which colours the palette stage folds, and into what, is read from the run;
@@ -170,15 +216,24 @@ ideal node count and the node limit built on it. The rest are not, and
 - The palette matching threshold (`harness.MATCH_DELTA_E`, 12 ΔE) is chosen.
 
 An assertion that fails against today's tracer is listed in
-`tests/synthetic/expected-failures.json` under the worklog task that tracks its
-cause, with the measurements the assertion compares against its bound (for
+`tests/synthetic/expected-failures.json` with its attribution, the measurements the assertion compares against its bound (for
 example the boundary distances and the length beyond them, the missed-vertex,
 kink, node and missing-region counts, and the excess areas; `bounds.MEASUREMENTS`
 lists them) and the identities of what it found wrong (the worst points, the
 missed vertices, the kink points, the node positions outside the zones, the
 wrong per-colour counts and unmatched structures, the missing and misplaced
 regions, the colours over their area bound; `bounds.IDENTITIES` lists them), one
-item per line. It runs as an expected failure only while it still fails, every
+item per line. The attribution names the worklog tasks whose fixes the failure
+needs, all of them, and the counterfactual that clears it: proxies
+(`regression.COUNTERFACTUALS`), each re-tracing the case's own trace-stage input
+with one task's mechanism removed (for example the pixel-era length floors, a
+1.5 px curve tolerance, the corner move check disabled, junction pixels
+relabelled from the hard-edged render, or hard label costs), which applied
+together make the assertion pass, while leaving out any one of them does not.
+The proxies' tasks are exactly the entry's tasks. A failure that no combination
+of the proxies clears names a single `synthetic-finding-` placeholder for its
+pinned cause and no counterfactual, and the table test rejects it until a
+worklog task tracks that cause. It runs as an expected failure only while it still fails, every
 measurement equals the recorded one, and the identities are the recorded set: a
 count may not change at all, a length or area by at most 0.001 px or 0.01 px²,
 and an identity item's coordinates by at most 0.001 px. The pipeline is
@@ -195,13 +250,16 @@ Any other exception while checking it is an error. Re-record with:
 ```
 
 It traces the corpus, updates every entry's measurements and identities, and
-removes entries that now pass; `--task TIER/CASE:ASSERTION=SLUG` adds an entry
-for a new failure, and `--retask TIER/CASE:ASSERTION=SLUG` moves an existing entry
-to another task without tracing, for a re-attributed cause. It writes all or nothing: while any failure has no entry, a
+removes entries that now pass. `--task TIER/CASE:ASSERTION=ATTRIBUTION` adds an
+entry for a new failure, and `--retask TIER/CASE:ASSERTION=ATTRIBUTION` gives an
+existing entry another attribution without tracing, for a re-attributed cause;
+an attribution is `SLUG[,SLUG...]@PROXY[+PROXY...]`, or a lone placeholder slug.
+It writes all or nothing: while any failure has no entry, a
 record is worse than the table's without `--allow-worse`, a case raises, or an
 orphan entry (a case the suite does not trace, or an assertion it does not make
 or that has nothing to hold) is kept without `--remove-orphans`, it reports
 everything and writes nothing. The table test checks each entry's form,
+attribution (the counterfactual's proxies stand for exactly its tasks),
 measurements and identities and rejects `synthetic-finding-` placeholder slugs;
 worklog is not available to the tests, so that a slug names a real task is
 checked by hand.

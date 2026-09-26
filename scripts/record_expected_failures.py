@@ -11,17 +11,25 @@ selection to matching ``tier/case_id`` keys) exactly as
   regression and is refused unless ``--allow-worse`` is given. An entry whose
   record lacks a measurement or identity kind the assertion now has is recorded
   afresh, the kinds it shares with the new record still compared;
-- without one, it is unrecorded; ``--task KEY:ASSERTION=SLUG`` (repeatable) adds
-  the entry under that worklog task and records it.
+- without one, it is unrecorded; ``--task KEY:ASSERTION=ATTRIBUTION`` (repeatable)
+  adds the entry with that attribution and records it.
+
+An ATTRIBUTION is ``SLUG[,SLUG...]@COUNTERFACTUAL``: the worklog tasks whose fixes
+the failure needs, all of them, and the proxies (``regression.COUNTERFACTUALS``,
+joined by ``+``) that together clear it, whose tasks must be exactly those slugs;
+or a single placeholder slug (``regression.PLACEHOLDER_SLUG_PREFIX``) with no
+counterfactual, for a failure no combination of the proxies clears.
 
 An entry whose assertion now passes is removed (the tests would report it as an
 unexpected success). An orphan entry, one naming a (tier, case) the suite does
 not trace, an assertion that case does not make or one with nothing to hold, is
 refused unless ``--remove-orphans`` is given, which removes it.
 
-``--retask KEY:ASSERTION=SLUG`` (repeatable) moves existing entries to another
-worklog task without tracing, measurements and identities unchanged, for when a
-cause is re-attributed.
+``--retask KEY:ASSERTION=ATTRIBUTION`` (repeatable) gives existing entries another
+attribution without tracing, measurements and identities unchanged, for when a
+cause is re-attributed. An entry still in the older ``{"task": slug}`` form is read
+as that single task with no counterfactual, which only a retask or a placeholder
+leaves well formed.
 
 All or nothing: the table is written only when nothing was refused, no traced
 case raised, and every failing assertion is recorded; otherwise every finding is
@@ -57,14 +65,39 @@ def _job(index: int) -> tuple[str, dict]:
         return key, {"error": traceback.format_exc()}
 
 
-def parse_tasks(values: list[str]) -> dict[tuple[str, str], str]:
+def parse_tasks(values: list[str]) -> dict[tuple[str, str], dict]:
+    """``KEY:ASSERTION=SLUG[,SLUG...][@COUNTERFACTUAL]`` values as ``{(key,
+    assertion): {"tasks", "counterfactual"}}``; an attribution
+    ``regression.attribution_problems`` rejects (other than a placeholder) is an
+    error."""
     tasks = {}
     for value in values:
-        match = re.fullmatch(r"(.+):([a-z]+)=([a-z0-9-]+)", value)
+        match = re.fullmatch(r"(.+):([a-z]+)=([a-z0-9,-]+)(?:@([a-z0-9.+-]+))?", value)
         if not match:
-            raise SystemExit(f"--task {value!r}: expected TIER/CASE:ASSERTION=SLUG")
-        tasks[(match.group(1), match.group(2))] = match.group(3)
+            raise SystemExit(f"--task {value!r}: expected "
+                             "TIER/CASE:ASSERTION=SLUG[,SLUG...][@COUNTERFACTUAL]")
+        attribution = {"tasks": match.group(3).split(","), "counterfactual": match.group(4)}
+        problems = [problem for problem in regression.attribution_problems(**attribution)
+                    if not problem.startswith("placeholder slug")]
+        if problems:
+            raise SystemExit(f"{value!r}: " + "; ".join(problems))
+        tasks[(match.group(1), match.group(2))] = attribution
     return tasks
+
+
+def normalised(entry) -> dict:
+    """A table entry in the current form: an older ``{"task": slug}`` (or bare slug)
+    entry becomes that single task with no counterfactual."""
+    entry = {"task": entry} if isinstance(entry, str) else dict(entry)
+    if "task" in entry:
+        entry["tasks"] = [entry.pop("task")]
+        entry.setdefault("counterfactual", None)
+    return entry
+
+
+def named(entry: dict) -> str:
+    return ",".join(entry["tasks"]) + (f"@{entry['counterfactual']}"
+                                       if entry.get("counterfactual") else "")
 
 
 def _fresh(name: str, entry: dict) -> bool:
@@ -73,7 +106,7 @@ def _fresh(name: str, entry: dict) -> bool:
             or set(entry.get("identities", {})) != set(bounds.IDENTITIES[name]))
 
 
-def reconcile(table: dict, results: dict, traced: dict, tasks: dict[tuple[str, str], str],
+def reconcile(table: dict, results: dict, traced: dict, tasks: dict[tuple[str, str], dict],
               allow_worse: bool = False, remove_orphans: bool = False) -> dict:
     """Bring ``table`` (changed in place) up to date with ``results`` (``_job``'s
     rows by ``tier/case_id`` key) for the traced runs ``traced`` (key to ``(tier,
@@ -105,31 +138,31 @@ def reconcile(table: dict, results: dict, traced: dict, tasks: dict[tuple[str, s
             entry = entries.get(name)
             if "skip" in verdict:
                 if entry is not None:
-                    orphans.append(f"{key} {name}: entry {entry['task']} for an assertion with "
+                    orphans.append(f"{key} {name}: entry {named(entry)} for an assertion with "
                                    f"nothing to hold ({verdict['skip']})")
                     if remove_orphans:
                         del entries[name]
                 continue
             if verdict["passed"]:
                 if entry is not None:
-                    changes.append(f"{key} {name}: now passes; entry {entry['task']} removed")
+                    changes.append(f"{key} {name}: now passes; entry {named(entry)} removed")
                     del entries[name]
                 continue
             measured, found = verdict["measured"], verdict["identities"]
             if entry is None:
-                slug = tasks.get((key, name))
-                if slug is None:
+                attribution = tasks.get((key, name))
+                if attribution is None:
                     unrecorded.append(f"{key} {name}: fails and has no entry: "
                                       f"{verdict['detail'][:300]}")
                     continue
-                entries[name] = {"task": slug, "measured": measured, "identities": found}
-                changes.append(f"{key} {name}: added under {slug}: {measured}")
+                entries[name] = {**attribution, "measured": measured, "identities": found}
+                changes.append(f"{key} {name}: added under {named(entries[name])}: {measured}")
                 continue
             if _fresh(name, entry):
                 shared = {k: v for k, v in entry.get("measured", {}).items() if k in measured}
                 worse, _ = bounds.ratchet(shared, {k: measured[k] for k in shared})
                 if worse and not allow_worse:
-                    refused.append(f"{key} {name} ({entry['task']}): worse than recorded: "
+                    refused.append(f"{key} {name} ({named(entry)}): worse than recorded: "
                                    + "; ".join(worse))
                     continue
                 entry["measured"], entry["identities"] = measured, found
@@ -138,7 +171,7 @@ def reconcile(table: dict, results: dict, traced: dict, tasks: dict[tuple[str, s
                 continue
             worse, better = bounds.entry_ratchet(entry, measured, found)
             if worse and not allow_worse:
-                refused.append(f"{key} {name} ({entry['task']}): worse than recorded: "
+                refused.append(f"{key} {name} ({named(entry)}): worse than recorded: "
                                + "; ".join(worse))
                 continue
             if worse or better:
@@ -152,19 +185,18 @@ def reconcile(table: dict, results: dict, traced: dict, tasks: dict[tuple[str, s
 
 
 def retask(moves: dict, dry_run: bool) -> int:
-    """Move each named entry to its new task; nothing is written if any is missing."""
-    table = regression.load_expected_failures()
+    """Give each named entry its new attribution; nothing is written if any is
+    missing."""
+    table = {key: {name: normalised(entry) for name, entry in entries.items()}
+             for key, entries in regression.load_expected_failures().items()}
     missing = []
-    for (key, name), slug in moves.items():
+    for (key, name), attribution in moves.items():
         entry = table.get(key, {}).get(name)
         if entry is None:
             missing.append(f"{key}:{name}")
-        elif isinstance(entry, str):
-            table[key][name] = slug
-        else:
-            entry["task"] = slug
-        if entry is not None:
-            print("RETASK", f"{key}:{name}", "->", slug)
+            continue
+        entry.update(attribution)
+        print("RETASK", f"{key}:{name}", "->", named(entry))
     if missing:
         print("nothing written: no entry for", ", ".join(missing))
         return 1
@@ -180,10 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-worse", action="store_true",
                         help="record measurements and identities worse than the recorded ones")
     parser.add_argument("--task", action="append", default=[],
-                        help="TIER/CASE:ASSERTION=SLUG: add an entry for a new failure")
+                        help="TIER/CASE:ASSERTION=SLUG[,SLUG...][@COUNTERFACTUAL]: add an "
+                             "entry for a new failure")
     parser.add_argument("--retask", action="append", default=[],
-                        help="TIER/CASE:ASSERTION=SLUG: move an existing entry to another task "
-                             "without tracing")
+                        help="TIER/CASE:ASSERTION=SLUG[,SLUG...][@COUNTERFACTUAL]: give an "
+                             "existing entry another attribution without tracing")
     parser.add_argument("--remove-orphans", action="store_true",
                         help="remove entries for a (tier, case) or assertion the suite does "
                              "not trace or assert")
@@ -194,10 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         return retask(parse_tasks(args.retask), args.dry_run)
     tasks = parse_tasks(args.task)
 
-    # An entry may name only its task (a slug string, or {"task": slug}) until
-    # it is first recorded.
-    table = {key: {name: ({"task": entry} if isinstance(entry, str) else dict(entry))
-                   for name, entry in entries.items()}
+    table = {key: {name: normalised(entry) for name, entry in entries.items()}
              for key, entries in regression.load_expected_failures().items()}
     runs = regression.all_runs()
     traced = {f"{tier}/{case.case_id}": (tier, case) for tier, case in runs}

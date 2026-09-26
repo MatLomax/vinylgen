@@ -103,16 +103,19 @@ python3 svg_trace.py outputs
 The regression suite's inputs are the synthetic ground-truth corpus under
 `tests/synthetic/` (see [Validation and testing](docs/validation-and-testing.md)).
 An assertion failing against today's tracer is an expected failure in
-`tests/synthetic/expected-failures.json` naming its worklog task and recording
-its failing measurements and the identities of what it found wrong (kink points,
+`tests/synthetic/expected-failures.json` naming the worklog tasks whose fixes it
+needs and the counterfactual proxies (`regression.COUNTERFACTUALS`) that
+together clear it, and recording its failing measurements and the identities of what it found wrong (kink points,
 missed vertices, node positions, missing regions, wrong per-colour counts). A
 measurement or identity set that gets worse or better fails the run, so fixing
 one defect while adding another of the same size fails too; re-record
 deliberately with `scripts/record_expected_failures.py` (all or nothing: it
 writes nothing while any failure is unrecorded, a record is worse without
 `--allow-worse`, or an orphan entry is kept without `--remove-orphans`), a
-re-attributed cause moves its entries with `--retask`, and a cause that is fixed
-has its passing entries removed.
+re-attributed cause moves its entries with `--retask` (an attribution is
+`SLUG[,SLUG...]@PROXY[+PROXY...]`; a failure no proxy combination clears names a
+`synthetic-finding-` placeholder, which the table test rejects until a task
+tracks it), and a cause that is fixed has its passing entries removed.
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold
 regions fold into a touching colour unless they are confident, coherent thin

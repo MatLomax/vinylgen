@@ -1,7 +1,8 @@
 {
  "labels/arc-128": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 9.0,
     "missing_pixels": 17.0,
@@ -9,6 +10,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 21.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -48,13 +50,15 @@
      [1, 105, 47, 7],
      [1, 107, 71, 5]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/arc-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 42.0
    },
@@ -108,7 +112,8 @@
  },
  "labels/arc-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 40.0
    },
@@ -160,7 +165,8 @@
  },
  "labels/arc-w1-px576": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 54.0,
     "missing_pixels": 165.0,
@@ -168,6 +174,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 71.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -302,13 +309,15 @@
      [1, 486, 319, 6],
      [1, 478, 352, 3]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/arc-w3-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -348,7 +357,8 @@
  },
  "labels/bar-ang10-128": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -356,6 +366,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 5.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -369,13 +380,15 @@
      [1, 74, 66, 6],
      [1, 91, 69, 6]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/bar-ang30-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -398,7 +411,8 @@
  },
  "labels/bar-w1-ang10-px576": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 39.0,
     "missing_pixels": 221.0,
@@ -406,6 +420,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 12.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -466,13 +481,15 @@
      [1, 366, 302, 6],
      [1, 480, 322, 5]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/bar-w2-ang30-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 12.0
    },
@@ -496,7 +513,8 @@
  },
  "labels/bar-w5-ang45-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 60.0
    },
@@ -568,7 +586,8 @@
  },
  "labels/corner-contact-rot0-ph0.5-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 8.0
    },
@@ -588,7 +607,8 @@
  },
  "labels/corner-contact-rot30-ph0.5-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -605,7 +625,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -635,7 +656,8 @@
  },
  "labels/crescent-rot0-128": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -647,7 +669,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -687,7 +710,8 @@
  },
  "labels/crescent-rot0-1536": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -699,7 +723,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 60.0
    },
@@ -771,7 +796,8 @@
  },
  "labels/crescent-rot20-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -782,7 +808,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 42.0
    },
@@ -836,7 +863,8 @@
  },
  "labels/d-rot0-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -859,7 +887,8 @@
  },
  "labels/d-rot0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 44.0
    },
@@ -915,7 +944,8 @@
  },
  "labels/d-rot20-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -927,7 +957,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 22.0
    },
@@ -961,7 +992,8 @@
  },
  "labels/disc-off0-128": {
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "kinks": 1.0
    },
@@ -972,7 +1004,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 20.0
    },
@@ -1004,7 +1037,8 @@
  },
  "labels/disc-off0.25-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 29.0
    },
@@ -1045,7 +1079,8 @@
  },
  "labels/disc-off0.5-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 57.0
    },
@@ -1114,7 +1149,8 @@
  },
  "labels/disc-r64-off0.25-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -1150,7 +1186,8 @@
  },
  "labels/ellipse-a1.5-rot0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 15.0
    },
@@ -1177,7 +1214,8 @@
  },
  "labels/ellipse-a1.5-rot45-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 39.0
    },
@@ -1228,7 +1266,8 @@
  },
  "labels/ellipse-a3-rot0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 53.0
    },
@@ -1293,7 +1332,8 @@
  },
  "labels/ellipse-a3-rot17-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 35.0
    },
@@ -1340,7 +1380,8 @@
  },
  "labels/ellipse-a8-rot17-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 77.0
    },
@@ -1429,7 +1470,8 @@
  },
  "labels/ellipse-a8-rot45-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -1451,7 +1493,8 @@
  },
  "labels/fuzz-blob-s1003-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 110.0
    },
@@ -1573,7 +1616,8 @@
  },
  "labels/fuzz-blob-s1007-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 25.0
    },
@@ -1610,7 +1654,8 @@
  },
  "labels/fuzz-blob-s1009-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -1640,7 +1685,8 @@
  },
  "labels/fuzz-blob-s1010-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -1679,7 +1725,8 @@
  },
  "labels/fuzz-blob-s1021-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 25.0
    },
@@ -1716,7 +1763,8 @@
  },
  "labels/fuzz-blob-s1031-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 78.0
    },
@@ -1806,7 +1854,8 @@
  },
  "labels/fuzz-blob-s1032-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 23.0
    },
@@ -1841,7 +1890,8 @@
  },
  "labels/fuzz-blob-s1036-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 31.0
    },
@@ -1884,7 +1934,8 @@
  },
  "labels/fuzz-blob-s1055-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 89.0
    },
@@ -1985,7 +2036,8 @@
  },
  "labels/fuzz-cornered-blob-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -1996,7 +2048,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 23.0
    },
@@ -2031,7 +2084,8 @@
  },
  "labels/fuzz-cornered-blob-s1004-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -2042,7 +2096,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 26.0
    },
@@ -2080,7 +2135,8 @@
  },
  "labels/fuzz-cornered-blob-s1013-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 22.0
    },
@@ -2114,7 +2170,8 @@
  },
  "labels/fuzz-cornered-blob-s1014-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 90.0
    },
@@ -2216,7 +2273,8 @@
  },
  "labels/fuzz-cornered-blob-s1021-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -2245,7 +2303,8 @@
  },
  "labels/fuzz-cornered-blob-s1024-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -2256,7 +2315,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 46.0
    },
@@ -2314,7 +2374,8 @@
  },
  "labels/fuzz-cornered-blob-s1029-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 55.0
    },
@@ -2381,7 +2442,8 @@
  },
  "labels/fuzz-cornered-blob-s1050-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 34.0
    },
@@ -2427,7 +2489,8 @@
  },
  "labels/fuzz-cornered-blob-s1053-1024": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -2438,7 +2501,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 78.0
    },
@@ -2528,7 +2592,8 @@
  },
  "labels/fuzz-layered-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -2542,7 +2607,8 @@
  },
  "labels/fuzz-layered-s1002-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 16.0
    },
@@ -2568,7 +2634,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 127.0
    },
@@ -2707,7 +2774,8 @@
  },
  "labels/fuzz-layered-s1005-1024": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -2721,7 +2789,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 165.0
    },
@@ -2898,7 +2967,8 @@
  },
  "labels/fuzz-layered-s1007-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -2917,7 +2987,8 @@
  },
  "labels/fuzz-layered-s1009-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -2929,7 +3000,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 31.0
    },
@@ -2972,7 +3044,8 @@
  },
  "labels/fuzz-layered-s1014-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -2985,7 +3058,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 192.0
    },
@@ -3189,7 +3263,8 @@
  },
  "labels/fuzz-layered-s1015-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 12.0
    },
@@ -3211,7 +3286,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -3219,6 +3295,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 1.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -3228,13 +3305,15 @@
     "misplaced_thin_regions": [
      [0, 281, 356, 1]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/fuzz-layered-s1017-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 14.0
    },
@@ -3260,7 +3339,8 @@
  },
  "labels/fuzz-layered-s1021-256": {
   "corners": {
-   "task": "detect-corners-whose-sides-curl-at-the-apex-which-the-raster",
+   "tasks": ["detect-corners-whose-sides-curl-at-the-apex-which-the-raster"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -3272,7 +3352,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 1.0,
     "missing_pixels": 9.0,
@@ -3280,6 +3361,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -3289,11 +3371,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "hausdorff": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 1.1395258010432612,
     "truth_length_beyond_px": 0.0,
@@ -3312,7 +3396,8 @@
  },
  "labels/fuzz-layered-s1023-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 11.0
    },
@@ -3333,7 +3418,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 1.0,
     "missing_pixels": 2.0,
@@ -3341,6 +3427,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -3350,11 +3437,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 321.0
    },
@@ -3687,7 +3776,8 @@
  },
  "labels/fuzz-layered-s1025-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 5.0
    },
@@ -3702,7 +3792,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -3710,6 +3801,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 1.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -3719,13 +3811,15 @@
     "misplaced_thin_regions": [
      [2, 88, 196, 2]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/fuzz-polygon-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -3738,7 +3832,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 23.0
    },
@@ -3773,7 +3868,8 @@
  },
  "labels/fuzz-polygon-s1006-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -3786,7 +3882,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -3825,7 +3922,8 @@
  },
  "labels/fuzz-polygon-s1009-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -3836,7 +3934,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 75.0
    },
@@ -3923,7 +4022,8 @@
  },
  "labels/fuzz-polygon-s1014-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -3937,7 +4037,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -3973,7 +4074,8 @@
  },
  "labels/fuzz-polygon-s1025-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -3987,7 +4089,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 26.0
    },
@@ -4025,7 +4128,8 @@
  },
  "labels/fuzz-polygon-s1026-1024": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -4037,7 +4141,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 172.0
    },
@@ -4221,7 +4326,8 @@
  },
  "labels/fuzz-polygon-s1031-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 8.0
    },
@@ -4239,7 +4345,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 35.0
    },
@@ -4286,7 +4393,8 @@
  },
  "labels/fuzz-polygon-s1033-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -4298,7 +4406,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 13.0
    },
@@ -4323,7 +4432,8 @@
  },
  "labels/fuzz-polygon-s1034-1024": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 8.0
    },
@@ -4341,7 +4451,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 153.0
    },
@@ -4506,7 +4617,8 @@
  },
  "labels/fuzz-polygon-s1053-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 12.0
    },
@@ -4528,7 +4640,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 60.0
    },
@@ -4600,7 +4713,8 @@
  },
  "labels/lens-rot0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -4626,7 +4740,8 @@
  },
  "labels/lens-rot0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 13.0
    },
@@ -4651,7 +4766,8 @@
  },
  "labels/lens-rot20-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -4687,7 +4803,8 @@
  },
  "labels/outline-disc-128": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 25.0,
     "missing_pixels": 45.0,
@@ -4695,6 +4812,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 28.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -4757,13 +4875,15 @@
      [1, 42, 96, 1],
      [1, 56, 102, 5]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/outline-disc-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 82.0
    },
@@ -4857,7 +4977,8 @@
  },
  "labels/outline-disc-w1-px576": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -4865,6 +4986,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 17.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -4890,13 +5012,15 @@
      [1, 253, 458, 6],
      [1, 259, 459, 6]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/outline-disc-w3-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 65.0
    },
@@ -4973,7 +5097,8 @@
  },
  "labels/pie-3-ph0-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 25.0
    },
@@ -5010,7 +5135,8 @@
  },
  "labels/pie-4-ph7-512": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 33.0
    },
@@ -5055,7 +5181,8 @@
  },
  "labels/pie-6-ph0-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 33.0
    },
@@ -5100,7 +5227,8 @@
  },
  "labels/pie-8-ph7-1536": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 75.0
    },
@@ -5187,7 +5315,8 @@
  },
  "labels/polygon-12-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 45.0
    },
@@ -5244,7 +5373,8 @@
  },
  "labels/polygon-3-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -5257,7 +5387,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -5283,7 +5414,8 @@
  },
  "labels/polygon-5-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -5296,7 +5428,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 31.0
    },
@@ -5339,7 +5472,8 @@
  },
  "labels/polygon-6-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 110.0
    },
@@ -5461,7 +5595,8 @@
  },
  "labels/polygon-8-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 22.0
    },
@@ -5495,7 +5630,8 @@
  },
  "labels/rect-rot30-int-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -5509,7 +5645,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 15.0
    },
@@ -5536,7 +5673,8 @@
  },
  "labels/rect-rot7-sub-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -5548,7 +5686,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -5569,7 +5708,8 @@
  },
  "labels/ring-nested-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 205.0
    },
@@ -5786,7 +5926,8 @@
  },
  "labels/ring-nested-w2-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 209.0
    },
@@ -6007,7 +6148,8 @@
  },
  "labels/ring-nested-w5-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 189.0
    },
@@ -6208,7 +6350,8 @@
  },
  "labels/ring-single-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 96.0
    },
@@ -6316,7 +6459,8 @@
  },
  "labels/ring-single-w1-px576": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 121.0,
     "missing_pixels": 364.0,
@@ -6324,6 +6468,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 136.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -6590,13 +6735,15 @@
      [1, 311, 487, 20],
      [1, 276, 489, 24]
     ],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "labels/ring-single-w3-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 68.0
    },
@@ -6676,7 +6823,8 @@
  },
  "labels/rrect-r2-rot0-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -6699,7 +6847,8 @@
  },
  "labels/rrect-r3-rot0-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -6720,7 +6869,8 @@
  },
  "labels/rrect-x0.8-rot20-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 31.0
    },
@@ -6763,7 +6913,8 @@
  },
  "labels/rrect-x1.25-rot0-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -6791,7 +6942,8 @@
  },
  "labels/rrect-x1.25-rot20-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -6820,7 +6972,8 @@
  },
  "labels/rrect-x1.25-rot20-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 320.0
    },
@@ -7152,7 +7305,8 @@
  },
  "labels/rrect-x3-rot0-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -7175,7 +7329,8 @@
  },
  "labels/rrect-x3-rot0-1536": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 38.0
    },
@@ -7225,7 +7380,8 @@
  },
  "labels/rrect-x3-rot20-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -7264,7 +7420,8 @@
  },
  "labels/rrect-x4-rot0-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -7303,7 +7460,8 @@
  },
  "labels/rrect-x4-rot20-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -7329,7 +7487,8 @@
  },
  "labels/rrect-x4-rot20-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 211.0
    },
@@ -7552,7 +7711,8 @@
  },
  "labels/stadium-rot0-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -7574,7 +7734,8 @@
  },
  "labels/stadium-rot0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 20.0
    },
@@ -7606,7 +7767,8 @@
  },
  "labels/stadium-rot20-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 36.0
    },
@@ -7654,7 +7816,8 @@
  },
  "labels/star-12p-r0.2-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 10.0
    },
@@ -7674,7 +7837,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 64.0
    },
@@ -7750,7 +7914,8 @@
  },
  "labels/star-3p-r0.6-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -7761,7 +7926,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -7801,7 +7967,8 @@
  },
  "labels/star-5p-r0.4-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 10.0
    },
@@ -7821,7 +7988,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 22.0
    },
@@ -7855,7 +8023,8 @@
  },
  "labels/star-5p-r0.6-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 36.0
    },
@@ -7903,7 +8072,8 @@
  },
  "labels/star-6p-r0.2-1536": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -7915,7 +8085,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 526.0
    },
@@ -8453,7 +8624,8 @@
  },
  "labels/star-8p-r0.4-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 8.0
    },
@@ -8471,7 +8643,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 68.0
    },
@@ -8551,7 +8724,8 @@
  },
  "labels/t-disc-over-band-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 38.0
    },
@@ -8601,7 +8775,8 @@
  },
  "labels/target-3c-off0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 25.0
    },
@@ -8638,7 +8813,8 @@
  },
  "labels/target-4c-off0.37-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 111.0
    },
@@ -8761,7 +8937,8 @@
  },
  "labels/target-5c-off0-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 163.0
    },
@@ -8936,7 +9113,8 @@
  },
  "labels/y-rot13-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 7.0
    },
@@ -8955,7 +9133,8 @@
  },
  "rgb/arc-128": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -8963,6 +9142,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -8972,11 +9152,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -8994,7 +9176,8 @@
  },
  "rgb/arc-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -9022,7 +9205,8 @@
  },
  "rgb/arc-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 21.0
    },
@@ -9055,7 +9239,8 @@
  },
  "rgb/arc-w1-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -9063,6 +9248,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -9072,13 +9258,15 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "rgb/arc-w3-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -9107,7 +9295,8 @@
  },
  "rgb/bar-ang10-128": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -9115,6 +9304,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -9124,13 +9314,15 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "rgb/bar-ang30-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -9153,7 +9345,8 @@
  },
  "rgb/bar-w0.5-ang0-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -9161,6 +9354,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -9170,13 +9364,15 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "rgb/bar-w1-ang10-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -9184,6 +9380,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -9193,11 +9390,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -9215,7 +9414,8 @@
  },
  "rgb/bar-w2-ang30-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -9223,6 +9423,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -9232,11 +9433,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -9255,7 +9458,8 @@
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -9273,7 +9477,8 @@
  },
  "rgb/bar-w5-ang45-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 32.0
    },
@@ -9317,7 +9522,8 @@
  },
  "rgb/corner-contact-rot0-ph0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 19.0
    },
@@ -9348,7 +9554,8 @@
  },
  "rgb/corner-contact-rot0-ph0.5-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 8.0
    },
@@ -9368,7 +9575,8 @@
  },
  "rgb/corner-contact-rot30-ph0.5-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -9385,7 +9593,8 @@
    }
   },
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -9397,7 +9606,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -9433,7 +9643,8 @@
  },
  "rgb/crescent-rot0-128": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -9445,7 +9656,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -9468,7 +9680,8 @@
  },
  "rgb/crescent-rot0-1536": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -9480,7 +9693,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 29.0
    },
@@ -9521,7 +9735,8 @@
  },
  "rgb/crescent-rot20-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -9533,7 +9748,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -9563,7 +9779,8 @@
  },
  "rgb/d-rot0-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 5.0
    },
@@ -9580,7 +9797,8 @@
  },
  "rgb/d-rot20-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -9592,7 +9810,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 7.0
    },
@@ -9611,7 +9830,8 @@
  },
  "rgb/disc-off0.25-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 8.0
    },
@@ -9631,7 +9851,8 @@
  },
  "rgb/disc-off0.5-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -9659,7 +9880,8 @@
  },
  "rgb/ellipse-a1.5-rot0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 6.0
    },
@@ -9677,7 +9899,8 @@
  },
  "rgb/ellipse-a1.5-rot45-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -9700,7 +9923,8 @@
  },
  "rgb/ellipse-a3-rot0-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -9729,7 +9953,8 @@
  },
  "rgb/ellipse-a3-rot17-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -9751,7 +9976,8 @@
  },
  "rgb/ellipse-a8-rot17-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -9780,7 +10006,8 @@
  },
  "rgb/ellipse-a8-rot45-128": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 6.0
    },
@@ -9798,7 +10025,8 @@
  },
  "rgb/fuzz-blob-s1003-1024": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -9824,7 +10052,8 @@
  },
  "rgb/fuzz-blob-s1021-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 19.0
    },
@@ -9855,7 +10084,8 @@
  },
  "rgb/fuzz-blob-s1036-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -9885,7 +10115,8 @@
  },
  "rgb/fuzz-blob-s1055-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -9925,7 +10156,8 @@
  },
  "rgb/fuzz-cornered-blob-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -9938,7 +10170,8 @@
  },
  "rgb/fuzz-cornered-blob-s1004-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -9966,7 +10199,8 @@
  },
  "rgb/fuzz-cornered-blob-s1013-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 12.0
    },
@@ -9990,7 +10224,8 @@
  },
  "rgb/fuzz-cornered-blob-s1014-1024": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -10029,7 +10264,8 @@
  },
  "rgb/fuzz-cornered-blob-s1021-256": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -10055,7 +10291,8 @@
  },
  "rgb/fuzz-cornered-blob-s1024-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -10068,7 +10305,8 @@
  },
  "rgb/fuzz-cornered-blob-s1029-1024": {
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "kinks": 1.0
    },
@@ -10079,7 +10317,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -10119,7 +10358,8 @@
  },
  "rgb/fuzz-cornered-blob-s1053-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -10130,7 +10370,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 37.0
    },
@@ -10179,7 +10420,8 @@
  },
  "rgb/fuzz-layered-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10193,7 +10435,8 @@
  },
  "rgb/fuzz-layered-s1002-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 14.0
    },
@@ -10217,7 +10460,8 @@
    }
   },
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -10231,7 +10475,8 @@
  },
  "rgb/fuzz-layered-s1005-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10243,7 +10488,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 62.0
    },
@@ -10317,7 +10563,8 @@
  },
  "rgb/fuzz-layered-s1007-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 6.0
    },
@@ -10333,7 +10580,8 @@
    }
   },
   "kinks": {
-   "task": "stop-the-rgb-tier-s-sub-pixel-boundary-crossings-putting-cus",
+   "tasks": ["stop-the-rgb-tier-s-sub-pixel-boundary-crossings-putting-cus"],
+   "counterfactual": null,
    "measured": {
     "kinks": 3.0
    },
@@ -10348,7 +10596,8 @@
  },
  "rgb/fuzz-layered-s1009-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10362,7 +10611,8 @@
  },
  "rgb/fuzz-layered-s1014-1024": {
   "corners": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 6.0
    },
@@ -10378,7 +10628,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 1.0,
     "missing_pixels": 27.0,
@@ -10386,6 +10637,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -10395,11 +10647,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "kinks": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -10411,7 +10665,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 129.0
    },
@@ -10552,7 +10807,8 @@
  },
  "rgb/fuzz-layered-s1015-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 12.0
    },
@@ -10574,7 +10830,8 @@
    }
   },
   "hausdorff": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 2.019334404001749,
     "truth_length_beyond_px": 2.16,
@@ -10591,15 +10848,17 @@
    }
   },
   "kinks": {
-   "task": "stop-the-rgb-tier-s-sub-pixel-boundary-crossings-putting-cus",
+   "tasks": ["stop-the-rgb-tier-s-sub-pixel-boundary-crossings-putting-cus"],
+   "counterfactual": null,
    "measured": {
-    "kinks": 4.0
+    "kinks": 5.0
    },
    "identities": {
     "kinks": [
      [167.8578, 318.225],
      [168.2371, 318.1503],
      [167.8024, 321.55],
+     [250.6727, 207.6746],
      [168.2865, 217.2661]
     ]
    }
@@ -10607,7 +10866,8 @@
  },
  "rgb/fuzz-layered-s1017-512": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -10624,12 +10884,14 @@
    }
   },
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
-    "kinks": 1.0
+    "kinks": 2.0
    },
    "identities": {
     "kinks": [
+     [154.7243, 99.8863],
      [292.2137, 119.2137]
     ]
    }
@@ -10637,7 +10899,8 @@
  },
  "rgb/fuzz-layered-s1021-256": {
   "corners": {
-   "task": "detect-corners-whose-sides-curl-at-the-apex-which-the-raster",
+   "tasks": ["detect-corners-whose-sides-curl-at-the-apex-which-the-raster"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10649,7 +10912,8 @@
    }
   },
   "kinks": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["synthetic-finding-unattributed"],
+   "counterfactual": null,
    "measured": {
     "kinks": 1.0
    },
@@ -10662,7 +10926,8 @@
  },
  "rgb/fuzz-layered-s1023-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 5.0
    },
@@ -10677,7 +10942,8 @@
    }
   },
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 1.0,
     "missing_pixels": 36.0,
@@ -10685,6 +10951,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -10694,11 +10961,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "kinks": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -10712,7 +10981,8 @@
  },
  "rgb/fuzz-layered-s1025-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -10723,11 +10993,24 @@
      [56.2037, 207.7254]
     ]
    }
+  },
+  "kinks": {
+   "tasks": ["synthetic-finding-unattributed"],
+   "counterfactual": null,
+   "measured": {
+    "kinks": 1.0
+   },
+   "identities": {
+    "kinks": [
+     [114.1289, 110.55]
+    ]
+   }
   }
  },
  "rgb/fuzz-polygon-s1000-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10739,7 +11022,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -10760,7 +11044,8 @@
  },
  "rgb/fuzz-polygon-s1006-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10772,7 +11057,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -10801,7 +11087,8 @@
  },
  "rgb/fuzz-polygon-s1009-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10813,7 +11100,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -10841,7 +11129,8 @@
  },
  "rgb/fuzz-polygon-s1014-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10853,7 +11142,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -10882,7 +11172,8 @@
  },
  "rgb/fuzz-polygon-s1025-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -10894,7 +11185,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -10922,7 +11214,8 @@
  },
  "rgb/fuzz-polygon-s1026-1024": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -10936,7 +11229,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 41.0
    },
@@ -10989,7 +11283,8 @@
  },
  "rgb/fuzz-polygon-s1031-256": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -11006,7 +11301,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 29.0
    },
@@ -11047,7 +11343,8 @@
  },
  "rgb/fuzz-polygon-s1033-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -11060,7 +11357,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -11082,7 +11380,8 @@
  },
  "rgb/fuzz-polygon-s1034-1024": {
   "corners": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -11093,7 +11392,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 34.0
    },
@@ -11139,7 +11439,8 @@
  },
  "rgb/fuzz-polygon-s1053-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -11156,7 +11457,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 40.0
    },
@@ -11208,7 +11510,8 @@
  },
  "rgb/lens-rot0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 6.0
    },
@@ -11226,7 +11529,8 @@
  },
  "rgb/lens-rot0-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 8.0
    },
@@ -11246,7 +11550,8 @@
  },
  "rgb/lens-rot20-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -11269,7 +11574,8 @@
  },
  "rgb/outline-disc-128": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -11277,6 +11583,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -11286,13 +11593,15 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   }
  },
  "rgb/outline-disc-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 26.0
    },
@@ -11330,7 +11639,8 @@
  },
  "rgb/outline-disc-w1-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 42.0
    },
@@ -11384,7 +11694,8 @@
  },
  "rgb/outline-disc-w3-px576": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 12.0
    },
@@ -11408,7 +11719,8 @@
  },
  "rgb/outline-square-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -11419,7 +11731,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 19.0
    },
@@ -11450,7 +11763,8 @@
  },
  "rgb/outline-square-w2-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -11458,6 +11772,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -11467,11 +11782,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -11489,7 +11806,8 @@
  },
  "rgb/palette-accent-red-on-star-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 6.0
    },
@@ -11505,7 +11823,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -11545,7 +11864,8 @@
  },
  "rgb/palette-dark-outline-disc-w1.5-512": {
   "hausdorff": {
-   "task": "keep-a-folded-colour-s-pixels-from-pulling-sub-pixel-boundar",
+   "tasks": ["keep-a-folded-colour-s-pixels-from-pulling-sub-pixel-boundar"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 1.7997857471206042,
     "truth_length_beyond_px": 34.800000000000004,
@@ -11562,7 +11882,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 40.0
    },
@@ -11614,7 +11935,8 @@
  },
  "rgb/palette-dark-outline-disc-w1.5-preserved-512": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -11622,6 +11944,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -11631,11 +11954,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "palette": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "problems": 2.0
    },
@@ -11647,7 +11972,8 @@
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -11665,7 +11991,8 @@
  },
  "rgb/palette-dark-outline-disc-w2.5-512": {
   "kinks": {
-   "task": "keep-a-folded-colour-s-pixels-from-pulling-sub-pixel-boundar",
+   "tasks": ["keep-a-folded-colour-s-pixels-from-pulling-sub-pixel-boundar"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -11677,7 +12004,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -11706,7 +12034,8 @@
  },
  "rgb/palette-dark-outline-square-w1-512": {
   "corners": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -11717,7 +12046,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 5.0
    },
@@ -11734,7 +12064,8 @@
  },
  "rgb/palette-dark-outline-square-w1.5-preserved-512": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -11742,6 +12073,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -11751,11 +12083,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "palette": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "problems": 2.0
    },
@@ -11767,7 +12101,8 @@
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -11785,7 +12120,8 @@
  },
  "rgb/palette-near-shades-pie-4-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 11.0
    },
@@ -11808,7 +12144,8 @@
  },
  "rgb/palette-noise-a3-star-5p-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 7.0
    },
@@ -11825,7 +12162,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 27.0
    },
@@ -11864,7 +12202,8 @@
  },
  "rgb/palette-noise-a4-star-5p-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 6.0
    },
@@ -11880,7 +12219,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 40.0
    },
@@ -11932,7 +12272,8 @@
  },
  "rgb/palette-noise-a5-pie-6-512": {
   "hausdorff": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 2.5319290913644537,
     "truth_length_beyond_px": 6.08,
@@ -11949,7 +12290,8 @@
    }
   },
   "kinks": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "kinks": 8.0
    },
@@ -11967,7 +12309,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 22.0
    },
@@ -11999,7 +12342,8 @@
    }
   },
   "topology": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 1.0,
     "count_error": 1.0,
@@ -12017,7 +12361,8 @@
  },
  "rgb/palette-noise-a6-star-5p-1536": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 16.0,
     "missing_pixels": 404.0,
@@ -12025,6 +12370,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -12049,11 +12395,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "kinks": {
-   "task": "stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain",
+   "tasks": ["stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain"],
+   "counterfactual": null,
    "measured": {
     "kinks": 32.0
    },
@@ -12095,7 +12443,8 @@
    }
   },
   "nodes": {
-   "task": "stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain",
+   "tasks": ["stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 57.0
    },
@@ -12164,7 +12513,8 @@
  },
  "rgb/pie-4-ph7-512": {
   "kinks": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -12176,7 +12526,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 29.0
    },
@@ -12217,7 +12568,8 @@
  },
  "rgb/pie-6-ph0-512": {
   "hausdorff": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 2.3121363450067753,
     "truth_length_beyond_px": 2.88,
@@ -12234,7 +12586,8 @@
    }
   },
   "kinks": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -12246,7 +12599,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 25.0
    },
@@ -12283,7 +12637,8 @@
  },
  "rgb/pie-8-ph7-1536": {
   "hausdorff": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 2.5876291674811345,
     "truth_length_beyond_px": 1.52,
@@ -12300,7 +12655,8 @@
    }
   },
   "kinks": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "kinks": 5.0
    },
@@ -12315,7 +12671,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 34.0
    },
@@ -12359,7 +12716,8 @@
    }
   },
   "topology": {
-   "task": "stop-anti-alias-resolution-giving-a-many-colour-junction-s-c",
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 1.0,
     "count_error": 1.0,
@@ -12377,7 +12735,8 @@
  },
  "rgb/polygon-12-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 28.0
    },
@@ -12417,7 +12776,8 @@
  },
  "rgb/polygon-3-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 3.0
    },
@@ -12430,7 +12790,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -12452,7 +12813,8 @@
  },
  "rgb/polygon-5-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 5.0
    },
@@ -12467,7 +12829,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -12496,7 +12859,8 @@
  },
  "rgb/polygon-6-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 8.0
    },
@@ -12516,7 +12880,8 @@
  },
  "rgb/polygon-8-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 10.0
    },
@@ -12538,7 +12903,8 @@
  },
  "rgb/rect-rot15-sub-1536": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 5.0
    },
@@ -12555,7 +12921,8 @@
  },
  "rgb/rect-rot30-int-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -12569,7 +12936,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 17.0
    },
@@ -12598,7 +12966,8 @@
  },
  "rgb/rect-rot7-sub-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -12610,7 +12979,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 7.0
    },
@@ -12629,7 +12999,8 @@
  },
  "rgb/ring-nested-512": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 56.0
    },
@@ -12697,7 +13068,8 @@
  },
  "rgb/ring-nested-w2-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -12705,6 +13077,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -12714,11 +13087,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "hausdorff": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "truth_distance_px": 4.567781090749651,
     "truth_length_beyond_px": 9284.24,
@@ -12735,7 +13110,8 @@
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 2.0,
     "count_error": 16.0,
@@ -12765,7 +13141,8 @@
  },
  "rgb/ring-nested-w5-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 53.0
    },
@@ -12830,7 +13207,8 @@
  },
  "rgb/ring-single-128": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -12838,6 +13216,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -12847,11 +13226,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -12869,7 +13250,8 @@
  },
  "rgb/ring-single-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -12905,7 +13287,8 @@
  },
  "rgb/ring-single-w1-px576": {
   "evidence": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 0.0,
     "missing_pixels": 0.0,
@@ -12913,6 +13296,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 1.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -12922,11 +13306,13 @@
      [1]
     ],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "topology": {
-   "task": "stop-palette-inference-replacing-a-thin-feature-s-colour-wit",
+   "tasks": ["stop-palette-inference-replacing-a-thin-feature-s-colour-wit"],
+   "counterfactual": null,
    "measured": {
     "wrong_colours": 0.0,
     "count_error": 0.0,
@@ -12944,7 +13330,8 @@
  },
  "rgb/ring-single-w3-px576": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 32.0
    },
@@ -12988,7 +13375,8 @@
  },
  "rgb/rrect-x1.25-rot20-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 21.0
    },
@@ -13021,7 +13409,8 @@
  },
  "rgb/rrect-x3-rot0-128": {
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -13042,7 +13431,8 @@
  },
  "rgb/rrect-x3-rot0-1536": {
   "nodes": {
-   "task": "stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap",
+   "tasks": ["stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 20.0
    },
@@ -13074,7 +13464,8 @@
  },
  "rgb/rrect-x4-rot0-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -13104,7 +13495,8 @@
  },
  "rgb/rrect-x4-rot20-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 15.0
    },
@@ -13131,7 +13523,8 @@
  },
  "rgb/square-rot0-int-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 12.0
    },
@@ -13155,7 +13548,8 @@
  },
  "rgb/stadium-rot0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 16.0
    },
@@ -13183,7 +13577,8 @@
  },
  "rgb/stadium-rot20-512": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 9.0
    },
@@ -13204,7 +13599,8 @@
  },
  "rgb/star-12p-r0.2-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -13218,7 +13614,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 48.0
    },
@@ -13278,7 +13675,8 @@
  },
  "rgb/star-3p-r0.6-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 1.0
    },
@@ -13289,7 +13687,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 15.0
    },
@@ -13316,7 +13715,8 @@
  },
  "rgb/star-5p-r0.4-128": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 8.0
    },
@@ -13334,7 +13734,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 18.0
    },
@@ -13364,7 +13765,8 @@
  },
  "rgb/star-5p-r0.6-1536": {
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 41.0
    },
@@ -13417,7 +13819,8 @@
  },
  "rgb/star-6p-r0.2-1536": {
   "corners": {
-   "task": "let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe",
+   "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 2.0
    },
@@ -13429,7 +13832,8 @@
    }
   },
   "nodes": {
-   "task": "make-the-curve-section-route-minimal-and-symmetric-about-a-c",
+   "tasks": ["make-the-curve-section-route-minimal-and-symmetric-about-a-c"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 42.0
    },
@@ -13483,7 +13887,8 @@
  },
  "rgb/star-8p-r0.4-512": {
   "corners": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "missed_vertices": 4.0
    },
@@ -13497,7 +13902,8 @@
    }
   },
   "nodes": {
-   "task": "stop-default-per-mille-trace-lengths-collapsing-below-a-pixe",
+   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 20.0
    },
@@ -13529,7 +13935,8 @@
  },
  "rgb/t-bar-on-band-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 12.0
    },
@@ -13553,7 +13960,8 @@
  },
  "rgb/t-disc-over-band-1536": {
   "evidence": {
-   "task": "stop-the-trace-dropping-one-pixel-wide-label-regions",
+   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
+   "counterfactual": null,
    "measured": {
     "missing_regions": 1.0,
     "missing_pixels": 24.0,
@@ -13561,6 +13969,7 @@
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
     "misplaced_thin_regions": 0.0,
+    "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    },
    "identities": {
@@ -13570,11 +13979,13 @@
     "colours_over": [],
     "absent_scene_colours": [],
     "misplaced_thin_regions": [],
+    "severed_thin_regions": [],
     "fold_target_mismatches": []
    }
   },
   "kinks": {
-   "task": "stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap",
+   "tasks": ["stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap"],
+   "counterfactual": null,
    "measured": {
     "kinks": 2.0
    },
@@ -13586,7 +13997,8 @@
    }
   },
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 13.0
    },
@@ -13611,7 +14023,8 @@
  },
  "rgb/target-3c-off0-128": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 14.0
    },
@@ -13637,7 +14050,8 @@
  },
  "rgb/target-4c-off0.37-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 24.0
    },
@@ -13673,7 +14087,8 @@
  },
  "rgb/target-5c-off0-1536": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 47.0
    },
@@ -13732,7 +14147,8 @@
  },
  "rgb/y-rot13-512": {
   "nodes": {
-   "task": "keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo",
+   "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
+   "counterfactual": null,
    "measured": {
     "nodes_outside_zones": 5.0
    },
