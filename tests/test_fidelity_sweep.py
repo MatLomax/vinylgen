@@ -31,12 +31,15 @@ def summary(**overrides) -> dict:
               "dense_fallbacks": 0, "warnings": 0, "bound_px": 1.74, "geometric": True,
               "evidence_tolerance_px": 2.0, "evidence_distance_px": 0.0,
               "evidence_regions": 2, "evidence_missing_regions": 0,
-              "required_scene_colours": 0, "absent_scene_colours": 0}
+              "required_scene_colours": 0, "absent_scene_colours": 0,
+              "evidence_area_ratio": 0.0, "evidence_colours_over": 0, "thin_regions": 2,
+              "misplaced_thin_regions": 0, "fold_target_mismatches": 0}
     values.update(overrides)
     # The zone-aware node counts follow the whole-boundary ones, and the area
     # ratio the misassigned area over a 100 px^2 limit, unless a test sets them.
     values.setdefault("nodes_outside_zones", values["nodes"])
     values.setdefault("ideal_nodes_outside_zones", values["ideal_nodes"])
+    values.setdefault("node_limit", values["ideal_nodes_outside_zones"])
     values.setdefault("area_ratio", values["misassigned_px"] / 100.0)
     # The judged distances (off the vertex discs and zones) follow the raw ones
     # unless a test sets them.
@@ -129,7 +132,9 @@ class ObjectiveTests(unittest.TestCase):
         worse = {"hausdorff_px": 2.0, "mean_px": 0.8, "misassigned_px": 90.0,
                  "required_found": 2, "kinks": 3, "topology_mismatches": 1,
                  "evidence_distance_px": 5.0, "evidence_missing_regions": 1,
-                 "absent_scene_colours": 1}
+                 "absent_scene_colours": 1, "unmatched_layers": 1,
+                 "evidence_area_ratio": 2.0, "misplaced_thin_regions": 1,
+                 "fold_target_mismatches": 1}
         for key, value in worse.items():
             with self.subTest(key=key):
                 self.assertGreater(tune.case_error(row(**{key: value})), base)
@@ -197,7 +202,8 @@ class ObjectiveTests(unittest.TestCase):
         worst = row(hausdorff_px=1e6, mean_px=1e6, misassigned_px=1e9, required_found=0,
                     kinks=10 ** 7, topology_mismatches=2, structural_failures=2,
                     evidence_regions=3, evidence_missing_regions=3, required_scene_colours=2,
-                    absent_scene_colours=2)
+                    absent_scene_colours=2, thin_regions=2, misplaced_thin_regions=2,
+                    fold_target_mismatches=1)
         self.assertAlmostEqual(tune.case_error(worst), tune.FAILURE_ERROR)
         self.assertEqual(tune.case_error(row(ok=False)), tune.FAILURE_ERROR)
 

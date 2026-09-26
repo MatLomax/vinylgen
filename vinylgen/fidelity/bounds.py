@@ -7,7 +7,7 @@ default trace settings and (in the rgb tier) the palette stage's folds (``D``,
 the true vertices with their roles and radii, the narrow zones, the area bounds,
 the ideal node count); ``evaluate`` measures one trace against them; ``check``
 turns a measured result into a pass or fail per assertion, and ``measurements``
-into the scalars an expected failure records.
+and ``identities`` into the scalars and the items an expected failure records.
 
 Lengths are pixels of the traced raster. ``M`` is the maximum deviation and ``A``
 the corner sharpening allowance of the DEFAULT trace settings, resolved exactly as
@@ -19,19 +19,31 @@ loosen its own yardstick.
 What is derived and what is not
 -------------------------------
 Derived from the trace stage's own guarantees and the raster's geometry: the
-label-map tier's quantisation ``Q``, ``D``, the vertex radii ``R(c)``, which
-corners are decidable, the sharpenable-round radius ``rho``, the local resolution
-and topology floors, the area tube ``E(c)``, the evidence tolerance ``e`` and the
-ideal node count. Not derived:
+label-map tier's quantisation ``Q``; ``D`` and ``e`` in the direction from the
+truth or evidence to the trace; the vertex radii ``R(c)``; which corners are
+decidable; the sharpenable-round radius and its reach ``rho``; the local
+resolution and topology floors; the area tube ``E(c)``; the ideal node count and
+the node limit built on it. Not derived:
 
 - the rgb tier's ``Q``: a measured baseline (below), reused from the label-map
   tier because the palette stage's anti-alias resolution follows no geometric
   rule;
-- the node limit's factor and constant (``NODE_FACTOR``, ``NODE_CONSTANT``): an
-  allowance for the fitter not being a global optimum, chosen, not derived;
+- ``D`` and ``e`` in the direction from the trace to the truth or evidence: the
+  fitter keeps each sample within ``M`` of the curve at the sample's own
+  parameter and bounds nothing between samples, so a curve may bow further there.
+  The trace is held to the same ``D`` and ``e`` both ways by choice; the measured
+  margin is in ``docs/validation-and-testing.md``;
+- the node limit's one node per run part cut by a zone: the boundary there
+  passes into geometry the ideal segmentation does not describe, so the fitter
+  may end a piece at the cut; an allowance, not a derivation;
+- the thin-feature pin ``THIN_RECALL``: the fitter's ``M`` allows a feature no
+  wider than ``M`` to move wholly off its pixels, so holding a thin evidence
+  region to its pixel centres is a requirement, set at the trace stage's own
+  post-fit threshold for a protected component;
 - which colours the palette stage folds and into what, and which survive under an
   unmatched colour (``observed_palette``): read from the run, a fold only among
-  the colours the usage cutoff may fold;
+  the colours the usage cutoff may fold, and the target checked against the
+  replay's where the colour is at least ``D`` wide (``case_truth``);
 - the topology bands: a trace within ``D`` of the truth sees each structure as
   the truth does from some band width between ``D`` and ``3 D``; the widths are
   sampled every ``D / 4``, not searched continuously;
@@ -56,7 +68,9 @@ Quantities
   of the written curve (``curve_fit._curve_tolerance`` and
   ``_straight_deviation`` are both capped by it), the samples lie within ``Q`` of
   the truth and the metric (with the truth's own flattening) adds at most
-  ``metrics.DISTANCE_ERROR_BOUND``.
+  ``metrics.DISTANCE_ERROR_BOUND``. That bounds every truth point's distance to
+  the trace; a traced point between two samples is held to ``D`` too, by choice
+  (``What is derived``).
 - ``e = max(M, A) + 1/2 + s + DISTANCE_ERROR_BOUND``, the evidence tolerance: the
   fitter keeps every sample within ``M`` of the curve and a sharpened corner
   within ``A`` of its sample; the samples are the pixel-edge vertices of the
@@ -64,8 +78,9 @@ Quantities
   for hard labels; ``0.45 sqrt 2`` in the rgb tier, the crossing clamped to
   0.05-0.95 of the edge); and every point of a pixel-edge chain lies within 1/2
   of a vertex. Each shared boundary is fitted from the samples of that boundary
-  alone, so each colour's traced boundary lies within ``e`` of that colour's
-  evidence boundary, and the other way round.
+  alone, so each colour's evidence boundary lies within ``e`` of that colour's
+  traced boundary. The other way round (a traced point between samples) is held
+  to ``e`` by choice, as for ``D``.
 - ``R(c)``, the radius of a true vertex ``c`` (corner, junction or edge point):
   the traced node where the traced branches meet lies within ``D`` of every true
   branch leaving ``c`` (each traced branch within ``D`` of its true branch), and
@@ -101,12 +116,27 @@ Quantities
   with ``s`` the distance to the nearest other true vertex, is *optional* (a cusp
   is allowed, not demanded). Every junction and edge point is required: the trace
   always anchors a cusp there.
-- Sharpenable rounds: the trace sharpens a round whose sharp point lies within
-  ``A`` of its drawn edge (GLOSSARY "corner sharpening allowance"), a 90 degree
-  round of radius up to ``SHARPENING_RADIUS_FACTOR * A``; seen through ``Q`` that
-  is a radius up to ``rho = SHARPENING_RADIUS_FACTOR * (A + Q)``, all of whose arc
-  lies within ``rho`` of the sharp point. A cusp is therefore allowed where the
-  true boundary turns by at least the threshold within ``rho`` of it.
+- Sharpenable rounds: the trace sharpens a round whose sharp point (where its
+  two sides meet) lies within ``A`` of its drawn edge (GLOSSARY "corner
+  sharpening allowance"), a 90 degree round of radius up to
+  ``SHARPENING_RADIUS_FACTOR * A`` (the sharp point lies ``r (sqrt 2 - 1)`` from
+  the arc), and its corner detector skips that much arc beside a candidate (the
+  tip skip), so a longer round vetoes its own corner. Seen through ``Q``: each
+  side is read from samples within ``Q`` of the true side, so it may lie ``Q``
+  inside it, which moves the two sides' meeting point up to ``Q sqrt 2`` towards
+  the arc, and the drawn edge at the arc may lie ``Q`` outside it. So the trace
+  may sharpen a round of radius up to
+  ``round_radius = SHARPENING_RADIUS_FACTOR * (A + (1 + sqrt 2) Q)`` (2.71
+  sharpening radii at ``A = 1`` px, 2.11 at the 1536 px canvas's ``A``), with its
+  cusp within ``Q sqrt 2`` of the true sharp point, which lies within the round's
+  radius of every point of its arc: all of the round lies within
+  ``rho = round_radius + Q sqrt 2`` of the cusp. A cusp is therefore allowed where
+  a stretch of true boundary turns by at least the threshold as a round of radius
+  ``b`` (its length over its turn in radians; 0 at a single true vertex) of at
+  most ``round_radius``, all within ``b + Q sqrt 2`` of it (``round_turn_near``).
+  A cusp on a larger round (such as a circle of larger radius, whose every
+  stretch is a round of that radius), or farther from a round or vertex than
+  that, is a kink.
 
 The truth a trace is judged against
 -----------------------------------
@@ -166,43 +196,62 @@ Assertions (``ASSERTIONS``)
   the vertex discs and the zones is within ``D`` of the other side's samples;
   and everywhere, each traced layer's boundary is within ``e`` of the boundary
   of its label in the evidence, both ways (``evidence_distance``). The second
-  part holds a feature below the resolution floor in place, where the first has
-  nothing: a thin feature shifted by more than ``e`` fails it.
+  part holds a feature below the resolution floor near its place, where the first
+  has nothing; ``evidence``'s thin-region pin holds it on its pixels.
 - ``corners``: every required vertex outside the zones has a cusp node within
   ``R(c)``. A required vertex inside a zone is optional.
 - ``kinks``: every cusp node lies within ``R(c)`` of a required or optional
-  vertex, inside a zone, or where the truth turns by at least the threshold
-  within ``rho`` of it.
-- ``nodes``: boundary nodes outside the zones ``<= NODE_FACTOR * ideal +
-  NODE_CONSTANT`` (``2 * ideal + 4``), where ``ideal`` is the ideal node count of
-  the boundary outside the zones (``zone_ideal_nodes``: the ideal segmentation's
-  vertex nodes whose traced node can lie outside them, within ``R(c)`` of an
-  anchored vertex or ``D`` of any other, and the ideal segmentation's interior
-  nodes that can fall on the parts of its runs outside them). The ideal segmentation
-  (one cubic per arc of at most 90 degrees, within ``3e-4 r`` of the arc, one
-  line per line) keeps every sample within ``Q < 1 px <= M`` of the curve, so it
-  meets the fitter's own tolerance and a node-minimal fit needs no more than the
-  ideal. The factor and constant are an allowance, not a derivation: the
-  fitter's search is not a global optimum and its default node placement prefers
-  axis extremes; the factor 2 allows every ideal piece to be split once, the 4
-  the axis extremes of one closed smooth run that coincide with no ideal node.
+  vertex, inside a zone, or on a sharpenable round (a stretch of the truth
+  turning by at least the threshold as a round of radius ``b`` at most
+  ``round_radius``, all within ``b + Q sqrt 2`` of it).
+- ``nodes``: boundary nodes outside the zones ``<=`` the node limit
+  (``zone_node_limit``), built on the ideal node count of the boundary outside
+  the zones (``zone_ideal_nodes``: the ideal segmentation's vertex nodes whose
+  traced node can lie outside them, within ``R(c)`` of an anchored vertex or
+  ``D`` of any other, and the ideal segmentation's interior nodes that can fall
+  on the parts of its runs outside them). The ideal segmentation (one cubic per
+  arc of at most 90 degrees, within ``2.7e-4 r`` of the arc; one line per line,
+  which a cubic also draws exactly; one cubic per scene cubic) keeps every
+  sample within ``Q + 2.7e-4 r`` of the curve, below the fitter's curve
+  tolerance (at least 1 px, and ``Q + 2.7e-4 r < 1`` for every radius below
+  1000 px). The fitter takes the fewest pieces over its candidate nodes
+  (``docs/svg-tracing-spec.md``, "Selection"), which include every axis extreme,
+  and seams a closed ring with no anchor at an axis extreme unless that costs a
+  piece. Between consecutive vertices and axis extremes, an arc turns by at most
+  90 degrees and a cubic is a piece of one cubic, so the ideal pieces split at
+  every axis extreme are a route the fitter's search can take. The limit is the
+  vertex nodes, plus on each part of an ideal run outside the zones the larger
+  of its ideal interior nodes and its axis extremes, plus one node per part end
+  the zone cuts (an allowance: see ``What is derived``). A traced count above it
+  is a route that is not minimal over the fitter's own candidates.
 - ``topology``: for every colour of the truth or the trace, the polygon and hole
   counts of the traced and the true geometry, each less the vertex discs, the
-  topology zone and the palette zone, and no traced layer is unmatched. The discs
-  are removed because a tip narrower than a pixel may leave a pixel touching the
-  shape only corner to corner and two regions meeting at a point may join
-  through one pixel. A boundary within ``D`` of the truth that meets the edge of
-  a removed disc or zone may cut off a sliver or break a strip there, so a band
-  round the removed region is filled with the colour being counted, for the
-  truth and the trace alike, and only the pieces and holes reaching beyond it
-  count. The trace is counted with a band ``2 D`` wide; seen from a band edge
-  ``2 D`` out, a trace within ``D`` of the truth shows each structure as the
-  truth does from an edge between ``D`` and ``3 D`` out, so the truth is counted
-  at every width from ``D`` to ``3 D`` in steps of ``D / 4``
-  (``TOPOLOGY_BAND_MULTIPLES``). A count that is the same at every width is
-  asserted exactly; one that varies (a true structure lies within ``D`` of the
-  band edge) is asserted to lie within its range over the widths. Each colour
-  and each of its two counts is judged on its own.
+  topology zone and the palette zone, the structures that decide themselves by
+  location, and no traced layer is unmatched. The discs are removed because a
+  tip narrower than a pixel may leave a pixel touching the shape only corner to
+  corner and two regions meeting at a point may join through one pixel. A
+  boundary within ``D`` of the truth that meets the edge of a removed disc or
+  zone may cut off a sliver or break a strip there, so a band round the removed
+  region is filled with the colour being counted, for the truth and the trace
+  alike, and only the pieces and holes reaching beyond it count. The trace is
+  counted with a band ``2 D`` wide; seen from a band edge ``2 D`` out, a trace
+  within ``D`` of the truth shows each structure as the truth does from an edge
+  between ``D`` and ``3 D`` out, so the truth is counted at every width from
+  ``D`` to ``3 D`` in steps of ``D / 4`` (``TOPOLOGY_BAND_MULTIPLES``). A count
+  is asserted, to lie within its range over the widths, only where the truth's
+  count at the traced band is the range's minimum, so deleting any one structure
+  it counts fails it; a count whose range reaches below it (structures near the
+  band edge that come and go with the width) cannot decide a single deletion and
+  is not asserted. Each colour and each of its two counts is judged on its own.
+  Located structures: a true piece or hole none of whose rings comes within
+  ``3 D`` of the removed region (*isolated*) is counted the same at every width,
+  and must match exactly one traced structure of its kind, each region within the
+  topology tolerance (``max(D, e)``) of the other; a traced piece or hole whose
+  rings clear the removed region by ``3 D`` plus that tolerance (so its true
+  counterpart would be isolated) must match an isolated true structure.
+  ``topology_mutations`` checks, per case, that the truth itself passes and that
+  every single deletion the assertion claims (an isolated structure, or a
+  structure an asserted count counts) fails it.
 - ``area``: per colour ``c``, the symmetric difference of the traced and true
   geometry is at most the area of ``E(c)``: the ``D``-tube round ``c``'s true
   boundary, the discs of the vertices on it and the palette zone near it (with the
@@ -223,12 +272,23 @@ Assertions (``ASSERTIONS``)
   folded or zoned colour, or one whose every region is below the small-region
   cleanup size) or it dominates no pixel of the render (it is absent from the
   hard-edged label render), so the palette stage never received it as a colour.
+  A folded colour at least ``D`` wide must fold into the colour the replay folds
+  it into (``case_truth``). Every *thin* evidence region (four-connected, most
+  of its pixels in no 2 x 2 block of its own pixels, so narrower than the
+  resolution floor along most of it), unless all those thin pixels lie in the
+  vertex discs, must have at least ``THIN_RECALL`` of the thin pixels' centres
+  covered by its traced layer (``thin_regions``): ``e``
+  exceeds a one-pixel feature's width, so this is what holds such a feature on
+  its pixels rather than a full width off them.
 - ``palette`` (palette-stage cases): ``scene.params["expect"]`` (see
   ``palette_outcome``).
 
-Expected failures record ``measurements``: the scalars each assertion compares
-with its bound (``MEASUREMENTS``), which ``ratchet`` compares with the recorded
-ones within ``RATCHET_TOLERANCE``.
+Expected failures record ``measurements``, the scalars each assertion compares
+with its bound (``MEASUREMENTS``), and ``identities``, the items it finds wrong
+(``IDENTITIES``: kink points, missed vertices, node positions, missing regions,
+wrong per-colour counts and so on). ``entry_ratchet`` compares both with the
+record: the scalars within ``RATCHET_TOLERANCE``, the identities as a set, item
+for item within ``IDENTITY_TOLERANCE``.
 """
 
 from __future__ import annotations
@@ -259,13 +319,16 @@ Q_PX = math.sqrt(2.0) / 2.0
 # 0.05-0.95 of the edge); hard labels put every crossing on the edge midpoint.
 EVIDENCE_OFFSET_PX = {"labels": 0.0, "rgb": 0.45 * math.sqrt(2.0)}
 RESOLUTION_FLOOR_PX = 2.0
+# The least fraction of a thin evidence region's pixel centres its traced layer
+# must cover: chosen, the trace stage's own post-fit acceptance threshold for a
+# protected component (``validation.validate_postfit_protected_features``,
+# ``minimum_component_pixel_recall``).
+THIN_RECALL = 0.6
 TOPOLOGY_FLOOR_PX = math.sqrt(2.0)
 # Topology bands, in multiples of D beyond the removed discs and zones: the truth
 # is counted with each, the trace with the middle one (see ``topology``).
 TOPOLOGY_BAND_MULTIPLES = tuple(1.0 + 0.25 * step for step in range(9))
 TOPOLOGY_BAND_TRACED = 2.0
-NODE_FACTOR = 2
-NODE_CONSTANT = 4
 MIN_PIECE_AREA = 1e-6
 # A narrow piece a vertex disc covers to within this area is that vertex's.
 _COVERED_AREA = 1e-2
@@ -277,6 +340,9 @@ _BUFFER_SEGMENTS = 16
 # Buffer arcs are inscribed polygons; buffering by this multiple circumscribes them.
 _CIRCUMSCRIBE = 1.0 / math.cos(math.pi / (4 * _BUFFER_SEGMENTS))
 _VERTEX_MATCH_PX = 0.01
+# Two regions within the topology tolerance of each other may differ by this
+# much area outside each other's buffer (floating-point slack of the buffers).
+_SAME_REGION_AREA = 1e-4
 _CHORD_GROWTH = 1.25
 _FRAME_EPS = 1e-6
 _NODE_DECIMALS = 6
@@ -512,41 +578,70 @@ def corner_roles(truth, rings: list[np.ndarray], threshold: float) -> list[dict]
     return rows
 
 
-def truth_turn_near(rings: list[np.ndarray], point, radius: float) -> float:
-    """The largest net turn (degrees) of a stretch of true boundary lying within
-    ``radius`` of ``point``; a whole ring inside counts as 360."""
+def round_turn_near(rings: list[np.ndarray], point, round_radius: float,
+                    reach: float) -> float:
+    """The largest net turn (degrees) of a *round* near ``point``: a stretch of
+    true boundary (vertices ``i..j`` of a ring, turning at each) whose radius
+    ``b`` (its length between its first and last vertex over its net turn in
+    radians; 0 for a single vertex, a tangent discontinuity) is at most
+    ``round_radius``, and every vertex of which lies within ``b + reach`` of
+    ``point``. A round of radius ``b`` lies within ``b`` of its sharp point, and a
+    cusp sharpened from it within ``reach`` of that point (module docstring,
+    "Sharpenable rounds")."""
     best = 0.0
     px, py = point
+    window = round_radius + reach
     for ring in rings:
-        inside = np.hypot(ring[:, 0] - px, ring[:, 1] - py) <= radius
-        if not inside.any():
-            continue
-        if inside.all():
-            return 360.0
-        # Rotate so the ring starts outside, then walk the runs of inside points.
-        start = int(np.flatnonzero(~inside)[0])
         closed = ring[:-1] if np.allclose(ring[0], ring[-1]) else ring
-        order = np.roll(np.arange(len(closed)), -start)
-        flags = inside[:len(closed)][order]
-        points = closed[order]
-        index = 0
-        while index < len(points):
-            if not flags[index]:
-                index += 1
-                continue
-            end = index
-            while end + 1 < len(points) and flags[end + 1]:
-                end += 1
-            # The run's first and last segments include the crossing into and out
-            # of the disc, so a run of one point still has two directions.
-            before = points[index - 1]
-            after = points[(end + 1) % len(points)]
-            first = points[index] - before
-            last = after - points[end]
-            angle = math.degrees(abs(math.atan2(first[0] * last[1] - first[1] * last[0],
-                                                first[0] * last[0] + first[1] * last[1])))
-            best = max(best, angle)
-            index = end + 1
+        count = len(closed)
+        if count < 3:
+            continue
+        distance = np.hypot(closed[:, 0] - px, closed[:, 1] - py)
+        near = distance <= window
+        if not near.any():
+            continue
+        before = closed - np.roll(closed, 1, axis=0)
+        after = np.roll(closed, -1, axis=0) - closed
+        turns = np.arctan2(before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0],
+                           np.einsum("ij,ij->i", before, after))
+        steps = np.hypot(*after.T)
+        # Walk each run of vertices within the window, starting outside it.
+        runs = []
+        if near.all():
+            runs.append(np.arange(count))
+        else:
+            start = int(np.flatnonzero(~near)[0])
+            order = np.roll(np.arange(count), -start)
+            flags = near[order]
+            index = 0
+            while index < count:
+                if not flags[index]:
+                    index += 1
+                    continue
+                end = index
+                while end + 1 < count and flags[end + 1]:
+                    end += 1
+                runs.append(order[index:end + 1])
+                index = end + 1
+        for run in runs:
+            run_turns = turns[run]
+            run_steps = steps[run]
+            run_distance = distance[run]
+            for i in range(len(run)):
+                total, length, farthest = 0.0, 0.0, 0.0
+                for j in range(i, len(run)):
+                    if j > i:
+                        length += run_steps[j - 1]
+                    total += run_turns[j]
+                    farthest = max(farthest, run_distance[j])
+                    turn = abs(total)
+                    if turn <= 1e-12:
+                        continue
+                    bend = length / turn
+                    if bend > round_radius:
+                        continue
+                    if farthest <= bend + reach:
+                        best = max(best, math.degrees(min(turn, 2.0 * math.pi)))
     return best
 
 
@@ -752,7 +847,7 @@ def case_truth(case, tier: str, truth=None, run=None) -> tuple[object, dict]:
     truth = truth if truth is not None else scene_truth(scene)
     if tier != "rgb":
         return truth, {"aliases": {}, "folded": {}, "stand_ins": {}, "zoned": set(),
-                       "regions": [], "reasons": []}
+                       "regions": [], "reasons": [], "fold_mismatches": []}
     aliases = merge_aliases(case)
     merged = scene_truth(recoloured_scene(scene, aliases)) if aliases else truth
     floors = palette_floors(case, merged.colour_geometry)
@@ -769,6 +864,24 @@ def case_truth(case, tier: str, truth=None, run=None) -> tuple[object, dict]:
                 for colour in sorted(zoned)]
     reasons += [f"colour {colour} survives as the unmatched colour {fill}"
                 for fill, colour in sorted(stand_ins.items())]
+    # The replay's fold target is the truth's call; the observed one moves the
+    # boundary by up to the folded colour's width where they differ, which
+    # matters (and must agree) only where the colour is at least D wide.
+    bound = boundary_bound(float(resolved_lengths(scene.width, scene.height).max_deviation))
+    fold_mismatches = []
+    for colour, target in sorted(folded.items()):
+        replay = floors["folded"].get(colour)
+        if replay is None or replay == target:
+            continue
+        wide = not merged.colour_geometry[colour].buffer(
+            -bound / 2.0, quad_segs=_BUFFER_SEGMENTS).is_empty
+        if wide:
+            fold_mismatches.append([colour, target, replay])
+        else:
+            reasons.append(f"colour {colour} folded into {target}, not the replay's {replay}: "
+                           f"immaterial, as the colour is narrower than D ({bound:.3f} px) "
+                           f"everywhere, so either target's boundary lies within D of the "
+                           f"other's")
     mapping = {index: folded.get(target, target) for index, target in aliases.items()}
     mapping.update(folded)
     effective = scene_truth(recoloured_scene(scene, mapping)) if folded else merged
@@ -776,7 +889,8 @@ def case_truth(case, tier: str, truth=None, run=None) -> tuple[object, dict]:
     regions += [(colour, polygon) for colour in sorted(zoned)
                 for polygon in _polygons(merged.colour_geometry[colour])]
     return effective, {"aliases": aliases, "folded": folded, "stand_ins": dict(stand_ins),
-                       "zoned": set(zoned), "regions": regions, "reasons": reasons}
+                       "zoned": set(zoned), "regions": regions, "reasons": reasons,
+                       "fold_mismatches": fold_mismatches}
 
 
 @dataclass
@@ -792,6 +906,7 @@ class CaseBounds:
     allowance: float
     bound: float
     rho: float
+    round_radius: float
     threshold: float
     evidence_tolerance: float
     corners: list[dict]
@@ -808,13 +923,17 @@ class CaseBounds:
     removed_by_design: set[int]
     topology_removed: object
     topology_far: object
+    topology_isolation: object
+    topology_tolerance: float
     palette_reasons: list[str]
+    fold_mismatches: list
     rings: list[np.ndarray]
     truth_samples: np.ndarray
     truth_kept: np.ndarray
     colour_limits: dict[int, dict]
     area_region_limit: float
     ideal_nodes: int
+    node_limit: int
     topology_truth: dict[str, dict] = field(default_factory=dict)
 
     @property
@@ -830,9 +949,12 @@ class CaseBounds:
 
     @property
     def topological(self) -> bool:
-        """Whether some colour has a piece reaching beyond the topology band at
-        some band width, so the topology assertion constrains something."""
-        return any(row["polygons_range"][1] for row in self.topology_truth.values())
+        """Whether the topology assertion holds anything: some colour has an
+        isolated structure, or an asserted count whose range reaches above 0."""
+        return any(row["isolated"]
+                   or any(row["asserted"][name] and row[f"{name}_range"][1]
+                          for name in ("polygons", "holes"))
+                   for row in self.topology_truth.values())
 
 
 def _inside(geometry, points: np.ndarray) -> np.ndarray:
@@ -873,30 +995,74 @@ def _quarters(sweep: float) -> int:
     return max(1, math.ceil(sweep / (math.pi / 2) - 1e-9))
 
 
-def _run_nodes(run, outside: np.ndarray) -> int:
-    """The ideal interior nodes of one ideal run that can lie on its parts whose
-    points are ``outside`` (``zone_ideal_nodes``)."""
+def _axis_extremes(points: np.ndarray, closed: bool) -> np.ndarray:
+    """Which points of the polyline ``points`` (a closed one ending on its start)
+    are axis extremes: where the sign of the x or y step changes, zero steps
+    carrying the sign before them. An open polyline's two ends are never
+    extremes; a closed one's repeated end is not flagged twice."""
+    steps = np.diff(points, axis=0)
+    count = len(points)
+    flags = np.zeros(count, dtype=bool)
+    if not len(steps):
+        return flags
+    for axis in (0, 1):
+        signs = np.sign(np.where(np.abs(steps[:, axis]) > 1e-12, steps[:, axis], 0.0))
+        nonzero = np.flatnonzero(signs)
+        if not len(nonzero):
+            continue
+        if closed:
+            # Carry the last non-zero sign round the seam.
+            filled = signs.copy()
+            last = signs[nonzero[-1]]
+            for index in range(len(filled)):
+                if filled[index] == 0:
+                    filled[index] = last
+                last = filled[index]
+            # Point i (1..n-1) joins step i-1 and step i; point 0 joins the last
+            # step and step 0.
+            before = np.roll(filled, 1)
+            flags[:-1] |= before != filled
+        else:
+            filled = signs.copy()
+            last = 0.0
+            for index in range(len(filled)):
+                if filled[index] == 0:
+                    filled[index] = last
+                last = filled[index]
+            change = (filled[:-1] != 0) & (filled[1:] != 0) & (filled[:-1] != filled[1:])
+            flags[1:-1] |= change
+    return flags
+
+
+def _run_nodes(run, outside: np.ndarray) -> tuple[int, int]:
+    """For one ideal run and its points ``outside`` the zone: the ideal interior
+    nodes that can lie on its parts outside the zone (``zone_ideal_nodes``), and
+    the interior nodes the fitter's fewest-piece route may need there
+    (``zone_node_limit``): per part, the larger of its ideal nodes and its axis
+    extremes, plus one per part end cut by the zone."""
     whole = _quarters(run.sweep[-1]) if run.conic else 1
     interior = whole if run.closed else whole - 1
     if not run.conic and not run.closed:
-        return 0
-    if outside.all():
-        return interior
+        interior = 0
     if not outside.any():
-        return 0
+        return 0, 0
+    extremes = _axis_extremes(run.points, run.closed)
+    if outside.all():
+        count = int(extremes[:-1].sum()) if run.closed else int(extremes.sum())
+        return interior, max(interior, count)
     spacing = run.sweep[-1] / whole if run.conic else math.inf
-    flags, sweep = outside, run.sweep
+    flags, sweep, marks = outside, run.sweep, extremes
     if run.closed:
         # Drop the repeated end and start the walk inside the zone, so no part
         # outside it wraps round the start.
-        flags, sweep = outside[:-1], run.sweep[:-1]
+        flags, sweep, marks = outside[:-1], run.sweep[:-1], extremes[:-1]
         total = run.sweep[-1]
         first = int(np.flatnonzero(~flags)[0])
         order = np.roll(np.arange(len(flags)), -first)
-        flags = flags[order]
+        flags, marks = flags[order], marks[order]
         sweep = np.where(order >= first, sweep[order] - sweep[first],
                          sweep[order] + total - sweep[first])
-    count = 0
+    count, limit = 0, 0
     index, last = 0, len(flags) - 1
     while index <= last:
         if not flags[index]:
@@ -909,10 +1075,28 @@ def _run_nodes(run, outside: np.ndarray) -> int:
         steps = math.floor(part / spacing + 1e-9) if math.isfinite(spacing) else 0
         # Nodes spaced ``spacing`` apart: from a vertex end at most ``steps`` fall
         # on the part; with both ends cut, at any phase, at most ``steps + 1``.
-        at_run_end = not run.closed and (index == 0 or end == last)
-        count += steps if at_run_end else steps + 1
+        starts_run = not run.closed and index == 0
+        ends_run = not run.closed and end == last
+        ideal = (steps if starts_run or ends_run else steps + 1) if (run.conic or run.closed) \
+            else 0
+        count += ideal
+        cuts = (0 if starts_run else 1) + (0 if ends_run else 1)
+        limit += max(ideal, int(marks[index:end + 1].sum())) + cuts
         index = end + 1
-    return min(count, interior)
+    return min(count, interior), limit
+
+
+def _vertices_outside(truth, zone, radii: dict | None, default_radius: float) -> int:
+    vertices = np.asarray(truth.ideal_vertices, dtype=np.float64).reshape(-1, 2)
+    if zone is None or zone.is_empty:
+        return len(vertices)
+    shapely.prepare(zone)
+    count = 0
+    for x, y in vertices:
+        radius = (radii or {}).get((round(float(x), 6), round(float(y), 6)), default_radius)
+        if not zone.contains(Point(x, y).buffer(max(radius, 1e-9), quad_segs=4)):
+            count += 1
+    return count
 
 
 def zone_ideal_nodes(truth, zone, radii: dict | None = None, default_radius: float = 0.0) -> int:
@@ -926,30 +1110,64 @@ def zone_ideal_nodes(truth, zone, radii: dict | None = None, default_radius: flo
     the zone ``floor(S_i / s) + 1`` at any phase (``s`` the piece sweep, ``S_i``
     the part's). Lines and cubics have no interior node. With an empty zone this
     is ``truth.ideal_nodes``."""
-    vertices = np.asarray(truth.ideal_vertices, dtype=np.float64).reshape(-1, 2)
-    count = 0
-    if zone is None or zone.is_empty:
-        count = len(vertices)
-    else:
-        shapely.prepare(zone)
-        for x, y in vertices:
-            radius = (radii or {}).get((round(float(x), 6), round(float(y), 6)), default_radius)
-            if not zone.contains(Point(x, y).buffer(max(radius, 1e-9), quad_segs=4)):
-                count += 1
+    count = _vertices_outside(truth, zone, radii, default_radius)
     for run in truth.ideal_runs:
-        count += _run_nodes(run, ~_inside(zone, run.points))
+        count += _run_nodes(run, ~_inside(zone, run.points))[0]
     return count
 
 
+def zone_node_limit(truth, zone, radii: dict | None = None, default_radius: float = 0.0) -> int:
+    """The ``nodes`` assertion's limit (module docstring): the vertex nodes
+    ``zone_ideal_nodes`` counts, and on each part of an ideal run outside the
+    zone the larger of its ideal interior nodes and its axis extremes, plus one
+    node per part end the zone cuts."""
+    count = _vertices_outside(truth, zone, radii, default_radius)
+    for run in truth.ideal_runs:
+        count += _run_nodes(run, ~_inside(zone, run.points))[1]
+    return count
+
+
+def _structures(geometry) -> list[dict]:
+    """Every piece and hole of ``geometry``: its kind, its region (a piece's shell
+    filled, a hole's ring filled), its rings, and a representative point."""
+    rows = []
+    for polygon in _polygons(geometry):
+        if polygon.area <= MIN_PIECE_AREA:
+            continue
+        rows.append({"kind": "piece", "region": Polygon(polygon.exterior),
+                     "rings": MultiLineString([LineString(polygon.exterior.coords)]
+                                              + [LineString(ring.coords)
+                                                 for ring in polygon.interiors]),
+                     "point": polygon.representative_point()})
+        for ring in polygon.interiors:
+            hole = Polygon(ring)
+            if hole.area > MIN_PIECE_AREA:
+                rows.append({"kind": "hole", "region": hole,
+                             "rings": MultiLineString([LineString(ring.coords)]),
+                             "point": hole.representative_point()})
+    return rows
+
+
+def _isolated(structure: dict, near) -> bool:
+    """Whether no ring of ``structure`` meets ``near``."""
+    return near is None or near.is_empty or not structure["rings"].intersects(near)
+
+
 def _topology_row(geometry, removed, bands) -> dict:
-    """The truth's counts with the traced band, and the range of each count over
-    every band width (``topology``)."""
+    """The truth's counts with the traced band, the range of each count over every
+    band width, which counts are asserted, and the isolated structures
+    (``topology``)."""
     rows = [_local_topology(geometry, removed, band) for band in bands]
     traced = rows[TOPOLOGY_BAND_MULTIPLES.index(TOPOLOGY_BAND_TRACED)]
     result = dict(traced)
+    result["asserted"] = {}
     for name in ("polygons", "holes"):
         values = [row[name] for row in rows]
         result[f"{name}_range"] = [min(values), max(values)]
+        # Asserted only where deleting one structure counted at the traced band
+        # takes the count below the range.
+        result["asserted"][name] = min(values) == traced[name]
+    result["isolated"] = [row for row in _structures(geometry) if _isolated(row, bands[-1])]
     return result
 
 
@@ -967,7 +1185,8 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     allowance = float(lengths.corner_sharpening_allowance)
     bound = boundary_bound(max_deviation)
     threshold = float(TraceSettings().corner_threshold)
-    rho = SHARPENING_RADIUS_FACTOR * (allowance + Q_PX)
+    round_radius = SHARPENING_RADIUS_FACTOR * (allowance + (1.0 + math.sqrt(2.0)) * Q_PX)
+    rho = round_radius + math.sqrt(2.0) * Q_PX
     rings = truth_rings(truth)
     vertices = np.asarray([corner.point for corner in truth.corners],
                           dtype=np.float64).reshape(-1, 2)
@@ -1024,6 +1243,14 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     bands = ([_buffer(removed_topology, k * bound) for k in TOPOLOGY_BAND_MULTIPLES]
              if not removed_topology.is_empty else [None] * len(TOPOLOGY_BAND_MULTIPLES))
     far_topology = bands[TOPOLOGY_BAND_MULTIPLES.index(TOPOLOGY_BAND_TRACED)]
+    evidence_tolerance = (max(max_deviation, allowance) + 0.5 + EVIDENCE_OFFSET_PX[tier]
+                          + DISTANCE_ERROR_BOUND)
+    # A trace lies within D of the truth, and within e of the evidence where the
+    # truth distance does not hold it (a feature below the resolution floor).
+    topology_tolerance = max(bound, evidence_tolerance)
+    isolation = (_buffer(removed_topology,
+                         TOPOLOGY_BAND_MULTIPLES[-1] * bound + topology_tolerance)
+                 if not removed_topology.is_empty else None)
     topology_truth = {}
     region_floored = {index for index, g in geometry.items()
                       if _polygons(g) and all(any(polygon.equals(floored)
@@ -1060,9 +1287,9 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
 
     return CaseBounds(
         tier=tier, width=width, height=height, truth=truth, max_deviation=max_deviation,
-        allowance=allowance, bound=bound, rho=rho, threshold=threshold,
-        evidence_tolerance=(max(max_deviation, allowance) + 0.5 + EVIDENCE_OFFSET_PX[tier]
-                            + DISTANCE_ERROR_BOUND),
+        allowance=allowance, bound=bound, rho=rho, round_radius=round_radius,
+        threshold=threshold,
+        evidence_tolerance=evidence_tolerance,
         corners=corners, centres=centres, radii=radii, discs=discs,
         resolution_zone=resolution_zone, topology_zone=topology_zone,
         palette_zone=palette_zone, aliases=dict(design["aliases"]),
@@ -1070,9 +1297,12 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
         zoned=set(design["zoned"]),
         removed_by_design=set(design["folded"]) | set(design["zoned"]) | region_floored,
         topology_removed=removed_topology, topology_far=far_topology,
-        palette_reasons=list(design["reasons"]), rings=rings, truth_samples=samples,
+        topology_isolation=isolation, topology_tolerance=topology_tolerance,
+        palette_reasons=list(design["reasons"]), fold_mismatches=list(design["fold_mismatches"]),
+        rings=rings, truth_samples=samples,
         truth_kept=kept, colour_limits=colour_limits, area_region_limit=area_region_limit,
         ideal_nodes=zone_ideal_nodes(truth, excluded, vertex_radii, bound),
+        node_limit=zone_node_limit(truth, excluded, vertex_radii, bound),
         topology_truth=topology_truth)
 
 
@@ -1182,32 +1412,82 @@ def evidence_distance(geometry: dict[int, object], palette_hex: list[str],
     and the length of boundary farther than ``tolerance``."""
     worst, point, fill = 0.0, None, None
     beyond = 0
+    directed = {"trace_to_evidence_px": 0.0, "evidence_to_trace_px": 0.0}
     for index, hex_code in enumerate(palette_hex):
         hex_code = hex_code.upper()
         shape = geometry.get(index)
         evidence = (_boundary_samples(_geometry_rings(shape), width, height)
                     if shape is not None else np.empty((0, 2)))
         traced = _boundary_samples(traced_rings_by_fill.get(hex_code, []), width, height)
-        for mine, other in ((traced, evidence), (evidence, traced)):
+        for name, mine, other in (("trace_to_evidence_px", traced, evidence),
+                                  ("evidence_to_trace_px", evidence, traced)):
             distances = _directed(mine, other)
             if not len(distances):
                 continue
             beyond += int((distances > tolerance).sum())
+            directed[name] = max(directed[name], float(distances.max()))
             if distances.max() > worst:
                 worst = float(distances.max())
                 point = [float(value) for value in mine[int(distances.argmax())]]
                 fill = hex_code
     return {"distance_px": worst, "worst_point": point, "fill": fill,
-            "length_beyond_px": beyond * SAMPLE_SPACING}
+            "length_beyond_px": beyond * SAMPLE_SPACING, **directed}
+
+
+def thin_regions(labels: np.ndarray, palette_hex: list[str], traced_by_fill: dict,
+                 exempt=None) -> list[dict]:
+    """Every *thin* four-connected evidence region: one most of whose pixels lie in
+    no 2 x 2 block of its own pixels (narrower than the resolution floor along
+    most of it), with the fraction of those thin pixels' centres its label's
+    traced layer covers (``recall``); a region whose thin pixels all lie in
+    ``exempt`` (the vertex discs, where a tip or a corner contact leaves a pixel
+    no trace is held to) is left out."""
+    labels = np.asarray(labels)
+    rows = []
+    for value in np.unique(labels):
+        mask = labels == value
+        block = mask[:-1, :-1] & mask[1:, :-1] & mask[:-1, 1:] & mask[1:, 1:]
+        covered = np.zeros_like(mask)
+        covered[:-1, :-1] |= block
+        covered[1:, :-1] |= block
+        covered[:-1, 1:] |= block
+        covered[1:, 1:] |= block
+        component, count = ndimage.label(mask)
+        if not count:
+            continue
+        sizes = np.bincount(component.ravel(), minlength=count + 1)
+        thin_sizes = np.bincount(component[mask & ~covered], minlength=count + 1)
+        slices = ndimage.find_objects(component)
+        traced = traced_by_fill.get(palette_hex[int(value)].upper(), Polygon())
+        if not traced.is_empty:
+            shapely.prepare(traced)
+        for region in np.flatnonzero(2 * thin_sizes[1:] > sizes[1:]) + 1:
+            rows_slice, columns_slice = slices[region - 1]
+            local = ((component[rows_slice, columns_slice] == region)
+                     & ~covered[rows_slice, columns_slice])
+            ys, xs = np.nonzero(local)
+            ys, xs = ys + rows_slice.start, xs + columns_slice.start
+            if exempt is not None and not exempt.is_empty \
+                    and shapely.contains_xy(exempt, xs + 0.5, ys + 0.5).all():
+                continue
+            order = np.lexsort((xs, ys))
+            inside = (shapely.contains_xy(traced, xs + 0.5, ys + 0.5) if not traced.is_empty
+                      else np.zeros(len(xs), dtype=bool))
+            rows.append({"label": int(value), "pixels": int(sizes[region]),
+                         "pixel": [int(xs[order[0]]), int(ys[order[0]])],
+                         "recall": float(inside.mean())})
+    return rows
 
 
 def evidence_check(labels: np.ndarray, palette_hex: list[str], traced_by_fill: dict,
                    traced_rings_by_fill: dict, tolerance: float, width: float,
-                   height: float) -> dict:
+                   height: float, exempt=None) -> dict:
     """Per evidence label: the four-connected regions with no traced area of their
     colour within ``tolerance``, the symmetric difference of the traced layer and
     the label's pixels against the area of the ``tolerance``-tube round the label's
-    boundary (off the frame), and the boundary distance (``evidence_distance``)."""
+    boundary (off the frame), the boundary distance (``evidence_distance``), and
+    the thin regions (``thin_regions``, outside ``exempt``) whose traced layer
+    covers less than ``THIN_RECALL`` of their pixel centres."""
     geometry = label_geometry(labels)
     regions = evidence_regions(labels, geometry)
     colours = {}
@@ -1233,7 +1513,12 @@ def evidence_check(labels: np.ndarray, palette_hex: list[str], traced_by_fill: d
         if overlap <= MIN_PIECE_AREA:
             missing.append({"label": region["label"], "pixels": region["pixels"],
                             "pixel": region["pixel"]})
+    lost = {(row["label"], tuple(row["pixel"])) for row in missing}
+    thin = thin_regions(labels, palette_hex, traced_by_fill, exempt)
+    misplaced = [row for row in thin
+                 if row["recall"] < THIN_RECALL and (row["label"], tuple(row["pixel"])) not in lost]
     return {"tolerance_px": tolerance, "regions": len(regions), "missing_regions": missing,
+            "thin_regions": len(thin), "misplaced_thin_regions": misplaced,
             "colours": colours, "present_labels": sorted(int(k) for k in geometry),
             "distance": evidence_distance(geometry, palette_hex, traced_rings_by_fill,
                                           tolerance, width, height)}
@@ -1253,17 +1538,87 @@ def colour_map(bounds: CaseBounds, run) -> dict[str, int]:
     return {**matched_colour_map(bounds, run), **bounds.stand_ins}
 
 
-def _topology_verdict(traced: dict, truth_row: dict) -> dict:
-    """The traced counts against the truth's: equal where the truth's count is the
-    same for every band width, within its range over the band widths otherwise;
-    ``error`` is how far outside that each count lies, summed."""
+def _same_region(first, second, tolerance: float) -> bool:
+    """Whether each region lies within ``tolerance`` of the other."""
+    return (first.difference(_buffer(second, tolerance)).area <= _SAME_REGION_AREA
+            and second.difference(_buffer(first, tolerance)).area <= _SAME_REGION_AREA)
+
+
+def topology_colour_verdict(traced_geometry, truth_row: dict, bounds: "CaseBounds") -> dict:
+    """One colour's ``topology`` verdict for ``traced_geometry`` against the
+    truth's row (``_topology_row``): each asserted count within its range over the
+    band widths; each isolated true structure matching exactly one traced structure
+    of its kind within the topology tolerance; and no traced structure whose rings
+    clear the removed region by ``3 D`` plus that tolerance (so its true
+    counterpart would be isolated) left unmatched. ``error`` sums how far each
+    asserted count lies outside its range, the unmatched isolated structures and
+    the unexpected traced ones."""
+    traced = _local_topology(traced_geometry, bounds.topology_removed, bounds.topology_far)
     error = 0
     for name in ("polygons", "holes"):
+        if not truth_row["asserted"][name]:
+            continue
         low, high = truth_row[f"{name}_range"]
         error += max(0, low - traced[name], traced[name] - high)
+    mine = _structures(traced_geometry)
+    tolerance = bounds.topology_tolerance
+    matched = set()
+    missing = []
+    for structure in truth_row["isolated"]:
+        near = _buffer(structure["region"], tolerance)
+        hits = [k for k, other in enumerate(mine)
+                if other["kind"] == structure["kind"] and other["region"].intersects(near)
+                and _same_region(structure["region"], other["region"], tolerance)]
+        if len(hits) != 1:
+            missing.append(structure)
+        matched.update(hits)
+    unexpected = [other for k, other in enumerate(mine)
+                  if k not in matched and _isolated(other, bounds.topology_isolation)]
+    error += len(missing) + len(unexpected)
+
+    def located(rows):
+        return [[row["kind"], float(row["point"].x), float(row["point"].y)] for row in rows]
+
     return {"traced": traced, "truth": {name: truth_row[name] for name in ("polygons", "holes")},
             "ranges": {name: truth_row[f"{name}_range"] for name in ("polygons", "holes")},
-            "error": error}
+            "asserted": dict(truth_row["asserted"]), "isolated": len(truth_row["isolated"]),
+            "missing": located(missing), "unexpected": located(unexpected), "error": error}
+
+
+def topology_mutations(bounds: "CaseBounds") -> list[dict]:
+    """The topology assertion judged, per colour, on the truth as its own trace
+    (``"truth"``, which must pass) and on every single deletion it claims to
+    catch (each must fail): every isolated structure, and every structure whose
+    deletion changes an asserted count at the traced band (a hole filled with the
+    colour, a piece dropped)."""
+    rows = []
+    for colour, truth_row in sorted(bounds.topology_truth.items()):
+        geometry = bounds.truth.colour_geometry[int(colour)]
+        verdict = topology_colour_verdict(geometry, truth_row, bounds)
+        rows.append({"colour": colour, "mutation": "truth", "error": verdict["error"]})
+        isolated = {(row["kind"], round(row["point"].x, 6), round(row["point"].y, 6))
+                    for row in truth_row["isolated"]}
+        pieces = [p for p in _polygons(geometry) if p.area > MIN_PIECE_AREA]
+        for structure in _structures(geometry):
+            if structure["kind"] == "hole":
+                mutated = geometry.union(structure["region"])
+            else:
+                piece = next(p for p in pieces
+                             if p.representative_point().equals(structure["point"]))
+                mutated = geometry.difference(piece)
+            key = (structure["kind"], round(structure["point"].x, 6),
+                   round(structure["point"].y, 6))
+            counts = _local_topology(mutated, bounds.topology_removed, bounds.topology_far)
+            changes = any(truth_row["asserted"][name] and counts[name] != truth_row[name]
+                          for name in ("polygons", "holes"))
+            if key not in isolated and not changes:
+                continue
+            verdict = topology_colour_verdict(mutated, truth_row, bounds)
+            rows.append({"colour": colour,
+                         "mutation": f"delete the {structure['kind']} at "
+                                     f"({structure['point'].x:.2f}, {structure['point'].y:.2f})",
+                         "error": verdict["error"]})
+    return rows
 
 
 def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None = None,
@@ -1308,12 +1663,15 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     traced_kept = (_outside_discs(traced_samples, bounds.centres, bounds.radii)
                    & ~_inside(excluded, traced_samples))
     pooled = []
-    for mine, other in ((traced_samples[traced_kept], truth_samples),
-                        (truth_samples[bounds.truth_kept], traced_samples)):
+    directed = {"trace_to_truth_px": 0.0, "truth_to_trace_px": 0.0}
+    for name, mine, other in (("trace_to_truth_px", traced_samples[traced_kept], truth_samples),
+                              ("truth_to_trace_px", truth_samples[bounds.truth_kept],
+                               traced_samples)):
         distances = _directed(mine, other)
         if not len(distances):
             continue
         pooled.append(distances)
+        directed[name] = float(distances.max())
         if distances.max() > worst:
             worst = float(distances.max())
             point = [float(value) for value in mine[int(distances.argmax())]]
@@ -1322,7 +1680,8 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     local = {"hausdorff_px": worst, "mean_px": mean, "worst_point": point,
              "truth_samples": int(bounds.truth_kept.sum()),
              "traced_samples": int(traced_kept.sum()),
-             "length_beyond_px": int((everything > bounds.bound).sum()) * SAMPLE_SPACING}
+             "length_beyond_px": int((everything > bounds.bound).sum()) * SAMPLE_SPACING,
+             **directed}
 
     # Cusps: kinks unless near an anchored vertex, in a zone or on a sharpenable round.
     in_zone = _inside(excluded, cusp_points)
@@ -1331,24 +1690,26 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     for (x, y), zoned in zip(cusp_points, in_zone):
         near_corner = any(math.hypot(x - c["point"][0], y - c["point"][1]) <= c["radius_px"]
                           for c in anchored)
-        turn = truth_turn_near(bounds.rings, (x, y), bounds.rho)
+        turn = round_turn_near(bounds.rings, (x, y), bounds.round_radius,
+                               math.sqrt(2.0) * Q_PX)
         cusps.append({"point": [float(x), float(y)], "near_corner": near_corner,
                       "in_zone": bool(zoned), "truth_turn_deg": turn,
                       "kink": not near_corner and not zoned and turn < bounds.threshold})
 
     node_points = np.asarray([(x, y) for x, y, _ in nodes], dtype=np.float64).reshape(-1, 2)
-    nodes_outside = int((~_inside(excluded, node_points)).sum())
+    outside_flags = ~_inside(excluded, node_points)
+    nodes_outside = int(outside_flags.sum())
 
     # Topology outside the discs and zones, every colour of the truth or the trace.
-    removed, far = bounds.topology_removed, bounds.topology_far
-    absent = {"polygons": 0, "holes": 0, "polygons_range": [0, 0], "holes_range": [0, 0]}
+    absent = {"polygons": 0, "holes": 0, "polygons_range": [0, 0], "holes_range": [0, 0],
+              "asserted": {"polygons": True, "holes": True}, "isolated": []}
     topology = {}
     for index in sorted(set(truth.colour_geometry) | set(traced_by_colour)):
         if index in bounds.zoned:
             continue
-        mine = _local_topology(traced_by_colour.get(index, Polygon()), removed, far)
-        topology[str(index)] = _topology_verdict(
-            mine, bounds.topology_truth.get(str(index), absent))
+        topology[str(index)] = topology_colour_verdict(
+            traced_by_colour.get(index, Polygon()),
+            bounds.topology_truth.get(str(index), absent), bounds)
 
     # Area per colour.
     colour_area = {}
@@ -1365,6 +1726,7 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
         "max_deviation_px": bounds.max_deviation,
         "audit_max_deviation_px": float(run.audit["lengths"]["px"]["max_deviation"]),
         "allowance_px": bounds.allowance, "rho_px": bounds.rho,
+        "round_radius_px": bounds.round_radius,
         "bound_px": bounds.bound, "threshold_deg": bounds.threshold,
         "geometric": bounds.geometric, "topological": bounds.topological,
         "palette_reasons": list(bounds.palette_reasons), "folded": sorted(bounds.folded),
@@ -1373,7 +1735,9 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
         "mean_px": measured["boundary"]["mean_px"],
         "corners": corners, "cusps": cusps,
         "nodes": measured["nodes"]["boundary"], "nodes_outside_zones": nodes_outside,
-        "ideal_nodes": int(bounds.ideal_nodes), "scene_ideal_nodes": int(truth.ideal_nodes),
+        "nodes_outside_points": [[float(x), float(y)] for x, y in node_points[outside_flags]],
+        "ideal_nodes": int(bounds.ideal_nodes), "node_limit": int(bounds.node_limit),
+        "scene_ideal_nodes": int(truth.ideal_nodes),
         "topology": topology,
         # A stand-in is judged as its colour geometrically but is still no match.
         "unmatched_layers": measured["area"]["unmatched_layers"]
@@ -1389,7 +1753,8 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
         labels = np.asarray(bundle["labels"])
     palette_hex = [str(row["hex"]).upper() for row in run.palette]
     result["evidence"] = evidence_check(labels, palette_hex, traced_by_fill, rings_by_fill,
-                                        bounds.evidence_tolerance, width, height)
+                                        bounds.evidence_tolerance, width, height,
+                                        exempt=bounds.discs)
     matched = matched_colour_map(bounds, run)
     present = {matched[palette_hex[label]]
                for label in result["evidence"]["present_labels"]
@@ -1402,6 +1767,7 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     result["evidence"]["required_scene_colours"] = required
     result["evidence"]["absent_scene_colours"] = (
         [index for index in required if index not in present] if tier == "rgb" else [])
+    result["evidence"]["fold_target_mismatches"] = [list(row) for row in bounds.fold_mismatches]
     return result
 
 
@@ -1461,6 +1827,13 @@ def _evidence_problems(result: dict) -> tuple[list[str], float]:
             excess += row["symmetric_difference_px"] - row["limit_px"]
     problems += [f"scene colour {index} is no inferred colour"
                  for index in evidence["absent_scene_colours"]]
+    problems += [f"thin label {row['label']} region of {row['pixels']} px at {row['pixel']}: "
+                 f"traced layer covers {100 * row['recall']:.0f}% of its pixel centres "
+                 f"(< {100 * THIN_RECALL:.0f}%)"
+                 for row in evidence["misplaced_thin_regions"][:6]]
+    problems += [f"colour {colour} folded into {target}, not {replay} as the usage cutoff "
+                 f"replay folds it, and is at least D wide"
+                 for colour, target, replay in evidence["fold_target_mismatches"]]
     return problems, excess
 
 
@@ -1488,16 +1861,24 @@ def check(name: str, result: dict, case) -> tuple[bool, str]:
         kinks = [cusp["point"] for cusp in result["cusps"] if cusp["kink"]]
         return not kinks, f"{len(kinks)} cusp nodes on smooth truth: {_points(kinks)}"
     if name == "nodes":
-        limit = NODE_FACTOR * result["ideal_nodes"] + NODE_CONSTANT
+        limit = result["node_limit"]
         count = result["nodes_outside_zones"]
-        return count <= limit, (f"{count} boundary nodes outside the zones (limit "
-                                f"{NODE_FACTOR} x {result['ideal_nodes']} ideal outside the "
-                                f"zones + {NODE_CONSTANT} = {limit})")
+        return count <= limit, (f"{count} boundary nodes outside the zones (limit {limit}: "
+                                f"{result['ideal_nodes']} ideal, with the axis extremes and "
+                                f"zone cuts the fitter's route may add)")
     if name == "topology":
         wrong = {colour: row for colour, row in result["topology"].items() if row["error"]}
         unmatched = [row["fill"] for row in result["unmatched_layers"]]
+        def located(rows):
+            return ", ".join(f"{kind} at ({x:.1f}, {y:.1f})" for kind, x, y in rows[:4])
+
         return not wrong and not unmatched, "; ".join(
-            [f"colour {colour}: traced {row['traced']} outside truth ranges {row['ranges']}"
+            [f"colour {colour}: traced {row['traced']}, truth ranges {row['ranges']} "
+             f"(asserted {[n for n, a in row['asserted'].items() if a]})"
+             + (f", isolated true {located(row['missing'])} unmatched" if row["missing"]
+                else "")
+             + (f", traced {located(row['unexpected'])} matching no isolated truth"
+                if row["unexpected"] else "")
              for colour, row in wrong.items()]
             + ([f"unmatched layers {unmatched}"] if unmatched else []))
     if name == "area":
@@ -1512,7 +1893,8 @@ def check(name: str, result: dict, case) -> tuple[bool, str]:
     raise KeyError(name)
 
 
-def _palette_problems(case, result: dict) -> list[str]:
+def _palette_findings(case, result: dict) -> list[tuple[str, list]]:
+    """Each ``palette`` problem as its text and its identity."""
     from vinylgen.fidelity.harness import MATCH_DELTA_E
     expect = case.scene.params["expect"]
     matched: dict[int, int] = {}
@@ -1523,17 +1905,25 @@ def _palette_problems(case, result: dict) -> list[str]:
     for first, second in expect.get("merge", []):
         count = matched.get(first, 0) + matched.get(second, 0)
         if count != 1:
-            problems.append(f"merge {first}+{second}: {count} inferred colours")
+            problems.append((f"merge {first}+{second}: {count} inferred colours",
+                             ["merge", first, second, count]))
     for index in expect.get("survive", []):
         if matched.get(index, 0) != 1:
-            problems.append(f"survive {index}: {matched.get(index, 0)} inferred colours")
+            problems.append((f"survive {index}: {matched.get(index, 0)} inferred colours",
+                             ["survive", index, matched.get(index, 0)]))
     for index in expect.get("fold", []):
         if matched.get(index, 0):
-            problems.append(f"fold {index}: {matched[index]} inferred colours")
+            problems.append((f"fold {index}: {matched[index]} inferred colours",
+                             ["fold", index, matched[index]]))
     unmatched = [row["hex"] for row in result["palette_matches"] if not row["matched"]]
     if unmatched:
-        problems.append(f"unmatched inferred colours {unmatched} (beyond {MATCH_DELTA_E} dE)")
+        problems.append((f"unmatched inferred colours {unmatched} (beyond {MATCH_DELTA_E} dE)",
+                         ["unmatched", *sorted(unmatched)]))
     return problems
+
+
+def _palette_problems(case, result: dict) -> list[str]:
+    return [text for text, _ in _palette_findings(case, result)]
 
 
 def palette_outcome(case, result: dict) -> tuple[bool, str]:
@@ -1560,9 +1950,29 @@ MEASUREMENTS = {
     "topology": ("wrong_colours", "count_error", "unmatched_layers"),
     "area": ("colours_over", "excess_px2"),
     "evidence": ("missing_regions", "missing_pixels", "colours_over", "excess_px2",
-                 "absent_scene_colours"),
+                 "absent_scene_colours", "misplaced_thin_regions", "fold_target_mismatches"),
     "palette": ("problems",),
 }
+# The identities of what each assertion finds wrong (``identities``): what an
+# expected failure records besides its measurements, so fixing one defect while
+# introducing another of the same size is no longer the recorded failure. Each
+# is a list of items, each a list of numbers and strings.
+IDENTITIES = {
+    "hausdorff": ("truth_worst_point", "evidence_worst_point"),
+    "corners": ("missed_vertices",),
+    "kinks": ("kinks",),
+    "nodes": ("nodes_outside_zones",),
+    "topology": ("wrong_counts", "missing_structures", "unexpected_structures",
+                 "unmatched_layers"),
+    "area": ("colours_over",),
+    "evidence": ("missing_regions", "colours_over", "absent_scene_colours",
+                 "misplaced_thin_regions", "fold_target_mismatches"),
+    "palette": ("problems",),
+}
+# Numbers in an identity item match within this: its positions are node and
+# vertex coordinates, which a deterministic trace reproduces to floating-point
+# drift (``RATCHET_TOLERANCE``'s px margin); its counts and indices are whole.
+IDENTITY_TOLERANCE = 1e-3
 # Tolerances of the expected-failure ratchet. The pipeline is deterministic (the
 # same code and inputs give the same SVG, and the measures are exact geometry on
 # it), so a count may not grow at all; lengths and areas get a margin far below
@@ -1614,12 +2024,108 @@ def measurements(name: str, result: dict, case) -> dict[str, float]:
                   "colours_over": len(over),
                   "excess_px2": sum(row["symmetric_difference_px"] - row["limit_px"]
                                     for row in over),
-                  "absent_scene_colours": len(evidence["absent_scene_colours"])}
+                  "absent_scene_colours": len(evidence["absent_scene_colours"]),
+                  "misplaced_thin_regions": len(evidence["misplaced_thin_regions"]),
+                  "fold_target_mismatches": len(evidence["fold_target_mismatches"])}
     elif name == "palette":
         values = {"problems": len(_palette_problems(case, result))}
     else:
         raise KeyError(name)
     return {key: float(value) for key, value in values.items()}
+
+
+def identities(name: str, result: dict, case) -> dict[str, list[list]]:
+    """What assertion ``name`` finds wrong, item by item (``IDENTITIES``)."""
+    def point(value):
+        return [] if value is None else [[float(value[0]), float(value[1])]]
+
+    if name == "hausdorff":
+        values = {"truth_worst_point": point(result["local_hausdorff"]["worst_point"]),
+                  "evidence_worst_point": point(result["evidence"]["distance"]["worst_point"])}
+    elif name == "corners":
+        values = {"missed_vertices": [list(map(float, c["point"])) for c in result["corners"]
+                                      if c["role"] == "required" and not c["found"]]}
+    elif name == "kinks":
+        values = {"kinks": [list(map(float, cusp["point"])) for cusp in result["cusps"]
+                            if cusp["kink"]]}
+    elif name == "nodes":
+        values = {"nodes_outside_zones": [list(p) for p in result["nodes_outside_points"]]}
+    elif name == "topology":
+        rows = result["topology"]
+        values = {"wrong_counts": [[colour, row["traced"]["polygons"], row["traced"]["holes"]]
+                                   for colour, row in rows.items() if row["error"]],
+                  "missing_structures": [[colour, *item] for colour, row in rows.items()
+                                         for item in row["missing"]],
+                  "unexpected_structures": [[colour, *item] for colour, row in rows.items()
+                                            for item in row["unexpected"]],
+                  "unmatched_layers": [[row["fill"]] for row in result["unmatched_layers"]]}
+    elif name == "area":
+        over = [[colour] for colour, row in result["colour_area"].items()
+                if row["asserted"] and row["symmetric_difference_px"] > row["limit_px"]]
+        if result["misassigned_px"] > result["area_limit_px"]:
+            over.append(["misassigned"])
+        values = {"colours_over": over}
+    elif name == "evidence":
+        evidence = result["evidence"]
+        values = {"missing_regions": [[row["label"], *row["pixel"], row["pixels"]]
+                                      for row in evidence["missing_regions"]],
+                  "colours_over": [[label] for label, row in evidence["colours"].items()
+                                   if row["symmetric_difference_px"] > row["limit_px"]],
+                  "absent_scene_colours": [[index]
+                                           for index in evidence["absent_scene_colours"]],
+                  "misplaced_thin_regions": [[row["label"], *row["pixel"], row["pixels"]]
+                                             for row in evidence["misplaced_thin_regions"]],
+                  "fold_target_mismatches": [list(row)
+                                             for row in evidence["fold_target_mismatches"]]}
+    elif name == "palette":
+        values = {"problems": [item for _, item in _palette_findings(case, result)]}
+    else:
+        raise KeyError(name)
+    return values
+
+
+def _same_item(first: list, second: list) -> bool:
+    if len(first) != len(second):
+        return False
+    for a, b in zip(first, second):
+        if isinstance(a, str) or isinstance(b, str):
+            if a != b:
+                return False
+        elif abs(float(a) - float(b)) > IDENTITY_TOLERANCE:
+            return False
+    return True
+
+
+def identity_ratchet(recorded: dict[str, list], found: dict[str, list]) -> tuple[list[str],
+                                                                                 list[str]]:
+    """The items ``found`` has and ``recorded`` lacks (new defects: worse), and
+    the ones ``recorded`` has and ``found`` lacks (fixed: better), each kind
+    matched item for item within ``IDENTITY_TOLERANCE``."""
+    worse, better = [], []
+    for key in sorted(set(found) | set(recorded)):
+        unmatched = list(recorded.get(key, []))
+        new = []
+        for item in found.get(key, []):
+            hit = next((k for k, other in enumerate(unmatched) if _same_item(item, other)), None)
+            if hit is None:
+                new.append(item)
+            else:
+                unmatched.pop(hit)
+        if new:
+            worse.append(f"{key}: {len(new)} not recorded, e.g. {new[:3]}")
+        if unmatched:
+            better.append(f"{key}: {len(unmatched)} recorded no longer found, "
+                          f"e.g. {unmatched[:3]}")
+    return worse, better
+
+
+def entry_ratchet(entry: dict, measured: dict[str, float],
+                  found: dict[str, list]) -> tuple[list[str], list[str]]:
+    """An expected failure's ratchet: its measurements (``ratchet``) and its
+    identities (``identity_ratchet``), worse and better lines together."""
+    worse, better = ratchet(entry["measured"], measured)
+    more, fewer = identity_ratchet(entry.get("identities", {}), found)
+    return worse + more, better + fewer
 
 
 def ratchet(recorded: dict[str, float], measured: dict[str, float]) -> tuple[list[str], list[str]]:
@@ -1677,6 +2183,8 @@ def summary_numbers(result: dict) -> dict:
     if result["area_limit_px"] > 0:
         area_ratios.append(result["misassigned_px"] / result["area_limit_px"])
     evidence = result["evidence"]
+    evidence_ratios = [row["symmetric_difference_px"] / row["limit_px"]
+                       for row in evidence["colours"].values() if row["limit_px"] > 0]
     return {
         "bound_px": result["bound_px"],
         "evidence_tolerance_px": evidence["tolerance_px"],
@@ -1692,10 +2200,17 @@ def summary_numbers(result: dict) -> dict:
         "nodes_outside_zones": result["nodes_outside_zones"],
         "ideal_nodes_outside_zones": result["ideal_nodes"],
         "colours": len(result["topology"]),
+        "node_limit": result["node_limit"],
         "topology_mismatches": sum(1 for row in result["topology"].values() if row["error"]),
+        "unmatched_layers": len(result["unmatched_layers"]),
         "area_ratio": max(area_ratios) if area_ratios else 0.0,
+        "evidence_area_ratio": max(evidence_ratios) if evidence_ratios else 0.0,
+        "evidence_colours_over": sum(1 for ratio in evidence_ratios if ratio > 1.0),
         "evidence_regions": evidence["regions"],
         "evidence_missing_regions": len(evidence["missing_regions"]),
+        "thin_regions": evidence["thin_regions"],
+        "misplaced_thin_regions": len(evidence["misplaced_thin_regions"]),
         "required_scene_colours": len(evidence["required_scene_colours"]),
         "absent_scene_colours": len(evidence["absent_scene_colours"]),
+        "fold_target_mismatches": len(evidence["fold_target_mismatches"]),
     }

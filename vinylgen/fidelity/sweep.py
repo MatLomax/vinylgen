@@ -204,7 +204,6 @@ def summarise_measure(result: dict, evaluation: dict) -> dict:
                           if judged["corners_true"] else None),
         "nodes": nodes["boundary"], "ideal_nodes": nodes["ideal"],
         "node_ratio": nodes["ratio_to_ideal"],
-        "unmatched_layers": len(area["unmatched_layers"]),
     }
 
 

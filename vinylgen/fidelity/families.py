@@ -515,8 +515,9 @@ ELLIPSE_ROTATIONS = (0.0, 17.0, 45.0)
 RECTANGLE_KINDS = ("square", "rect")
 RECTANGLE_ROTATIONS = (0.0, 3.0, 7.0, 15.0, 30.0, 45.0)
 RECTANGLE_PHASES = ("int", "sub")
-# Corner radius as a multiple of the default sharpening radius (straddling 1).
-ROUNDED_MULTIPLES = (0.5, 0.8, 0.95, 1.05, 1.25, 2.0, 4.0)
+# Corner radius as a multiple of the default sharpening radius: straddling 1, and
+# above the largest round the trace may sharpen seen through the quantisation.
+ROUNDED_MULTIPLES = (0.5, 0.8, 0.95, 1.05, 1.25, 2.0, 3.0, 4.0)
 ROUNDED_RADII_PX = (1.0, 1.5, 2.0, 2.25, 2.5, 2.75, 3.0, 4.0, 6.0, 10.0)
 ROUNDED_ROTATIONS = (0.0, 20.0)
 POLYGON_SIDES = (3, 5, 6, 8, 12)
@@ -596,6 +597,16 @@ def fixed_set() -> list[Case]:
         rounded_rectangle_case(medium, "scaled", 0.0, multiple=1.25),
         rounded_rectangle_case(large, "scaled", 0.0, multiple=0.8),
         rounded_rectangle_case(large, "scaled", 20.0, multiple=1.25),
+        # Rounds of 3 and 4 sharpening radii: above the largest round the trace
+        # may sharpen seen through the quantisation (``bounds`` "Sharpenable
+        # rounds": 2.71 sharpening radii at A = 1 px, 2.11 at 1536 px), so each
+        # must stay round.
+        rounded_rectangle_case(small, "scaled", 0.0, multiple=3.0),
+        rounded_rectangle_case(small, "scaled", 20.0, multiple=4.0),
+        rounded_rectangle_case(medium, "scaled", 20.0, multiple=3.0),
+        rounded_rectangle_case(medium, "scaled", 0.0, multiple=4.0),
+        rounded_rectangle_case(large, "scaled", 0.0, multiple=3.0),
+        rounded_rectangle_case(large, "scaled", 20.0, multiple=4.0),
         rounded_rectangle_case(px, "fixed-px", 0.0, radius_px=2.0),
         rounded_rectangle_case(px, "fixed-px", 0.0, radius_px=3.0),
         regular_polygon_case(small, 3), regular_polygon_case(small, 8),
@@ -751,6 +762,21 @@ def palette_stage_set() -> list[Case]:
             {"outline_width_px": width,
              "palette_options": {"preserved_colour_points": [point]},
              "expect": {"survive": [0, 1, 2]}}))
+    # A 1 px preserved outline: an axis-aligned square on whole pixel edges (an
+    # integer centre and half size), so column 409 of the outline's right side is
+    # a whole pixel inside it, which the preservation point clicks.
+    width, inner, centre = 1.0, 153.0, (s / 2, s / 2)
+    regions = [Region(1, _place(rectangle(-inner - width, -inner - width, inner + width,
+                                          inner + width), centre)),
+               Region(2, _place(rectangle(-inner, -inner, inner, inner), centre))]
+    point = _pixel_inside_band(regions[0].outline, regions[1].outline,
+                               int(math.floor(centre[1])), int(math.floor(centre[0] + inner)))
+    cases.append(_palette_case(
+        f"palette-dark-outline-square-w{_tok(width)}-preserved-512", s,
+        _rgb_palette("paper", "black", "gold"), regions, width, "dark-outline",
+        {"outline_width_px": width,
+         "palette_options": {"preserved_colour_points": [point]},
+         "expect": {"survive": [0, 1, 2]}}))
 
     # Light seeded noise over clean scenes, at three canvas sizes.
     for size, amplitude, seed in ((128, 3, 11), (512, 4, 12), (1536, 6, 13)):
@@ -774,12 +800,14 @@ def palette_stage_set() -> list[Case]:
 
 def _pixel_inside_band(outer: Outline, inner: Outline, row: int, start: int) -> list[int]:
     """The first pixel of ``row``, from column ``start`` rightwards, whose whole
-    square lies between ``outer`` and ``inner`` (each flattened, the inner outline
-    grown by the flattening tolerance so its inscribed chords never count a pixel
-    as inside that the true curve cuts)."""
+    square lies between ``outer`` and ``inner`` (each flattened; an inner outline
+    with a curved segment is grown by the flattening tolerance so its inscribed
+    chords never count a pixel as inside that the true curve cuts, while a
+    polygonal one is exact and is not grown)."""
     from shapely.geometry import Polygon, box
+    curved = any(not isinstance(segment, Line) for segment in inner.segments)
     band = Polygon(outer.flatten(FLATTEN_TOLERANCE)).difference(
-        Polygon(inner.flatten(FLATTEN_TOLERANCE)).buffer(FLATTEN_TOLERANCE))
+        Polygon(inner.flatten(FLATTEN_TOLERANCE)).buffer(FLATTEN_TOLERANCE if curved else 0.0))
     for column in range(start, start + 8):
         if band.contains(box(column, row, column + 1, row + 1)):
             return [column, row]

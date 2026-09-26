@@ -25,20 +25,31 @@ assertion's truth-distance bound and ``e`` its evidence-distance bound::
     m = min(10, mean truth distance off the discs and zones / D)
                                            the same distances' mean
     a = min(10, max over asserted colours of symmetric difference / its limit,
-                and misassigned area / its limit)
-                                           the ``area`` assertion
+                misassigned area / its limit, and over the evidence labels of
+                symmetric difference with the label's pixels / its limit)
+                                           the ``area`` assertion and the
+                                           ``evidence`` assertion's areas
     c = missed required vertices / max(1, required vertices)
                                            the ``corners`` assertion
     k = min(10, log2(1 + kinks / max(1, ideal nodes outside the zones)))
                                            the ``kinks`` assertion's count
-    t = colours whose topology is outside the truth's / colours
+    t = min(1, (colours whose topology is outside the truth's
+                + traced layers matching no scene colour) / colours)
                                            the ``topology`` assertion
     v = evidence regions without traced area / evidence regions
         + scene colours missing from the palette / colours required to survive
+        + thin evidence regions their layer misplaces / thin evidence regions
+        + 1 if a fold at least D wide went to another colour than the replay's
                                            the ``evidence`` assertion's counts
     s = 1 if the edge or overlap SVG failed the trace stage's structural validation
 
     E = 1 h + 2 m + 1 a + 2 c + 1 k + 4 t + 4 v + 4 s
+
+Every measure an assertion bounds is a term, and the ``nodes`` assertion's
+count is the node economy below, with one exclusion: the ``palette`` assertion
+(palette-stage cases' merge, survive and fold outcomes) judges the palette
+stage, which runs before the trace and which no trace setting changes, so it
+would be a constant.
 
 Weights: ``m`` runs at roughly a third of ``h`` on a sound trace, so doubling it
 lets the whole boundary count as much as its worst point. ``a`` counts once: it
@@ -49,8 +60,9 @@ than capped linearly: a staircase trace has tens of kinks per ideal node, and a
 linear cap would make every such trace score the same, leaving the search no
 slope to follow; one kink on a four-node disc costs 0.32, a kink at every
 staircase step of a small disc (about 40 per ideal node) about 5.4. A cusp on a
-round tight enough for the trace to sharpen (radius up to about
-``bounds.SHARPENING_RADIUS_FACTOR`` times the sharpening allowance plus ``Q``)
+round tight enough for the trace to sharpen (radius up to
+``bounds.SHARPENING_RADIUS_FACTOR`` times the sharpening allowance plus
+``(1 + sqrt 2) Q``, the ``kinks`` assertion's ``round_radius``)
 is no kink, as in the regression assertion; every larger round keeps the slope.
 A topology error, a dropped region or colour, or an invalid SVG is structural,
 so each costs up to 4 per case (2 for one wrong colour of two), more than any
@@ -63,12 +75,15 @@ is the evidence distance alone. A failed trace scores ``FAILURE_ERROR``, every
 term at its maximum.
 
 Node economy: ``N`` is the geometric mean over cases of ``max(1, boundary nodes
-outside the zones / ideal nodes outside the zones)``, the two numbers the
-``nodes`` assertion compares (cases with no ideal node outside the zones are left
-out). The ideal count is already the fewest nodes that represent the truth
-exactly, so fewer earns no credit: the error terms judge what the missing nodes
-cost. The scalar objective at node weight ``w`` is ``J = E + w * log2(N)``:
-doubling the node excess costs ``w`` error units. Every evaluation keeps its
+outside the zones / ideal nodes outside the zones)``: the count the ``nodes``
+assertion bounds, over the ideal count its limit builds on (cases with no ideal
+node outside the zones are left out). The limit itself adds the axis extremes and
+zone cuts the fitter's own route may need; those are the fitter's preferences,
+not the truth's, so the economy measures against the ideal. The ideal count is
+already the fewest nodes that represent the truth exactly, so fewer earns no
+credit: the error terms judge what the missing nodes cost. The scalar objective
+at node weight ``w`` is ``J = E + w * log2(N)``: doubling the node excess costs
+``w`` error units. Every evaluation keeps its
 ``(E, N)`` pair, and the Pareto front over them is reported, so the trade-off can
 be re-read at any weight without re-tracing.
 
@@ -126,8 +141,8 @@ DISTANCE_CAP = 10.0
 KINK_CAP = 10.0
 WEIGHTS = {"hausdorff": 1.0, "mean": 2.0, "area": 1.0, "corners": 2.0, "kinks": 1.0,
            "topology": 4.0, "evidence": 4.0, "structural": 4.0}
-# The evidence term's two fractions each reach 1.
-EVIDENCE_CAP = 2.0
+# The evidence term's four fractions each reach 1.
+EVIDENCE_CAP = 4.0
 FAILURE_ERROR = (DISTANCE_CAP * (WEIGHTS["hausdorff"] + WEIGHTS["mean"] + WEIGHTS["area"])
                  + KINK_CAP * WEIGHTS["kinks"] + EVIDENCE_CAP * WEIGHTS["evidence"]
                  + WEIGHTS["corners"] + WEIGHTS["topology"] + WEIGHTS["structural"])
@@ -146,10 +161,14 @@ def error_terms(row: dict) -> dict:
         return DISTANCE_CAP if value is None else min(DISTANCE_CAP, float(value) / float(bound))
 
     evidence = budgets(s["evidence_distance_px"], s["evidence_tolerance_px"])
-    terms = {"area": min(DISTANCE_CAP, float(s["area_ratio"])),
-             "topology": s["topology_mismatches"] / s["colours"] if s["colours"] else 0.0,
+    terms = {"area": min(DISTANCE_CAP, max(float(s["area_ratio"]),
+                                           float(s["evidence_area_ratio"]))),
+             "topology": min(1.0, (s["topology_mismatches"] + s["unmatched_layers"])
+                             / max(1, s["colours"])),
              "evidence": (s["evidence_missing_regions"] / max(1, s["evidence_regions"])
-                          + s["absent_scene_colours"] / max(1, s["required_scene_colours"])),
+                          + s["absent_scene_colours"] / max(1, s["required_scene_colours"])
+                          + s["misplaced_thin_regions"] / max(1, s["thin_regions"])
+                          + min(1, s["fold_target_mismatches"])),
              "structural": 1.0 if s.get("structural_failures") else 0.0,
              "hausdorff": evidence}
     if not row.get("sub_resolution"):
@@ -171,7 +190,7 @@ def case_error(row: dict) -> float:
 
 def case_log_node_excess(row: dict) -> float | None:
     """ln(max(1, boundary nodes / ideal nodes)), both outside the zones as the
-    ``nodes`` assertion counts them, or None for a failed trace or a case with no
+    ``nodes`` assertion and its limit count them, or None for a failed trace or a case with no
     ideal node outside the zones."""
     if not row["ok"]:
         return None
