@@ -91,7 +91,9 @@ def _palette_rows(palette: list[dict], labels: np.ndarray) -> list[dict]:
 def _trace(subject_dir: Path, settings: TraceSettings | None,
            cleanup: CleanupSettings | None) -> tuple[dict, float]:
     started = time.perf_counter()
-    audit = trace_subject(subject_dir, settings or TraceSettings(), {}, cleanup=cleanup)
+    # Like the trace CLI, cutter cleanup in ``cleanup`` is applied to the labels first.
+    audit = trace_subject(subject_dir, settings or TraceSettings(), {}, cleanup=cleanup,
+                          clean_inline=True)
     return audit, time.perf_counter() - started
 
 
