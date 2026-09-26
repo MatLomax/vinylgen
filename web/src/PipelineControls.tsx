@@ -65,6 +65,10 @@ export function lengthInPixels(value: number, longSide: number): number {
 // pixel they would chase the boundary's sub-pixel noise on a small image.
 export const FLOORED_LENGTHS: readonly TraceLengthField[] = ['curve_fit_tolerance', 'max_deviation', 'corner_sharpening_allowance']
 export const MIN_ACCURACY_PX = 1
+// The minimum straight length always resolves above one pixel step
+// (MIN_STRAIGHT_RUN_PX in vinylgen.trace_lengths), so a single step of a pixel
+// staircase is never a straight run.
+export const STRAIGHT_RUN_FLOORED: TraceLengthField = 'minimum_straight_length'
 export function pixelHint(name: TraceLengthField, value: number | null, longSide: number | null, automaticUnits = AUTOMATIC_LENGTHS[name]?.[0]): string {
   if (!longSide) return ''
   const units = value ?? automaticUnits
@@ -72,6 +76,7 @@ export function pixelHint(name: TraceLengthField, value: number | null, longSide
   const px = lengthInPixels(units, longSide)
   const automatic = value === null ? ' (Automatic)' : ''
   if (FLOORED_LENGTHS.includes(name) && px < MIN_ACCURACY_PX) return ` = ${MIN_ACCURACY_PX} px on this image${automatic}, held at the ${MIN_ACCURACY_PX} px minimum.`
+  if (name === STRAIGHT_RUN_FLOORED && px <= MIN_ACCURACY_PX) return ` = just over ${MIN_ACCURACY_PX} px on this image${automatic}, held above one pixel step.`
   const shown = px >= 10 ? px.toFixed(0) : px >= 1 ? String(Number(px.toFixed(1))) : String(Number(px.toFixed(2)))
   return ` = ${shown} px on this image${automatic}.`
 }

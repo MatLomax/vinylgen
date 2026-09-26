@@ -43,6 +43,13 @@ _PX_DECIMALS = 9
 FLOORED_LENGTHS = ("curve_fit_tolerance", "max_deviation", "corner_sharpening_allowance")
 MIN_ACCURACY_PX = 1.0
 
+# ``minimum_straight_length`` always resolves above one pixel step, by the
+# smallest resolved increment, whatever unit it arrives in. A straight run is
+# accepted when its chord is at least this long, so at one pixel or less every
+# unit step of a pixel staircase would be a straight run with a corner between
+# it and the next, and small images would trace as staircases of cusps.
+MIN_STRAIGHT_RUN_PX = MIN_ACCURACY_PX + 10.0 ** -_PX_DECIMALS
+
 
 def length_reference(width: int, height: int) -> int:
     """The pixel length one thousand units span: the traced raster's longer side."""
@@ -83,14 +90,17 @@ def resolve_trace_lengths(settings: TraceSettings, reference: int) -> TraceSetti
     ``reference`` px, and ``length_unit`` ``px``: what the fitter takes.
 
     Automatic lengths (``max_deviation`` None) take their default in the settings'
-    own unit. ``FLOORED_LENGTHS`` resolve to ``MIN_ACCURACY_PX`` or more; every
-    other pixel length keeps its value exactly.
+    own unit. ``FLOORED_LENGTHS`` resolve to ``MIN_ACCURACY_PX`` or more and
+    ``minimum_straight_length`` to ``MIN_STRAIGHT_RUN_PX`` or more; every other
+    pixel length keeps its value exactly.
     """
     lengths = _complete(_lengths(settings), settings.length_unit)
     if settings.length_unit == LENGTH_UNIT_PER_MILLE:
         lengths = {name: _to_px(value, reference) for name, value in lengths.items()}
     for name in FLOORED_LENGTHS:
         lengths[name] = max(MIN_ACCURACY_PX, lengths[name])
+    lengths["minimum_straight_length"] = max(MIN_STRAIGHT_RUN_PX,
+                                             lengths["minimum_straight_length"])
     return replace(settings, length_unit=LENGTH_UNIT_PX, **lengths)
 
 

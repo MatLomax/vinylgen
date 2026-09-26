@@ -36,6 +36,7 @@ from vinylgen.palette import infer_palette
 from vinylgen.trace_lengths import (
     FLOORED_LENGTHS,
     MIN_ACCURACY_PX,
+    MIN_STRAIGHT_RUN_PX,
     PREVIEW_MARGIN_MIN_PX,
     is_pixel_record,
     length_reference,
@@ -90,6 +91,20 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(resolve_trace_lengths(pixels, 600).curve_fit_tolerance, MIN_ACCURACY_PX)
         self.assertEqual(resolve_trace_lengths(pixels, 600).straight_line_max_deviation, 1.6)
 
+    def test_minimum_straight_length_always_resolves_above_one_pixel_step(self):
+        # At 2 per mille a 256 px image would give 0.512 px and a 500 px image exactly
+        # 1 px; either would accept every unit step of a pixel staircase as a straight
+        # run. A 600 px image gives 1.2 px, which stands.
+        self.assertGreater(MIN_STRAIGHT_RUN_PX, 1.0)
+        for reference in (64, 256, 500):
+            self.assertEqual(resolve_trace_lengths(TraceSettings(), reference)
+                             .minimum_straight_length, MIN_STRAIGHT_RUN_PX, reference)
+        self.assertAlmostEqual(resolve_trace_lengths(TraceSettings(), 600)
+                               .minimum_straight_length, 1.2)
+        pixels = TraceSettings(length_unit="px", minimum_straight_length=1.0)
+        self.assertEqual(resolve_trace_lengths(pixels, 600).minimum_straight_length,
+                         MIN_STRAIGHT_RUN_PX)
+
     def test_automatic_and_following_lengths(self):
         settings = TraceSettings(straight_line_max_deviation=1.2)
         self.assertEqual(settings.side_smoothness, 1.2)
@@ -121,6 +136,8 @@ class ResolverTests(unittest.TestCase):
                 # at the 1 px minimum like any resolved length.
                 expected = {name: max(MIN_ACCURACY_PX, value) if name in FLOORED_LENGTHS else value
                             for name, value in values.items()}
+                expected["minimum_straight_length"] = max(MIN_STRAIGHT_RUN_PX,
+                                                          values["minimum_straight_length"])
                 self.assertEqual(lengths(resolve_trace_lengths(units, reference)), expected,
                                  reference)
 
