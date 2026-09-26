@@ -4,9 +4,12 @@ from unittest.mock import patch
 import numpy as np
 from scipy import ndimage
 
+from vinylgen.fidelity.raster import render_rgb
+from vinylgen.fidelity.scene import Region, Scene, ellipse
 from vinylgen.validation import (
     semantic_warning_mask,
     source_thin_feature_mask,
+    validate_feature_roi,
     validate_postfit_protected_features,
     validate_semantic_preservation,
 )
@@ -183,6 +186,101 @@ class SemanticValidationTests(unittest.TestCase):
 
         self.assertFalse(warning[12:14, 10:35].any())
         self.assertTrue(warning[35:37, 45:70].any())
+
+
+# Geometry of the synthetic replacement for the griffin-head outline corpus
+# checks below: a filled ellipse ("head") on a lighter background, with a
+# uniform dark outline built as a slightly larger ellipse underneath it (both
+# concentric, so the visible ring is the outer ellipse's edge minus the width
+# by which the inner, lighter fill ellipse is shrunk on each axis).
+_OUTLINE_CENTRE = (100.0, 70.0)
+_OUTLINE_OUTER_RX, _OUTLINE_OUTER_RY = 70.0, 48.0
+_OUTLINE_RING_WIDTH = 3.0
+_OUTLINE_ROI_BOUNDS = (0.20, 0.04, 0.80, 0.28)  # left, top, right, bottom
+
+
+def _synthetic_outline_scene() -> Scene:
+    """A filled ellipse with a uniform 3 px dark outline on a lighter
+    background, at a canvas size comparable to the griffin-castle ROI
+    (``images/griffin-castle.png`` normalised bounds ``(0.405, 0.065, 0.495,
+    0.145)`` crop to roughly 134x85 px) the moved
+    ``tests/fullimage/test_semantic_validation_corpus.py`` checks used."""
+    inner_rx = _OUTLINE_OUTER_RX - _OUTLINE_RING_WIDTH
+    inner_ry = _OUTLINE_OUTER_RY - _OUTLINE_RING_WIDTH
+    palette = [
+        {"name": "background", "rgb": [222, 205, 178]},
+        {"name": "ring-dark", "rgb": [28, 20, 16]},
+        {"name": "fill", "rgb": [150, 118, 80]},
+    ]
+    regions = [
+        Region(1, ellipse(_OUTLINE_CENTRE, _OUTLINE_OUTER_RX, _OUTLINE_OUTER_RY)),
+        Region(2, ellipse(_OUTLINE_CENTRE, inner_rx, inner_ry)),
+    ]
+    return Scene(200, 140, palette, 0, regions, family="griffin-outline-corpus")
+
+
+def _outline_arc_length_in_roi(width: int, height: int) -> float:
+    """The outer ellipse boundary's length inside the normalised ROI box.
+
+    Sampled finely and summed as chords rather than looked up as a constant,
+    so the expected-evidence threshold below is derived from the same ellipse
+    geometry the scene is built from, not a number copied from the griffin
+    corpus.
+    """
+    left, top, right, bottom = _OUTLINE_ROI_BOUNDS
+    x0, x1 = left * width, right * width
+    y0, y1 = top * height, bottom * height
+    theta = np.linspace(0.0, 2.0 * np.pi, 200_000, endpoint=False)
+    cx, cy = _OUTLINE_CENTRE
+    x = cx + _OUTLINE_OUTER_RX * np.cos(theta)
+    y = cy + _OUTLINE_OUTER_RY * np.sin(theta)
+    inside = (x0 <= x) & (x < x1) & (y0 <= y) & (y < y1)
+    segment_lengths = np.hypot(np.diff(x), np.diff(y))
+    return float(segment_lengths[inside[:-1] & inside[1:]].sum())
+
+
+class SyntheticOutlineCorpusTest(unittest.TestCase):
+    """Synthetic replacement for the griffin-head outline checks moved to
+    ``tests/fullimage/test_semantic_validation_corpus.py``: an AA-rendered
+    filled shape with a dark outline stands in for the griffin crown/forehead
+    outline, evidenced the same way (``source_thin_feature_mask``) and
+    audited the same way (``validate_feature_roi``)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.scene = _synthetic_outline_scene()
+        cls.source = render_rgb(cls.scene, supersample=8)
+
+    def _roi_pixel_bounds(self):
+        height, width = self.source.shape[:2]
+        left, top, right, bottom = _OUTLINE_ROI_BOUNDS
+        return (round(left * width), round(top * height),
+                round(right * width), round(bottom * height))
+
+    def test_outline_is_source_feature_evidence(self) -> None:
+        height, width = self.source.shape[:2]
+        features = source_thin_feature_mask(self.source)
+        x0, y0, x1, y1 = self._roi_pixel_bounds()
+        roi = features[y0:y1, x0:x1]
+
+        arc_length = _outline_arc_length_in_roi(width, height)
+        # Half the analytic arc-length*ring-width area allows for the AA edge
+        # softening and the ridge detector's own contrast margin, while still
+        # requiring substantial (not incidental) evidence.
+        expected_minimum = 0.5 * arc_length * _OUTLINE_RING_WIDTH
+        self.assertGreater(expected_minimum, 0.0)
+        self.assertGreaterEqual(int(roi.sum()), expected_minimum)
+
+    def test_roi_accepts_preserved_outline_and_rejects_omission(self) -> None:
+        x0, y0, x1, y1 = self._roi_pixel_bounds()
+        omitted = self.source.copy()
+        omitted[y0:y1, x0:x1] = self.source[y0, x0]
+
+        preserved_audit = validate_feature_roi(self.source, self.source, _OUTLINE_ROI_BOUNDS)
+        omitted_audit = validate_feature_roi(self.source, omitted, _OUTLINE_ROI_BOUNDS)
+
+        self.assertTrue(preserved_audit["passed"])
+        self.assertFalse(omitted_audit["passed"])
 
 
 if __name__ == "__main__":

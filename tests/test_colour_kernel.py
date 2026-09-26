@@ -1,5 +1,7 @@
+import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -7,6 +9,67 @@ from PIL import Image
 from PIL import ImageFilter
 
 from vinylgen.colour import despeckle, nearest_palette_labels, palette_costs, srgb_to_lab
+from vinylgen.contracts import PaletteSettings
+from vinylgen.fidelity.raster import render_rgb
+from vinylgen.fidelity.scene import Region, Scene, circle, ellipse, polygon, wedge
+from vinylgen.palette import infer_palette
+
+
+def _synthetic_colour_kernel_scene() -> Scene:
+    """An anti-aliased illustration standing in for a real palette-stage input.
+
+    Overlapping shapes carry two near-identical teal shades (an anti-alias-scale
+    difference the palette stage may or may not merge, exactly as real photographed
+    or rendered art does) and a thin two-pixel dark ring around a light fill, the
+    kind of stroke real corpus images and the moved griffin/desert-rocket checks
+    exercised. The canvas is sized (with ``_assert_crosses_band_boundary`` below)
+    so the real inferred palette's colour count still makes
+    ``nearest_palette_labels``'s reference span more than one of its banding
+    boundary's row-bands, not just a single-band image.
+    """
+    palette = [
+        {"name": "background", "rgb": [235, 232, 225]},
+        {"name": "blue", "rgb": [55, 90, 160]},
+        {"name": "teal", "rgb": [40, 150, 140]},
+        {"name": "teal-near", "rgb": [46, 153, 137]},
+        {"name": "orange", "rgb": [230, 120, 40]},
+        {"name": "magenta", "rgb": [180, 50, 120]},
+        {"name": "ring-dark", "rgb": [20, 18, 22]},
+        {"name": "ring-fill", "rgb": [245, 210, 90]},
+    ]
+    regions = [
+        Region(1, ellipse((390, 390), 285, 195, rotation=0.3)),
+        Region(2, circle((710, 270), 165)),
+        Region(3, circle((885, 390), 140)),
+        Region(4, wedge((225, 630), 195, 0.2, 2.1)),
+        Region(5, polygon([(675, 585), (900, 540), (1010, 740), (810, 830), (640, 765)])),
+        Region(6, circle((975, 180), 68)),
+        Region(7, circle((975, 180), 65)),
+    ]
+    return Scene(1200, 1000, palette, 0, regions, family="colour-kernel-corpus")
+
+
+def _add_seeded_noise(rgb: np.ndarray, seed: int) -> np.ndarray:
+    """A few counts of per-pixel noise so the colour distribution is not just
+    the scene's handful of exact anti-aliased blends, matching a real photo or
+    render's sensor/compression noise."""
+    rng = np.random.default_rng(seed)
+    noise = rng.integers(-3, 4, size=rgb.shape, endpoint=True)
+    return np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+
+def _assert_crosses_band_boundary(width: int, height: int, colour_count: int) -> None:
+    """Fail loudly if the fixture stopped exercising the reference's banding.
+
+    Mirrors the reference's own ``band = (1 << 24) // (width * K * 3)`` row
+    span (see ``_reference_nearest_palette_labels`` above): the image must be
+    taller than one band so the reference genuinely iterates more than once.
+    """
+    band = max(1, (1 << 24) // max(1, width * colour_count * 3))
+    if height <= band:
+        raise AssertionError(
+            f"synthetic scene ({width}x{height}, K={colour_count}) does not cross "
+            f"the reference's {band}-row banding boundary; enlarge the canvas")
 
 
 def _reference_srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
@@ -281,6 +344,38 @@ class NearestPaletteLabelsKernelBitExactnessTest(unittest.TestCase):
             results = list(executor.map(lambda case: nearest_palette_labels(*case), cases))
         for result, want in zip(results, expected):
             self.assertTrue(np.array_equal(result, want))
+
+
+class SyntheticSceneKernelCorpusTest(unittest.TestCase):
+    """Synthetic replacement for the real-image checks moved to
+    ``tests/fullimage/test_colour_kernel_corpus.py``: an anti-aliased scene
+    plays the role of ``images/desert-rocket.png``, and the real palette stage
+    (``vinylgen.palette.infer_palette``) plays the role of the real
+    ``outputs/desert-rocket`` flattened image and palette, so both kernels are
+    still exercised against realistic, non-synthetic-random inputs by default.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        scene = _synthetic_colour_kernel_scene()
+        cls.rgb = _add_seeded_noise(render_rgb(scene, supersample=4), seed=20260926)
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as temporary:
+            root = Path(temporary)
+            source_path = root / "synthetic.png"
+            Image.fromarray(cls.rgb, "RGB").save(source_path)
+            report = infer_palette(source_path, root, PaletteSettings())
+            cls.flattened = np.asarray(
+                Image.open(root / "synthetic" / "flattened.png").convert("RGB"))
+        cls.palette = np.asarray([row["rgb"] for row in report["palette"]], dtype=np.int32)
+        _assert_crosses_band_boundary(
+            cls.flattened.shape[1], cls.flattened.shape[0], len(cls.palette))
+
+    def test_synthetic_scene_srgb_to_lab(self) -> None:
+        SrgbToLabKernelBitExactnessTest._assert_identical(self, self.rgb.reshape(-1, 3))
+
+    def test_synthetic_scene_nearest_palette_labels(self) -> None:
+        NearestPaletteLabelsKernelBitExactnessTest._assert_identical(
+            self, self.flattened, self.palette)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from scipy import ndimage
 
+from vinylgen.colour import srgb_to_lab
+from vinylgen.fidelity.raster import render_rgb
+from vinylgen.fidelity.scene import Region, Scene, circle, ellipse, polygon, wedge
 from vinylgen.ridge import two_sided_dark_ridge_response
 
 
@@ -80,6 +83,56 @@ class RidgeKernelBitExactnessTest(unittest.TestCase):
         for (response, radius), (want_response, want_radius) in zip(results, expected):
             self.assertTrue(np.array_equal(response, want_response))
             self.assertTrue(np.array_equal(radius, want_radius))
+
+
+def _synthetic_ridge_kernel_scene() -> Scene:
+    """An anti-aliased illustration standing in for the L channel of a real
+    photographed/rendered image: overlapping shapes, two near-identical teal
+    shades and a thin two-pixel dark ring, the sort of stroke
+    ``images/desert-rocket.png`` carries in the moved
+    ``test_real_desert_rocket_l_channel`` check. The reference formulation here
+    has no chunking or banding of its own (it is one fully vectorised
+    ``map_coordinates`` pass per offset), so unlike the colour-kernel corpus
+    scene this one is kept small enough that the reference's naive cost stays
+    well under the per-test time budget."""
+    palette = [
+        {"name": "background", "rgb": [235, 232, 225]},
+        {"name": "blue", "rgb": [55, 90, 160]},
+        {"name": "teal", "rgb": [40, 150, 140]},
+        {"name": "teal-near", "rgb": [46, 153, 137]},
+        {"name": "orange", "rgb": [230, 120, 40]},
+        {"name": "magenta", "rgb": [180, 50, 120]},
+        {"name": "ring-dark", "rgb": [20, 18, 22]},
+        {"name": "ring-fill", "rgb": [245, 210, 90]},
+    ]
+    regions = [
+        Region(1, ellipse((100, 100), 75, 52, rotation=0.3)),
+        Region(2, circle((175, 68), 42)),
+        Region(3, circle((215, 100), 35)),
+        Region(4, wedge((55, 155), 48, 0.2, 2.1)),
+        Region(5, polygon([(165, 145), (220, 135), (245, 180), (200, 205), (158, 190)])),
+        Region(6, circle((255, 45), 18)),
+        Region(7, circle((255, 45), 16)),
+    ]
+    return Scene(300, 220, palette, 0, regions, family="ridge-kernel-corpus")
+
+
+class SyntheticSceneRidgeKernelCorpusTest(unittest.TestCase):
+    """Synthetic replacement for the real-image check moved to
+    ``tests/fullimage/test_ridge_kernel_corpus.py``: an anti-aliased scene's L
+    channel (from the real ``vinylgen.colour.srgb_to_lab``, as the moved test
+    derived it) plays the role of ``images/desert-rocket.png``'s L channel."""
+
+    def test_synthetic_scene_l_channel(self) -> None:
+        scene = _synthetic_ridge_kernel_scene()
+        rgb = render_rgb(scene, supersample=8)
+        rng = np.random.default_rng(20260926)
+        noise = rng.integers(-3, 4, size=rgb.shape, endpoint=True)
+        noisy = np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        height, width, _ = noisy.shape
+        lab = srgb_to_lab(noisy.reshape(-1, 3))
+        lightness = lab[:, 0].reshape(height, width).astype(np.float32)
+        RidgeKernelBitExactnessTest._assert_identical(self, lightness)
 
 
 if __name__ == "__main__":
