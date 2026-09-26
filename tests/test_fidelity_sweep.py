@@ -23,7 +23,7 @@ def summary(**overrides) -> dict:
     values = {"hausdorff_px": 1.0, "mean_px": 0.3, "p95_px": 0.6, "hausdorff_per_mille": 1.0,
               "misassigned_px": 30.0, "misassigned_fraction": 0.01, "boundary_length_px": 100.0,
               "area_offset_px": 0.3, "corners_true": 4, "corners_found": 4, "corner_recall": 1.0,
-              "required_corners": 4, "required_found": 4, "kinks": 0, "nodes": 8,
+              "required_corners": 4, "required_found": 4, "kinks": 0, "cusps": 4, "nodes": 8,
               "ideal_nodes": 4, "node_ratio": 2.0, "colours": 2, "topology_mismatches": 0,
               "unmatched_layers": 0, "structural_failures": 0, "semantic_passed": True,
               "dense_fallbacks": 0, "warnings": 0}
@@ -76,10 +76,23 @@ class AggregationTests(unittest.TestCase):
         self.assertAlmostEqual(stats["node_ratio"]["geometric_mean"], 2.0)  # (2 * 8 * 0.5) ** (1/3)
         self.assertEqual(stats["topology"], {"cases_mismatched": 1, "colours_mismatched": 1})
 
+    def test_staircase_recall_is_offset_by_cusp_precision(self):
+        # A staircase whose every node is a cusp finds every corner; most of its
+        # cusps are kinks, so precision and F1 expose it where recall cannot.
+        staircase = sweep.group_stats([row("s", corners_true=4, corners_found=4,
+                                           cusps=100, kinks=90)])
+        clean = sweep.group_stats([row("c", corners_true=4, corners_found=3, cusps=3, kinks=0)])
+        self.assertEqual(staircase["corner_recall"], 1.0)
+        self.assertAlmostEqual(staircase["cusp_precision"], 0.1)
+        self.assertAlmostEqual(staircase["corner_f1"], 2 * 0.1 / 1.1)
+        self.assertAlmostEqual(clean["corner_f1"], 2 * 0.75 / 1.75)
+        self.assertGreater(clean["corner_f1"], staircase["corner_f1"])
+
     def test_empty_group_statistics_are_none(self):
         stats = sweep.group_stats([row("x", ok=False)])
         self.assertIsNone(stats["hausdorff_px"]["median"])
         self.assertIsNone(stats["corner_recall"])
+        self.assertIsNone(stats["corner_f1"])
         self.assertIsNone(stats["node_ratio"]["geometric_mean"])
 
     def test_aggregate_groups_by_tier_family_tag_and_size(self):

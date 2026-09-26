@@ -174,6 +174,7 @@ def summarise_measure(result: dict, truth) -> dict:
         "required_corners": len(required),
         "required_found": len(required) - missed_required,
         "kinks": result["kinks"]["count"],
+        "cusps": nodes["types"]["cusp"],
         "nodes": nodes["boundary"], "ideal_nodes": nodes["ideal"],
         "node_ratio": nodes["ratio_to_ideal"],
         "colours": len(result["topology"]),
@@ -328,13 +329,23 @@ def geometric_mean(values: list[float]) -> float | None:
     return float(math.exp(sum(math.log(value) for value in positive) / len(positive)))
 
 
+def _f1(recall: float | None, precision: float | None) -> float | None:
+    if recall is None or precision is None:
+        return None
+    return 2.0 * recall * precision / (recall + precision) if recall + precision else 0.0
+
+
 def group_stats(rows: list[dict]) -> dict:
     """Aggregate numbers for one group of rows.
 
     Hausdorff: median, p95 and max over cases (px). Boundary distance: the mean of
     the per-case mean distances (px). Misassigned area: the mean per-case fraction
     of the canvas. Corner recall: pooled (all found over all true), for all true
-    corners and for the required ones. Kinks: total and per case. Node ratio: the
+    corners and for the required ones. Cusp precision: pooled cusp nodes lying
+    within the match radius of a true corner over all cusp nodes. Corner F1: the
+    harmonic mean of corner recall and cusp precision; recall alone is satisfied
+    for free by a staircase trace whose every node is a cusp, so it is only read
+    together with precision. Kinks: total and per case. Node ratio: the
     geometric mean of boundary nodes over ideal nodes (ratios compound, so the
     geometric mean weighs a halving and a doubling equally), plus the median.
     Topology: cases with any colour whose traced polygon or hole count differs
@@ -347,6 +358,9 @@ def group_stats(rows: list[dict]) -> dict:
     required = sum(row["summary"]["required_corners"] for row in ok)
     required_found = sum(row["summary"]["required_found"] for row in ok)
     kinks = [row["summary"]["kinks"] for row in ok]
+    cusps = sum(row["summary"]["cusps"] for row in ok)
+    precision = (cusps - sum(kinks)) / cusps if cusps else None
+    recall = corners_found / corners_true if corners_true else None
     ratios = _values(ok, "node_ratio")
     mismatches = [row["summary"]["topology_mismatches"] for row in ok]
     return {
@@ -356,8 +370,10 @@ def group_stats(rows: list[dict]) -> dict:
                          "max": _stat(hausdorff, "max")},
         "mean_boundary_px": _stat(_values(ok, "mean_px"), "mean"),
         "misassigned_fraction": _stat(_values(ok, "misassigned_fraction"), "mean"),
-        "corner_recall": corners_found / corners_true if corners_true else None,
+        "corner_recall": recall,
         "required_corner_recall": required_found / required if required else None,
+        "cusp_precision": precision,
+        "corner_f1": _f1(recall, precision),
         "corners": {"true": corners_true, "found": corners_found,
                     "required": required, "required_found": required_found},
         "kinks": {"total": int(sum(kinks)), "per_case": _stat(kinks, "mean")},
@@ -405,7 +421,7 @@ def _fmt(value, digits: int = 3) -> str:
 
 SUMMARY_COLUMNS = ("cases", "failed", "Hausdorff median px", "Hausdorff p95 px",
                    "Hausdorff max px", "mean dist px", "misassigned %", "corner recall",
-                   "required recall", "kinks", "node ratio (geo)", "topology mismatches",
+                   "required recall", "cusp precision", "corner F1", "kinks", "node ratio (geo)", "topology mismatches",
                    "structural failures", "semantic failures", "dense fallbacks")
 
 
@@ -416,6 +432,7 @@ def summary_row(name: str, stats: dict) -> str:
              _fmt(stats["hausdorff_px"]["max"]), _fmt(stats["mean_boundary_px"]),
              _fmt(None if misassigned is None else 100.0 * misassigned),
              _fmt(stats["corner_recall"]), _fmt(stats["required_corner_recall"]),
+             _fmt(stats["cusp_precision"]), _fmt(stats["corner_f1"]),
              _fmt(stats["kinks"]["total"]), _fmt(stats["node_ratio"]["geometric_mean"]),
              _fmt(stats["topology"]["cases_mismatched"]),
              _fmt(stats["trace_audit"]["structural_failures"]),
@@ -442,7 +459,9 @@ def summary_markdown(summary: dict, meta: dict) -> str:
              f"{REFERENCE_CORNER_TURN_DEG:g} degrees.",
              "- Hausdorff statistics are over cases; mean dist is the mean of per-case mean "
              "boundary distances; misassigned % is the mean per-case share of the canvas; "
-             "recall is pooled over corners; node ratio is the geometric mean of boundary "
+             "recall is pooled over corners; cusp precision is pooled over cusp nodes (those "
+             "within the match radius of a true corner); corner F1 combines the two, since "
+             "a staircase whose every node is a cusp scores full recall; node ratio is the geometric mean of boundary "
              "nodes over ideal nodes; topology mismatches, structural failures (edge or overlap "
              "SVG failed the trace stage's validation) and semantic failures (its feature audit) "
              "count cases; dense fallbacks count boundaries.",

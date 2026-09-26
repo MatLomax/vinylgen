@@ -503,6 +503,8 @@ def family_scores(rows: list[dict]) -> dict:
                         "hausdorff_max_px": stats["hausdorff_px"]["max"],
                         "mean_boundary_px": stats["mean_boundary_px"],
                         "required_corner_recall": stats["required_corner_recall"],
+                        "cusp_precision": stats["cusp_precision"],
+                        "corner_f1": stats["corner_f1"],
                         "kinks": stats["kinks"]["total"],
                         "topology_mismatches": stats["topology"]["cases_mismatched"],
                         "structural_failures": stats["trace_audit"]["structural_failures"]}
@@ -783,8 +785,9 @@ def report_markdown(meta: dict, evaluations: list[dict], front: list[int], curre
         lines += ["## Held-out before/after (fuzz seeds not used in training)", "",
                   "Each cell is current -> proposed.", "",
                   "| family | cases | E | N | Hausdorff median px | required corner recall | "
-                  "kinks | topology mismatches | structural failures |",
-                  "|---|---|---|---|---|---|---|---|---|"]
+                  "cusp precision | corner F1 | kinks | topology mismatches | "
+                  "structural failures |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|"]
         for family in held_out["current"]:
             b, a = held_out["current"][family], held_out["proposed"].get(family, {})
 
@@ -793,6 +796,7 @@ def report_markdown(meta: dict, evaluations: list[dict], front: list[int], curre
 
             lines.append(f"| {family} | {b['cases']} | {pair('error')} | {pair('nodes')} | "
                          f"{pair('hausdorff_median_px')} | {pair('required_corner_recall')} | "
+                         f"{pair('cusp_precision')} | {pair('corner_f1')} | "
                          f"{pair('kinks')} | {pair('topology_mismatches')} | "
                          f"{pair('structural_failures')} |")
         lines += ["", "Full sweeps: `held-out/current/summary.md`, `held-out/proposed/summary.md`.", ""]
