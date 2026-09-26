@@ -450,10 +450,28 @@ def _colour_geometry(scene) -> dict[int, object]:
     pieces.setdefault(scene.background, []).append(background)
     geometry = {}
     for colour in sorted(pieces):
-        merged = _polygonal(shapely.union_all(pieces[colour]))
+        merged = _without_slivers(_polygonal(shapely.union_all(pieces[colour])))
         if not merged.is_empty and merged.area > 0.0:
             geometry[colour] = merged
     return geometry
+
+
+# Overlay operations leave numerical slivers (holes and parts of about 1e-13 px²)
+# where flattened outlines coincide; no scene feature is this small.
+_SLIVER_AREA = 1e-6
+
+
+def _without_slivers(geometry):
+    """``geometry`` without polygon parts or holes smaller than ``_SLIVER_AREA``."""
+    parts = []
+    for polygon in getattr(geometry, "geoms", [geometry]):
+        if polygon.area < _SLIVER_AREA:
+            continue
+        holes = [ring for ring in polygon.interiors if Polygon(ring).area >= _SLIVER_AREA]
+        parts.append(Polygon(polygon.exterior, holes))
+    if not parts:
+        return Polygon()
+    return parts[0] if len(parts) == 1 else MultiPolygon(parts)
 
 
 def _polygonal(geometry):
