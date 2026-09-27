@@ -18,8 +18,9 @@ cropped input would trace with different settings than the real subject, and a
 crop edge would add frame boundaries none of the tools see in real use.
 
 Each crop window is then drawn as one row: the flattened raster, then each
-tool's filled shapes at the same scale with every node marked by type (cusp
-rhombus, symmetric square, smooth circle). Our node types are our SVG's
+tool's filled shapes at the same scale with every node marked by type as the
+Trace step's node overlay marks it (cusp a red rhombus, symmetric a blue square,
+smooth a yellow circle; partly transparent outlines with a white ring). Our node types are our SVG's
 ``sodipodi:nodetypes``; Potrace's and VTracer's are read from their handles by
 ``benchmark_tracers.stacked_trace`` over the visible partition of their stacked
 shapes (plus the cusps where stacking clips one shape against another). A node
@@ -35,6 +36,7 @@ import argparse
 import base64
 import io
 import json
+import math
 import pickle
 import shutil
 import sqlite3
@@ -61,13 +63,19 @@ SODIPODI = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
 INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
 TOOLS = ("ours", "potrace", "vtracer")
 TOOL_TITLES = {"ours": "Vinylgen", "potrace": "Potrace", "vtracer": "VTracer"}
-NODE_COLOURS = {"c": "#FF1FD2", "s": "#1FE4FF", "z": "#8CFF1F"}
+# The Trace step's node overlay (web/src/PathNodes.tsx): each type's outline colour,
+# the opacity of that outline and of the white ring just outside it, the faint
+# fill, the marker half-size and the line width, in sheet px as the overlay's CSS px.
+NODE_COLOURS = {"c": "#ff6b93", "s": "#6ccdff", "z": "#fff266"}
+NODE_BORDER_OPACITY = 0.8
+NODE_FILL = "rgba(255, 255, 255, .1)"
+NODE_LINE = 1.25
 NODE_NAMES = {"c": "cusp", "s": "symmetric", "z": "smooth"}
 
 PANEL = 540          # panel side in sheet px
 GAP = 14
 LOCATOR = 220        # locator thumbnail width
-MARKER = 3.4         # marker half-size in sheet px
+MARKER = 4.5         # marker half-size in sheet px (the overlay's NODE_MARKER_RADIUS)
 HEADER = 44
 
 
@@ -316,15 +324,28 @@ def _png_data(image: Image.Image) -> str:
     return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
 
 
-def _marker(x, y, letter, r) -> str:
-    colour = NODE_COLOURS[letter]
-    style = f'fill="{colour}" stroke="#000" stroke-width="{r * 0.28:.4f}"'
+def _marker_shape(x, y, letter, r, grow, style) -> str:
+    """A node type's marker centred on (x, y), grown outward by ``grow`` on every
+    side: cusp a rhombus, symmetric a square, smooth a circle."""
     if letter == "c":
-        return (f'<polygon points="{x:.3f},{y - r * 1.25:.3f} {x + r * 1.25:.3f},{y:.3f} '
-                f'{x:.3f},{y + r * 1.25:.3f} {x - r * 1.25:.3f},{y:.3f}" {style}/>')
+        k = r * 1.25 + grow * math.sqrt(2.0)
+        return (f'<polygon points="{x:.3f},{y - k:.3f} {x + k:.3f},{y:.3f} '
+                f'{x:.3f},{y + k:.3f} {x - k:.3f},{y:.3f}" {style}/>')
     if letter == "s":
-        return f'<rect x="{x - r:.3f}" y="{y - r:.3f}" width="{2 * r:.3f}" height="{2 * r:.3f}" {style}/>'
-    return f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{r:.3f}" {style}/>'
+        h = r * 0.85 + grow
+        return f'<rect x="{x - h:.3f}" y="{y - h:.3f}" width="{2 * h:.3f}" height="{2 * h:.3f}" {style}/>'
+    return f'<circle cx="{x:.3f}" cy="{y:.3f}" r="{r + grow:.3f}" {style}/>'
+
+
+def _marker(x, y, letter, r, line) -> str:
+    """A node marker styled as the Trace step's overlay draws it: a white ring just
+    outside the outline, then the faint fill and the type's coloured outline, both
+    rings partly transparent."""
+    ring = (f'fill="none" stroke="#fff" stroke-opacity="{NODE_BORDER_OPACITY}" '
+            f'stroke-width="{line:.4f}" stroke-linejoin="miter"')
+    body = (f'fill="{NODE_FILL}" stroke="{NODE_COLOURS[letter]}" '
+            f'stroke-opacity="{NODE_BORDER_OPACITY}" stroke-width="{line:.4f}" stroke-linejoin="miter"')
+    return _marker_shape(x, y, letter, r, line, ring) + _marker_shape(x, y, letter, r, 0.0, body)
 
 
 _CLIP_IDS = iter(range(1_000_000))
@@ -412,7 +433,8 @@ def build(retrace: bool) -> Path:
                 body += [f'<path d="{_d(subpaths)}" fill="{fill}" fill-rule="evenodd"/>'
                          for fill, subpaths in shapes]
                 for letter in "zsc":  # cusps on top
-                    body += [_marker(px, py, t, r) for (px, py), t in nodes.items() if t == letter]
+                    body += [_marker(px, py, t, r, NODE_LINE / scale)
+                             for (px, py), t in nodes.items() if t == letter]
                 rows_svg.append(_panel(x, y + HEADER, crop, body))
                 label, counts = _count_text(nodes)
                 rows_svg.append(_text(x, y + 18, TOOL_TITLES[tool], 16, "bold"))
@@ -424,7 +446,8 @@ def build(retrace: bool) -> Path:
     head = [_text(GAP, 34, "Tracer contact sheet: Vinylgen vs Potrace vs VTracer", 24, "bold"),
             _text(GAP, 62, "Each tool traced the WHOLE subject from the same flattened labels "
                   "(segmentation.npz); panels are crops of those traces, fills at the same scale. "
-                  "Vinylgen: default TraceSettings, pixel mode, all colours cut, traced-edge.svg. "
+                  "Vinylgen: default TraceSettings, pixel mode, all colours cut, traced-edge.svg, from the labels "
+                  "only (hard-edged costs, no protection). "
                   "Potrace 1.16: stacked scans per colour (-t 0). VTracer 0.6.4: flattened RGB, stacked "
                   "colour mode, spline.", 13, fill="#ccc"),
             _text(GAP, 82, "Nodes: Vinylgen from sodipodi:nodetypes; Potrace/VTracer typed by their "
@@ -433,7 +456,7 @@ def build(retrace: bool) -> Path:
                   13, fill="#ccc")]
     lx = GAP
     for letter in "csz":
-        head.append(f'<g transform="translate({lx + 8},{116})">{_marker(0, 0, letter, 7)}</g>')
+        head.append(f'<g transform="translate({lx + 8},{116})">{_marker(0, 0, letter, 7, 1.8)}</g>')
         head.append(_text(lx + 24, 121, f"{NODE_NAMES[letter]} node", 15))
         lx += 190
     sheet_height = y + GAP
