@@ -3,12 +3,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 9.0,
-    "missing_pixels": 17.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 21.0,
+    "misplaced_thin_regions": 5.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -34,12 +34,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 54.0,
-    "missing_pixels": 165.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 71.0,
+    "misplaced_thin_regions": 22.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -80,12 +80,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 39.0,
-    "missing_pixels": 221.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 12.0,
+    "misplaced_thin_regions": 51.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -509,7 +509,7 @@
   "corners": {
    "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
    "measured": {
-    "missed_vertices": 3.0
+    "missed_vertices": 2.0
    }
   },
   "nodes": {
@@ -524,19 +524,6 @@
    "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
    "measured": {
     "missed_vertices": 12.0
-   }
-  },
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 0.0,
-    "missing_pixels": 0.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 1.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
    }
   }
  },
@@ -554,28 +541,6 @@
    "measured": {
     "missed_vertices": 2.0
    }
-  },
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 1.0,
-    "missing_pixels": 9.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
-   }
-  },
-  "hausdorff": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "truth_distance_px": 1.1395258010432612,
-    "truth_length_beyond_px": 0.0,
-    "evidence_distance_px": 12.23763706081553,
-    "evidence_length_beyond_px": 21.96
-   }
   }
  },
  "labels/fuzz-layered-s1023-1024": {
@@ -583,19 +548,6 @@
    "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
    "measured": {
     "missed_vertices": 11.0
-   }
-  },
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 1.0,
-    "missing_pixels": 2.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
    }
   },
   "nodes": {
@@ -706,7 +658,7 @@
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 172.0
+    "nodes_outside_zones": 198.0
    }
   }
  },
@@ -720,7 +672,7 @@
   "nodes": {
    "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
    "measured": {
-    "nodes_outside_zones": 35.0
+    "nodes_outside_zones": 37.0
    }
   }
  },
@@ -794,12 +746,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 25.0,
-    "missing_pixels": 45.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 28.0,
+    "misplaced_thin_regions": 32.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -822,7 +774,7 @@
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 17.0,
+    "misplaced_thin_regions": 40.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -984,12 +936,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 121.0,
-    "missing_pixels": 364.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 136.0,
+    "misplaced_thin_regions": 44.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -1133,7 +1085,7 @@
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 64.0
+    "nodes_outside_zones": 96.0
    }
   }
  },
@@ -1730,29 +1682,24 @@
     "missed_vertices": 6.0
    }
   },
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 1.0,
-    "missing_pixels": 27.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
-   }
-  },
   "kinks": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "kinks": 2.0
+    "kinks": 4.0
    }
   },
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 129.0
+    "nodes_outside_zones": 135.0
+   }
+  },
+  "topology": {
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "measured": {
+    "wrong_colours": 1.0,
+    "count_error": 2.0,
+    "unmatched_layers": 0.0
    }
   }
  },
@@ -1814,23 +1761,18 @@
     "missed_vertices": 5.0
    }
   },
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 1.0,
-    "missing_pixels": 36.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
-   }
-  },
   "kinks": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
     "kinks": 2.0
+   }
+  },
+  "topology": {
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "measured": {
+    "wrong_colours": 1.0,
+    "count_error": 2.0,
+    "unmatched_layers": 0.0
    }
   }
  },
@@ -2276,12 +2218,12 @@
   "evidence": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "missing_regions": 16.0,
-    "missing_pixels": 404.0,
+    "missing_regions": 0.0,
+    "missing_pixels": 0.0,
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
+    "misplaced_thin_regions": 13.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -2295,7 +2237,15 @@
   "nodes": {
    "tasks": ["stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain"],
    "measured": {
-    "nodes_outside_zones": 57.0
+    "nodes_outside_zones": 90.0
+   }
+  },
+  "topology": {
+   "tasks": ["stop-pixel-noise-on-a-straight-edge-being-traced-as-a-chain"],
+   "measured": {
+    "wrong_colours": 1.0,
+    "count_error": 32.0,
+    "unmatched_layers": 0.0
    }
   }
  },
@@ -2639,7 +2589,7 @@
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 48.0
+    "nodes_outside_zones": 88.0
    }
   }
  },
@@ -2716,29 +2666,24 @@
   }
  },
  "rgb/t-disc-over-band-1536": {
-  "evidence": {
-   "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
-   "measured": {
-    "missing_regions": 1.0,
-    "missing_pixels": 24.0,
-    "colours_over": 0.0,
-    "excess_px2": 0.0,
-    "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 0.0,
-    "severed_thin_regions": 0.0,
-    "fold_target_mismatches": 0.0
-   }
-  },
   "kinks": {
    "tasks": ["stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap"],
    "measured": {
-    "kinks": 2.0
+    "kinks": 4.0
    }
   },
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 13.0
+    "nodes_outside_zones": 18.0
+   }
+  },
+  "topology": {
+   "tasks": ["stop-anti-alias-resolution-giving-a-many-colour-junction-s-c"],
+   "measured": {
+    "wrong_colours": 1.0,
+    "count_error": 2.0,
+    "unmatched_layers": 0.0
    }
   }
  },

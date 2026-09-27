@@ -691,8 +691,8 @@ straight-line deviation at the reclassification stage.
 The cleaned flattened raster is authoritative. A surviving explicitly
 protected feature is recovered locally and in a fixed order: tighten its curve
 fit, reconsider its line/curve classification, add one non-corner fit
-constraint, and finally emit the dense boundary only when every modelled form
-still fails validation. Every attempt and final fallback is recorded. Both
+constraint (a corner there stays on its sample), and finally emit the dense
+boundary only when every modelled form still fails validation. Every attempt and final fallback is recorded. Both
 adjacent colours reuse the same recovered chain. `trace-fallbacks.png` is
 emitted only for final dense fallbacks, together with its transparent RGBA
 twin `trace-fallbacks-overlay.png` (the tightened chains only, on the traced
@@ -987,6 +987,82 @@ one shared sub-pixel boundary graph, then emits deterministic line and cubic
 Bezier sections. Independent per-colour bitmap tracing is not part of the
 pipeline because it cannot guarantee identical shared interfaces.
 
+### No path crosses itself
+
+No traced path crosses itself. Neither its outline nor its holes cross, touch
+inside a segment, or run along one another, and no path does so with another
+path. Paths meet only at a vertex both carry exactly: consecutive segments,
+chain ends at a junction or endpoint anchor, and touches, where a region meets
+itself or another at a corner contact without crossing there. This holds for
+both SVG variants, the live preview, and the overlap buffer; solid-underlayer
+outlines are the exception described below.
+
+Every path is assembled from fitted pieces: the shared chains, or in the
+overlap buffer each ring fitted on its own. After fitting,
+`vinylgen/path_crossings.py` tests the pieces together on the true curves, with
+no sampling. Each pair of primitives whose control boxes overlap is subdivided
+while the boxes of its parts still overlap (a curve lies in its control hull);
+near a vertex both primitives carry, the parts there are cleared once the
+cones their control points span from the vertex are disjoint. Parts still in
+contact at 1e-7 px are a contact, so a crossing is found however shallow. Each
+cubic's own loop is solved in closed form. Pieces visiting one vertex cross
+there when their tangents interleave around it. The overlap buffer's rings are
+first noded: where a valid polygon's ring touches another inside a segment,
+that vertex is inserted into the segment.
+
+A piece in an illegal contact is repaired locally and refitted, one round per
+pass, until no contact remains (`_repair_crossings` in `curve_fit.py`). Each
+round pins the fit (fit constraints) to samples at each contact: round 1 to
+the sample nearest the contact among those the contacting primitives span,
+and round `r` to that sample and the `2^(r-2)` samples either side, counted
+along the chain. A corner at a pinned sample stays on its sample rather than
+moving to where its sides meet. A run of consecutive pinned samples is drawn
+as lines through them: there the path is the dense boundary itself. A round
+that pins nothing new widens until it does, so every pass pins at least one
+more sample; a piece whose every sample is pinned is its dense samples, and a
+piece with interior samples that ends so is reported as a dense fallback
+(`trace-fallbacks.png`; a warning for an overlap-buffer ring).
+
+The piece keeps its settings; nothing is tightened along the whole chain. A
+pinned sample is a node the fit must pass through, so the runs between the
+corners or anchors on either side of it are refitted, and a closed ring
+without corners or anchors is refitted from its first pinned sample; every
+other run, and every piece not in a contact, keeps its fit. Both colours use
+the one repaired chain. The dense samples come from the planar boundary graph
+(in the overlap buffer, the noded rings of one valid polygon), so they cannot
+cross and the repair ends; dense samples that did cross would stop the trace
+with an error rather than emit a crossing path. After the first pass only the
+pieces the last pass repaired are checked, since a contact between two
+untouched pieces would already have been found.
+
+Before this repair, 10 to 35% of the corpus paths crossed themselves, mostly as
+small hooks where a fitted run turns back at a moved corner or chain end, and
+as near-collinear lines leaving a junction on either side of a one-pixel
+feature. With it, on the nine subjects, no chain needs more than four rounds
+and the edge variant has 1 to 8% more nodes; the only dense fallbacks are
+chains of three to five samples (at most 33 per subject). On the 5980 x 4208
+`sourceup`, where 35% of paths crossed themselves, 651 of 2522 chains are
+repaired and the edge variant has 28% more nodes. Independent checks of the
+emitted SVGs (the true curves densely sampled, then GEOS validity and noding)
+find no crossing.
+
+The repair also keeps raster detail that crossing fits used to swallow. On the
+synthetic corpus, one-pixel features that a crossing fit dropped are drawn again
+(a 1 px bar's 39 missing regions become 0), and small regions the palette stage
+leaves at noisy edges and anti-aliased junctions now trace as the separate
+pieces the label map holds. The costs: the dense three- to five-sample chains
+at one-pixel spike tips and around those regions add nodes, and a few kinks
+where a pinned chain meets a fitted one; and on one-pixel outlines the traced
+features the refit moves sit about half a pixel off more often (on a 1 px disc
+outline at 576 px, 40 of its thin regions fall below the coverage pin, against
+17 before, with the traced dark area 1063 px² against 1091 px² of evidence).
+
+Solid-underlayer outlines are not yet covered. `region_components` walks the
+union outline and replays each chain's fit per run; where the outline leaves a
+chain partway, at an a,b,a,c corner contact the chain passes through without
+an anchor, the run falls back to its straight pixel edges, which can cross the
+neighbouring fitted curves.
+
 ## Performance
 
 The tracer is built to scale to sources of several tens of megapixels while
@@ -1040,7 +1116,8 @@ as in a full trace. The result is only a preview:
 
 - Boundaries crossing the crop edge end there, so their fit near that edge can
   differ from a full run's; the margin keeps most of that outside the visible
-  window. Underlayer adjacency and the overlap buffer likewise see only the crop.
+  window. Underlayer adjacency, the overlap buffer and crossing repair
+  likewise see only the crop.
 - Validation and protected-feature recovery are skipped, so explicitly protected
   details are not tightened as a full run would, and no audit is written.
 - Nothing is saved; a trace run still creates the revision and its artifacts.
@@ -1099,6 +1176,10 @@ symmetric detail controls.
   cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
 - Rendered comparison metrics against `flattened.png`.
 - Local boundary-fallback locations and effective tolerances.
+- Crossing repair: `topology.shared_curve_fit.crossing_passes` and, per repaired
+  chain, `crossing_recovery` (its round, whether it fell back dense, and its
+  pinned samples); each overlap-buffer path's `crossing_repair` counts its
+  repaired and dense rings.
 - Structural validation results.
 
 ## Validation
@@ -1113,8 +1194,9 @@ Automated checks must cover:
 - Expected named palette layers and exact fill colours.
 - Separately selectable disconnected components in stable largest-first order.
 - Preserved holes using compound paths.
-- No open cut paths, self-intersections, duplicate paths, or unsupported SVG
-  effects.
+- No open cut paths, self-intersections (checked and repaired at fit time; see
+  [No path crosses itself](#no-path-crosses-itself)), duplicate paths, or
+  unsupported SVG effects.
 - Consistent shared boundaries in `traced-edge.svg` with no gaps or overlaps.
 - Correct overlap amount and stacking in `traced-overlap.svg`.
 - Correct optional colour omission.

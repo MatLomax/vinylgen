@@ -140,7 +140,8 @@ overlay says so instead of guessing. `traced.png` is
 the current preview rendered from `traced-overlap.svg` and must be
 regenerated whenever either SVG changes. It targets 768 DPI, but its longer
 side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
-when local curve-fit fallback occurs, and `trace-semantic-warnings.png` only
+when a shared chain falls back to its dense boundary (after protected-feature
+recovery or crossing repair), and `trace-semantic-warnings.png` only
 when the semantic feature audit fails; both paint their marks over the source
 faded toward white, as standalone audit images. Each has a transparent RGBA
 twin written under exactly the same condition and removed with it:

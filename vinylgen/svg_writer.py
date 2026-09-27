@@ -49,6 +49,8 @@ def add_layer(root: ET.Element, row: dict, components: list[dict], transform: st
         stats.append({"id": path_id, "nodes": component["nodes"],
                       "holes": component["holes"],
                       "fit_metrics": component["fit_metrics"]})
+        if "crossing_repair" in component:
+            stats[-1]["crossing_repair"] = component["crossing_repair"]
     metric_names = ("lines", "cubics", "hard_anchors", "source_samples",
                     "final_nodes", "node_reduction")
     fit_metrics = {

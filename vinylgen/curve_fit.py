@@ -9,11 +9,13 @@ from typing import Callable, Iterable, Literal
 
 import numpy as np
 from numba import njit
+import shapely
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
 
 from vinylgen.contracts import AUTOMATIC_LENGTHS, LENGTH_UNIT_PX, TraceSettings
 from vinylgen.palette import Progress, _noop
+from vinylgen.path_crossings import crossings
 
 Point = tuple[float, float]
 Primitive = tuple
@@ -3374,6 +3376,27 @@ def _tightened(value: float, divisor: float) -> float:
     return min(float(value), max(0.05, float(value) / divisor))
 
 
+def _recovery_settings(settings: TraceSettings, stage: int) -> TraceSettings:
+    """``settings`` tightened for local recovery ``stage``.
+
+    Each stage only tightens: the 0.05 floor never raises a configured value
+    that is already below it (a straight-line deviation of 0 stays 0). Stage 1
+    halves the curve-fit tolerance; stage 2 quarters it and halves side
+    smoothness together with the straight-line deviation, so fewer runs confirm
+    a hard corner. Stage 3 adds fit constraints and stage 4 emits the dense
+    samples, neither of which changes the settings.
+    """
+    if stage >= 2:
+        return replace(
+            settings,
+            curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 4.0),
+            straight_line_max_deviation=_tightened(settings.straight_line_max_deviation, 2.0),
+            side_smoothness=_tightened(settings.side_smoothness, 2.0))
+    if stage >= 1:
+        return replace(settings, curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 2.0))
+    return settings
+
+
 def _curve_tolerance(settings: TraceSettings) -> float:
     tolerance = max(1e-4, float(settings.curve_fit_tolerance))
     if settings.max_deviation is not None:
@@ -3625,13 +3648,16 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
     array = np.asarray(canonical, dtype=float)
     closed = len(canonical) >= 4 and canonical[0] == canonical[-1]
     corners = _geometric_corners(array, settings, closed)
+    # A corner stays on its sample at an anchor or a recovery fit constraint;
+    # elsewhere it moves to where its two sides meet.
+    pinned_points = anchor_points | set(constraint_key)
     model_points = array.copy()
     for index, point in corners.items():
-        if canonical[index] not in anchor_points:
+        if canonical[index] not in pinned_points:
             model_points[index] = point
             if closed and index == 0:
                 model_points[-1] = point
-    movable_corners = {index for index in corners if canonical[index] not in anchor_points}
+    movable_corners = {index for index in corners if canonical[index] not in pinned_points}
 
     count = len(canonical) - 1 if closed else len(canonical)
     interior = range(count) if closed else range(1, count - 1)
@@ -3891,18 +3917,9 @@ def _fmt(point: Point) -> str:
     return f"{point[0]:.10g} {point[1]:.10g}"
 
 
-def ring_path(coords: Iterable[Point], settings: TraceSettings,
-              hard_anchors: Iterable[HardAnchor] = (),
-              fitter: SharedChainFitter | None = None) -> RingFit:
-    raw = [tuple(map(float, p)) for p in coords]
-    points = raw[:-1] if raw and raw[0] == raw[-1] else raw
-    anchors = tuple(hard_anchors)
-    anchor_points = frozenset(a.point for a in anchors)
-    fitter = fitter or SharedChainFitter()
-    # Closed rings use the same modeller as shared open chains. The duplicated
-    # seam is only a topological endpoint; it is not a protected or inferred
-    # geometry anchor.
-    fitted = fitter.fit([*points, points[0]], settings, anchors)
+def _ring_fit_path(fitted: ChainFit, points: list[Point],
+                   anchor_points: frozenset) -> RingFit:
+    """The closed SVG subpath of one ring's fit, with its metrics."""
     commands = [f"M{_fmt(fitted.start)}"]
     primitives = list(fitted.primitives)
     for primitive in primitives:
@@ -3915,32 +3932,107 @@ def ring_path(coords: Iterable[Point], settings: TraceSettings,
     return RingFit(" ".join(commands), metrics)
 
 
+def ring_path(coords: Iterable[Point], settings: TraceSettings,
+              hard_anchors: Iterable[HardAnchor] = (),
+              fitter: SharedChainFitter | None = None) -> RingFit:
+    raw = [tuple(map(float, p)) for p in coords]
+    points = raw[:-1] if raw and raw[0] == raw[-1] else raw
+    anchors = tuple(hard_anchors)
+    fitter = fitter or SharedChainFitter()
+    # Closed rings use the same modeller as shared open chains. The duplicated
+    # seam is only a topological endpoint; it is not a protected or inferred
+    # geometry anchor.
+    fitted = fitter.fit([*points, points[0]], settings, anchors)
+    return _ring_fit_path(fitted, points, frozenset(a.point for a in anchors))
+
+
+def _noded_rings(polygons: list) -> dict[tuple[int, int], tuple[Point, ...]]:
+    """Every ring of ``polygons`` as closed samples, keyed ``(polygon, ring)``.
+
+    A valid polygon's rings may touch where a vertex of one lies inside a
+    segment of another (or of itself); that vertex is inserted into the segment,
+    so every contact between rings is at a vertex both carry.
+    """
+    rings: dict[tuple[int, int], list[Point]] = {}
+    for number, polygon in enumerate(polygons):
+        for position, ring in enumerate((polygon.exterior, *polygon.interiors)):
+            raw = [tuple(map(float, point)) for point in ring.coords]
+            rings[(number, position)] = raw if raw[0] == raw[-1] else [*raw, raw[0]]
+    keys = list(rings)
+    starts = np.asarray([point for key in keys for point in rings[key][:-1]], dtype=np.float64)
+    ends = np.asarray([point for key in keys for point in rings[key][1:]], dtype=np.float64)
+    owner = [(key, index) for key in keys for index in range(len(rings[key]) - 1)]
+    if not len(starts):
+        return {key: tuple(points) for key, points in rings.items()}
+    segments = shapely.linestrings(np.stack((starts, ends), axis=1))
+    vertices = shapely.points(starts)
+    point_index, segment_index = STRtree(segments).query(vertices, predicate="intersects")
+    inserted: dict[tuple, list[Point]] = {}
+    for vertex, segment in zip(point_index.tolist(), segment_index.tolist()):
+        point = tuple(starts[vertex].tolist())
+        if point == tuple(starts[segment].tolist()) or point == tuple(ends[segment].tolist()):
+            continue
+        inserted.setdefault(owner[segment], []).append(point)
+    for (key, index), points in sorted(inserted.items(), key=lambda item: (item[0][0], -item[0][1])):
+        origin = rings[key][index]
+        points = sorted(set(points), key=lambda point: (point[0] - origin[0]) ** 2
+                        + (point[1] - origin[1]) ** 2)
+        rings[key][index + 1:index + 1] = points
+    return {key: tuple(points) for key, points in rings.items()}
+
+
 def geometry_components(geometry, settings: TraceSettings,
                         hard_anchors: Iterable[HardAnchor] = (),
                         fitter: SharedChainFitter | None = None) -> list[dict]:
+    """Fit every ring of ``geometry`` on its own and group the rings into components.
+
+    The rings are repaired together (``_repair_crossings``), so no ring crosses
+    itself or another ring of the geometry.
+    """
     polygons = [] if geometry.is_empty else ([geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms))
     polygons.sort(key=lambda polygon: (-polygon.area, polygon.bounds))
     fitter = fitter or SharedChainFitter()
     anchors = tuple(hard_anchors)
-    plans = []
-    for polygon in polygons:
-        for ring in (polygon.exterior, *polygon.interiors):
-            raw = [tuple(map(float, point)) for point in ring.coords]
-            points = raw[:-1] if raw and raw[0] == raw[-1] else raw
-            key, _, canonical, anchor_tuple, constraint_key = fitter.prepare(
-                [*points, points[0]], settings, anchors)
-            plans.append((key, canonical, anchor_tuple, constraint_key, settings))
-    _fit_cache_misses(fitter, plans)
+    anchor_points = frozenset(anchor.point for anchor in anchors)
+    rings = _noded_rings(polygons)
+    repair: dict = {}
+    fits: dict[tuple[int, int], ChainFit] = {}
+
+    def refit(keys: Iterable) -> None:
+        plans = []
+        for key in keys:
+            samples = rings[key]
+            state = repair.get(key)
+            pins = state["pins"] if state is not None else ()
+            plan_key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
+                samples, settings, anchors, pins)
+            plans.append((key, forward, plan_key, canonical, anchor_tuple, constraint_key))
+        _fit_cache_misses(fitter, [(plan_key, canonical, anchor_tuple, constraint_key, settings)
+                                   for _, _, plan_key, canonical, anchor_tuple, constraint_key
+                                   in plans])
+        for key, forward, plan_key, *_ in plans:
+            fitted = fitter._cache[plan_key]
+            fits[key] = _repaired(fitted if forward else fitted.reversed(), rings[key],
+                                  repair.get(key))
+
+    refit(rings)
+    _repair_crossings(fits, rings, refit, repair, lambda key: False)
     result = []
-    for polygon in polygons:
-        fitted = [ring_path(r.coords, settings, hard_anchors, fitter)
-                  for r in [polygon.exterior, *polygon.interiors]]
+    for number, polygon in enumerate(polygons):
+        fitted = [_ring_fit_path(fits[(number, position)], list(rings[(number, position)][:-1]),
+                                 anchor_points)
+                  for position in range(1 + len(polygon.interiors))]
         aggregate = FitMetrics(
             sum(f.metrics.lines for f in fitted), sum(f.metrics.cubics for f in fitted),
             sum(f.metrics.hard_anchors for f in fitted), sum(f.metrics.source_samples for f in fitted),
             sum(f.metrics.final_nodes for f in fitted))
+        states = [repair[(number, position)] for position in range(1 + len(polygon.interiors))
+                  if (number, position) in repair]
         result.append({"d": " ".join(f.path for f in fitted), "nodes": aggregate.final_nodes,
                        "holes": len(polygon.interiors), "fit_metrics": aggregate.as_dict(),
+                       "crossing_repair": {
+                           "repaired_rings": len(states),
+                           "dense_fallback_rings": sum(_repair_fell_back(state) for state in states)},
                        "area": float(polygon.area)})
     return result
 
@@ -4145,6 +4237,264 @@ def region_components(track, fits: dict[str, "ChainFit"], geometry) -> list[dict
     return components
 
 
+def _repair_dense(state: dict) -> bool:
+    """Whether crossing repair has pinned every sample, making the piece its
+    dense samples."""
+    return bool(state.get("samples")) and len(state["pins"]) >= state["samples"]
+
+
+def _repair_fell_back(state: dict) -> bool:
+    """Whether crossing repair reduced a piece with interior samples to its dense
+    samples: a dense fallback. A two-sample piece pinned at both ends is only
+    straightened to its one line."""
+    return _repair_dense(state) and state["samples"] > 2
+
+
+def _closed_samples(samples: tuple) -> tuple[bool, int]:
+    closed = len(samples) >= 4 and samples[0] == samples[-1]
+    return closed, len(samples) - 1 if closed else len(samples)
+
+
+def _arrives_backward(fit: ChainFit, node: int, array: np.ndarray, low: int,
+                      high: int) -> bool:
+    """Whether the primitive of ``fit`` arriving at ``node`` (of a closed ring)
+    has its middle nearer the samples from ``low`` to ``high`` (indices taken
+    modulo the sample count) than any other sample: the fit steps back over
+    them there."""
+    primitive = fit.primitives[node - 1]
+    start = fit.start if node == 1 else fit.primitives[node - 2][-1]
+    if primitive[0] == "L":
+        middle = ((start[0] + primitive[1][0]) / 2, (start[1] + primitive[1][1]) / 2)
+    else:
+        p0, p1, p2, p3 = start, primitive[1], primitive[2], primitive[3]
+        middle = tuple(0.125 * p0[i] + 0.375 * p1[i] + 0.375 * p2[i] + 0.125 * p3[i]
+                       for i in range(2))
+    nearest = int(np.argmin(np.hypot(array[:, 0] - middle[0], array[:, 1] - middle[1])))
+    count = len(array)
+    return (nearest - low) % count <= high - low
+
+
+def _node_samples(fit: ChainFit, samples: tuple) -> list[int]:
+    """The sample index of each node of ``fit``, following the fit along the
+    samples.
+
+    ``fit`` runs in the samples' order, but may step back where it hooks (a
+    moved corner, a turn back at a chain end), so the indices need not
+    increase. A node that is a sample takes its index; a node between two such
+    nodes (a moved corner, a snapped join) takes the index of its nearest sample
+    near theirs, which may lie past them where it overshoots. On a closed chain each index is taken on the
+    lap nearest the previous node's, so the indices run on past the seam and
+    the last node's index is the first's plus the sample count; an open chain's
+    indices stay within its samples.
+    """
+    closed, count = _closed_samples(samples)
+    position: dict[Point, int] = {}
+    for index, point in enumerate(samples[:count]):
+        position.setdefault(point, index)
+    array = np.asarray(samples[:count], dtype=np.float64)
+    nodes = [fit.start, *(primitive[-1] for primitive in fit.primitives)]
+    total = len(nodes)
+    if closed:
+        # Work from the first node that is a sample round to it again.
+        ring = total - 1
+        first = next((k for k in range(ring) if nodes[k] in position), None)
+        if first is None:
+            anchor = int(np.argmin(np.hypot(array[:, 0] - nodes[0][0],
+                                            array[:, 1] - nodes[0][1])))
+            first, fixed = 0, anchor
+        else:
+            fixed = position[nodes[first]]
+        order = [(first + step) % ring for step in range(ring + 1)]
+    else:
+        order = list(range(total))
+        fixed = position.get(nodes[0], 0)
+    values: list[int | None] = [None] * len(order)
+    values[0] = fixed
+    previous = fixed
+    for step in range(1, len(order)):
+        k = order[step]
+        index = fixed if closed and step == len(order) - 1 else position.get(nodes[k])
+        if index is None:
+            continue
+        if closed:
+            # Forward to the next lap unless the fit stepped back: the shorter
+            # way round, with the middle of the primitive arriving at this node
+            # on the samples it backs over.
+            forward = previous + (index - previous) % count
+            back = forward - count
+            if step == len(order) - 1:
+                index = fixed + count if forward == previous else forward
+            elif previous - back < forward - previous and \
+                    _arrives_backward(fit, k, array, back, previous):
+                index = back
+            else:
+                index = forward
+        values[step] = index
+        previous = index
+    if not closed and values[-1] is None:
+        values[-1] = count - 1
+    step = 1
+    while step < len(values):
+        if values[step] is not None:
+            step += 1
+            continue
+        end = step
+        while values[end] is None:
+            end += 1
+        low, high = sorted((values[step - 1], values[end]))
+        # A node off the samples may overshoot its neighbours (a hook's tip):
+        # search past them by their own gap, never round the rest of the ring.
+        reach = max(high - low, 1)
+        window = np.arange(low - reach, high + reach + 1)
+        if not closed:
+            window = window[(window >= 0) & (window < count)]
+        ring = array[window % count]
+        for j in range(step, end):
+            node = nodes[order[j]]
+            distance = np.hypot(ring[:, 0] - node[0], ring[:, 1] - node[1])
+            # Where the window holds the nearest sample on more than one lap,
+            # the lap nearest the previous node's.
+            nearest = window[distance <= distance.min() + 1e-12]
+            values[j] = int(nearest[int(np.argmin(np.abs(nearest - values[j - 1])))])
+        step = end
+    result = [0] * total
+    if closed:
+        # Back to the fit's own order: nodes the rotation reached before the
+        # fit's first node come after it, one lap on.
+        seam = order.index(0)
+        for step, k in enumerate(order[:-1]):
+            result[k] = values[step] + (count if step < seam else 0)
+        result[-1] = result[0] + count
+    else:
+        result = [int(value) for value in values]
+    return result
+
+
+def _repaired(fit: ChainFit, samples: tuple, state: dict | None) -> ChainFit:
+    """``fit`` with each cubic between two pinned, consecutive samples made a line.
+
+    Crossing repair pins samples near each contact; a run of consecutive pinned
+    samples is then drawn as lines through them, the dense boundary itself, and
+    the rest of the fit keeps its curves.
+    """
+    if state is None or len(state["pins"]) < 2:
+        return fit
+    pinned = set(state["pins"])
+    closed, count = _closed_samples(samples)
+    position: dict[Point, int] = {}
+    for index, point in enumerate(samples[:count]):
+        position.setdefault(point, index)
+    primitives: list[Primitive] = []
+    cursor = fit.start
+    for primitive in fit.primitives:
+        end = primitive[-1]
+        if primitive[0] == "C" and cursor in pinned and end in pinned:
+            a, b = position.get(cursor), position.get(end)
+            # The fit runs in the samples' order, so a pinned run steps forward.
+            if a is not None and b is not None and (
+                    (b - a) % count == 1 if closed else b - a == 1):
+                primitive = ("L", end)
+        primitives.append(primitive)
+        cursor = end
+    lines = sum(primitive[0] == "L" for primitive in primitives)
+    return replace(fit, primitives=tuple(primitives), metrics=replace(
+        fit.metrics, lines=lines, cubics=len(primitives) - lines))
+
+
+def _pin(state: dict, fit: ChainFit, samples: tuple, point: Point,
+         primitives: tuple[int, ...]) -> bool:
+    """Pin the samples of one contact; returns whether any is new.
+
+    The contact's sample is the one nearest ``point`` among those the
+    contacting ``primitives`` of ``fit`` span; round ``r`` of the piece's
+    repair pins it and the ``2^(r-2)`` samples either side (none on round 1).
+    """
+    closed, count = _closed_samples(samples)
+    indices = _node_samples(fit, samples)
+    array = np.asarray(samples[:count], dtype=np.float64)
+    # A primitive spans the samples between its ends' indices, whichever way
+    # the fit runs there.
+    span = np.concatenate([np.arange(min(indices[k], indices[k + 1]),
+                                     max(indices[k], indices[k + 1]) + 1)
+                           for k in primitives if k < len(indices) - 1]) \
+        if primitives else np.arange(count)
+    ring = span % count if closed else np.clip(span, 0, count - 1)
+    centre = int(ring[int(np.argmin(np.hypot(array[ring, 0] - point[0],
+                                             array[ring, 1] - point[1])))])
+    reach = 0 if int(state["round"]) <= 1 else 2 ** (int(state["round"]) - 2)
+    grew = False
+    for offset in range(-reach, reach + 1):
+        index = centre + offset
+        if closed:
+            index %= count
+        elif not 0 <= index < count:
+            continue
+        if samples[index] not in state["pins"]:
+            state["pins"].append(samples[index])
+            grew = True
+    return grew
+
+
+def _repair_crossings(fits: dict, samples: dict, refit: Callable[[set], None],
+                      repair: dict, dense: Callable[[object], bool]) -> int:
+    """Repair fitted pieces locally until none is in an illegal contact.
+
+    Every path is assembled from the pieces in ``fits``, so no path crosses
+    itself once no piece crosses itself or another (``crossings``: a crossing,
+    or a contact anywhere but a shared vertex where the pieces do not cross).
+    Each piece in a contact is repaired once per pass and ``refit`` is called
+    with them: it is pinned (fit constraints) to the sample nearest each
+    contact among those the contacting primitives span, and on later rounds to
+    1, 2, 4, ... samples either side too (``_pin``); runs of consecutive pinned
+    samples are drawn as lines, the dense boundary itself (``_repaired``). Each
+    pass pins at least one new sample. The dense samples of every piece
+    together form a planar partition and cannot cross, so the repair ends, at
+    worst with a piece wholly pinned to its dense samples. ``repair`` holds each
+    piece's round and pins; ``dense`` names pieces already dense for another
+    reason. Returns the number of repair passes.
+    """
+    passes = 0
+    flattened: dict = {}
+    # A contact between two pieces untouched by the last pass would have been
+    # found in it, so each later pass checks only the pieces it repaired.
+    escalated: set | None = None
+    while True:
+        found = crossings({key: (fit.start, fit.primitives) for key, fit in fits.items()},
+                          only=escalated, cache=flattened)
+        if not found:
+            return passes
+        passes += 1
+        contacts: dict = {}
+        for item in found:
+            contacts.setdefault(item.first, []).append((item.point, item.first_primitives))
+            contacts.setdefault(item.second, []).append((item.point, item.second_primitives))
+        escalated = set()
+        for key in sorted(contacts, key=str):
+            if dense(key):
+                continue
+            state = repair.setdefault(key, {"round": 0, "pins": [], "samples": 0})
+            closed, count = _closed_samples(samples[key])
+            state["samples"] = count
+            # A round that finds every sample near its contacts pinned widens
+            # until it pins a new one, or every sample is pinned.
+            grew = False
+            while not grew and not _repair_dense(state):
+                state["round"] = int(state["round"]) + 1
+                for point, primitives in contacts[key]:
+                    grew |= _pin(state, fits[key], samples[key], point, primitives)
+            if grew:
+                escalated.add(key)
+        # A contact neither of whose pieces can be repaired further is between
+        # dense samples, which the planar partition rules out.
+        stuck = [item for item in found
+                 if item.first not in escalated and item.second not in escalated]
+        if stuck:
+            raise RuntimeError(
+                "dense boundary samples cross at "
+                + ", ".join(f"({item.point[0]:.6g}, {item.point[1]:.6g})" for item in stuck[:5]))
+        refit(escalated)
+
+
 def shared_boundary_components(track, included: list[int], settings: TraceSettings,
                                recovery: dict[str, dict[str, object]] | None = None,
                                progress: Progress | None = None,
@@ -4166,67 +4516,70 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
     recovery = recovery or {}
     tick = progress or _noop
     total = len(track.chains)
-    # Phase 1: resolve each chain's recovery-adjusted settings and cache key.
-    # This is cheap; the expensive curve fit is deferred to phase 2.
-    plans: list[tuple] = []
-    for index, chain in enumerate(track.chains):
-        tick(index / total if total else 1.0,
-             f"Fitting boundary curves ({index + 1} of {total})")
-        anchors = [HardAnchor(anchor.point, anchor.kind) for anchor in chain.anchors]
-        chain_settings = settings
-        samples = chain.points
-        state = recovery.get(chain.identity, {})
-        stage = int(state.get("stage", 0))
-        constraint = state.get("constraint")
-        constraints = [tuple(constraint)] if constraint is not None and stage >= 3 else []
-        # Each recovery stage only tightens: the 0.05 floor never raises a
-        # configured value that is already below it (a straight-line deviation
-        # of 0 stays 0). Stage 2 halves side smoothness together with the
-        # straight-line deviation, so fewer runs confirm a hard corner.
-        if stage >= 1:
-            chain_settings = replace(
-                chain_settings,
-                curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 2.0))
-        if stage >= 2:
-            chain_settings = replace(
-                chain_settings,
-                curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 4.0),
-                straight_line_max_deviation=_tightened(
-                    settings.straight_line_max_deviation, 2.0),
-                side_smoothness=_tightened(settings.side_smoothness, 2.0))
-        if stage >= 4:
-            primitives = tuple(("L", point) for point in samples[1:])
-            fits[chain.identity] = ChainFit(
-                samples[0], primitives,
-                FitMetrics(len(primitives), 0, len(anchors), len(samples), len(primitives)),
-                (RunDiagnostic(
-                    "curve", 0, len(samples) - 1, 0.0, len(primitives),
-                    recovery_attempts=4, dense_fallback=True,
-                    fallback_reason=(
-                        "maximum deviation still exceeded after ordered local recovery")),))
-            continue
-        key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
-            samples, chain_settings, anchors, constraints)
-        plans.append((chain.identity, stage, forward, key,
-                      canonical, anchor_tuple, constraint_key, chain_settings))
+    # Crossing repair per chain: its round and the samples it is pinned to.
+    crossing: dict[str, dict[str, object]] = {}
 
-    # Phase 2: compute the cache misses. Distinct keys are fitted once by the
-    # compiled per-chain fitter; the cold first pass over the whole image is
-    # sub-second, so this is a serial loop.
-    _fit_cache_misses(
-        fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
-                 for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
-                 in plans], tick, checkpoint)
+    def is_dense(identity: str) -> bool:
+        return int(recovery.get(identity, {}).get("stage", 0)) >= 4
 
-    # Phase 3: assemble oriented fits from the now-populated cache.
-    for identity, stage, forward, key, *_ in plans:
-        fitted = fitter._cache[key]
-        if not forward:
-            fitted = fitted.reversed()
-        if stage:
-            fitted = replace(fitted, diagnostics=tuple(
-                replace(item, recovery_attempts=stage) for item in fitted.diagnostics))
-        fits[identity] = fitted
+    def fit_chains(identities: set[str] | None) -> None:
+        # Phase 1: resolve each chain's recovery-adjusted settings and cache key.
+        # This is cheap; the expensive curve fit is deferred to phase 2.
+        plans: list[tuple] = []
+        for index, chain in enumerate(track.chains):
+            if identities is not None and chain.identity not in identities:
+                continue
+            if identities is None:
+                tick(index / total if total else 1.0,
+                     f"Fitting boundary curves ({index + 1} of {total})")
+            anchors = [HardAnchor(anchor.point, anchor.kind) for anchor in chain.anchors]
+            samples = chain.points
+            state = recovery.get(chain.identity, {})
+            stage = int(state.get("stage", 0))
+            chain_settings = _recovery_settings(settings, stage)
+            constraint = state.get("constraint")
+            constraints = [tuple(constraint)] if constraint is not None and stage >= 3 else []
+            constraints.extend(crossing.get(chain.identity, {}).get("pins", ()))
+            if is_dense(chain.identity):
+                reason = "maximum deviation still exceeded after ordered local recovery"
+                primitives = tuple(("L", point) for point in samples[1:])
+                fits[chain.identity] = ChainFit(
+                    samples[0], primitives,
+                    FitMetrics(len(primitives), 0, len(anchors), len(samples), len(primitives)),
+                    (RunDiagnostic(
+                        "curve", 0, len(samples) - 1, 0.0, len(primitives),
+                        recovery_attempts=4, dense_fallback=True,
+                        fallback_reason=reason),))
+                continue
+            key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
+                samples, chain_settings, anchors, constraints)
+            plans.append((chain.identity, stage, forward, key,
+                          canonical, anchor_tuple, constraint_key, chain_settings))
+
+        # Phase 2: compute the cache misses. Distinct keys are fitted once by the
+        # compiled per-chain fitter.
+        _fit_cache_misses(
+            fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
+                     for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
+                     in plans], tick if identities is None else _noop, checkpoint)
+
+        # Phase 3: assemble oriented fits from the now-populated cache.
+        for identity, stage, forward, key, *_ in plans:
+            fitted = fitter._cache[key]
+            if not forward:
+                fitted = fitted.reversed()
+            if stage:
+                fitted = replace(fitted, diagnostics=tuple(
+                    replace(item, recovery_attempts=stage) for item in fitted.diagnostics))
+            fits[identity] = _repaired(fitted, chains[identity].points, crossing.get(identity))
+
+    # Phase 4: no path may cross itself (``_repair_crossings``). A chain already
+    # dense from protected-feature recovery is not repaired further.
+    fit_chains(None)
+    crossing_passes = _repair_crossings(
+        fits, {identity: chain.points for identity, chain in chains.items()},
+        fit_chains, crossing,
+        lambda identity: int(recovery.get(identity, {}).get("stage", 0)) >= 4)
 
     assembled = assemble_colour_rings(track, included)
     result: dict[int, list[dict]] = {}
@@ -4247,11 +4600,19 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
                         "add_local_constraint", "dense_fallback"],
                     "recovered_chains": len(recovery),
                     "dense_fallback_chains": sum(
-                        int(state.get("stage", 0)) >= 4 for state in recovery.values()),
+                        is_dense(identity) or (identity in crossing
+                                               and _repair_fell_back(crossing[identity]))
+                        for identity in set(recovery) | set(crossing)),
                     "chain_recovery": {
                         identity: {"stage": int(state.get("stage", 0)),
                                    "constraint": state.get("constraint")}
                         for identity, state in sorted(recovery.items())},
+                    "crossing_passes": crossing_passes,
+                    "crossing_recovery": {
+                        identity: {"round": int(state["round"]),
+                                   "dense_fallback": _repair_fell_back(state),
+                                   "pins": [list(point) for point in state["pins"]]}
+                        for identity, state in sorted(crossing.items())},
                     "chain_diagnostics": {
                         identity: [item.as_dict() for item in fit.diagnostics]
                         for identity, fit in sorted(fits.items())

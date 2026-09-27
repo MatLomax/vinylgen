@@ -678,8 +678,20 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         invariant_cache=semantic_cache)
     write_trace_html(subject_dir, width, height)
     topology["shared_curve_fit"] = shared_fit_audit
-    dense_fallbacks = [identity for identity, state in recovery.items()
-                       if int(state["stage"]) >= 4]
+    # A chain falls back dense after protected-feature recovery or when local
+    # crossing repair could not keep it from crossing a boundary.
+    dense_fallbacks = sorted(
+        {identity for identity, state in recovery.items() if int(state["stage"]) >= 4}
+        | {identity for identity, state in shared_fit_audit["crossing_recovery"].items()
+           if state["dense_fallback"]})
+    # The overlap buffer's rings are fitted and repaired on their own.
+    dense_overlap_rings = sum(
+        int(path.get("crossing_repair", {}).get("dense_fallback_rings", 0))
+        for layer in variant_stats["overlap"] for path in layer["components"])
+    if dense_overlap_rings:
+        warnings.append(
+            f"{dense_overlap_rings} overlap-buffer rings fell back to their dense boundary "
+            "so that no path crosses itself")
     if recovery:
         warnings.append(
             f"{len(recovery)} shared curves used ordered local recovery after "
