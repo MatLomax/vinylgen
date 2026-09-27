@@ -26,6 +26,13 @@ smooth a yellow circle; partly transparent outlines with a white ring). Our node
 shapes (plus the cusps where stacking clips one shape against another). A node
 shared by two colour layers is counted once.
 
+``--corpus icons`` draws the icon corpus instead (``build_icons``): one row per
+glyph, whole, as the benchmark renders it, with its label render under the true
+outline and required genuine corners, then the three tools traced from those
+labels (Potrace and VTracer at the benchmark grid's tuned settings), each panel
+captioned with that glyph's benchmark figures. The glyphs are picked from a tuned
+icon benchmark run (``_icon_rows``). Output: ``.tmp/contact-sheet/icons.svg``.
+
 Output: ``.tmp/contact-sheet/contact-sheet.svg`` and ``contact-sheet.png``.
 Traces are cached in the work directory; ``--retrace`` redoes them.
 """
@@ -470,6 +477,157 @@ def build(retrace: bool) -> Path:
     return target
 
 
+# --- icon corpus -------------------------------------------------------------------
+
+# The tuned tool settings the benchmark grid chose (``benchmark_tracers.py --grid``).
+POTRACE_TUNED = {"alphamax": 0.8, "opttolerance": 0.0}
+VTRACER_TUNED = {"corner_threshold": 45.0, "splice_threshold": 45.0, "segment_length": 4.0}
+ICON_ROWS = 24
+
+
+def _icon_rows(rows_path: Path) -> list[tuple[str, dict]]:
+    """The glyphs to show, from a tuned icon benchmark's labels-tier rows: the six
+    with most genuine corners our tracer misses, the four Potrace misses most, the
+    four where VTracer makes most kinks, then an even spread over the rest (in case
+    id order) up to ``ICON_ROWS``. Each with its per-tool benchmark summary."""
+    by_case: dict[str, dict] = {}
+    for line in rows_path.read_text().splitlines():
+        row = json.loads(line)
+        if row["tier"] == "labels" and row["ok"]:
+            by_case.setdefault(row["case_id"], {})[row["tool"]] = row["summary"]
+    cases = {case: tools for case, tools in by_case.items() if len(tools) == 3}
+
+    def misses(tool):
+        def key(case):
+            found, true = cases[case][tool]["required_by_kind"].get("corner", [0, 0])
+            return (true - found, case)
+        return key
+
+    chosen: list[str] = []
+    for key, count in ((misses("vinylgen"), 6), (misses("potrace"), 4),
+                       (lambda case: (cases[case]["vtracer"]["kinks"], case), 4)):
+        for case in sorted(cases, key=key, reverse=True):
+            if count == 0:
+                break
+            if case not in chosen:
+                chosen.append(case)
+                count -= 1
+    rest = sorted(case for case in cases if case not in chosen)
+    spare = ICON_ROWS - len(chosen)
+    chosen += [rest[int(i * len(rest) / spare)] for i in range(spare)] if spare > 0 else []
+    return [(case, cases[case]) for case in chosen]
+
+
+def _row_figures(summary: dict) -> str:
+    found, true = summary["required_by_kind"].get("corner", [0, 0])
+    curve = summary.get("curve") or {}
+    extra = curve.get("extra_inflections_per_100px")
+    wobble = "-" if extra is None else f"{extra:+.1f}"
+    return f"corners {found}/{true}, kinks {summary['kinks']}, extra inflections/100px {wobble}"
+
+
+def build_icons(rows_path: Path) -> Path:
+    """The icon contact sheet: per glyph, its label render with the true outline and
+    required corners, then ours, Potrace and VTracer (tuned) traced from those labels."""
+    from vinylgen.contracts import TraceSettings
+    from vinylgen.fidelity.harness import trace_labels
+    from vinylgen.fidelity.icons import icon_cases
+    from vinylgen.fidelity.raster import render_labels
+    from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
+    from vinylgen.fidelity.sweep import _bounds
+    cases = {case.case_id: case for case in icon_cases()}
+    OUT.mkdir(parents=True, exist_ok=True)
+    work = WORK / "icons"
+    rows_svg = []
+    row_height = HEADER + PANEL + GAP * 2
+    sheet_width = LOCATOR + GAP + 4 * (PANEL + GAP) + GAP
+    y = 150
+    for case_id, summaries in _icon_rows(rows_path):
+        case = cases[case_id]
+        scene = case.scene
+        size = int(max(scene.width, scene.height))
+        crop = Crop(case_id, 0, 0, size, "")
+        scale = PANEL / size
+        r, line = MARKER / scale, NODE_LINE / scale
+        labels = np.asarray(render_labels(scene), dtype=np.int16)
+        run = trace_labels((labels, scene.palette), work / case_id, TraceSettings(),
+                           subject=case_id)
+        fills = [str(row["hex"]).upper() for row in run.palette]
+        rgb = np.asarray([row["rgb"] for row in run.palette], dtype=np.uint8)
+        bounds = _bounds(case, "labels", run)
+        rows_svg.append(_text(GAP, y + 18, case_id.removeprefix("icon-"), 14, "bold"))
+        rows_svg.append(_text(GAP, y + 37, f"{scene.width}x{scene.height} px", 12, fill="#aaa"))
+        x = LOCATOR + GAP
+        # The label render with the true outline and the required genuine corners.
+        body = [f'<image x="0" y="0" width="{scene.width}" height="{scene.height}" '
+                f'xlink:href="{_png_data(Image.fromarray(rgb[labels], "RGB"))}" '
+                f'style="image-rendering:optimizeSpeed"/>']
+        for region in scene.regions:
+            for outline in region.rings:
+                points = outline.flatten(FLATTEN_TOLERANCE)
+                path = " ".join(f"{px:.3f},{py:.3f}" for px, py in points)
+                body.append(f'<polygon points="{path}" fill="none" stroke="#00e5ff" '
+                            f'stroke-width="{1.2 / scale:.4f}"/>')
+        corners = [c for c in bounds.corners if c["role"] == "required" and c["kind"] == "corner"]
+        body += [f'<circle cx="{c["point"][0]:.3f}" cy="{c["point"][1]:.3f}" r="{2.2 * r:.3f}" '
+                 f'fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="{1.5 * line:.4f}"/>'
+                 for c in corners]
+        rows_svg.append(_panel(x, y + HEADER, crop, body))
+        rows_svg.append(_text(x, y + 18, "labels + true outline", 15, "bold"))
+        rows_svg.append(_text(x, y + 37, f"{len(corners)} required corners (white rings)", 13,
+                              fill="#ccc"))
+        x += PANEL + GAP
+        for tool in TOOLS:
+            if tool == "ours":
+                shapes, nodes = ours_in_crop(run.edge_svg, crop)
+            else:
+                traced = (run_potrace(labels, fills, work / case_id / tool, **POTRACE_TUNED)
+                          if tool == "potrace" else
+                          run_vtracer(labels, fills, rgb, work / case_id / tool, **VTRACER_TUNED))
+                shapes, nodes = tool_in_crop(traced, crop, scene.width, scene.height)
+            body = [f'<rect x="0" y="0" width="{scene.width}" height="{scene.height}" fill="#fff"/>']
+            body += [f'<path d="{_d(subpaths)}" fill="{fill}" fill-rule="evenodd"/>'
+                     for fill, subpaths in shapes]
+            body += [f'<circle cx="{c["point"][0]:.3f}" cy="{c["point"][1]:.3f}" r="{2.2 * r:.3f}" '
+                     f'fill="none" stroke="#888" stroke-opacity="0.6" stroke-width="{line:.4f}"/>'
+                     for c in corners]
+            for letter in "zsc":  # cusps on top
+                body += [_marker(px, py, t, r, line) for (px, py), t in nodes.items() if t == letter]
+            rows_svg.append(_panel(x, y + HEADER, crop, body))
+            label, _ = _count_text(nodes)
+            summary = summaries["vinylgen" if tool == "ours" else tool]
+            rows_svg.append(_text(x, y + 18, f"{TOOL_TITLES[tool]}: {label}", 14, "bold"))
+            rows_svg.append(_text(x, y + 37, _row_figures(summary), 13, fill="#ccc"))
+            x += PANEL + GAP
+        shutil.rmtree(work / case_id, ignore_errors=True)
+        y += row_height
+    head = [_text(GAP, 34, "Icon contact sheet: Vinylgen vs Potrace vs VTracer", 24, "bold"),
+            _text(GAP, 62, "Each glyph as the benchmark renders it (seeded size, rotation and "
+                  "sub-pixel offset); all three trace its hard-edged labels. Vinylgen: default "
+                  "TraceSettings. Potrace 1.16: stacked scans, -a 0.8 -n. VTracer 0.6.4: stacked "
+                  "colour mode, corner 45, splice 45, segment 4 (the benchmark grid's best settings).",
+                  13, fill="#ccc"),
+            _text(GAP, 82, "Rows: the six glyphs where ours misses most corners, the four where "
+                  "Potrace does, the four where VTracer makes most kinks, then a spread of the rest. "
+                  "Figures are the benchmark's for that glyph: required genuine corners found, kinks, "
+                  "extra inflections per 100 px.", 13, fill="#ccc")]
+    lx = GAP
+    for letter in "csz":
+        head.append(f'<g transform="translate({lx + 8},{116})">{_marker(0, 0, letter, 7, 1.8)}</g>')
+        head.append(_text(lx + 24, 121, f"{NODE_NAMES[letter]} node", 15))
+        lx += 190
+    head.append(f'<circle cx="{lx + 8}" cy="116" r="8" fill="none" stroke="#fff" stroke-width="2"/>')
+    head.append(_text(lx + 24, 121, "required genuine corner (true)", 15))
+    sheet_height = y + GAP
+    svg = (f'<svg xmlns="{SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink" width="{sheet_width}" '
+           f'height="{sheet_height}" viewBox="0 0 {sheet_width} {sheet_height}">'
+           f'<rect width="100%" height="100%" fill="#1b1b1f"/>'
+           + "".join(head) + "".join(rows_svg) + "</svg>\n")
+    target = OUT / "icons.svg"
+    target.write_text(svg)
+    return target
+
+
 def render(svg: Path) -> Path:
     png = svg.with_suffix(".png")
     subprocess.run([str(ROOT / "scripts" / "inkscape-headless"), str(svg), "--export-type=png",
@@ -477,12 +635,30 @@ def render(svg: Path) -> Path:
     return png
 
 
+def _newest_tuned_icon_rows() -> Path:
+    for run in sorted((ROOT / ".tmp" / "benchmark").glob("2*"), reverse=True):
+        summary = run / "summary.md"
+        if (summary.exists() and "Corpus: icons" in summary.read_text()
+                and "Potrace: -a 0.8 -n" in summary.read_text()):
+            return run / "rows.jsonl"
+    raise SystemExit("no tuned icon benchmark run under .tmp/benchmark; run "
+                     "benchmark_tracers.py --corpus icons with the tuned settings first")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--retrace", action="store_true", help="redo all three traces")
     parser.add_argument("--no-render", action="store_true", help="skip the PNG render")
+    parser.add_argument("--corpus", choices=("real", "icons"), default="real",
+                        help="real subjects (default) or glyphs from the icon corpus")
+    parser.add_argument("--rows", type=Path, default=None,
+                        help="with --corpus icons: a tuned icon benchmark run's rows.jsonl "
+                             "(default: the newest run whose summary names the tuned settings)")
     args = parser.parse_args()
-    svg = build(args.retrace)
+    if args.corpus == "icons":
+        svg = build_icons(args.rows or _newest_tuned_icon_rows())
+    else:
+        svg = build(args.retrace)
     print(svg)
     if not args.no_render:
         print(render(svg))
