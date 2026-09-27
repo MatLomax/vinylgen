@@ -2234,14 +2234,16 @@ def topology_mutations(bounds: "CaseBounds") -> list[dict]:
 
 
 def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None = None,
-             raster_colours: set[int] | None = None) -> dict:
+             raster_colours: set[int] | None = None, traced: dict | None = None) -> dict:
     """Measure ``run`` (a ``harness.TraceRun`` of ``case`` in ``tier``) against
     ``bounds``: every number ``check`` and the sweep summaries read.
     ``raster_colours`` (the scene colours of the hard-edged label render, which
     are the colours that dominate some pixel) limits the rgb tier's demand that
     a scene colour survive the palette stage to colours the raster carries.
     ``measured`` is ``metrics.measure`` of the run against ``bounds.truth`` with
-    ``colour_map(bounds, run)``, when the caller already has it."""
+    ``colour_map(bounds, run)``, when the caller already has it. ``traced`` is
+    ``run.edge_svg`` already parsed (``metrics.parse_traced_svg``'s layout), or
+    another tracer's output converted to it, which replaces reading the file."""
     scene = case.scene
     truth = bounds.truth
     mapping = colour_map(bounds, run)
@@ -2249,8 +2251,9 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
         # A negative radius and distance make every true vertex a miss and every
         # cusp a kink, so the result lists each one's nearest distance.
         measured = measure(run.edge_svg, truth, scene.palette, corner_radius=-1.0,
-                           smooth_min_distance=-1.0, colour_map=mapping)
-    traced = parse_traced_svg(run.edge_svg)
+                           smooth_min_distance=-1.0, colour_map=mapping, traced=traced)
+    if traced is None:
+        traced = parse_traced_svg(run.edge_svg)
     width, height = traced["width"], traced["height"]
     traced_by_colour, traced_by_fill, traced_rings, rings_by_fill = _traced_layers(traced, mapping)
     excluded = bounds.excluded_zone

@@ -243,7 +243,7 @@ def _topology(geometry) -> dict:
 
 def measure(svg_path: Path, truth: SceneTruth, palette: list[dict], *,
             corner_radius: float, smooth_min_distance: float | None = None,
-            colour_map: dict[str, int] | None = None) -> dict:
+            colour_map: dict[str, int] | None = None, traced: dict | None = None) -> dict:
     """Measure a traced edge-variant SVG against a scene's truth.
 
     ``palette`` is the scene palette (rows with ``rgb``); each layer is assigned to
@@ -261,8 +261,13 @@ def measure(svg_path: Path, truth: SceneTruth, palette: list[dict], *,
     A true corner (any kind) is found when a cusp node lies within
     ``corner_radius``. A kink is a cusp node farther than ``smooth_min_distance``
     (default ``corner_radius``) from every true corner.
+
+    ``traced`` is the SVG already parsed (``parse_traced_svg``'s layout), which
+    replaces reading ``svg_path``: another tracer's output converted to layers,
+    rings and typed nodes (``scripts/benchmark_tracers.py``).
     """
-    traced = parse_traced_svg(Path(svg_path))
+    if traced is None:
+        traced = parse_traced_svg(Path(svg_path))
     width, height = traced["width"], traced["height"]
     if (width, height) != (float(truth.width), float(truth.height)):
         raise ValueError(f"traced canvas {width:g}x{height:g} differs from the truth's "
