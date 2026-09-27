@@ -18,22 +18,26 @@ cropped input would trace with different settings than the real subject, and a
 crop edge would add frame boundaries none of the tools see in real use.
 
 Each crop window is then drawn as one row: the flattened raster, then each
-tool's filled shapes at the same scale with every node marked by type as the
-Trace step's node overlay marks it (cusp a red rhombus, symmetric a blue square,
-smooth a yellow circle; partly transparent outlines with a white ring). Our node types are our SVG's
-``sodipodi:nodetypes``; Potrace's and VTracer's are read from their handles by
-``benchmark_tracers.stacked_trace`` over the visible partition of their stacked
-shapes (plus the cusps where stacking clips one shape against another). A node
-shared by two colour layers is counted once.
+tool's filled shapes at the same scale, outlined in red, under the label
+boundaries in cyan (the truth all three traced), with every node marked by type
+as the Trace step's node overlay marks it (cusp a red rhombus, symmetric a blue
+square, smooth a yellow circle; partly transparent outlines with a white ring).
+Our node types are our SVG's ``sodipodi:nodetypes``; Potrace's and VTracer's are
+read from their handles by ``benchmark_tracers.stacked_trace`` over the visible
+partition of their stacked shapes (plus the cusps where stacking clips one shape
+against another). A node shared by two colour layers is counted once.
 
 ``--corpus icons`` draws the icon corpus instead (``build_icons``): one row per
 glyph, whole, as the benchmark renders it, with its label render under the true
-outline and required genuine corners, then the three tools traced from those
-labels (Potrace and VTracer at the benchmark grid's tuned settings), each panel
-captioned with that glyph's benchmark figures. The glyphs are picked from a tuned
-icon benchmark run (``_icon_rows``). Output: ``.tmp/contact-sheet/icons.svg``.
+outline and every authored node (white outline in its type's shape), then the
+three tools traced from those labels (Potrace and VTracer at the benchmark grid's
+tuned settings) under the true outline, each panel captioned with that glyph's
+benchmark figures. The glyphs are picked from a tuned icon benchmark run
+(``_icon_rows``). Output: ``.tmp/contact-sheet/icons.html``.
 
-Output: ``.tmp/contact-sheet/contact-sheet.svg`` and ``contact-sheet.png``.
+The sheet is an HTML page for Firefox: every panel zooms (wheel) and pans
+(drag), and the panels of a row move together. Output:
+``.tmp/contact-sheet/contact-sheet.html``.
 Traces are cached in the work directory; ``--retrace`` redoes them.
 """
 
@@ -47,7 +51,6 @@ import math
 import pickle
 import shutil
 import sqlite3
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -79,11 +82,13 @@ NODE_FILL = "rgba(255, 255, 255, .1)"
 NODE_LINE = 1.25
 NODE_NAMES = {"c": "cusp", "s": "symmetric", "z": "smooth"}
 
-PANEL = 540          # panel side in sheet px
-GAP = 14
+PANEL = 540          # panel side in screen px
 LOCATOR = 220        # locator thumbnail width
-MARKER = 4.5         # marker half-size in sheet px (the overlay's NODE_MARKER_RADIUS)
-HEADER = 44
+MARKER = 4.5         # marker half-size in screen px (the overlay's NODE_MARKER_RADIUS)
+TRUTH_MARKER = 8.0   # authored-node marker half-size in screen px
+TRUTH_LINE = 1.5
+TRUTH_OUTLINE = "#00e5ff"
+OWN_OUTLINE = "#ff2d2d"
 
 
 @dataclass(frozen=True)
@@ -324,6 +329,12 @@ def tool_in_crop(shapes, crop: Crop, width: int, height: int):
 
 
 # --- drawing -----------------------------------------------------------------------
+#
+# The sheet is an HTML page. Each panel is an inline SVG in source-pixel
+# coordinates whose viewBox the page's script zooms (wheel) and pans (drag); every
+# panel of a row shares one view. Markers are drawn in screen pixels inside a
+# ``<g class="k">`` that the script rescales to the view, so they keep their size
+# on screen at any zoom, and outlines use non-scaling strokes.
 
 def _png_data(image: Image.Image) -> str:
     buffer = io.BytesIO()
@@ -355,79 +366,240 @@ def _marker(x, y, letter, r, line) -> str:
     return _marker_shape(x, y, letter, r, line, ring) + _marker_shape(x, y, letter, r, 0.0, body)
 
 
-_CLIP_IDS = iter(range(1_000_000))
+def _truth_marker(letter) -> str:
+    """An authored node: its type's shape, larger than a traced node's marker, as a
+    white outline only."""
+    style = (f'fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="{TRUTH_LINE}" '
+             f'stroke-linejoin="miter"')
+    return _marker_shape(0.0, 0.0, letter, TRUTH_MARKER, 0.0, style)
 
 
-def _panel(px, py, crop: Crop, body: list[str]) -> str:
-    """The body (in source-pixel coordinates) scaled into a clipped panel."""
-    clip = f"clip{next(_CLIP_IDS)}"
-    scale = PANEL / crop.size
-    return (f'<clipPath id="{clip}"><rect x="{px}" y="{py}" width="{PANEL}" height="{PANEL}"/>'
-            f'</clipPath><g clip-path="url(#{clip})"><g transform="translate({px} {py}) '
-            f'scale({scale:.6f}) translate({-crop.x} {-crop.y})">' + "".join(body) + "</g></g>"
-            f'<rect x="{px}" y="{py}" width="{PANEL}" height="{PANEL}" fill="none" '
-            f'stroke="#888" stroke-width="1"/>')
+def _pinned(x, y, drawing: str, k: float) -> str:
+    """``drawing`` (in screen pixels about the origin) pinned to source point (x, y)
+    at the view's screen scale ``k`` (source pixels per screen pixel)."""
+    return (f'<g transform="translate({x:.3f} {y:.3f})"><g class="k" transform="scale({k:.6f})">'
+            f'{drawing}</g></g>')
 
 
-def _count_text(nodes: dict) -> str:
+def _outlined(fill, d) -> str:
+    """A tool's filled shape with its own outline in red. Stroked after its own fill
+    and before the shapes above it, so only the visible part of a stacked outline
+    shows."""
+    return (f'<path d="{d}" fill="{fill}" fill-rule="evenodd" stroke="{OWN_OUTLINE}" '
+            f'stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>')
+
+
+def _truth_path(d) -> str:
+    return (f'<path d="{d}" fill="none" stroke="{TRUTH_OUTLINE}" stroke-width="1" '
+            f'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>')
+
+
+def _pixel_boundaries(pixels: np.ndarray, crop: Crop) -> str:
+    """Path data of the label boundaries inside the crop: the pixel edges between
+    differently coloured pixels, as horizontal and vertical runs."""
+    x0, y0 = crop.x, crop.y
+    window = pixels[max(0, y0 - 1):y0 + crop.size + 1, max(0, x0 - 1):x0 + crop.size + 1]
+    ox, oy = max(0, x0 - 1), max(0, y0 - 1)
+    code = window[..., 0].astype(np.int64) << 16 | window[..., 1].astype(np.int64) << 8 | window[..., 2]
+    parts = []
+
+    def runs(mask, emit):
+        for i, row in enumerate(mask):
+            edges = np.flatnonzero(np.diff(np.concatenate(([0], row.astype(np.int8), [0]))))
+            for start, stop in zip(edges[::2], edges[1::2]):
+                emit(i, start, stop)
+
+    # Horizontal edges lie between rows i and i + 1, vertical ones between columns.
+    runs(code[1:] != code[:-1],
+         lambda i, a, b: parts.append(f"M{ox + a} {oy + i + 1}h{b - a}"))
+    runs((code[:, 1:] != code[:, :-1]).T,
+         lambda i, a, b: parts.append(f"M{ox + i + 1} {oy + a}v{b - a}"))
+    return "".join(parts)
+
+
+def _authored_typed_nodes(scene, rings) -> dict:
+    """The scene's authored nodes on the drawn truth boundary, typed from the
+    segments meeting there as the tools' nodes are typed from their handles
+    (``benchmark_tracers.typed_nodes``): a cusp turns more than CUSP_TURN_DEG, a
+    smooth node has equal tangent magnitudes either side, otherwise symmetric. A
+    position typed differently by two outlines counts as a cusp."""
+    from benchmark_tracers import BALANCED, CUSP_TURN_DEG
+    from vinylgen.fidelity.metrics import authored_nodes
+    from vinylgen.fidelity.scene import segment_start, turn_degrees
+    visible = {(round(x, 4), round(y, 4)) for x, y in authored_nodes(scene, rings)}
+    typed: dict = {}
+    for region in scene.regions:
+        for outline in region.rings:
+            for index, segment in enumerate(outline.segments):
+                x, y = segment_start(segment)
+                key = (round(x, 4), round(y, 4))
+                if key not in visible:
+                    continue
+                incoming = outline.segments[index - 1].end_tangent()
+                outgoing = segment.start_tangent()
+                if turn_degrees(incoming, outgoing) > CUSP_TURN_DEG:
+                    letter = "c"
+                else:
+                    a, b = float(np.hypot(*incoming)), float(np.hypot(*outgoing))
+                    letter = "z" if abs(a - b) <= BALANCED * max(a, b) else "s"
+                typed[key] = "c" if typed.get(key, letter) != letter else letter
+    return typed
+
+
+def _count_text(nodes: dict) -> tuple[str, dict]:
     counts = {letter: sum(1 for t in nodes.values() if t == letter) for letter in "csz"}
     return (f"{len(nodes)} nodes: {counts['c']} cusp, {counts['s']} symmetric, "
             f"{counts['z']} smooth"), counts
 
 
-def _text(x, y, text, size=15, weight="normal", fill="#eee") -> str:
-    text = text.replace("&", "&amp;").replace("<", "&lt;")
-    return (f'<text x="{x}" y="{y}" font-family="DejaVu Sans, sans-serif" font-size="{size}" '
-            f'font-weight="{weight}" fill="{fill}">{text}</text>')
+def _esc(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _panel(title: str, caption: str, view: tuple[float, float, float], body: list[str]) -> str:
+    """One zoomable panel: ``body`` in source-pixel coordinates, first shown as the
+    square ``view`` (x, y, side)."""
+    x, y, side = view
+    box = f"{x} {y} {side} {side}"
+    return (f'<figure><figcaption><b>{_esc(title)}</b><span>{_esc(caption)}</span></figcaption>'
+            f'<svg class="pz" viewBox="{box}" data-home="{box}" width="{PANEL}" height="{PANEL}" '
+            f'xmlns="{SVG_NS}">' + "".join(body) + "</svg></figure>")
+
+
+def _legend(extra: str = "") -> str:
+    items = []
+    for letter in "csz":
+        items.append(f'<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
+                     f'{_marker(0, 0, letter, 7, 1.8)}</svg>{NODE_NAMES[letter]} node</span>')
+    items.append(f'<span><svg width="30" height="12"><line x1="0" y1="6" x2="30" y2="6" '
+                 f'stroke="{TRUTH_OUTLINE}" stroke-width="2"/></svg>true outline</span>')
+    items.append(f'<span><svg width="30" height="12"><line x1="0" y1="6" x2="30" y2="6" '
+                 f'stroke="{OWN_OUTLINE}" stroke-width="2"/></svg>the tool\'s own outline</span>')
+    return '<div class="legend">' + "".join(items) + extra + "</div>"
+
+
+_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title><style>
+body {{ background: #1b1b1f; color: #eee; font: 14px "DejaVu Sans", sans-serif; margin: 16px; }}
+h1 {{ font-size: 24px; margin: 0 0 8px; }}
+p {{ color: #ccc; font-size: 13px; max-width: 1800px; margin: 4px 0; }}
+.legend {{ display: flex; gap: 28px; align-items: center; margin: 12px 0 18px; font-size: 15px; }}
+.legend span {{ display: flex; gap: 8px; align-items: center; }}
+section {{ display: flex; gap: 14px; margin-bottom: 26px; align-items: flex-start; }}
+.info {{ width: 220px; flex: none; }}
+.info h2 {{ font-size: 16px; margin: 0 0 6px; word-break: break-all; }}
+.info div {{ color: #bbb; font-size: 13px; margin-top: 6px; }}
+.info img {{ display: block; margin-top: 6px; }}
+figure {{ margin: 0; }}
+figcaption {{ height: 40px; font-size: 14px; }}
+figcaption span {{ display: block; color: #ccc; font-size: 13px; margin-top: 3px; }}
+svg.pz {{ display: block; outline: 1px solid #888; background: #111; cursor: grab; }}
+svg.pz:active {{ cursor: grabbing; }}
+svg.pz image {{ image-rendering: pixelated; }}
+</style></head><body>
+<h1>{title}</h1>
+{intro}
+<p>Scroll a panel to zoom, drag to pan, double-click to reset; every panel in a row
+follows. Node markers keep their screen size at any zoom.</p>
+{legend}
+{rows}
+<script>
+const PANEL = {panel};
+for (const row of document.querySelectorAll("section")) {{
+  const panels = [...row.querySelectorAll("svg.pz")];
+  if (!panels.length) continue;
+  const home = panels[0].dataset.home.split(" ").map(Number);
+  const view = {{x: home[0], y: home[1], s: home[2]}};
+  const minSide = Math.min(home[2], 2);
+  const markers = panels.flatMap(p => [...p.querySelectorAll("g.k")]);
+  function show() {{
+    view.s = Math.min(home[2], Math.max(minSide, view.s));
+    view.x = Math.min(home[0] + home[2] - view.s, Math.max(home[0], view.x));
+    view.y = Math.min(home[1] + home[2] - view.s, Math.max(home[1], view.y));
+    const box = `${{view.x}} ${{view.y}} ${{view.s}} ${{view.s}}`;
+    for (const p of panels) p.setAttribute("viewBox", box);
+    const k = `scale(${{view.s / PANEL}})`;
+    for (const m of markers) m.setAttribute("transform", k);
+  }}
+  for (const p of panels) {{
+    p.addEventListener("wheel", e => {{
+      e.preventDefault();
+      const r = p.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const px = view.x + fx * view.s, py = view.y + fy * view.s;
+      view.s *= Math.exp(e.deltaY * (e.deltaMode ? 0.05 : 0.0015));
+      view.s = Math.min(home[2], Math.max(minSide, view.s));
+      view.x = px - fx * view.s; view.y = py - fy * view.s;
+      show();
+    }}, {{passive: false}});
+    p.addEventListener("pointerdown", e => {{
+      p.setPointerCapture(e.pointerId);
+      const start = {{cx: e.clientX, cy: e.clientY, x: view.x, y: view.y}};
+      const move = m => {{
+        const per = view.s / p.getBoundingClientRect().width;
+        view.x = start.x - (m.clientX - start.cx) * per;
+        view.y = start.y - (m.clientY - start.cy) * per;
+        show();
+      }};
+      const up = () => {{ p.removeEventListener("pointermove", move); p.removeEventListener("pointerup", up); }};
+      p.addEventListener("pointermove", move);
+      p.addEventListener("pointerup", up);
+    }});
+    p.addEventListener("dblclick", () => {{ view.x = home[0]; view.y = home[1]; view.s = home[2]; show(); }});
+  }}
+}}
+</script>
+</body></html>
+"""
+
+
+def _page(target: Path, title: str, intro: list[str], legend: str, rows: list[str]) -> Path:
+    target.write_text(_PAGE.format(title=_esc(title), intro="".join(f"<p>{_esc(t)}</p>" for t in intro),
+                                   legend=legend, rows="\n".join(rows), panel=PANEL))
+    return target
+
+
+def _tool_body(shapes, nodes, truth: list[str], k: float, under: list[str] = (),
+               over: list[str] = ()) -> list[str]:
+    """A tool panel: its shapes with their own outlines, the true outline over them,
+    then ``over`` and its node markers (cusps on top)."""
+    body = list(under)
+    body += [_outlined(fill, _d(subpaths)) for fill, subpaths in shapes]
+    body += truth
+    body += list(over)
+    for letter in "zsc":
+        body += [_pinned(px, py, _marker(0, 0, t, MARKER, NODE_LINE), k)
+                 for (px, py), t in nodes.items() if t == letter]
+    return body
 
 
 def build(retrace: bool) -> Path:
     OUT.mkdir(parents=True, exist_ok=True)
-    rows_svg, report = [], []
-    row_height = HEADER + PANEL + GAP * 2
-    sheet_width = LOCATOR + GAP + 4 * (PANEL + GAP) + GAP
-    y = 150
+    rows, report = [], []
     for subject in SUBJECTS:
         data = trace_all(subject, retrace)
         flattened = Image.open(data["dir"] / "flattened.png").convert("RGB")
+        pixels = np.asarray(flattened)
         width, height = flattened.size
+        thumb = flattened.copy()
+        thumb.thumbnail((LOCATOR, LOCATOR))
+        factor = thumb.width / width
         for crop in subject.crops:
-            scale = PANEL / crop.size
-            r = MARKER / scale
-            x = GAP
-            # Locator: the whole subject with the crop outlined.
-            thumb = flattened.copy()
-            thumb.thumbnail((LOCATOR, LOCATOR))
-            factor = thumb.width / width
-            rows_svg.append(_text(x, y + 18, subject.name, 17, "bold"))
-            rows_svg.append(f'<image x="{x}" y="{y + HEADER}" width="{thumb.width}" '
-                            f'height="{thumb.height}" xlink:href="{_png_data(thumb)}"/>')
-            rows_svg.append(f'<rect x="{x + crop.x * factor:.1f}" y="{y + HEADER + crop.y * factor:.1f}" '
-                            f'width="{max(3, crop.size * factor):.1f}" height="{max(3, crop.size * factor):.1f}" '
-                            f'fill="none" stroke="#FF1FD2" stroke-width="2"/>')
-            wrap, words, line = [], crop.why.split(), ""
-            for word in words:
-                if len(line) + len(word) > 28:
-                    wrap.append(line)
-                    line = ""
-                line = (line + " " + word).strip()
-            wrap.append(line)
-            ty = y + HEADER + thumb.height + 22
-            rows_svg.append(_text(x, ty, crop.name, 15, "bold"))
-            for k, part in enumerate(wrap):
-                rows_svg.append(_text(x, ty + 20 + 18 * k, part, 13, fill="#bbb"))
-            rows_svg.append(_text(x, ty + 20 + 18 * len(wrap) + 4,
-                                  f"{crop.size} px square at ({crop.x}, {crop.y})", 12, fill="#999"))
-            x += LOCATOR + GAP
-            # Raster panel.
+            k = crop.size / PANEL
+            view = (crop.x, crop.y, crop.size)
+            box = max(3, crop.size * factor)
+            locator = (f'<svg width="{thumb.width}" height="{thumb.height}" xmlns="{SVG_NS}">'
+                       f'<image href="{_png_data(thumb)}" width="{thumb.width}" height="{thumb.height}"/>'
+                       f'<rect x="{crop.x * factor:.1f}" y="{crop.y * factor:.1f}" width="{box:.1f}" '
+                       f'height="{box:.1f}" fill="none" stroke="#FF1FD2" stroke-width="2"/></svg>')
+            cells = [f'<div class="info"><h2>{_esc(subject.name)}</h2>{locator}'
+                     f'<div><b>{_esc(crop.name)}</b></div><div>{_esc(crop.why)}</div>'
+                     f'<div>{crop.size} px square at ({crop.x}, {crop.y})</div></div>']
             window = flattened.crop((crop.x, crop.y, crop.x + crop.size, crop.y + crop.size))
-            window = window.resize((PANEL, PANEL), Image.NEAREST)
-            rows_svg.append(_text(x, y + 30, "flattened labels (input to all three)", 15, "bold"))
-            rows_svg.append(f'<image x="{x}" y="{y + HEADER}" width="{PANEL}" height="{PANEL}" '
-                            f'xlink:href="{_png_data(window)}" style="image-rendering:optimizeSpeed"/>')
-            rows_svg.append(f'<rect x="{x}" y="{y + HEADER}" width="{PANEL}" height="{PANEL}" '
-                            f'fill="none" stroke="#888"/>')
-            x += PANEL + GAP
+            cells.append(_panel("flattened labels", "input to all three", view,
+                                [f'<image x="{crop.x}" y="{crop.y}" width="{crop.size}" '
+                                 f'height="{crop.size}" href="{_png_data(window)}"/>']))
+            truth = [_truth_path(_pixel_boundaries(pixels, crop))]
             row_report = {"subject": subject.name, "crop": crop.name,
                           "window": [crop.x, crop.y, crop.size]}
             for tool in TOOLS:
@@ -435,44 +607,26 @@ def build(retrace: bool) -> Path:
                     shapes, nodes = ours_in_crop(data["dir"] / "traced-edge.svg", crop)
                 else:
                     shapes, nodes = tool_in_crop(data["shapes"][tool], crop, width, height)
-                body = [f'<rect x="{crop.x}" y="{crop.y}" width="{crop.size}" height="{crop.size}" '
-                        f'fill="#fff"/>']
-                body += [f'<path d="{_d(subpaths)}" fill="{fill}" fill-rule="evenodd"/>'
-                         for fill, subpaths in shapes]
-                for letter in "zsc":  # cusps on top
-                    body += [_marker(px, py, t, r, NODE_LINE / scale)
-                             for (px, py), t in nodes.items() if t == letter]
-                rows_svg.append(_panel(x, y + HEADER, crop, body))
+                under = [f'<rect x="{crop.x}" y="{crop.y}" width="{crop.size}" height="{crop.size}" '
+                         f'fill="#fff"/>']
                 label, counts = _count_text(nodes)
-                rows_svg.append(_text(x, y + 18, TOOL_TITLES[tool], 16, "bold"))
-                rows_svg.append(_text(x, y + 37, label, 13, fill="#ccc"))
-                row_report[tool] = {"nodes": len(nodes), **{NODE_NAMES[k]: v for k, v in counts.items()}}
-                x += PANEL + GAP
+                cells.append(_panel(TOOL_TITLES[tool], label, view,
+                                    _tool_body(shapes, nodes, truth, k, under)))
+                row_report[tool] = {"nodes": len(nodes), **{NODE_NAMES[c]: v for c, v in counts.items()}}
             report.append(row_report)
-            y += row_height
-    head = [_text(GAP, 34, "Tracer contact sheet: Vinylgen vs Potrace vs VTracer", 24, "bold"),
-            _text(GAP, 62, "Each tool traced the WHOLE subject from the same flattened labels "
-                  "(segmentation.npz); panels are crops of those traces, fills at the same scale. "
-                  "Vinylgen: default TraceSettings, pixel mode, all colours cut, traced-edge.svg, from the labels "
-                  "only (hard-edged costs, no protection). "
-                  "Potrace 1.16: stacked scans per colour (-t 0). VTracer 0.6.4: flattened RGB, stacked "
-                  "colour mode, spline.", 13, fill="#ccc"),
-            _text(GAP, 82, "Nodes: Vinylgen from sodipodi:nodetypes; Potrace/VTracer typed by their "
-                  "handles on the visible partition of their stacked shapes (stacking clip points are "
-                  "cusps). A node shared by two colours counts once. Counts are nodes inside the crop.",
-                  13, fill="#ccc")]
-    lx = GAP
-    for letter in "csz":
-        head.append(f'<g transform="translate({lx + 8},{116})">{_marker(0, 0, letter, 7, 1.8)}</g>')
-        head.append(_text(lx + 24, 121, f"{NODE_NAMES[letter]} node", 15))
-        lx += 190
-    sheet_height = y + GAP
-    svg = (f'<svg xmlns="{SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink" width="{sheet_width}" height="{sheet_height}" '
-           f'viewBox="0 0 {sheet_width} {sheet_height}">'
-           f'<rect width="100%" height="100%" fill="#1b1b1f"/>'
-           + "".join(head) + "".join(rows_svg) + "</svg>\n")
-    target = OUT / "contact-sheet.svg"
-    target.write_text(svg)
+            rows.append("<section>" + "".join(cells) + "</section>")
+    intro = ["Each tool traced the WHOLE subject from the same flattened labels (segmentation.npz); "
+             "panels are crops of those traces. Vinylgen: default TraceSettings, pixel mode, all "
+             "colours cut, traced-edge.svg, from the labels only (hard-edged costs, no protection). "
+             "Potrace 1.16: stacked scans per colour (-t 0). VTracer 0.6.4: flattened RGB, stacked "
+             "colour mode, spline.",
+             "Cyan: the label boundaries (pixel edges between colours), the truth all three traced. "
+             "Red: each tool's own outlines, as visible after stacking. Nodes: Vinylgen from "
+             "sodipodi:nodetypes; Potrace/VTracer typed by their handles on the visible partition "
+             "of their stacked shapes (stacking clip points are cusps). A node shared by two "
+             "colours counts once. Counts are nodes inside the crop."]
+    target = _page(OUT / "contact-sheet.html",
+                   "Tracer contact sheet: Vinylgen vs Potrace vs VTracer", intro, _legend(), rows)
     (OUT / "node-counts.json").write_text(json.dumps(report, indent=2) + "\n")
     return target
 
@@ -528,7 +682,8 @@ def _row_figures(summary: dict) -> str:
 
 def build_icons(rows_path: Path) -> Path:
     """The icon contact sheet: per glyph, its label render with the true outline and
-    required corners, then ours, Potrace and VTracer (tuned) traced from those labels."""
+    every authored node, then ours, Potrace and VTracer (tuned) traced from those
+    labels."""
     from vinylgen.contracts import TraceSettings
     from vinylgen.fidelity.harness import trace_labels
     from vinylgen.fidelity.icons import icon_cases
@@ -538,45 +693,41 @@ def build_icons(rows_path: Path) -> Path:
     cases = {case.case_id: case for case in icon_cases()}
     OUT.mkdir(parents=True, exist_ok=True)
     work = WORK / "icons"
-    rows_svg = []
-    row_height = HEADER + PANEL + GAP * 2
-    sheet_width = LOCATOR + GAP + 4 * (PANEL + GAP) + GAP
-    y = 150
+    rows = []
     for case_id, summaries in _icon_rows(rows_path):
         case = cases[case_id]
         scene = case.scene
         size = int(max(scene.width, scene.height))
         crop = Crop(case_id, 0, 0, size, "")
-        scale = PANEL / size
-        r, line = MARKER / scale, NODE_LINE / scale
+        view = (0, 0, size)
+        k = size / PANEL
         labels = np.asarray(render_labels(scene), dtype=np.int16)
         run = trace_labels((labels, scene.palette), work / case_id, TraceSettings(),
                            subject=case_id)
         fills = [str(row["hex"]).upper() for row in run.palette]
         rgb = np.asarray([row["rgb"] for row in run.palette], dtype=np.uint8)
         bounds = _bounds(case, "labels", run)
-        rows_svg.append(_text(GAP, y + 18, case_id.removeprefix("icon-"), 14, "bold"))
-        rows_svg.append(_text(GAP, y + 37, f"{scene.width}x{scene.height} px", 12, fill="#aaa"))
-        x = LOCATOR + GAP
-        # The label render with the true outline and the required genuine corners.
-        body = [f'<image x="0" y="0" width="{scene.width}" height="{scene.height}" '
-                f'xlink:href="{_png_data(Image.fromarray(rgb[labels], "RGB"))}" '
-                f'style="image-rendering:optimizeSpeed"/>']
+        cells = [f'<div class="info"><h2>{_esc(case_id.removeprefix("icon-"))}</h2>'
+                 f'<div>{scene.width}x{scene.height} px</div></div>']
+        truth = []
         for region in scene.regions:
             for outline in region.rings:
                 points = outline.flatten(FLATTEN_TOLERANCE)
-                path = " ".join(f"{px:.3f},{py:.3f}" for px, py in points)
-                body.append(f'<polygon points="{path}" fill="none" stroke="#00e5ff" '
-                            f'stroke-width="{1.2 / scale:.4f}"/>')
+                truth.append(_truth_path("M" + "L".join(f"{px:.3f} {py:.3f}" for px, py in points)
+                                         + "Z"))
         corners = [c for c in bounds.corners if c["role"] == "required" and c["kind"] == "corner"]
-        body += [f'<circle cx="{c["point"][0]:.3f}" cy="{c["point"][1]:.3f}" r="{2.2 * r:.3f}" '
-                 f'fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="{1.5 * line:.4f}"/>'
-                 for c in corners]
-        rows_svg.append(_panel(x, y + HEADER, crop, body))
-        rows_svg.append(_text(x, y + 18, "labels + true outline", 15, "bold"))
-        rows_svg.append(_text(x, y + 37, f"{len(corners)} required corners (white rings)", 13,
-                              fill="#ccc"))
-        x += PANEL + GAP
+        authored = _authored_typed_nodes(scene, bounds.rings)
+        body = [f'<image x="0" y="0" width="{scene.width}" height="{scene.height}" '
+                f'href="{_png_data(Image.fromarray(rgb[labels], "RGB"))}"/>'] + truth
+        for letter in "zsc":
+            body += [_pinned(px, py, _truth_marker(t), k) for (px, py), t in authored.items()
+                     if t == letter]
+        label, _ = _count_text(authored)
+        cells.append(_panel("labels + true outline",
+                            f"authored {label}; {len(corners)} required genuine corners", view, body))
+        rings = [_pinned(c["point"][0], c["point"][1],
+                         f'<circle r="{2.2 * MARKER}" fill="none" stroke="#888" stroke-opacity="0.6" '
+                         f'stroke-width="{NODE_LINE}"/>', k) for c in corners]
         for tool in TOOLS:
             if tool == "ours":
                 shapes, nodes = ours_in_crop(run.edge_svg, crop)
@@ -585,54 +736,31 @@ def build_icons(rows_path: Path) -> Path:
                           if tool == "potrace" else
                           run_vtracer(labels, fills, rgb, work / case_id / tool, **VTRACER_TUNED))
                 shapes, nodes = tool_in_crop(traced, crop, scene.width, scene.height)
-            body = [f'<rect x="0" y="0" width="{scene.width}" height="{scene.height}" fill="#fff"/>']
-            body += [f'<path d="{_d(subpaths)}" fill="{fill}" fill-rule="evenodd"/>'
-                     for fill, subpaths in shapes]
-            body += [f'<circle cx="{c["point"][0]:.3f}" cy="{c["point"][1]:.3f}" r="{2.2 * r:.3f}" '
-                     f'fill="none" stroke="#888" stroke-opacity="0.6" stroke-width="{line:.4f}"/>'
-                     for c in corners]
-            for letter in "zsc":  # cusps on top
-                body += [_marker(px, py, t, r, line) for (px, py), t in nodes.items() if t == letter]
-            rows_svg.append(_panel(x, y + HEADER, crop, body))
+            under = [f'<rect x="0" y="0" width="{scene.width}" height="{scene.height}" fill="#fff"/>']
             label, _ = _count_text(nodes)
             summary = summaries["vinylgen" if tool == "ours" else tool]
-            rows_svg.append(_text(x, y + 18, f"{TOOL_TITLES[tool]}: {label}", 14, "bold"))
-            rows_svg.append(_text(x, y + 37, _row_figures(summary), 13, fill="#ccc"))
-            x += PANEL + GAP
+            cells.append(_panel(f"{TOOL_TITLES[tool]}: {label}", _row_figures(summary), view,
+                                _tool_body(shapes, nodes, truth, k, under, rings)))
         shutil.rmtree(work / case_id, ignore_errors=True)
-        y += row_height
-    head = [_text(GAP, 34, "Icon contact sheet: Vinylgen vs Potrace vs VTracer", 24, "bold"),
-            _text(GAP, 62, "Each glyph as the benchmark renders it (seeded size, rotation and "
-                  "sub-pixel offset); all three trace its hard-edged labels. Vinylgen: default "
-                  "TraceSettings. Potrace 1.16: stacked scans, -a 0.8 -n. VTracer 0.6.4: stacked "
-                  "colour mode, corner 45, splice 45, segment 4 (the benchmark grid's best settings).",
-                  13, fill="#ccc"),
-            _text(GAP, 82, "Rows: the six glyphs where ours misses most corners, the four where "
-                  "Potrace does, the four where VTracer makes most kinks, then a spread of the rest. "
-                  "Figures are the benchmark's for that glyph: required genuine corners found, kinks, "
-                  "extra inflections per 100 px.", 13, fill="#ccc")]
-    lx = GAP
-    for letter in "csz":
-        head.append(f'<g transform="translate({lx + 8},{116})">{_marker(0, 0, letter, 7, 1.8)}</g>')
-        head.append(_text(lx + 24, 121, f"{NODE_NAMES[letter]} node", 15))
-        lx += 190
-    head.append(f'<circle cx="{lx + 8}" cy="116" r="8" fill="none" stroke="#fff" stroke-width="2"/>')
-    head.append(_text(lx + 24, 121, "required genuine corner (true)", 15))
-    sheet_height = y + GAP
-    svg = (f'<svg xmlns="{SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink" width="{sheet_width}" '
-           f'height="{sheet_height}" viewBox="0 0 {sheet_width} {sheet_height}">'
-           f'<rect width="100%" height="100%" fill="#1b1b1f"/>'
-           + "".join(head) + "".join(rows_svg) + "</svg>\n")
-    target = OUT / "icons.svg"
-    target.write_text(svg)
-    return target
-
-
-def render(svg: Path) -> Path:
-    png = svg.with_suffix(".png")
-    subprocess.run([str(ROOT / "scripts" / "inkscape-headless"), str(svg), "--export-type=png",
-                    "--export-dpi=96", f"--export-filename={png}"], check=True)
-    return png
+        rows.append("<section>" + "".join(cells) + "</section>")
+    intro = ["Each glyph as the benchmark renders it (seeded size, rotation and sub-pixel offset); "
+             "all three trace its hard-edged labels. Vinylgen: default TraceSettings. Potrace 1.16: "
+             "stacked scans, -a 0.8 -n. VTracer 0.6.4: stacked colour mode, corner 45, splice 45, "
+             "segment 4 (the benchmark grid's best settings).",
+             "Rows: the six glyphs where ours misses most corners, the four where Potrace does, the "
+             "four where VTracer makes most kinks, then a spread of the rest. Figures are the "
+             "benchmark's for that glyph: required genuine corners found, kinks, extra inflections "
+             "per 100 px.",
+             "Truth panel: every authored node on the visible outline, its shape giving its type "
+             "(read from the segments meeting there, as the tools' nodes are read from their "
+             "handles). Tool panels: grey rings mark the required genuine corners."]
+    legend = _legend('<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
+                     f'{_truth_marker("c")}</svg>authored node (shape = type)</span>'
+                     '<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
+                     f'<circle r="10" fill="none" stroke="#888" stroke-width="{NODE_LINE}"/></svg>'
+                     'required genuine corner</span>')
+    return _page(OUT / "icons.html", "Icon contact sheet: Vinylgen vs Potrace vs VTracer",
+                 intro, legend, rows)
 
 
 def _newest_tuned_icon_rows() -> Path:
@@ -648,7 +776,6 @@ def _newest_tuned_icon_rows() -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--retrace", action="store_true", help="redo all three traces")
-    parser.add_argument("--no-render", action="store_true", help="skip the PNG render")
     parser.add_argument("--corpus", choices=("real", "icons"), default="real",
                         help="real subjects (default) or glyphs from the icon corpus")
     parser.add_argument("--rows", type=Path, default=None,
@@ -656,12 +783,9 @@ def main() -> int:
                              "(default: the newest run whose summary names the tuned settings)")
     args = parser.parse_args()
     if args.corpus == "icons":
-        svg = build_icons(args.rows or _newest_tuned_icon_rows())
+        print(build_icons(args.rows or _newest_tuned_icon_rows()))
     else:
-        svg = build(args.retrace)
-    print(svg)
-    if not args.no_render:
-        print(render(svg))
+        print(build(args.retrace))
     return 0
 
 
