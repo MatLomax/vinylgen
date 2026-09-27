@@ -9,7 +9,9 @@ from shapely.geometry import Point, box
 
 from vinylgen.contracts import TraceSettings
 from vinylgen.fidelity.harness import trace_labels, trace_rgb
-from vinylgen.fidelity.metrics import DISTANCE_ERROR_BOUND, measure
+from vinylgen.fidelity.metrics import (DISTANCE_ERROR_BOUND, authored_nodes, boundary_pieces,
+                                       count_inflections, curve_quality, curve_reference,
+                                       measure, node_placement)
 from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
 from vinylgen.fidelity.truth import SceneTruth, TrueCorner
 
@@ -267,6 +269,136 @@ class TraceHarnessTests(unittest.TestCase):
         self.assertEqual(result["area"]["unmatched_layers"], [])
         self.assertLess(result["boundary"]["hausdorff_px"], 2.0)
         self.assertGreater(result["area"]["per_colour"]["1"]["iou"], 0.95)
+
+
+def circle_ring(centre, radius, count=720):
+    angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+    ring = np.stack((centre[0] + radius * np.cos(angles), centre[1] + radius * np.sin(angles)), 1)
+    return np.vstack((ring, ring[:1]))
+
+
+class CurveQualityTests(unittest.TestCase):
+    def test_tangent_error_ignores_how_finely_a_curve_was_flattened(self):
+        # The traced side is flattened ten times coarser than the truth: chord
+        # directions alone would differ by up to half a chord's turn (5 degrees at
+        # radius 3); the vertex tangents agree to a fraction of a degree.
+        for radius in (3.0, 10.0, 50.0):
+            chords = [math.ceil(math.pi / math.acos(1.0 - tolerance / radius))
+                      for tolerance in (0.001, 0.01)]
+            reference = curve_reference([circle_ring((50, 50), radius, chords[0])], 100, 100)
+            quality = curve_quality([circle_ring((50, 50), radius, chords[1])], reference)
+            self.assertLess(quality["tangent_max_deg"], 0.5, radius)
+
+    def test_tangent_error_holds_for_unequal_chords(self):
+        # Chords alternating 1:3 in angle: a length-weighted direction leans towards
+        # the longer chord by degrees; the three-point estimate stays exact.
+        steps = np.tile([1.0, 3.0], 60)
+        angles = np.concatenate(([0.0], np.cumsum(steps)))[:-1] * (2 * math.pi / steps.sum())
+        ring = np.stack((50 + 10 * np.cos(angles), 50 + 10 * np.sin(angles)), 1)
+        ring = np.vstack((ring, ring[:1]))
+        reference = curve_reference([circle_ring((50, 50), 10.0, 3000)], 100, 100)
+        self.assertLess(curve_quality([ring], reference)["tangent_max_deg"], 0.1)
+
+    def test_circle_has_no_inflections(self):
+        pieces = boundary_pieces([circle_ring((50, 50), 20)], 100, 100)
+        self.assertEqual(len(pieces), 1)
+        self.assertTrue(pieces[0][2])
+        self.assertEqual(count_inflections(pieces[0][0], True), 0)
+
+    def test_sine_wave_counts_each_sign_change(self):
+        # Three full periods: six half-waves alternate their bending, five changes.
+        x = np.linspace(0.0, 6.0 * math.pi, 2000)
+        wave = np.stack((x * 5.0, 20.0 * np.sin(x)), axis=1)
+        self.assertEqual(count_inflections(wave, False), 5)
+
+    def test_closed_flower_wraps_its_sign_changes(self):
+        angles = np.linspace(0.0, 2.0 * math.pi, 4000, endpoint=False)
+        radius = 30.0 + 6.0 * np.cos(5.0 * angles)
+        flower = np.stack((50 + radius * np.cos(angles), 50 + radius * np.sin(angles)), axis=1)
+        # Five lobes, each concave between two convex stretches: ten inflections,
+        # wherever the ring starts.
+        self.assertEqual(count_inflections(flower, True), 10)
+        self.assertEqual(count_inflections(np.roll(flower, 1234, axis=0), True), 10)
+
+    def test_sub_threshold_jitter_has_no_inflections(self):
+        # Headings alternate 0 and 0.5 degrees: every turn is +-0.5 degrees.
+        headings = np.radians(np.where(np.arange(200) % 2, 0.5, 0.0))
+        points = np.vstack(([0.0, 0.0], np.cumsum(np.stack((np.cos(headings),
+                                                            np.sin(headings)), 1), axis=0)))
+        self.assertEqual(count_inflections(points, False), 0)
+
+    def test_cusp_turn_is_part_of_its_run(self):
+        # A square's four 90-degree turns share one sign: no inflection.
+        square = np.array([[10, 10], [40, 10], [40, 40], [10, 40]], dtype=float)
+        self.assertEqual(count_inflections(square, True), 0)
+
+    def test_excluded_region_splits_a_ring_into_pieces(self):
+        ring = circle_ring((50, 50), 20)
+        keep = lambda points: np.abs(points[:, 1] - 50) > 5  # noqa: E731
+        pieces = boundary_pieces([ring], 100, 100, keep)
+        self.assertEqual(len(pieces), 2)
+        self.assertFalse(any(closed for _, _, closed in pieces))
+
+    def test_frame_samples_are_not_boundary(self):
+        square = np.array([[0, 0], [100, 0], [100, 50], [0, 50], [0, 0]], dtype=float)
+        pieces = boundary_pieces([square], 100, 100)
+        # Only the side along y = 50 lies off the frame; its ends touch the frame.
+        self.assertEqual(len(pieces), 1)
+        self.assertTrue(np.allclose(pieces[0][0][:, 1], 50.0))
+
+    def test_identical_rings_score_zero(self):
+        ring = circle_ring((50, 50), 20)
+        result = curve_quality([ring], curve_reference([ring], 100, 100))
+        self.assertEqual(result["extra_inflections_per_100px"], 0.0)
+        self.assertAlmostEqual(result["tangent_p95_deg"], 0.0, places=6)
+        self.assertAlmostEqual(result["tangent_max_deg"], 0.0, places=6)
+
+    def test_rotated_segment_tangent_error_equals_the_rotation(self):
+        truth = np.array([[20.0, 50.0], [80.0, 50.0]])
+        angle = math.radians(3.0)
+        centre = np.array([50.0, 50.0])
+        rotation = np.array([[math.cos(angle), -math.sin(angle)],
+                             [math.sin(angle), math.cos(angle)]])
+        traced = (truth - centre) @ rotation.T + centre
+        result = curve_quality([traced[::-1]], curve_reference([truth], 100, 100))
+        self.assertAlmostEqual(result["tangent_p95_deg"], 3.0, places=6)
+        self.assertAlmostEqual(result["tangent_max_deg"], 3.0, places=6)
+
+    def test_extra_inflections_are_per_100px_of_truth(self):
+        x = np.linspace(0.0, 2.0 * math.pi, 1000)
+        wave = np.stack((10 + x * 10.0, 50 + 5.0 * np.sin(x)), axis=1)
+        line = np.array([[10.0, 50.0], [10 + 20 * math.pi, 50.0]])
+        result = curve_quality([wave], curve_reference([line], 100, 100))
+        self.assertEqual(result["inflections_traced"], 1)
+        self.assertEqual(result["inflections_truth"], 0)
+        self.assertAlmostEqual(result["extra_inflections_per_100px"],
+                               100.0 / (20 * math.pi), places=6)
+
+
+class NodePlacementTests(unittest.TestCase):
+    def test_authored_nodes_are_visible_outline_joins_off_the_canvas_corners(self):
+        from vinylgen.fidelity.scene import Region, Scene, rectangle
+        from vinylgen.fidelity.truth import scene_truth
+        from vinylgen.fidelity.bounds import truth_rings
+        scene = Scene(100, 100, PALETTE + [{"name": "Red", "rgb": [200, 0, 0]}], 0,
+                      [Region(1, rectangle(0, 0, 60, 60)), Region(2, rectangle(40, 40, 80, 80))])
+        every = {tuple(p) for p in authored_nodes(scene).tolist()}
+        self.assertNotIn((0.0, 0.0), every)
+        self.assertIn((60.0, 60.0), every)
+        visible = {tuple(p) for p in authored_nodes(scene, truth_rings(scene_truth(scene)))
+                   .tolist()}
+        # The first square's corner at (60, 60) lies under the second square.
+        self.assertNotIn((60.0, 60.0), visible)
+        self.assertIn((60.0, 0.0), visible)
+        self.assertIn((80.0, 80.0), visible)
+
+    def test_recall_and_strays(self):
+        authored = np.array([[10.0, 10.0], [50.0, 50.0]])
+        traced = np.array([[10.3, 10.0], [70.0, 70.0], [71.0, 70.0]])
+        result = node_placement(authored, traced, 0.5)
+        self.assertEqual((result["recalled"], result["stray"]), (1, 2))
+        self.assertAlmostEqual(result["recall"], 0.5)
+        self.assertAlmostEqual(result["stray_share"], 2 / 3)
 
 
 if __name__ == "__main__":

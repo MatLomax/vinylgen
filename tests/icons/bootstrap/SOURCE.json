@@ -1,0 +1,35 @@
+{
+ "set": "bootstrap",
+ "title": "Bootstrap Icons",
+ "repository": "https://github.com/twbs/icons",
+ "commit": "6945b7006285d444cc17ff2e22c7691719229526",
+ "licence": "MIT",
+ "licence_file": "LICENSE",
+ "upstream_licence_path": "LICENSE",
+ "path_template": "icons/{name}.svg",
+ "styles": [
+  "regular"
+ ],
+ "names": [
+  "gear-fill",
+  "star-fill",
+  "heart-fill",
+  "bell-fill",
+  "bookmark-star-fill",
+  "puzzle-fill",
+  "key-fill",
+  "shield-fill-check",
+  "rocket-takeoff-fill",
+  "cup-hot-fill",
+  "fire",
+  "moon-stars-fill",
+  "sun-fill",
+  "suit-club-fill",
+  "suit-spade-fill",
+  "airplane-fill",
+  "trophy-fill",
+  "camera-fill",
+  "emoji-smile-fill",
+  "scissors"
+ ]
+}

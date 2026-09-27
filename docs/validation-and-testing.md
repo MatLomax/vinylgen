@@ -298,6 +298,45 @@ analytic grid cases outside the fixed set, from 64 px up), and before/after
 traces of the nine real images to `.tmp/fidelity/tune-*/`. It only proposes:
 defaults change through a reviewed commit.
 
+### Benchmark against Potrace and VTracer
+
+```bash
+.venv/bin/python scripts/benchmark_tracers.py                  # synthetic corpus
+.venv/bin/python scripts/benchmark_tracers.py --corpus icons   # hand-authored icons
+.venv/bin/python scripts/benchmark_tracers.py --grid           # tune both tools
+.venv/bin/python scripts/tracer_contact_sheet.py               # real subjects, by eye
+```
+
+`benchmark_tracers.py` traces every corpus run with our tracer, Potrace 1.16 and
+VTracer 0.6.4 from the same label map. Neither tool writes a partition, so each
+tool's shapes are stacked the way Inkscape stacks a multi-colour trace, and the
+visible partition is clipped to the canvas. All three are judged with the
+regression bounds.
+
+Beyond the sweep's statistics it scores:
+- recall per vertex kind: genuine corners separately from junctions and edge
+  points, which our shared boundaries anchor by construction;
+- genuine-corner F1;
+- curve quality: extra inflections per 100 px and tangent-direction error, with
+  one function applied to traced and truth rings;
+- node placement against the scene's authored nodes.
+
+The tiers are `labels`, `rgb` and `rgb-flat`. In `rgb-flat` ours traces the
+palette stage's labels without the source's sub-pixel costs, the same input the
+other two get. Results go to `.tmp/benchmark/<timestamp>/`.
+
+The icon corpus (`vinylgen/fidelity/icons.py`) is 216 glyphs committed under
+`tests/icons/` with their licences and pinned upstream commits, re-fetched by
+`scripts/fetch_icons.py`:
+- Material Symbols in its Sharp, Rounded and Outlined styles;
+- Bootstrap Icons;
+- Remix Icon fill;
+- Heroicons solid.
+
+Each glyph is rendered once at a seeded size, rotation and sub-pixel offset. Its
+full check, every case building truth and bounds, runs in the full-image bucket
+(`test_fidelity_icons_corpus.py`).
+
 ### Other coverage
 
 The current tests also cover:

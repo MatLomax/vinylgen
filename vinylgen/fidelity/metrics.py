@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 import shapely
 from scipy.spatial import cKDTree
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, MultiLineString, Polygon
 from shapely.ops import unary_union
 
 from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
@@ -184,10 +184,9 @@ def _geometry_rings(geometry) -> list[np.ndarray]:
     return rings
 
 
-def sample_polyline(points: np.ndarray, spacing: float = SAMPLE_SPACING) -> np.ndarray:
-    """Points along a polyline no more than ``spacing`` apart, both ends included."""
-    if len(points) < 2:
-        return points.reshape(-1, 2)
+def _samples_and_segments(points: np.ndarray, spacing: float) -> tuple[np.ndarray, np.ndarray]:
+    """``sample_polyline``'s samples of a polyline of at least two points, and the
+    index of the segment each sample lies on (the end point on the last one)."""
     starts, ends = points[:-1], points[1:]
     lengths = np.hypot(*(ends - starts).T)
     counts = np.maximum(1, np.ceil(lengths / spacing).astype(np.int64))
@@ -195,7 +194,14 @@ def sample_polyline(points: np.ndarray, spacing: float = SAMPLE_SPACING) -> np.n
     first = np.cumsum(counts) - counts
     t = (np.arange(int(counts.sum())) - np.repeat(first, counts)) / np.repeat(counts, counts)
     samples = starts[segment] + (ends - starts)[segment] * t[:, None]
-    return np.vstack((samples, points[-1:]))
+    return np.vstack((samples, points[-1:])), np.append(segment, len(starts) - 1)
+
+
+def sample_polyline(points: np.ndarray, spacing: float = SAMPLE_SPACING) -> np.ndarray:
+    """Points along a polyline no more than ``spacing`` apart, both ends included."""
+    if len(points) < 2:
+        return points.reshape(-1, 2)
+    return _samples_and_segments(points, spacing)[0]
 
 
 def _off_frame(samples: np.ndarray, width: float, height: float) -> np.ndarray:
@@ -212,6 +218,242 @@ def _boundary_samples(rings: list[np.ndarray], width: float, height: float) -> n
     if not rings:
         return np.empty((0, 2))
     return _off_frame(np.vstack([sample_polyline(ring) for ring in rings]), width, height)
+
+
+# --- curve quality and node placement --------------------------------------------------
+
+# A run of same-sign vertex turns counts towards inflections once its accumulated
+# turn reaches this many degrees.
+INFLECTION_RUN_DEG = 2.0
+# A join turning by less than this many degrees is a flattened smooth curve, whose
+# tangent is estimated across it (``_sample_tangents``).
+_SMOOTH_JOIN_DEG = 10.0
+# A vertex turning by less than this many degrees (collinear samples) has no sign.
+_STRAIGHT_TURN_DEG = 1e-7
+# An authored node lies on the truth's drawn boundary within this distance (px).
+_AUTHORED_ON_BOUNDARY = 0.01
+
+
+def _on_frame_mask(points: np.ndarray, width: float, height: float) -> np.ndarray:
+    x, y = points[:, 0], points[:, 1]
+    return ((np.abs(x) <= _FRAME_EPS) | (np.abs(x - width) <= _FRAME_EPS)
+            | (np.abs(y) <= _FRAME_EPS) | (np.abs(y - height) <= _FRAME_EPS))
+
+
+def _sample_tangents(ring: np.ndarray, samples: np.ndarray, segment: np.ndarray,
+                     closed: bool) -> np.ndarray:
+    """The unit tangent at each sample of a flattened ring. A chord's direction
+    differs from the curve's tangent by up to half the chord's turn, so the tangent
+    is estimated at each vertex instead: across a join turning by less than
+    ``_SMOOTH_JOIN_DEG``, the three-point estimate (each unit chord weighted by the
+    other chord's length, exact to second order however unequal the chords); at a
+    sharper join, each chord's own direction. A
+    sample takes the normalised blend of its chord's two end tangents by its
+    position along the chord, so a straight chord keeps its direction and two
+    flattenings of the same curve agree whatever their chord tolerance."""
+    vectors = np.diff(ring, axis=0)
+    lengths = np.hypot(*vectors.T)
+    chords = vectors / lengths[:, None]
+    count = len(chords)
+    starts, ends = chords.copy(), chords.copy()
+    joins = range(count) if closed else range(1, count)
+    for j in joins:
+        before, after = chords[j - 1], chords[j]
+        cross = before[0] * after[1] - before[1] * after[0]
+        if abs(math.degrees(math.atan2(cross, float(before @ after)))) >= _SMOOTH_JOIN_DEG:
+            continue
+        # The three-point estimate: each unit chord weighted by the other's length.
+        through = before * lengths[j] + after * lengths[j - 1]
+        through = through / np.hypot(*through)
+        ends[j - 1], starts[j] = through, through
+    t = np.einsum("ij,ij->i", samples - ring[:-1][segment], chords[segment]) / lengths[segment]
+    t = np.clip(t, 0.0, 1.0)[:, None]
+    blended = starts[segment] * (1.0 - t) + ends[segment] * t
+    return blended / np.hypot(*blended.T)[:, None]
+
+
+def boundary_pieces(rings: list[np.ndarray], width: float, height: float, keep=None,
+                    spacing: float = SAMPLE_SPACING) -> list[tuple[np.ndarray, np.ndarray, bool]]:
+    """The rings sampled every ``spacing`` (``sample_polyline``) and cut into the
+    maximal stretches of samples off the canvas frame that ``keep`` (a function of
+    an ``(n, 2)`` array returning a boolean mask, e.g. off the vertex discs and
+    zones) accepts. Each piece is ``(samples, directions, closed)``: ``directions``
+    holds the unit direction of the polyline segment each sample lies on, and
+    ``closed`` says the whole ring was kept, so the piece wraps round (its end
+    point is not repeated). A ring whose ends coincide is closed; a kept stretch
+    that runs through its join is one piece."""
+    pieces = []
+    for ring in rings:
+        ring = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+        if len(ring) < 2:
+            continue
+        steps = np.hypot(*np.diff(ring, axis=0).T)
+        ring = np.vstack((ring[:1], ring[1:][steps > 0]))
+        if len(ring) < 2:
+            continue
+        samples, segment = _samples_and_segments(ring, spacing)
+        closed = len(ring) > 2 and bool(np.all(ring[0] == ring[-1]))
+        directions = _sample_tangents(ring, samples, segment, closed)
+        if closed:
+            samples, directions = samples[:-1], directions[:-1]
+        kept = ~_on_frame_mask(samples, width, height)
+        if keep is not None:
+            kept &= np.asarray(keep(samples), dtype=bool)
+        count = len(samples)
+        if closed and kept.all():
+            pieces.append((samples, directions, True))
+            continue
+        edges = np.flatnonzero(np.diff(np.concatenate(([0], kept.astype(np.int8), [0]))))
+        runs = [np.arange(start, end) for start, end in zip(edges[::2], edges[1::2])]
+        if closed and len(runs) > 1 and runs[0][0] == 0 and runs[-1][-1] == count - 1:
+            runs = [np.concatenate((runs[-1], runs[0]))] + runs[1:-1]
+        pieces += [(samples[run], directions[run], False) for run in runs if len(run) >= 2]
+    return pieces
+
+
+def piece_length(points: np.ndarray, closed: bool) -> float:
+    """The length of a sampled piece (``boundary_pieces``), round the join when closed."""
+    if len(points) < 2:
+        return 0.0
+    path = np.vstack((points, points[:1])) if closed else points
+    return float(np.hypot(*np.diff(path, axis=0).T).sum())
+
+
+def count_inflections(points: np.ndarray, closed: bool,
+                      min_run_deg: float = INFLECTION_RUN_DEG) -> int:
+    """The inflections along a polyline: its vertex turns grouped into runs of
+    consecutive same-sign turns (a straight vertex has no sign and neither breaks
+    nor extends a run), a run counting only when its accumulated turn reaches
+    ``min_run_deg``, and an inflection being a sign change between two
+    consecutive counted runs. A closed polyline (end point not repeated) turns at
+    every vertex, and its runs and sign changes wrap round."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(points) < 3:
+        return 0
+    path = np.vstack((points, points[:1])) if closed else points
+    vectors = np.diff(path, axis=0)
+    vectors = vectors[np.hypot(*vectors.T) > 0]
+    if len(vectors) < 2:
+        return 0
+    incoming, outgoing = (np.roll(vectors, 1, axis=0), vectors) if closed else (vectors[:-1],
+                                                                               vectors[1:])
+    cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
+    dot = (incoming * outgoing).sum(axis=1)
+    turns = np.degrees(np.arctan2(cross, dot))
+    turns = turns[np.abs(turns) >= _STRAIGHT_TURN_DEG]
+    if not len(turns):
+        return 0
+    signs = np.sign(turns)
+    breaks = np.flatnonzero(signs[1:] != signs[:-1]) + 1
+    starts = np.concatenate(([0], breaks))
+    runs = [[float(signs[start]), float(total)]
+            for start, total in zip(starts, np.add.reduceat(np.abs(turns), starts))]
+    if closed and len(runs) > 1 and runs[0][0] == runs[-1][0]:
+        runs[0][1] += runs.pop()[1]
+    counted = [sign for sign, total in runs if total >= min_run_deg]
+    changes = sum(1 for a, b in zip(counted, counted[1:]) if a != b)
+    if closed and len(counted) > 1 and counted[-1] != counted[0]:
+        changes += 1
+    return changes
+
+
+def curve_reference(truth_rings: list[np.ndarray], width: float, height: float,
+                    keep=None) -> dict:
+    """The truth side of ``curve_quality``, computed once per case: the truth
+    rings' kept pieces (``boundary_pieces``) with their inflections and length, and
+    every off-frame truth sample with its direction for the nearest-sample lookup."""
+    kept = boundary_pieces(truth_rings, width, height, keep)
+    everywhere = boundary_pieces(truth_rings, width, height)
+    points = (np.vstack([piece[0] for piece in everywhere]) if everywhere
+              else np.empty((0, 2)))
+    directions = (np.vstack([piece[1] for piece in everywhere]) if everywhere
+                  else np.empty((0, 2)))
+    return {"width": float(width), "height": float(height), "keep": keep,
+            "inflections": sum(count_inflections(p, closed) for p, _, closed in kept),
+            "length_px": sum(piece_length(p, closed) for p, _, closed in kept),
+            "points": points, "directions": directions,
+            "tree": cKDTree(points) if len(points) else None}
+
+
+def tangent_errors(points: np.ndarray, directions: np.ndarray, reference: dict) -> np.ndarray:
+    """The orientation-free angle (degrees, 0 to 90) between each sample's direction
+    and the truth direction at the truth sample nearest to it (``curve_reference``)."""
+    if not len(points) or reference["tree"] is None:
+        return np.empty(0)
+    _, nearest = reference["tree"].query(points)
+    truth = reference["directions"][nearest]
+    cross = directions[:, 0] * truth[:, 1] - directions[:, 1] * truth[:, 0]
+    dot = (directions * truth).sum(axis=1)
+    return np.degrees(np.arctan2(np.abs(cross), np.abs(dot)))
+
+
+def curve_quality(traced_rings: list[np.ndarray], reference: dict) -> dict:
+    """Curve quality of traced boundary rings against the truth (``curve_reference``),
+    both cut to the same kept pieces (``boundary_pieces`` with the reference's
+    ``keep``): inflections of each side (``count_inflections``, summed over the
+    pieces), traced minus truth per 100 px of kept truth boundary, and the p95 and
+    maximum tangent-direction error (``tangent_errors``) over the traced samples.
+    Colour boundaries are drawn by both of their colours, so both sides count every
+    boundary twice, the length included."""
+    pieces = boundary_pieces(traced_rings, reference["width"], reference["height"],
+                             reference["keep"])
+    traced = sum(count_inflections(p, closed) for p, _, closed in pieces)
+    length = reference["length_px"]
+    errors = (tangent_errors(np.vstack([p for p, _, _ in pieces]),
+                             np.vstack([d for _, d, _ in pieces]), reference)
+              if pieces else np.empty(0))
+    return {"inflections_traced": int(traced), "inflections_truth": int(reference["inflections"]),
+            "truth_length_px": float(length),
+            "extra_inflections_per_100px": (100.0 * (traced - reference["inflections"]) / length
+                                            if length > 0 else None),
+            "tangent_samples": int(len(errors)),
+            "tangent_p95_deg": float(np.percentile(errors, 95)) if len(errors) else None,
+            "tangent_max_deg": float(errors.max()) if len(errors) else None}
+
+
+def authored_nodes(scene, truth_rings: list[np.ndarray] | None = None) -> np.ndarray:
+    """The segment endpoints of the scene's region outlines and holes (``(n, 2)``,
+    unique), without the four canvas corners. With ``truth_rings`` (the rings of the
+    truth being judged against) only the endpoints on its drawn boundary are kept:
+    an endpoint covered by a region above, off the canvas, or on a boundary a
+    palette merge or fold removed is no node of the picture."""
+    from vinylgen.fidelity.scene import segment_start
+    width, height = float(scene.width), float(scene.height)
+    corners = {(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)}
+    found = {}
+    for region in scene.regions:
+        for outline in region.rings:
+            for segment in outline.segments:
+                x, y = segment_start(segment)
+                key = (round(x, _NODE_DECIMALS) + 0.0, round(y, _NODE_DECIMALS) + 0.0)
+                if key not in corners:
+                    found.setdefault(key, (x, y))
+    points = np.asarray(list(found.values()), dtype=np.float64).reshape(-1, 2)
+    if truth_rings is not None and len(points):
+        rings = [np.asarray(ring) for ring in truth_rings if len(ring) >= 2]
+        if not rings:
+            return np.empty((0, 2))
+        lines = MultiLineString([LineString(ring) for ring in rings])
+        near = shapely.distance(shapely.points(points), lines) <= _AUTHORED_ON_BOUNDARY
+        points = points[near]
+    return points
+
+
+def node_placement(authored: np.ndarray, traced: np.ndarray, distance: float) -> dict:
+    """How the traced nodes sit on the authored ones (``authored_nodes``): the
+    authored nodes with a traced node within ``distance`` and the traced nodes with
+    no authored node within it (strays)."""
+    authored = np.asarray(authored, dtype=np.float64).reshape(-1, 2)
+    traced = np.asarray(traced, dtype=np.float64).reshape(-1, 2)
+    if len(authored) and len(traced):
+        recalled = int((cKDTree(traced).query(authored)[0] <= distance).sum())
+        stray = int((cKDTree(authored).query(traced)[0] > distance).sum())
+    else:
+        recalled, stray = 0, int(len(traced))
+    return {"distance_px": float(distance), "authored": int(len(authored)),
+            "recalled": recalled, "recall": recalled / len(authored) if len(authored) else None,
+            "traced": int(len(traced)), "stray": stray,
+            "stray_share": stray / len(traced) if len(traced) else None}
 
 
 def _distance_summary(traced: np.ndarray, truth: np.ndarray, longer: float) -> dict:
