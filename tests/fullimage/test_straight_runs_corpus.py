@@ -2,19 +2,19 @@
 
 No emitted piece on the corpus has a sample beyond its bound, at the default
 thousandths and under stage-3 recovery (tightened lengths plus a fit constraint).
-Reuses ``run_violations`` from ``test_straight_runs`` (kept there because the
+The fits are the ones the product writes: ``shared_boundary_components``, crossing
+repair included. Reuses ``run_violations`` from ``test_straight_runs`` (kept there because the
 synthetic tests still use it) and ``CORPUS`` from ``test_smooth_joins_corpus``
 rather than duplicating them.
 """
 
 import unittest
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from vinylgen.contracts import TraceSettings
-from vinylgen.curve_fit import HardAnchor, SharedChainFitter, _tightened
+from vinylgen.curve_fit import _recovery_settings, shared_boundary_components
 from vinylgen.trace_lengths import resolve_trace_lengths
 
 from test_smooth_joins_corpus import CORPUS
@@ -50,25 +50,29 @@ class CorpusBoundTests(unittest.TestCase):
             _, track, _ = shared_boundary_polygons(labels, included, costs,
                                                    protected_features=protected)
             settings = resolve_trace_lengths(TraceSettings(), max(labels.shape))
-            tightened = replace(
-                settings, curve_fit_tolerance=_tightened(settings.curve_fit_tolerance, 4.0),
-                straight_line_max_deviation=_tightened(settings.straight_line_max_deviation, 2.0),
-                side_smoothness=_tightened(settings.side_smoothness, 2.0))
-            fitter = SharedChainFitter()
             failures = []
-            for number, chain in enumerate(track.chains):
-                anchors = [HardAnchor(anchor.point, anchor.kind) for anchor in chain.anchors]
-                points = tuple(tuple(map(float, point)) for point in chain.points)
-                canonical = points if points <= tuple(reversed(points)) else tuple(reversed(points))
-                cases = [(settings, ())]
-                if number % 7 == 0:
-                    cases.append((tightened, (canonical[len(canonical) // 2],)))
-                for chain_settings, constraints in cases:
-                    fit = fitter.fit(canonical, chain_settings, anchors, constraints)
+            for recovered in (False, True):
+                # Stage 3 recovery on every seventh chain: tightened lengths plus a
+                # fit constraint, as protected-feature recovery fits.
+                recovery = ({chain.identity: {"stage": 3,
+                                              "constraint": chain.points[len(chain.points) // 2]}
+                             for chain in track.chains[::7]} if recovered else {})
+                _, fits, _ = shared_boundary_components(track, included, settings,
+                                                        recovery=recovery)
+                for chain in track.chains:
+                    if recovered and chain.identity not in recovery:
+                        continue
+                    points = tuple(tuple(map(float, point)) for point in chain.points)
+                    forward = points <= tuple(reversed(points))
+                    canonical = points if forward else tuple(reversed(points))
+                    # Run diagnostics index the canonical samples.
+                    fit = fits[chain.identity] if forward else fits[chain.identity].reversed()
+                    chain_settings = _recovery_settings(settings, 3) if recovered else settings
                     violations = run_violations(fit, canonical, chain_settings)
                     checked += 1
                     if violations:
-                        failures.append((chain.identity, max(violations, key=lambda row: row[1] - row[2])))
+                        failures.append((chain.identity, recovered,
+                                         max(violations, key=lambda row: row[1] - row[2])))
             self.assertEqual(failures, [], f"{subject}: {len(failures)} chains beyond their bound")
         if not checked:
             self.skipTest("no corpus segmentation found")

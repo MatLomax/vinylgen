@@ -19,8 +19,10 @@ from vinylgen.boundary_graph import shared_boundary_polygons
 from vinylgen.contracts import PX_DEFAULTS, TraceSettings
 from vinylgen.curve_fit import (
     ChainFit, FitMetrics, HardAnchor, SharedChainFitter, _pin, _repair_crossings, _repair_dense,
-    _node_samples, _repaired, geometry_components, shared_boundary_components)
+    _node_samples, _straighten, geometry_components, shared_boundary_components)
 from vinylgen.path_crossings import crossings, cubic_loop
+
+from test_smooth_joins import SMOOTH_DEG, join_turns
 
 SETTINGS = TraceSettings(**{**PX_DEFAULTS, "max_deviation": 2.0, "side_smoothness": 1.6,
                             "corner_sharpening_allowance": 2.0}, length_unit="px")
@@ -251,18 +253,72 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(sampled_contacts(["M0 0 L10 0 L10 10 L0 10 Z M10 5 L5 3 L5 7 Z"]), 1)
         self.assertEqual(sampled_contacts(["M0 0 L10 0 L10 5 L10 10 L0 10 Z M10 5 L5 3 L5 7 Z"]), 0)
 
-    def test_pinned_runs_are_drawn_as_their_samples(self):
+    def test_repaired_nodes_stay_symmetric(self):
+        # Crossing repair refits with its pins as symmetric nodes, so a repaired
+        # chain is a cusp only where an unrepaired one is (a corner, a junction,
+        # a closed chain's anchor) or where two repair lines meet.
+        repaired_nodes = line_cusps = 0
+        for seed in range(12):
+            with self.subTest(seed=seed):
+                _, track, _ = track_for(blobs_with_a_stripe(seed))
+                _, fits, audit = shared_boundary_components(track, [0, 1, 2], SETTINGS)
+                for chain in track.chains:
+                    state = audit["crossing_recovery"].get(chain.identity)
+                    if state is None:
+                        continue
+                    fit = fits[chain.identity]
+                    allowed = set(fit.corners) | {anchor.point for anchor in chain.anchors
+                                                  if anchor.kind == "junction" or chain.closed}
+                    lines = {tuple(sorted((tuple(a), tuple(b))))
+                             for a, b in state.get("lines", ())}
+                    nodes = [fit.start, *(primitive[-1] for primitive in fit.primitives)]
+
+                    def repair_line(k):
+                        k %= len(fit.primitives)
+                        return fit.primitives[k][0] == "L" and \
+                            tuple(sorted((nodes[k], nodes[k + 1]))) in lines
+
+                    for k, (node, turn, kinds) in enumerate(join_turns(fit, chain.closed), 1):
+                        if node in allowed:
+                            continue
+                        if repair_line(k - 1) and repair_line(k):
+                            line_cusps += turn >= SMOOTH_DEG
+                            continue
+                        repaired_nodes += 1
+                        self.assertLess(turn, SMOOTH_DEG,
+                                        f"{chain.identity}: cusp of {turn:.3f} deg at {node} "
+                                        f"({kinds})")
+        # The fixtures must reach repaired nodes, and the lines between them.
+        self.assertGreater(repaired_nodes, 100)
+        self.assertGreater(line_cusps, 0)
+
+    def test_a_pinned_step_is_tightened_then_straightened(self):
         samples = ((0.0, 0.0), (1.0, 0.4), (2.0, 0.0), (3.0, 0.4), (4.0, 0.0))
         fit = ChainFit((0.0, 0.0), (("C", (0.3, 0.3), (0.7, 0.5), (1.0, 0.4)),
                                     ("C", (1.3, 0.3), (1.7, 0.1), (2.0, 0.0)),
-                                    ("C", (2.5, 0.5), (3.5, 0.5), (4.0, 0.0))),
-                       FitMetrics(0, 3, 0, 5, 3))
-        state = {"round": 2, "pins": [(1.0, 0.4), (2.0, 0.0)], "samples": 5}
-        repaired = _repaired(fit, samples, state)
-        self.assertEqual(repaired.primitives, (fit.primitives[0], ("L", (2.0, 0.0)),
-                                               fit.primitives[2]))
+                                    ("C", (2.3, -0.1), (2.7, 0.3), (3.0, 0.4)),
+                                    ("C", (3.3, 0.5), (3.7, 0.3), (4.0, 0.0))),
+                       FitMetrics(0, 4, 0, 5, 4))
+        state = {"round": 2, "pins": [(1.0, 0.4), (2.0, 0.0), (3.0, 0.4)], "tight": [],
+                 "lines": [], "samples": 5, "pairs": 4}
+        # A contact on a primitive spanning unpinned samples is not a step.
+        self.assertFalse(_straighten(state, fit, samples, (0,), set()))
+        # A step between consecutive pins is made tight first, then a line.
+        first, second = ((1.0, 0.4), (2.0, 0.0)), ((2.0, 0.0), (3.0, 0.4))
+        self.assertTrue(_straighten(state, fit, samples, (1, 2), set()))
+        self.assertEqual(state["tight"], [first, second])
+        self.assertEqual(state["lines"], [])
+        # Of two neighbouring steps, one is drawn as a line per pass: the other
+        # is refitted beside it first.
+        self.assertTrue(_straighten(state, fit, samples, (1, 2), set()))
+        self.assertEqual(state["lines"], [first])
+        self.assertTrue(_straighten(state, fit, samples, (1, 2), set()))
+        self.assertEqual(state["lines"], [first, second])
+        # A contact on a repair line is left to pinning.
+        self.assertFalse(_straighten(state, fit, samples, (1,), set()))
         self.assertFalse(_repair_dense(state))
-        state["pins"] = list(samples)
+        state["pins"] = list(samples[:-1]) + [(4.0, 0.0)]
+        state["lines"] = [tuple(sorted(pair)) for pair in zip(samples, samples[1:])]
         self.assertTrue(_repair_dense(state))
 
     def test_node_samples_follow_a_closed_ring_from_a_moved_start(self):

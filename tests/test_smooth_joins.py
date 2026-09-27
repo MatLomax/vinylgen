@@ -15,7 +15,7 @@ import numpy as np
 from vinylgen.contracts import TraceSettings
 from vinylgen.curve_fit import (
     ChainFit, HardAnchor, SharedChainFitter, _chord_monotone_nb, _constrained_cubic_nb,
-    _geometric_corners, _tightened)
+    _fixed_pair_nb, _geometric_corners, _range_tables_nb, _tightened)
 from vinylgen.trace_lengths import resolve_trace_lengths
 
 SMOOTH_DEG = 1e-6
@@ -606,6 +606,42 @@ class HandleTests(unittest.TestCase):
             for handle, control in ((first, (c1x, c1y)), (last, (c2x, c2y))):
                 on_box = np.isclose(control, box_low).any() or np.isclose(control, box_high).any()
                 self.assertTrue(handle >= 0.1 * chord - 1e-9 or on_box, (handle, chord))
+
+    def test_a_tangent_along_the_chord_gets_no_zero_handle(self):
+        # A 45-degree staircase run whose start tangent lies along the chord to
+        # the next node, the end tangent turning back: rounding once put the
+        # start tangent a hair to one side, the tangent triangle's apex on the
+        # end node, and the end handle at zero length, a 143-degree kink at a
+        # node that must be symmetric (cosmic-jellyfish).
+        points = ((542.45, 373.2734994640943), (543.45, 373.0969989281886), (543.45, 372.45),
+                  (544.0, 372.1663909640697), (545.3163884673748, 371.8827819281395),
+                  (545.3163884673748, 371.4108737685296), (546.0, 371.1760630352777),
+                  (547.1700223713647, 370.94125230202576), (547.3100111856824, 370.0),
+                  (547.45, 369.45), (545.55, 369.45), (545.55, 368.45), (547.45, 368.45),
+                  (547.45, 367.0), (547.45, 366.45), (548.45, 366.45), (548.45, 365.45),
+                  (549.45, 365.45), (549.45, 364.45), (550.45, 364.45), (550.45, 363.45),
+                  (551.45, 363.45), (551.45, 364.0), (551.45, 365.0), (551.0, 366.45))
+        array = np.ascontiguousarray(np.asarray(points, dtype=float))
+        arc, table = _range_tables_nb(array, 0, len(points) - 1)
+        start_tangent = (0.7071067811865475, -0.7071067811865476)
+        end_tangent = (-0.1483404529302593, 0.9889363528682953)
+        ok, _, _, c1x, c1y, c2x, c2y, _ = _fixed_pair_nb(
+            array, 17, 21, *start_tangent, *end_tangent, 1.122, 1.496, 4.0, True,
+            np.empty(len(points)), arc, table, 0)
+        chord = math.dist(points[17], points[21])
+        if ok:
+            self.assertGreaterEqual(math.dist((c2x, c2y), points[21]), 0.1 * chord - 1e-9)
+            self.assertGreaterEqual(math.dist((c1x, c1y), points[17]), 0.1 * chord - 1e-9)
+        settings = TraceSettings(
+            length_unit="px", curve_fit_tolerance=1.122, straight_line_max_deviation=1.1968,
+            minimum_straight_length=2.992, max_deviation=1.496, corner_analysis_span=5.984,
+            side_smoothness=1.1968, corner_sharpening_allowance=1.496, curve_feature_scale=2.992)
+        fit = SharedChainFitter().fit(points, settings, [HardAnchor(points[0], "junction"),
+                                                         HardAnchor(points[-1], "junction")])
+        self.assertEqual(fit.corners, ())
+        for node, turn, kinds in join_turns(fit, False):
+            self.assertLess(turn, SMOOTH_DEG, (node, kinds))
+        self.assertLessEqual(max_sample_distance(fit, points), 1.122 + 1e-9)
 
 
 def replace_turn(first, degrees):

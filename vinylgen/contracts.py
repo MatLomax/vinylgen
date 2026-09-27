@@ -130,9 +130,9 @@ TRACE_LENGTH_FIELDS = (
     "curve_fit_tolerance", "straight_line_max_deviation", "minimum_straight_length",
     "max_deviation", "side_smoothness", "corner_sharpening_allowance", "corner_analysis_span",
     "curve_feature_scale")
-# Lengths with a fixed default, filled at construction, in thousandths (proposed:
-# they reproduce the pixel defaults on a 2000 px image) and in pixels (the
-# defaults every setting recorded before units existed was traced with).
+# Lengths with a fixed default, filled at construction, in thousandths (they
+# reproduce the pixel defaults on a 2000 px image) and in pixels (the defaults
+# every setting recorded before units existed was traced with).
 PER_MILLE_DEFAULTS = {
     "curve_fit_tolerance": 0.75, "straight_line_max_deviation": 0.8,
     "minimum_straight_length": 2.0, "corner_analysis_span": 4.0,

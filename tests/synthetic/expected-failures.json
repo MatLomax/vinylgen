@@ -194,16 +194,10 @@
   }
  },
  "labels/disc-off0-128": {
-  "kinks": {
-   "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
-   "measured": {
-    "kinks": 1.0
-   }
-  },
   "nodes": {
    "tasks": ["keep-the-curve-fit-tolerance-clear-of-staircase-noise-so-smo"],
    "measured": {
-    "nodes_outside_zones": 20.0
+    "nodes_outside_zones": 21.0
    }
   }
  },
@@ -509,7 +503,7 @@
   "corners": {
    "tasks": ["let-a-quantised-corner-apex-sharpen-beyond-the-corner-sharpe"],
    "measured": {
-    "missed_vertices": 2.0
+    "missed_vertices": 3.0
    }
   },
   "nodes": {
@@ -774,7 +768,7 @@
     "colours_over": 0.0,
     "excess_px2": 0.0,
     "absent_scene_colours": 0.0,
-    "misplaced_thin_regions": 40.0,
+    "misplaced_thin_regions": 36.0,
     "severed_thin_regions": 0.0,
     "fold_target_mismatches": 0.0
    }
@@ -1079,7 +1073,7 @@
   "corners": {
    "tasks": ["stop-default-per-mille-trace-lengths-collapsing-below-a-pixe"],
    "measured": {
-    "missed_vertices": 10.0
+    "missed_vertices": 12.0
    }
   },
   "nodes": {
@@ -1685,7 +1679,7 @@
   "kinks": {
    "tasks": ["stop-the-trace-dropping-one-pixel-wide-label-regions"],
    "measured": {
-    "kinks": 4.0
+    "kinks": 2.0
    }
   },
   "nodes": {
@@ -2669,7 +2663,7 @@
   "kinks": {
    "tasks": ["stop-writing-the-flat-bottom-of-a-gentle-arc-as-an-axis-snap"],
    "measured": {
-    "kinks": 4.0
+    "kinks": 2.0
    }
   },
   "nodes": {

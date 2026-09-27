@@ -2208,7 +2208,8 @@ def _fixed_pair_nb(points: np.ndarray, start: int, end: int,
     ray to the apex; tangents that turn by 180 degrees or more (parallel rays,
     or an apex behind a node) cannot be one hand-drawn piece and return
     ``ok = False``. An S-shaped piece (tangents on opposite sides of the chord)
-    has no triangle. Handle lengths are Schneider's least-squares values, kept
+    has no triangle, and neither has a tangent along the chord (within 1e-12 of
+    it). Handle lengths are Schneider's least-squares values, kept
     between ``_MIN_HANDLE`` of the chord and the chord, within the triangle and
     inside the padded sample box; a length clamped to a bound re-solves the
     other. ``clamps`` counts the handles held at a bound (or given the
@@ -2239,6 +2240,12 @@ def _fixed_pair_nb(points: np.ndarray, start: int, end: int,
     b_max = chord
     side_start = ux * sty - uy * stx
     side_end = ux * ety - uy * etx
+    # A tangent along the chord is on neither side: rounding must not give it
+    # one, or its triangle's apex falls on the far node.
+    if abs(side_start) < 1e-12 * chord:
+        side_start = 0.0
+    if abs(side_end) < 1e-12 * chord:
+        side_end = 0.0
     if side_start * side_end < 0.0:
         det = stx * ety - sty * etx
         if abs(det) < 1e-9:
@@ -3614,8 +3621,35 @@ def _snap_straight_sections(points: np.ndarray, raw: np.ndarray, sections: list,
     return {}
 
 
+def _tight_step(start: Point, fitted: list[Primitive],
+                first_tangent: tuple[float, float] | None,
+                last_tangent: tuple[float, float] | None) -> Primitive:
+    """The one cubic of a crossing-repair step between two consecutive samples
+    made tight: its end tangents kept (a join's shared tangent where the node
+    has one, else the fitted handle's direction) and both handles
+    ``_MIN_HANDLE`` of the chord, the shortest the fitter allows."""
+    end = fitted[-1][-1]
+    chord = math.dist(start, end)
+    if chord <= 0.0:
+        return ("L", end)
+
+    def unit(vector, fallback):
+        length = math.hypot(*vector)
+        return (vector[0] / length, vector[1] / length) if length > 1e-12 * chord else fallback
+
+    along = ((end[0] - start[0]) / chord, (end[1] - start[1]) / chord)
+    first, last = fitted[0], fitted[-1]
+    out = first_tangent or unit((first[1][0] - start[0], first[1][1] - start[1])
+                                if first[0] == "C" else along, along)
+    back = last_tangent or unit((end[0] - last[2][0], end[1] - last[2][1])
+                                if last[0] == "C" else along, along)
+    handle = _MIN_HANDLE * chord
+    return ("C", (start[0] + handle * out[0], start[1] + handle * out[1]),
+            (end[0] - handle * back[0], end[1] - handle * back[1]), end)
+
+
 def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
-                       settings: TraceSettings) -> ChainFit:
+                       settings: TraceSettings, step_key: tuple = ((), ())) -> ChainFit:
     """Fit one canonical chain from its samples, anchors, and constraints.
 
     Only confirmed corners (moved to where their two sides meet), junction
@@ -3628,7 +3662,11 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
     anchor are forced nodes (the fit passes through them), symmetric like the
     rest: the runs on their two sides share one tangent there, a straight run's
     direction when one side is straight, and two straight runs meeting at one
-    are both refitted as curves. Straight runs may snap to exact lines
+    are both refitted as curves. ``step_key`` holds crossing repair's steps,
+    pairs of consecutive constraint samples: a line step stays one line (the
+    run beside it is the curve that takes its direction, and two line steps
+    meeting stay lines, a cusp), and a tight step is its cubic with both handles
+    ``_MIN_HANDLE`` of the chord (``_tight_step``). Straight runs may snap to exact lines
     (``_snap_straight_sections``), moving corners onto them. Inside a run
     ``_fit_section_nb`` keeps every node symmetric. An open chain's two ends
     are where the chain ends.
@@ -3645,6 +3683,7 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
     anchor_points = {anchor.point for anchor in anchors}
     junction_points = {anchor.point for anchor in anchors if anchor.kind == "junction"}
     forced_points = (anchor_points - junction_points) | set(constraint_key)
+    line_set, tight_set = set(step_key[0]), set(step_key[1])
     array = np.asarray(canonical, dtype=float)
     closed = len(canonical) >= 4 and canonical[0] == canonical[-1]
     corners = _geometric_corners(array, settings, closed)
@@ -3708,17 +3747,33 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
 
         evidence = [_section_line(points[first:last + 1], settings) for first, last in sections]
         straight = [flag for flag, _ in evidence]
+        # Crossing-repair lines: a section between two consecutive samples the
+        # repair drew as one line stays that line.
+        steps = [tuple(sorted((canonical[source(first - context)],
+                               canonical[source(last - context)])))
+                 if last - first == 1 else None for first, last in sections]
+        repair_line = [step is not None and step in line_set for step in steps]
+        repair_tight = [step is not None and step in tight_set and step not in line_set
+                        for step in steps]
         # Forced-node joins: (left section, right section, node position).
         joins = [(index, index + 1, sections[index][1]) for index in range(len(sections) - 1)
                  if sections[index][1] - context not in hard_local]
         if cyclic and len(sections) > 1:
             joins.append((len(sections) - 1, 0, sections[0][0]))
+        # Two straight runs meeting at a forced node are refitted as curves, so
+        # the node is symmetric; a repair line stays straight and the run beside
+        # it is the curve that takes its direction. Two repair lines meeting
+        # there stay lines.
         for left, right, _ in joins:
             if straight[left] and straight[right]:
-                straight[left] = straight[right] = False
+                straight[left] = repair_line[left]
+                straight[right] = repair_line[right]
         key = (lambda position: source(position - context))
+        # A repair line runs between samples the fit must pass through: it is
+        # never snapped.
         snapped = _snap_straight_sections(
-            points, raw, sections, straight,
+            points, raw, sections,
+            [flag and not repair for flag, repair in zip(straight, repair_line)],
             {index for index in movable_corners}, key, settings)
         first_tangent: list = [None] * len(sections)
         last_tangent: list = [None] * len(sections)
@@ -3754,6 +3809,9 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
             if cyclic and len(sections) == 1:
                 seam_records = (records, context)
             fitted = _fit_records(records)
+            if repair_tight[index]:
+                fitted = [_tight_step(tuple(map(float, points[first])), fitted,
+                                      first_tangent[index], last_tangent[index])]
             pieces.extend(fitted)
             section_diagnostics.append(RunDiagnostic("curve", start, end,
                                                      min(residual, tolerance), len(fitted)))
@@ -3812,7 +3870,7 @@ def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
                       checkpoint: Callable[[], None] | None = None) -> None:
     """Fit every plan whose key is absent from the fitter cache.
 
-    Each plan is ``(key, canonical, anchors, constraint_key, settings)`` as
+    Each plan is ``(key, canonical, anchors, constraint_key, settings, step_key)`` as
     produced by ``SharedChainFitter.prepare``. Distinct keys are fitted once and
     land in the cache under their key. Each fit depends only on its own plan, so
     the result is the same in any order; from ``_THREADED_FIT_MINIMUM`` pending
@@ -3822,10 +3880,10 @@ def _fit_cache_misses(fitter: "SharedChainFitter", plans: list[tuple],
     stay cached.
     """
     unique_pending: dict[tuple, tuple] = {}
-    for key, canonical, anchor_tuple, constraint_key, chain_settings in plans:
+    for key, canonical, anchor_tuple, constraint_key, chain_settings, step_key in plans:
         if key not in fitter._cache:
             unique_pending.setdefault(
-                key, (canonical, anchor_tuple, constraint_key, chain_settings))
+                key, (canonical, anchor_tuple, constraint_key, chain_settings, step_key))
     if not unique_pending:
         return
     total = len(unique_pending)
@@ -3869,11 +3927,18 @@ class SharedChainFitter:
 
     def prepare(self, coords: Iterable[Point], settings: TraceSettings,
                 hard_anchors: Iterable[HardAnchor] = (),
-                fit_constraints: Iterable[Point] = ()) -> tuple:
+                fit_constraints: Iterable[Point] = (),
+                fit_lines: Iterable[tuple[Point, Point]] = (),
+                fit_tight: Iterable[tuple[Point, Point]] = ()) -> tuple:
         """Canonicalize a chain and build its cache key without fitting it.
 
-        Returns ``(key, forward, canonical, anchors, constraint_key)``; the four
-        latter values are exactly the inputs ``_compute_chain_fit`` needs.
+        ``fit_lines`` and ``fit_tight`` are pairs of consecutive fit constraints
+        (crossing repair): the fit draws the step between a line pair as one
+        line, and between a tight pair as a curve with the shortest handles the
+        fitter allows. Returns ``(key, forward, canonical, anchors,
+        constraint_key, step_key)``; ``canonical``, ``anchors`` and
+        ``constraint_key``, with the settings, then ``step_key``, are exactly the
+        inputs ``_compute_chain_fit`` needs.
         """
         _require_pixels(settings)
         points = tuple(tuple(map(float, p)) for p in coords)
@@ -3886,7 +3951,16 @@ class SharedChainFitter:
         forward = points <= tuple(reversed(points))
         canonical = points if forward else tuple(reversed(points))
         constraint_key = tuple(sorted(point for point in constraints if point in canonical))
-        key = (canonical, anchor_key, constraint_key,
+        constrained = set(constraint_key)
+
+        def step_pairs(pairs) -> tuple:
+            ordered = {tuple(sorted((tuple(map(float, a)), tuple(map(float, b)))))
+                       for a, b in pairs}
+            return tuple(sorted(pair for pair in ordered
+                                if pair[0] in constrained and pair[1] in constrained))
+
+        step_key = (step_pairs(fit_lines), step_pairs(fit_tight))
+        key = (canonical, anchor_key, constraint_key, step_key,
                float(settings.curve_fit_tolerance),
                float(settings.straight_line_max_deviation),
                float(settings.minimum_straight_length),
@@ -3896,16 +3970,18 @@ class SharedChainFitter:
                settings.straight_line_snap, float(settings.snap_angle),
                settings.node_placement, bool(settings.nodes_at_bends),
                float(settings.curve_feature_scale))
-        return key, forward, canonical, anchors, constraint_key
+        return key, forward, canonical, anchors, constraint_key, step_key
 
     def fit(self, coords: Iterable[Point], settings: TraceSettings,
             hard_anchors: Iterable[HardAnchor] = (),
-            fit_constraints: Iterable[Point] = ()) -> ChainFit:
-        key, forward, canonical, anchors, constraint_key = self.prepare(
-            coords, settings, hard_anchors, fit_constraints)
+            fit_constraints: Iterable[Point] = (),
+            fit_lines: Iterable[tuple[Point, Point]] = (),
+            fit_tight: Iterable[tuple[Point, Point]] = ()) -> ChainFit:
+        key, forward, canonical, anchors, constraint_key, step_key = self.prepare(
+            coords, settings, hard_anchors, fit_constraints, fit_lines, fit_tight)
         if key not in self._cache:
             self._cache[key] = _compute_chain_fit(
-                canonical, anchors, constraint_key, settings)
+                canonical, anchors, constraint_key, settings, step_key)
         fitted = self._cache[key]
         return fitted if forward else fitted.reversed()
 
@@ -4004,16 +4080,19 @@ def geometry_components(geometry, settings: TraceSettings,
             samples = rings[key]
             state = repair.get(key)
             pins = state["pins"] if state is not None else ()
-            plan_key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
-                samples, settings, anchors, pins)
-            plans.append((key, forward, plan_key, canonical, anchor_tuple, constraint_key))
-        _fit_cache_misses(fitter, [(plan_key, canonical, anchor_tuple, constraint_key, settings)
-                                   for _, _, plan_key, canonical, anchor_tuple, constraint_key
-                                   in plans])
+            lines = state["lines"] if state is not None else ()
+            tight = state["tight"] if state is not None else ()
+            plan_key, forward, canonical, anchor_tuple, constraint_key, step_key = \
+                fitter.prepare(samples, settings, anchors, pins, lines, tight)
+            plans.append((key, forward, plan_key, canonical, anchor_tuple, constraint_key,
+                          step_key))
+        _fit_cache_misses(fitter, [(plan_key, canonical, anchor_tuple, constraint_key, settings,
+                                    step_key)
+                                   for _, _, plan_key, canonical, anchor_tuple, constraint_key,
+                                   step_key in plans])
         for key, forward, plan_key, *_ in plans:
             fitted = fitter._cache[plan_key]
-            fits[key] = _repaired(fitted if forward else fitted.reversed(), rings[key],
-                                  repair.get(key))
+            fits[key] = fitted if forward else fitted.reversed()
 
     refit(rings)
     _repair_crossings(fits, rings, refit, repair, lambda key: False)
@@ -4238,9 +4317,10 @@ def region_components(track, fits: dict[str, "ChainFit"], geometry) -> list[dict
 
 
 def _repair_dense(state: dict) -> bool:
-    """Whether crossing repair has pinned every sample, making the piece its
-    dense samples."""
-    return bool(state.get("samples")) and len(state["pins"]) >= state["samples"]
+    """Whether crossing repair has pinned every sample and drawn every step
+    between consecutive samples as a line, making the piece its dense samples."""
+    return bool(state.get("samples")) and len(state["pins"]) >= state["samples"] \
+        and len(state.get("lines", ())) >= state.get("pairs", 0)
 
 
 def _repair_fell_back(state: dict) -> bool:
@@ -4370,35 +4450,52 @@ def _node_samples(fit: ChainFit, samples: tuple) -> list[int]:
     return result
 
 
-def _repaired(fit: ChainFit, samples: tuple, state: dict | None) -> ChainFit:
-    """``fit`` with each cubic between two pinned, consecutive samples made a line.
+def _straighten(state: dict, fit: ChainFit, samples: tuple,
+                primitives: tuple[int, ...], fresh: set) -> bool:
+    """Tighten, then straighten, each contacting primitive of ``fit`` that runs
+    between two consecutive pinned samples; returns whether the contact is
+    handled so (any such primitive).
 
-    Crossing repair pins samples near each contact; a run of consecutive pinned
-    samples is then drawn as lines through them, the dense boundary itself, and
-    the rest of the fit keeps its curves.
+    Such a primitive cannot be pinned further. It is a curve whose end tangents
+    are its symmetric nodes' shared tangents. Still in contact, it is first
+    made tight: the same tangents with the shortest handles the fitter allows
+    (``_MIN_HANDLE`` of the chord), hugging the chord. Still in contact then,
+    the repair draws it as the dense boundary step itself, a line. A step next
+    to one drawn as a line in the same pass (``fresh``) waits a pass: refitted
+    beside that line it takes the line's direction, and may then need no line,
+    so the node between them need not be a cusp.
     """
-    if state is None or len(state["pins"]) < 2:
-        return fit
     pinned = set(state["pins"])
     closed, count = _closed_samples(samples)
     position: dict[Point, int] = {}
     for index, point in enumerate(samples[:count]):
         position.setdefault(point, index)
-    primitives: list[Primitive] = []
-    cursor = fit.start
-    for primitive in fit.primitives:
-        end = primitive[-1]
-        if primitive[0] == "C" and cursor in pinned and end in pinned:
-            a, b = position.get(cursor), position.get(end)
-            # The fit runs in the samples' order, so a pinned run steps forward.
-            if a is not None and b is not None and (
-                    (b - a) % count == 1 if closed else b - a == 1):
-                primitive = ("L", end)
-        primitives.append(primitive)
-        cursor = end
-    lines = sum(primitive[0] == "L" for primitive in primitives)
-    return replace(fit, primitives=tuple(primitives), metrics=replace(
-        fit.metrics, lines=lines, cubics=len(primitives) - lines))
+    nodes = [fit.start, *(primitive[-1] for primitive in fit.primitives)]
+    tight = state.setdefault("tight", [])
+    lines = state.setdefault("lines", [])
+    handled = False
+    for k in primitives:
+        if k >= len(fit.primitives):
+            continue
+        a, b = nodes[k], nodes[k + 1]
+        if a not in pinned or b not in pinned:
+            continue
+        i, j = position.get(a), position.get(b)
+        if i is None or j is None:
+            continue
+        step = (j - i) % count if closed else abs(j - i)
+        if step != 1 and not (closed and step == count - 1):
+            continue
+        pair = tuple(sorted((a, b)))
+        if pair in lines:
+            continue
+        handled = True
+        if pair not in tight:
+            tight.append(pair)
+        elif not any(a in other or b in other for other in fresh):
+            lines.append(pair)
+            fresh.add(pair)
+    return handled
 
 
 def _pin(state: dict, fit: ChainFit, samples: tuple, point: Point,
@@ -4443,15 +4540,19 @@ def _repair_crossings(fits: dict, samples: dict, refit: Callable[[set], None],
     itself once no piece crosses itself or another (``crossings``: a crossing,
     or a contact anywhere but a shared vertex where the pieces do not cross).
     Each piece in a contact is repaired once per pass and ``refit`` is called
-    with them: it is pinned (fit constraints) to the sample nearest each
-    contact among those the contacting primitives span, and on later rounds to
-    1, 2, 4, ... samples either side too (``_pin``); runs of consecutive pinned
-    samples are drawn as lines, the dense boundary itself (``_repaired``). Each
-    pass pins at least one new sample. The dense samples of every piece
-    together form a planar partition and cannot cross, so the repair ends, at
-    worst with a piece wholly pinned to its dense samples. ``repair`` holds each
-    piece's round and pins; ``dense`` names pieces already dense for another
-    reason. Returns the number of repair passes.
+    with them. A contacting primitive between two consecutive pinned samples,
+    which pinning cannot change, is drawn as a line, the dense boundary step
+    itself (``_straighten``); the fit keeps every other node symmetric, so the
+    curves beside it take its direction. Every other contact pins the piece
+    (fit constraints) to the sample nearest the contact among those the
+    contacting primitives span, and on later rounds to 1, 2, 4, ... samples
+    either side too (``_pin``); pinned samples are symmetric nodes like any
+    other forced node. Each pass pins a new sample or draws a new line. The
+    dense samples of every piece together form a planar partition and cannot
+    cross, so the repair ends, at worst with a piece wholly pinned and drawn as
+    lines: its dense samples. ``repair`` holds each piece's round, pins and
+    lines; ``dense`` names pieces already dense for another reason. Returns the
+    number of repair passes.
     """
     passes = 0
     flattened: dict = {}
@@ -4472,16 +4573,29 @@ def _repair_crossings(fits: dict, samples: dict, refit: Callable[[set], None],
         for key in sorted(contacts, key=str):
             if dense(key):
                 continue
-            state = repair.setdefault(key, {"round": 0, "pins": [], "samples": 0})
+            state = repair.setdefault(key, {"round": 0, "pins": [], "tight": [], "lines": [],
+                                            "samples": 0, "pairs": 0})
             closed, count = _closed_samples(samples[key])
             state["samples"] = count
+            state["pairs"] = count if closed else count - 1
+            # A contact on a curve between consecutive pinned samples straightens
+            # it; every other contact pins.
+            steps = len(state["tight"]) + len(state["lines"])
+            fresh: set = set()
+            pinning = [(point, primitives) for point, primitives in contacts[key]
+                       if not _straighten(state, fits[key], samples[key], primitives, fresh)]
+            grew = len(state["tight"]) + len(state["lines"]) > steps
             # A round that finds every sample near its contacts pinned widens
-            # until it pins a new one, or every sample is pinned.
-            grew = False
-            while not grew and not _repair_dense(state):
-                state["round"] = int(state["round"]) + 1
-                for point, primitives in contacts[key]:
-                    grew |= _pin(state, fits[key], samples[key], point, primitives)
+            # until it pins a new one, or every sample is pinned; a contact
+            # already on a repair line widens the same way (the other piece in
+            # it is repaired too).
+            if pinning or not grew:
+                pinned = False
+                while not pinned and len(state["pins"]) < count:
+                    state["round"] = int(state["round"]) + 1
+                    for point, primitives in pinning or contacts[key]:
+                        pinned |= _pin(state, fits[key], samples[key], point, primitives)
+                grew |= pinned
             if grew:
                 escalated.add(key)
         # A contact neither of whose pieces can be repaired further is between
@@ -4540,6 +4654,8 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
             constraint = state.get("constraint")
             constraints = [tuple(constraint)] if constraint is not None and stage >= 3 else []
             constraints.extend(crossing.get(chain.identity, {}).get("pins", ()))
+            lines = crossing.get(chain.identity, {}).get("lines", ())
+            tight = crossing.get(chain.identity, {}).get("tight", ())
             if is_dense(chain.identity):
                 reason = "maximum deviation still exceeded after ordered local recovery"
                 primitives = tuple(("L", point) for point in samples[1:])
@@ -4551,17 +4667,17 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
                         recovery_attempts=4, dense_fallback=True,
                         fallback_reason=reason),))
                 continue
-            key, forward, canonical, anchor_tuple, constraint_key = fitter.prepare(
-                samples, chain_settings, anchors, constraints)
+            key, forward, canonical, anchor_tuple, constraint_key, step_key = fitter.prepare(
+                samples, chain_settings, anchors, constraints, lines, tight)
             plans.append((chain.identity, stage, forward, key,
-                          canonical, anchor_tuple, constraint_key, chain_settings))
+                          canonical, anchor_tuple, constraint_key, chain_settings, step_key))
 
         # Phase 2: compute the cache misses. Distinct keys are fitted once by the
         # compiled per-chain fitter.
         _fit_cache_misses(
-            fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings)
-                     for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings
-                     in plans], tick if identities is None else _noop, checkpoint)
+            fitter, [(key, canonical, anchor_tuple, constraint_key, chain_settings, step_key)
+                     for _, _, _, key, canonical, anchor_tuple, constraint_key, chain_settings,
+                     step_key in plans], tick if identities is None else _noop, checkpoint)
 
         # Phase 3: assemble oriented fits from the now-populated cache.
         for identity, stage, forward, key, *_ in plans:
@@ -4571,7 +4687,7 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
             if stage:
                 fitted = replace(fitted, diagnostics=tuple(
                     replace(item, recovery_attempts=stage) for item in fitted.diagnostics))
-            fits[identity] = _repaired(fitted, chains[identity].points, crossing.get(identity))
+            fits[identity] = fitted
 
     # Phase 4: no path may cross itself (``_repair_crossings``). A chain already
     # dense from protected-feature recovery is not repaired further.
@@ -4611,7 +4727,9 @@ def shared_boundary_components(track, included: list[int], settings: TraceSettin
                     "crossing_recovery": {
                         identity: {"round": int(state["round"]),
                                    "dense_fallback": _repair_fell_back(state),
-                                   "pins": [list(point) for point in state["pins"]]}
+                                   "pins": [list(point) for point in state["pins"]],
+                                   "tight": [[list(a), list(b)] for a, b in state["tight"]],
+                                   "lines": [[list(a), list(b)] for a, b in state["lines"]]}
                         for identity, state in sorted(crossing.items())},
                     "chain_diagnostics": {
                         identity: [item.as_dict() for item in fit.diagnostics]

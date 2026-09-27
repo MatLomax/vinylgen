@@ -1,7 +1,7 @@
 """Corpus join-shape check, opt-in via ``scripts/run_tests.py --full-image``.
 
-Every node inside a fitted chain is symmetric unless it is a corner, a junction
-or a closed chain's anchor. Reuses ``SMOOTH_DEG`` and ``join_turns`` from
+Every node inside a fitted chain is symmetric unless it is a corner, a junction,
+a closed chain's anchor, or where two crossing-repair lines meet. Reuses ``SMOOTH_DEG`` and ``join_turns`` from
 ``test_smooth_joins`` (kept there because the synthetic tests still use them)
 rather than duplicating them.
 """
@@ -66,17 +66,34 @@ def backtrack(start, primitive) -> float:
     return float(np.max(np.maximum.accumulate(along) - along))
 
 
-def _cusp_nodes(chain, fit: ChainFit) -> set:
+def _cusp_nodes(chain, fit: ChainFit, repair: dict | None = None) -> set:
     """The nodes allowed to be cusps: the fit's corner nodes (the detector's
-    corners, where a straight-line snap may have moved them), junction anchors, and
-    a closed chain's anchor (where the loop leaves a vertex and returns: its ends)."""
-    return set(fit.corners) | {anchor.point for anchor in chain.anchors
-                               if anchor.kind == "junction" or chain.closed}
+    corners, where a straight-line snap may have moved them), junction anchors, a
+    closed chain's anchor (where the loop leaves a vertex and returns: its ends),
+    and a node between two of the chain's crossing-repair lines (``repair``: its
+    ``crossing_recovery`` audit), each a step between consecutive samples that
+    crossed as a curve."""
+    allowed = set(fit.corners) | {anchor.point for anchor in chain.anchors
+                                  if anchor.kind == "junction" or chain.closed}
+    lines = {tuple(sorted((tuple(a), tuple(b)))) for a, b in (repair or {}).get("lines", ())}
+    if lines:
+        nodes = [fit.start, *(primitive[-1] for primitive in fit.primitives)]
+        count = len(fit.primitives)
+
+        def repair_line(k: int) -> bool:
+            k %= count
+            return fit.primitives[k][0] == "L" and \
+                tuple(sorted((nodes[k], nodes[k + 1]))) in lines
+
+        for k in range(1, count + (1 if chain.closed else 0)):
+            if repair_line(k - 1) and repair_line(k):
+                allowed.add(nodes[k])
+    return allowed
 
 
 class CorpusJoinTests(unittest.TestCase):
-    """Every node inside a chain fit is symmetric unless it is a corner, a junction
-    or a closed chain's anchor."""
+    """Every node inside a chain fit is symmetric unless it is a corner, a junction,
+    a closed chain's anchor, or where two crossing-repair lines meet."""
 
     def test_only_corners_and_junctions_are_cusps_on_the_corpus(self):
         from vinylgen.boundary_graph import shared_boundary_polygons
@@ -107,10 +124,12 @@ class CorpusJoinTests(unittest.TestCase):
                 recovery = ({chain.identity: {"stage": 3,
                                               "constraint": chain.points[len(chain.points) // 2]}
                              for chain in track.chains[::7]} if recovered else {})
-                _, fits, _ = shared_boundary_components(track, included, settings, recovery=recovery)
+                _, fits, audit = shared_boundary_components(track, included, settings,
+                                                            recovery=recovery)
                 for chain in track.chains:
                     fit = fits[chain.identity]
-                    cusps = _cusp_nodes(chain, fit)
+                    cusps = _cusp_nodes(chain, fit,
+                                        audit["crossing_recovery"].get(chain.identity))
                     # The fit's corner nodes are the detector's corners.
                     state = recovery.get(chain.identity)
                     points = chain.points

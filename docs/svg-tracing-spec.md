@@ -799,8 +799,9 @@ Terms follow [GLOSSARY.md](../GLOSSARY.md) "Path nodes"; how the written SVG
 labels each node is in [Path node types](#path-node-types).
 
 A node is a **cusp node** only at a confirmed corner, at a junction anchor
-(three or more colours meet) or at a chain end (a closed chain's anchor
-included). Every other node is a **symmetric node**
+(three or more colours meet), at a chain end (a closed chain's anchor
+included), or where two crossing-repair lines meet (see
+[No path crosses itself](#no-path-crosses-itself)). Every other node is a **symmetric node**
 whatever its local angle: recursive split points, joins between classified
 runs, forced nodes and ring seams. Both sides share one tangent direction;
 handle lengths are fitted independently, so they are not forced equal.
@@ -829,7 +830,8 @@ handle lengths are fitted independently, so they are not forced equal.
   straight and the curve's handle continues it. Two straight runs never meet
   at a symmetric node (a node between two lines is always a cusp), so two
   straight runs meeting anywhere but a corner or junction are refitted as one
-  curve run across the join.
+  curve run across the join. A crossing-repair line is never refitted: the
+  run beside it is the curve, and two repair lines meeting stay lines.
 - Between two curves at a forced node or ring seam the tangent is the
   total-least-squares direction of the samples within half the analysis span
   on both sides of the node. Nodes inside a curve run are placed at chosen
@@ -1010,24 +1012,40 @@ there when their tangents interleave around it. The overlap buffer's rings are
 first noded: where a valid polygon's ring touches another inside a segment,
 that vertex is inserted into the segment.
 
-A piece in an illegal contact is repaired locally and refitted, one round per
-pass, until no contact remains (`_repair_crossings` in `curve_fit.py`). Each
-round pins the fit (fit constraints) to samples at each contact: round 1 to
-the sample nearest the contact among those the contacting primitives span,
-and round `r` to that sample and the `2^(r-2)` samples either side, counted
-along the chain. A corner at a pinned sample stays on its sample rather than
-moving to where its sides meet. A run of consecutive pinned samples is drawn
-as lines through them: there the path is the dense boundary itself. A round
-that pins nothing new widens until it does, so every pass pins at least one
-more sample; a piece whose every sample is pinned is its dense samples, and a
-piece with interior samples that ends so is reported as a dense fallback
-(`trace-fallbacks.png`; a warning for an overlap-buffer ring).
+A piece in an illegal contact is repaired locally and refitted, one pass at a
+time, until no contact remains (`_repair_crossings` in `curve_fit.py`). A
+contact is repaired in one of two ways:
 
-The piece keeps its settings; nothing is tightened along the whole chain. A
-pinned sample is a node the fit must pass through, so the runs between the
-corners or anchors on either side of it are refitted, and a closed ring
-without corners or anchors is refitted from its first pinned sample; every
-other run, and every piece not in a contact, keeps its fit. Both colours use
+- **Pinning.** A contact on a primitive that spans unpinned samples pins the
+  fit (fit constraints) to samples there: round 1 to the sample nearest the
+  contact among those the contacting primitives span, and round `r` to that
+  sample and the `2^(r-2)` samples either side, counted along the chain. A
+  pinned sample is a forced symmetric node like any other: the fit passes
+  through it and both sides share one tangent there. A corner at a pinned
+  sample stays on its sample rather than moving to where its sides meet. A
+  round that pins nothing new widens until it does.
+- **Steps.** A contact on a primitive between two consecutive pinned samples
+  (a step, which pinning cannot change) first makes the step **tight**: the
+  same end tangents, the joins' shared tangents, with both handles
+  `_MIN_HANDLE` (a tenth) of the chord, the shortest handles the fitter
+  allows, so the curve hugs the chord. A tight step still in contact becomes a
+  **repair line**, the dense boundary step itself. A repair line is never
+  refitted as a curve, and the curve beside it takes its direction, as at any
+  line join, so its ends stay symmetric. Of two neighbouring steps only one
+  becomes a line per pass; the other is refitted beside the new line first.
+
+Where two repair lines meet, the node is a cusp: the one exception to the join
+rule ([Joins](#joins-only-corners-and-junctions-are-cusps)). Each pass pins a
+new sample or makes a new step tight or a line. A piece whose every sample is
+pinned and every step a line is its dense samples, and a piece with interior
+samples that ends so is reported as a dense fallback (`trace-fallbacks.png`;
+a warning for an overlap-buffer ring).
+
+The piece keeps its settings; nothing is tightened along the whole chain.
+Pinning refits the runs between the corners or anchors on either side of the
+pinned sample, and a closed ring without corners or anchors is refitted from
+its first pinned sample; every other run, and every piece not in a contact,
+keeps its fit. Both colours use
 the one repaired chain. The dense samples come from the planar boundary graph
 (in the overlap buffer, the noded rings of one valid polygon), so they cannot
 cross and the repair ends; dense samples that did cross would stop the trace
@@ -1038,11 +1056,13 @@ untouched pieces would already have been found.
 Before this repair, 10 to 35% of the corpus paths crossed themselves, mostly as
 small hooks where a fitted run turns back at a moved corner or chain end, and
 as near-collinear lines leaving a junction on either side of a one-pixel
-feature. With it, on the nine subjects, no chain needs more than four rounds
-and the edge variant has 1 to 8% more nodes; the only dense fallbacks are
-chains of three to five samples (at most 33 per subject). On the 5980 x 4208
-`sourceup`, where 35% of paths crossed themselves, 651 of 2522 chains are
-repaired and the edge variant has 28% more nodes. Independent checks of the
+feature. With it, on the nine subjects, the repair takes at most nine passes
+and no chain falls back dense; 15 to 230 chains per subject are repaired, 3 to
+84 steps become repair lines, and 0 to 53 nodes per subject join two repair
+lines at an angle (the cusps above); every other node of a repaired chain is
+symmetric. On the 5980 x 4208 `sourceup`, where 35% of paths crossed
+themselves, 661 of 2522 chains are repaired, with 234 repair lines, 45 cusps
+where two meet, and no dense fallback. Independent checks of the
 emitted SVGs (the true curves densely sampled, then GEOS validity and noding)
 find no crossing.
 
@@ -1050,9 +1070,9 @@ The repair also keeps raster detail that crossing fits used to swallow. On the
 synthetic corpus, one-pixel features that a crossing fit dropped are drawn again
 (a 1 px bar's 39 missing regions become 0), and small regions the palette stage
 leaves at noisy edges and anti-aliased junctions now trace as the separate
-pieces the label map holds. The costs: the dense three- to five-sample chains
-at one-pixel spike tips and around those regions add nodes, and a few kinks
-where a pinned chain meets a fitted one; and on one-pixel outlines the traced
+pieces the label map holds. The costs: pinned samples at one-pixel spike tips
+and around those regions add nodes, and the cusps where two repair lines meet;
+and on one-pixel outlines the traced
 features the refit moves sit about half a pixel off more often (on a 1 px disc
 outline at 576 px, 40 of its thin regions fall below the coverage pin, against
 17 before, with the traced dark area 1063 px² against 1091 px² of evidence).
@@ -1177,8 +1197,8 @@ symmetric detail controls.
 - Rendered comparison metrics against `flattened.png`.
 - Local boundary-fallback locations and effective tolerances.
 - Crossing repair: `topology.shared_curve_fit.crossing_passes` and, per repaired
-  chain, `crossing_recovery` (its round, whether it fell back dense, and its
-  pinned samples); each overlap-buffer path's `crossing_repair` counts its
+  chain, `crossing_recovery` (its round, whether it fell back dense, its
+  pinned samples, and its tight steps and repair lines as sample pairs); each overlap-buffer path's `crossing_repair` counts its
   repaired and dense rings.
 - Structural validation results.
 
