@@ -24,13 +24,11 @@ readiness is not yet claimed.
   progress and blockers, and attach relevant file/commit/URL links. Keep the
   in-session plan aligned with the durable worklog rather than treating either
   as a substitute for the other.
-- Before marking any task as implemented or done, run a new adversarial review
-  agent that did not implement the task. Give it the task scope, acceptance
-  criteria, implementation, tests, and relevant specifications, and ask it to
-  try to falsify the completion claim. Every review finding must be resolved in
-  the implementation or explicitly refuted with evidence recorded in worklog.
-  Do not mark the task implemented or done while any finding remains
-  unaddressed or merely acknowledged.
+- Review before marking a task implemented or done follows the shared review
+  rules: @~/.claude/review-rules.md
+- Bookkeeping means keeping records true: task statuses current, decisions and
+  findings recorded in worklog, and any note or memory you said you would write
+  actually written. It does not mean proving every number.
 - Before ending a substantial work session, update task statuses and write a
   concise worklog session summary so the next session can resume without
   reconstructing context from chat history.
