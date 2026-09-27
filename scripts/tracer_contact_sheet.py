@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contact sheet of our tracer, Potrace and VTracer on three real subjects.
+"""Contact sheet of our tracer, Potrace and VTracer on real subjects, glyphs and fuzz scenes.
 
 Each subject's stored flattened labels (``segmentation.npz``) are copied into
 ``.tmp/contact-sheet/work/<subject>/`` and traced whole by all three tools:
@@ -35,6 +35,10 @@ tuned settings) under the true outline, each panel captioned with that glyph's
 benchmark figures. The glyphs are picked from a tuned icon benchmark run
 (``_icon_rows``). Output: ``.tmp/contact-sheet/icons.html``.
 
+After the real subjects the main sheet mixes in a few icon glyphs and pinned fuzz
+scenes (``MIXED_ICONS``, ``MIXED_FUZZ``), drawn as the icon sheet draws a glyph
+(``_scene_row``), with figures judged afresh by the benchmark (``_judged``).
+
 The sheet is an HTML page for Firefox: every panel zooms (wheel) and pans
 (drag), and the panels of a row move together. Output:
 ``.tmp/contact-sheet/contact-sheet.html``.
@@ -63,7 +67,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from benchmark_tracers import run_potrace, run_vtracer, stacked_trace  # noqa: E402
+from benchmark_tracers import run_one, run_potrace, run_vtracer, stacked_trace  # noqa: E402
 
 OUT = ROOT / ".tmp" / "contact-sheet"
 WORK = OUT / "work"
@@ -615,6 +619,7 @@ def build(retrace: bool) -> Path:
                 row_report[tool] = {"nodes": len(nodes), **{NODE_NAMES[c]: v for c, v in counts.items()}}
             report.append(row_report)
             rows.append("<section>" + "".join(cells) + "</section>")
+    rows += _mixed_rows()
     intro = ["Each tool traced the WHOLE subject from the same flattened labels (segmentation.npz); "
              "panels are crops of those traces. Vinylgen: default TraceSettings, pixel mode, all "
              "colours cut, traced-edge.svg, from the labels only (hard-edged costs, no protection). "
@@ -624,9 +629,16 @@ def build(retrace: bool) -> Path:
              "Red: each tool's own outlines, as visible after stacking. Nodes: Vinylgen from "
              "sodipodi:nodetypes; Potrace/VTracer typed by their handles on the visible partition "
              "of their stacked shapes (stacking clip points are cusps). A node shared by two "
-             "colours counts once. Counts are nodes inside the crop."]
+             "colours counts once. Counts are nodes inside the crop.",
+             "After the real subjects: icon glyphs and pinned fuzz scenes (tests/synthetic/fuzz), "
+             "drawn whole, their hard-edged labels traced by all three (Potrace -a 0.8 -n; VTracer "
+             "corner 45, splice 45, segment 4). Cyan there is the scene's true vector outline. "
+             "Figures are the benchmark's for that scene, from the current code: required genuine "
+             "corners found, kinks, extra inflections per 100 px.",
+             SCENE_PANELS]
     target = _page(OUT / "contact-sheet.html",
-                   "Tracer contact sheet: Vinylgen vs Potrace vs VTracer", intro, _legend(), rows)
+                   "Tracer contact sheet: Vinylgen vs Potrace vs VTracer", intro,
+                   _legend(_scene_legend()), rows)
     (OUT / "node-counts.json").write_text(json.dumps(report, indent=2) + "\n")
     return target
 
@@ -637,6 +649,15 @@ def build(retrace: bool) -> Path:
 POTRACE_TUNED = {"alphamax": 0.8, "opttolerance": 0.0}
 VTRACER_TUNED = {"corner_threshold": 45.0, "splice_threshold": 45.0, "segment_length": 4.0}
 ICON_ROWS = 24
+# The glyphs and pinned fuzz scenes the main sheet mixes in after the real subjects.
+MIXED_ICONS = ("icon-material-sharp-castle-512", "icon-remix-fill-leaf-128",
+               "icon-heroicons-solid-bolt-128", "icon-bootstrap-regular-heart-fill-512")
+MIXED_FUZZ = ("fuzz-cornered-blob-s1031-256", "fuzz-cornered-blob-s1050-512",
+              "fuzz-polygon-s1014-256", "fuzz-blob-s1036-512", "fuzz-layered-s1000-256",
+              "fuzz-layered-s1015-512")
+SCENE_PANELS = ("Truth panel: every authored node on the visible outline, its shape giving its "
+                "type (read from the segments meeting there, as the tools' nodes are read from "
+                "their handles). Tool panels: grey rings mark the required genuine corners.")
 
 
 def _icon_rows(rows_path: Path) -> list[tuple[str, dict]]:
@@ -680,69 +701,113 @@ def _row_figures(summary: dict) -> str:
     return f"corners {found}/{true}, kinks {summary['kinks']}, extra inflections/100px {wobble}"
 
 
+def _scene_row(case, summaries: dict, work: Path, note: str = "") -> str:
+    """One row for a scene case (an icon glyph or a fuzz scene), whole: its label
+    render with the true outline and every authored node, then ours, Potrace and
+    VTracer (tuned) traced from those labels, each captioned with its figures
+    from ``summaries`` (per benchmark tool name)."""
+    from vinylgen.contracts import TraceSettings
+    from vinylgen.fidelity.harness import trace_labels
+    from vinylgen.fidelity.raster import render_labels
+    from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
+    from vinylgen.fidelity.sweep import _bounds
+    case_id = case.case_id
+    scene = case.scene
+    size = int(max(scene.width, scene.height))
+    crop = Crop(case_id, 0, 0, size, "")
+    view = (0, 0, size)
+    k = size / PANEL
+    labels = np.asarray(render_labels(scene), dtype=np.int16)
+    run = trace_labels((labels, scene.palette), work / case_id, TraceSettings(), subject=case_id)
+    fills = [str(row["hex"]).upper() for row in run.palette]
+    rgb = np.asarray([row["rgb"] for row in run.palette], dtype=np.uint8)
+    bounds = _bounds(case, "labels", run)
+    cells = [f'<div class="info"><h2>{_esc(case_id.removeprefix("icon-"))}</h2>'
+             f'<div>{scene.width}x{scene.height} px</div>'
+             + (f'<div>{_esc(note)}</div>' if note else "") + '</div>']
+    truth = []
+    for region in scene.regions:
+        for outline in region.rings:
+            points = outline.flatten(FLATTEN_TOLERANCE)
+            truth.append(_truth_path("M" + "L".join(f"{px:.3f} {py:.3f}" for px, py in points)
+                                     + "Z"))
+    corners = [c for c in bounds.corners if c["role"] == "required" and c["kind"] == "corner"]
+    authored = _authored_typed_nodes(scene, bounds.rings)
+    body = [f'<image x="0" y="0" width="{scene.width}" height="{scene.height}" '
+            f'href="{_png_data(Image.fromarray(rgb[labels], "RGB"))}"/>'] + truth
+    for letter in "zsc":
+        body += [_pinned(px, py, _truth_marker(t), k) for (px, py), t in authored.items()
+                 if t == letter]
+    label, _ = _count_text(authored)
+    cells.append(_panel("labels + true outline",
+                        f"authored {label}; {len(corners)} required genuine corners", view, body))
+    rings = [_pinned(c["point"][0], c["point"][1],
+                     f'<circle r="{2.2 * MARKER}" fill="none" stroke="#888" stroke-opacity="0.6" '
+                     f'stroke-width="{NODE_LINE}"/>', k) for c in corners]
+    for tool in TOOLS:
+        if tool == "ours":
+            shapes, nodes = ours_in_crop(run.edge_svg, crop)
+        else:
+            traced = (run_potrace(labels, fills, work / case_id / tool, **POTRACE_TUNED)
+                      if tool == "potrace" else
+                      run_vtracer(labels, fills, rgb, work / case_id / tool, **VTRACER_TUNED))
+            shapes, nodes = tool_in_crop(traced, crop, scene.width, scene.height)
+        under = [f'<rect x="0" y="0" width="{scene.width}" height="{scene.height}" fill="#fff"/>']
+        label, _ = _count_text(nodes)
+        summary = summaries.get("vinylgen" if tool == "ours" else tool)
+        cells.append(_panel(f"{TOOL_TITLES[tool]}: {label}",
+                            _row_figures(summary) if summary else "", view,
+                            _tool_body(shapes, nodes, truth, k, under, rings)))
+    shutil.rmtree(work / case_id, ignore_errors=True)
+    return "<section>" + "".join(cells) + "</section>"
+
+
+def _mixed_rows() -> list[str]:
+    """The icon glyphs and pinned fuzz scenes the main sheet shows after the real
+    subjects, each judged afresh."""
+    from vinylgen.fidelity.fuzz import case_id as fuzz_id, pinned_cases, pinned_rows
+    from vinylgen.fidelity.icons import icon_cases
+    icons = {case.case_id: case for case in icon_cases() if case.case_id in MIXED_ICONS}
+    fuzz = {case.case_id: case for case in pinned_cases() if case.case_id in MIXED_FUZZ}
+    notes = {fuzz_id(row["seed"], row["size"], row["kind"]): row.get("note", "")
+             for row in pinned_rows()}
+    work = WORK / "mixed"
+    rows = ['<h2>Icon glyphs</h2>']
+    rows += [_scene_row(icons[name], _judged(icons[name], work / "judge"), work)
+             for name in MIXED_ICONS]
+    rows.append('<h2>Random shape scenes (pinned fuzz cases)</h2>')
+    rows += [_scene_row(fuzz[name], _judged(fuzz[name], work / "judge"), work, notes.get(name, ""))
+             for name in MIXED_FUZZ]
+    return rows
+
+
+def _judged(case, work: Path) -> dict:
+    """The benchmark's labels-tier figures for ``case``, per tool, from the code as
+    it is now (Potrace and VTracer at their tuned settings)."""
+    rows = run_one(case, "labels", str(work), {"potrace": POTRACE_TUNED, "vtracer": VTRACER_TUNED})
+    return {row["tool"]: row["summary"] for row in rows if row["ok"]}
+
+
+_SCENE_LEGEND = ('<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
+                 '{authored}</svg>authored node (shape = type)</span>'
+                 '<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
+                 '<circle r="10" fill="none" stroke="#888" stroke-width="{line}"/></svg>'
+                 'required genuine corner</span>')
+
+
+def _scene_legend() -> str:
+    return _SCENE_LEGEND.format(authored=_truth_marker("c"), line=NODE_LINE)
+
+
 def build_icons(rows_path: Path) -> Path:
     """The icon contact sheet: per glyph, its label render with the true outline and
     every authored node, then ours, Potrace and VTracer (tuned) traced from those
     labels."""
-    from vinylgen.contracts import TraceSettings
-    from vinylgen.fidelity.harness import trace_labels
     from vinylgen.fidelity.icons import icon_cases
-    from vinylgen.fidelity.raster import render_labels
-    from vinylgen.fidelity.scene import FLATTEN_TOLERANCE
-    from vinylgen.fidelity.sweep import _bounds
     cases = {case.case_id: case for case in icon_cases()}
     OUT.mkdir(parents=True, exist_ok=True)
-    work = WORK / "icons"
-    rows = []
-    for case_id, summaries in _icon_rows(rows_path):
-        case = cases[case_id]
-        scene = case.scene
-        size = int(max(scene.width, scene.height))
-        crop = Crop(case_id, 0, 0, size, "")
-        view = (0, 0, size)
-        k = size / PANEL
-        labels = np.asarray(render_labels(scene), dtype=np.int16)
-        run = trace_labels((labels, scene.palette), work / case_id, TraceSettings(),
-                           subject=case_id)
-        fills = [str(row["hex"]).upper() for row in run.palette]
-        rgb = np.asarray([row["rgb"] for row in run.palette], dtype=np.uint8)
-        bounds = _bounds(case, "labels", run)
-        cells = [f'<div class="info"><h2>{_esc(case_id.removeprefix("icon-"))}</h2>'
-                 f'<div>{scene.width}x{scene.height} px</div></div>']
-        truth = []
-        for region in scene.regions:
-            for outline in region.rings:
-                points = outline.flatten(FLATTEN_TOLERANCE)
-                truth.append(_truth_path("M" + "L".join(f"{px:.3f} {py:.3f}" for px, py in points)
-                                         + "Z"))
-        corners = [c for c in bounds.corners if c["role"] == "required" and c["kind"] == "corner"]
-        authored = _authored_typed_nodes(scene, bounds.rings)
-        body = [f'<image x="0" y="0" width="{scene.width}" height="{scene.height}" '
-                f'href="{_png_data(Image.fromarray(rgb[labels], "RGB"))}"/>'] + truth
-        for letter in "zsc":
-            body += [_pinned(px, py, _truth_marker(t), k) for (px, py), t in authored.items()
-                     if t == letter]
-        label, _ = _count_text(authored)
-        cells.append(_panel("labels + true outline",
-                            f"authored {label}; {len(corners)} required genuine corners", view, body))
-        rings = [_pinned(c["point"][0], c["point"][1],
-                         f'<circle r="{2.2 * MARKER}" fill="none" stroke="#888" stroke-opacity="0.6" '
-                         f'stroke-width="{NODE_LINE}"/>', k) for c in corners]
-        for tool in TOOLS:
-            if tool == "ours":
-                shapes, nodes = ours_in_crop(run.edge_svg, crop)
-            else:
-                traced = (run_potrace(labels, fills, work / case_id / tool, **POTRACE_TUNED)
-                          if tool == "potrace" else
-                          run_vtracer(labels, fills, rgb, work / case_id / tool, **VTRACER_TUNED))
-                shapes, nodes = tool_in_crop(traced, crop, scene.width, scene.height)
-            under = [f'<rect x="0" y="0" width="{scene.width}" height="{scene.height}" fill="#fff"/>']
-            label, _ = _count_text(nodes)
-            summary = summaries["vinylgen" if tool == "ours" else tool]
-            cells.append(_panel(f"{TOOL_TITLES[tool]}: {label}", _row_figures(summary), view,
-                                _tool_body(shapes, nodes, truth, k, under, rings)))
-        shutil.rmtree(work / case_id, ignore_errors=True)
-        rows.append("<section>" + "".join(cells) + "</section>")
+    rows = [_scene_row(cases[case_id], summaries, WORK / "icons")
+            for case_id, summaries in _icon_rows(rows_path)]
     intro = ["Each glyph as the benchmark renders it (seeded size, rotation and sub-pixel offset); "
              "all three trace its hard-edged labels. Vinylgen: default TraceSettings. Potrace 1.16: "
              "stacked scans, -a 0.8 -n. VTracer 0.6.4: stacked colour mode, corner 45, splice 45, "
@@ -751,16 +816,9 @@ def build_icons(rows_path: Path) -> Path:
              "four where VTracer makes most kinks, then a spread of the rest. Figures are the "
              "benchmark's for that glyph: required genuine corners found, kinks, extra inflections "
              "per 100 px.",
-             "Truth panel: every authored node on the visible outline, its shape giving its type "
-             "(read from the segments meeting there, as the tools' nodes are read from their "
-             "handles). Tool panels: grey rings mark the required genuine corners."]
-    legend = _legend('<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
-                     f'{_truth_marker("c")}</svg>authored node (shape = type)</span>'
-                     '<span><svg width="24" height="24" viewBox="-12 -12 24 24">'
-                     f'<circle r="10" fill="none" stroke="#888" stroke-width="{NODE_LINE}"/></svg>'
-                     'required genuine corner</span>')
+             SCENE_PANELS]
     return _page(OUT / "icons.html", "Icon contact sheet: Vinylgen vs Potrace vs VTracer",
-                 intro, legend, rows)
+                 intro, _legend(_scene_legend()), rows)
 
 
 def _newest_tuned_icon_rows() -> Path:
