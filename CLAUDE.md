@@ -85,7 +85,7 @@ python3 palette_infer.py images --min-region-pixels 0 --jobs 1
 # Trace every prepared subject.
 python3 svg_trace.py outputs
 
-# Run the regression suite in parallel (one worker per core; ~95 s). Always use
+# Run the regression suite in parallel (one worker per core; ~45 s). Always use
 # the project virtual environment: the system Python does not include web-test
 # dependencies such as httpx. `-j 1` runs serially; test names narrow the run.
 .venv/bin/python scripts/run_tests.py
@@ -102,20 +102,15 @@ python3 svg_trace.py outputs
 
 The regression suite's inputs are the synthetic ground-truth corpus under
 `tests/synthetic/` (see [Validation and testing](docs/validation-and-testing.md)).
+The default run traces the gate slice listed in `tests/synthetic/gate-slice.json`;
+the full corpus is in the `--full-image` bucket (`test_synthetic_fidelity_corpus`).
 An assertion failing against today's tracer is an expected failure in
-`tests/synthetic/expected-failures.json` naming the worklog tasks whose fixes it
-needs and the counterfactual proxies (`regression.COUNTERFACTUALS`) that
-together clear it, and recording its failing measurements and the identities of what it found wrong (kink points,
-missed vertices, node positions, missing regions, wrong per-colour counts). A
-measurement or identity set that gets worse or better fails the run, so fixing
-one defect while adding another of the same size fails too; re-record
-deliberately with `scripts/record_expected_failures.py` (all or nothing: it
-writes nothing while any failure is unrecorded, a record is worse without
-`--allow-worse`, or an orphan entry is kept without `--remove-orphans`), a
-re-attributed cause moves its entries with `--retask` (an attribution is
-`SLUG[,SLUG...]@PROXY[+PROXY...]`; a failure no proxy combination clears names a
-`synthetic-finding-` placeholder, which the table test rejects until a task
-tracks it), and a cause that is fixed has its passing entries removed.
+`tests/synthetic/expected-failures.json` naming the worklog tasks that track it
+and recording its failing measurements. A measurement that gets worse beyond a
+coarse margin fails the run, a better one does not, and a pass is an unexpected
+success until its entry is removed. Update the table with
+`scripts/record_expected_failures.py` (all or nothing; `--task` adds an entry,
+`--allow-worse` and `--remove-orphans` accept what it otherwise refuses).
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold
 regions fold into a touching colour unless they are confident, coherent thin

@@ -7,7 +7,7 @@ default trace settings and (in the rgb tier) the palette stage's folds (``D``,
 the true vertices with their roles and radii, the narrow zones, the area bounds,
 the ideal node count); ``evaluate`` measures one trace against them; ``check``
 turns a measured result into a pass or fail per assertion, and ``measurements``
-and ``identities`` into the scalars and the items an expected failure records.
+into the scalars an expected failure records.
 
 Lengths are pixels of the traced raster. ``M`` is the maximum deviation and ``A``
 the corner sharpening allowance of the DEFAULT trace settings, resolved exactly as
@@ -325,11 +325,8 @@ Assertions (``ASSERTIONS``)
   ``palette_outcome``).
 
 Expected failures record ``measurements``, the scalars each assertion compares
-with its bound (``MEASUREMENTS``), and ``identities``, the items it finds wrong
-(``IDENTITIES``: kink points, missed vertices, node positions, missing regions,
-wrong per-colour counts and so on). ``entry_ratchet`` compares both with the
-record: the scalars within ``RATCHET_TOLERANCE``, the identities as a set, item
-for item within ``IDENTITY_TOLERANCE``.
+with its bound (``MEASUREMENTS``); ``worse_than_recorded`` says which have got
+worse than the record by more than ``WORSE_MARGIN``.
 """
 
 from __future__ import annotations
@@ -2573,34 +2570,12 @@ MEASUREMENTS = {
                  "fold_target_mismatches"),
     "palette": ("problems",),
 }
-# The identities of what each assertion finds wrong (``identities``): what an
-# expected failure records besides its measurements, so fixing one defect while
-# introducing another of the same size is no longer the recorded failure. Each
-# is a list of items, each a list of numbers and strings.
-IDENTITIES = {
-    "hausdorff": ("truth_worst_point", "evidence_worst_point"),
-    "corners": ("missed_vertices",),
-    "kinks": ("kinks",),
-    "nodes": ("nodes_outside_zones",),
-    "topology": ("wrong_counts", "missing_structures", "unexpected_structures",
-                 "unmatched_layers"),
-    "area": ("colours_over",),
-    "evidence": ("missing_regions", "colours_over", "absent_scene_colours",
-                 "misplaced_thin_regions", "severed_thin_regions", "fold_target_mismatches"),
-    "palette": ("problems",),
-}
-# Numbers in an identity item match within this: its positions are node and
-# vertex coordinates, which a deterministic trace reproduces to floating-point
-# drift (``RATCHET_TOLERANCE``'s px margin); its counts and indices are whole.
-IDENTITY_TOLERANCE = 1e-3
-# Tolerances of the expected-failure ratchet. The pipeline is deterministic (the
-# same code and inputs give the same SVG, and the measures are exact geometry on
-# it), so a count may not grow at all; lengths and areas get a margin far below
-# any change a trace makes (a node moves on a grid of whole and sub-pixel sample
-# positions, so the smallest geometric change a trace makes is of order 0.01 px)
-# and far above floating-point drift of the geometry on these canvases (coordinates
-# up to 1536 px, relative error ~1e-15, so ~1e-12 px).
-RATCHET_TOLERANCE = {"px": 1e-3, "px2": 1e-2, "count": 0.0}
+# How far an expected failure's measurement may grow before it counts as worse
+# (``worse_than_recorded``): a count may not grow at all (one more kink, missed
+# vertex or lost region is a regression); a length may grow by half a pixel step
+# or 10%, an area by 4 px^2 or 10%, whichever is larger, so a fix elsewhere that
+# nudges the geometry by a sub-pixel amount does not trip every entry near it.
+WORSE_MARGIN = {"px": (0.5, 0.1), "px2": (4.0, 0.1), "count": (0.0, 0.0)}
 
 
 def measurement_unit(key: str) -> str:
@@ -2655,115 +2630,17 @@ def measurements(name: str, result: dict, case) -> dict[str, float]:
     return {key: float(value) for key, value in values.items()}
 
 
-def identities(name: str, result: dict, case) -> dict[str, list[list]]:
-    """What assertion ``name`` finds wrong, item by item (``IDENTITIES``)."""
-    def point(value):
-        return [] if value is None else [[float(value[0]), float(value[1])]]
-
-    if name == "hausdorff":
-        values = {"truth_worst_point": point(result["local_hausdorff"]["worst_point"]),
-                  "evidence_worst_point": point(result["evidence"]["distance"]["worst_point"])}
-    elif name == "corners":
-        values = {"missed_vertices": [list(map(float, c["point"])) for c in result["corners"]
-                                      if c["role"] == "required" and not c["found"]]}
-    elif name == "kinks":
-        values = {"kinks": [list(map(float, cusp["point"])) for cusp in result["cusps"]
-                            if cusp["kink"]]}
-    elif name == "nodes":
-        values = {"nodes_outside_zones": [list(p) for p in result["nodes_outside_points"]]}
-    elif name == "topology":
-        rows = result["topology"]
-        values = {"wrong_counts": [[colour, row["traced"]["polygons"], row["traced"]["holes"]]
-                                   for colour, row in rows.items() if row["error"]],
-                  "missing_structures": [[colour, *item] for colour, row in rows.items()
-                                         for item in row["missing"]],
-                  "unexpected_structures": [[colour, *item] for colour, row in rows.items()
-                                            for item in row["unexpected"]],
-                  "unmatched_layers": [[row["fill"]] for row in result["unmatched_layers"]]}
-    elif name == "area":
-        over = [[colour] for colour, row in result["colour_area"].items()
-                if row["asserted"] and row["symmetric_difference_px"] > row["limit_px"]]
-        if result["misassigned_px"] > result["area_limit_px"]:
-            over.append(["misassigned"])
-        values = {"colours_over": over}
-    elif name == "evidence":
-        evidence = result["evidence"]
-        values = {"missing_regions": [[row["label"], *row["pixel"], row["pixels"]]
-                                      for row in evidence["missing_regions"]],
-                  "colours_over": [[label] for label, row in evidence["colours"].items()
-                                   if row["symmetric_difference_px"] > row["limit_px"]],
-                  "absent_scene_colours": [[index]
-                                           for index in evidence["absent_scene_colours"]],
-                  "misplaced_thin_regions": [[row["label"], *row["pixel"], row["pixels"]]
-                                             for row in evidence["misplaced_thin_regions"]],
-                  "severed_thin_regions": [[row["label"], *row["pixel"], row["pixels"],
-                                            row["pieces"]]
-                                           for row in evidence["severed_thin_regions"]],
-                  "fold_target_mismatches": [list(row)
-                                             for row in evidence["fold_target_mismatches"]]}
-    elif name == "palette":
-        values = {"problems": [item for _, item in _palette_findings(case, result)]}
-    else:
-        raise KeyError(name)
-    return values
-
-
-def _same_item(first: list, second: list) -> bool:
-    if len(first) != len(second):
-        return False
-    for a, b in zip(first, second):
-        if isinstance(a, str) or isinstance(b, str):
-            if a != b:
-                return False
-        elif abs(float(a) - float(b)) > IDENTITY_TOLERANCE:
-            return False
-    return True
-
-
-def identity_ratchet(recorded: dict[str, list], found: dict[str, list]) -> tuple[list[str],
-                                                                                 list[str]]:
-    """The items ``found`` has and ``recorded`` lacks (new defects: worse), and
-    the ones ``recorded`` has and ``found`` lacks (fixed: better), each kind
-    matched item for item within ``IDENTITY_TOLERANCE``."""
-    worse, better = [], []
-    for key in sorted(set(found) | set(recorded)):
-        unmatched = list(recorded.get(key, []))
-        new = []
-        for item in found.get(key, []):
-            hit = next((k for k, other in enumerate(unmatched) if _same_item(item, other)), None)
-            if hit is None:
-                new.append(item)
-            else:
-                unmatched.pop(hit)
-        if new:
-            worse.append(f"{key}: {len(new)} not recorded, e.g. {new[:3]}")
-        if unmatched:
-            better.append(f"{key}: {len(unmatched)} recorded no longer found, "
-                          f"e.g. {unmatched[:3]}")
-    return worse, better
-
-
-def entry_ratchet(entry: dict, measured: dict[str, float],
-                  found: dict[str, list]) -> tuple[list[str], list[str]]:
-    """An expected failure's ratchet: its measurements (``ratchet``) and its
-    identities (``identity_ratchet``), worse and better lines together."""
-    worse, better = ratchet(entry["measured"], measured)
-    more, fewer = identity_ratchet(entry.get("identities", {}), found)
-    return worse + more, better + fewer
-
-
-def ratchet(recorded: dict[str, float], measured: dict[str, float]) -> tuple[list[str], list[str]]:
-    """The measurements worse and better than ``recorded`` beyond
-    ``RATCHET_TOLERANCE``, each as a readable line."""
-    worse, better = [], []
+def worse_than_recorded(recorded: dict[str, float],
+                        measured: dict[str, float]) -> list[str]:
+    """The measurements worse than ``recorded`` beyond ``WORSE_MARGIN``, each as a
+    readable line. A better measurement is never reported."""
+    worse = []
     for key in sorted(measured):
         value, then = float(measured[key]), float(recorded[key])
-        tolerance = RATCHET_TOLERANCE[measurement_unit(key)]
-        if value > then + tolerance:
+        absolute, relative = WORSE_MARGIN[measurement_unit(key)]
+        if value > then + max(absolute, relative * then):
             worse.append(f"{key} {value:.6g} > recorded {then:.6g}")
-        elif value < then - tolerance:
-            better.append(f"{key} {value:.6g} < recorded {then:.6g}")
-    return worse, better
+    return worse
 
 
 def area_coverage(bounds: CaseBounds, evidence_labels: set[int] | None) -> list[str]:

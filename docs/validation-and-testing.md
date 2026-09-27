@@ -23,8 +23,8 @@ shard regenerates the same seeded case list and checks its share of it.
 
 `just test` runs this backend suite and the frontend `vitest` suite
 concurrently, printing each one's output whole once both finish; the whole gate
-takes roughly 95 s on the 28-core host, most of it the synthetic fidelity
-tests tracing every committed case in both tiers.
+takes roughly 47 s on the 28-core host (the backend about 43 s, the frontend,
+which sets the total, about 46 s).
 
 ### Synthetic ground-truth corpus
 
@@ -58,8 +58,8 @@ regression-tested against synthetic scenes whose exact vector truth is known
   kinks and cusp precision, node count against the ideal, node types and
   topology.
 
-`tests/test_synthetic_fidelity.py` traces every committed case in both tiers
-with the product defaults and asserts the bounds in
+`tests/test_synthetic_fidelity.py` traces the gate slice (below) with the
+product defaults and asserts the bounds in
 `vinylgen/fidelity/bounds.py`, the one yardstick the sweep and tuner use too.
 In the RGB tier the truth is the scene after the palette stage's whole-colour
 replacements: the colours a case expects to merge are merged, and a colour the
@@ -133,8 +133,8 @@ mismatch. The assertions:
   rings stay `3D` clear of the discs and zones must match exactly one traced
   piece or hole by location (each within `max(D, e)` of the other), and no
   traced piece or hole clear of them by `3D` plus that tolerance may be left
-  unmatched, so an isolated addition fails whatever the counts. A per-case test
-  checks that the truth itself passes and that every change the truth decides
+  unmatched, so an isolated addition fails whatever the counts. A per-case check
+  in the full-corpus run checks that the truth itself passes and that every change the truth decides
   fails: each isolated structure deleted, each counted structure deleted where
   its count decides one deletion, an isolated addition, an addition near the
   removed region where its count decides one, and otherwise the smallest
@@ -215,60 +215,51 @@ ideal node count and the node limit built on it. The rest are not, and
   wide.
 - The palette matching threshold (`harness.MATCH_DELTA_E`, 12 ΔE) is chosen.
 
+The default run traces the gate slice, the runs listed in
+`tests/synthetic/gate-slice.json` (`regression.gate_runs`): every case on a
+canvas of at most 256 px in both tiers, plus the cheapest case of each family
+and tier without one (the palette-stage sets and the fixed-pixel sweep). That is
+96 of the 291 runs, holding 100 of the 345 expected failures, and adds about 13 s
+on the 28-core host. The full corpus runs in the full-image bucket (below), and
+only there are the checks that each case's bounds can fail (every colour held by
+an area assertion, and the topology changes above); they depend on the bounds
+code, not the trace.
+
 An assertion that fails against today's tracer is listed in
-`tests/synthetic/expected-failures.json` with its attribution, the measurements the assertion compares against its bound (for
-example the boundary distances and the length beyond them, the missed-vertex,
-kink, node and missing-region counts, and the excess areas; `bounds.MEASUREMENTS`
-lists them) and the identities of what it found wrong (the worst points, the
-missed vertices, the kink points, the node positions outside the zones, the
-wrong per-colour counts and unmatched structures, the missing and misplaced
-regions, the colours over their area bound; `bounds.IDENTITIES` lists them), one
-item per line. The attribution names the worklog tasks whose fixes the failure
-needs, all of them, and the counterfactual that clears it: proxies
-(`regression.COUNTERFACTUALS`), each re-tracing the case's own trace-stage input
-with one task's mechanism removed (for example the pixel-era length floors, a
-1.5 px curve tolerance, the corner move check disabled, junction pixels
-relabelled from the hard-edged render, or hard label costs), which applied
-together make the assertion pass, while leaving out any one of them does not.
-The proxies' tasks are exactly the entry's tasks. A failure that no combination
-of the proxies clears names a single `synthetic-finding-` placeholder for its
-pinned cause and no counterfactual, and the table test rejects it until a
-worklog task tracks that cause. It runs as an expected failure only while it still fails, every
-measurement equals the recorded one, and the identities are the recorded set: a
-count may not change at all, a length or area by at most 0.001 px or 0.01 px²,
-and an identity item's coordinates by at most 0.001 px. The pipeline is
-deterministic (two independent traces of the whole corpus gave identical
-measurements), so the tolerances only have to absorb floating-point drift. A
-worse record (a larger measurement or an unrecorded item) is a regression the
-entry would otherwise hide, and a better one leaves the record too loose, so
-either fails the run, as does an unexpected pass; fixing one recorded defect
-while adding another of the same size changes the identities and fails too.
-Any other exception while checking it is an error. Re-record with:
+`tests/synthetic/expected-failures.json` with the worklog tasks that track its
+defects and the measurements the assertion compared against its bound when it
+was recorded (for example the boundary distances and the length beyond them,
+the missed-vertex, kink, node and missing-region counts, and the excess areas;
+`bounds.MEASUREMENTS` lists them). It runs as an expected failure while it still
+fails and is no worse than recorded: a count may not grow, a length may not grow
+by more than 0.5 px or 10%, and an area by more than 4 px² or 10%, whichever is
+larger (`bounds.WORSE_MARGIN`). Worse is a regression the entry would otherwise
+hide, so it fails the run; better does not. An unexpected pass fails the run
+until its entry is removed. Any other exception while checking it is an error.
+Update the table with:
 
 ```bash
 .venv/bin/python scripts/record_expected_failures.py
 ```
 
-It traces the corpus, updates every entry's measurements and identities, and
-removes entries that now pass. `--task TIER/CASE:ASSERTION=ATTRIBUTION` adds an
-entry for a new failure, and `--retask TIER/CASE:ASSERTION=ATTRIBUTION` gives an
-existing entry another attribution without tracing, for a re-attributed cause;
-an attribution is `SLUG[,SLUG...]@PROXY[+PROXY...]`, or a lone placeholder slug.
-It writes all or nothing: while any failure has no entry, a
-record is worse than the table's without `--allow-worse`, a case raises, or an
-orphan entry (a case the suite does not trace, or an assertion it does not make
-or that has nothing to hold) is kept without `--remove-orphans`, it reports
-everything and writes nothing. The table test checks each entry's form,
-attribution (the counterfactual's proxies stand for exactly its tasks),
-measurements and identities and rejects `synthetic-finding-` placeholder slugs;
-worklog is not available to the tests, so that a slug names a real task is
-checked by hand.
+It traces the corpus, tightens each entry's measurements that got better (a
+worse one keeps its record unless `--allow-worse` is given), and removes
+entries that now pass. `--task TIER/CASE:ASSERTION=SLUG[,SLUG...]` adds
+an entry for a new failure. It writes all or nothing: while any failure has no
+entry, a record is worse than the table's without `--allow-worse`, a case raises,
+or an orphan entry (a case the suite does not trace, or an assertion it does not
+make or that has nothing to hold) is kept without `--remove-orphans`, it reports
+everything and writes nothing. An entry's tasks are edited in the JSON by hand.
+The table test checks each entry's form; worklog is not available to the tests,
+so that a slug names a real task is checked by hand.
 
 ### Full-image bucket
 
 Tests that read real images, `outputs/` or `.tmp` baselines live in
-`tests/fullimage/`, which default discovery does not collect. Run them only when
-there is a reason to test a whole image:
+`tests/fullimage/`, which default discovery does not collect, as does the full
+synthetic corpus (`test_synthetic_fidelity_corpus.py`, about 100 s on the 28-core
+host; run it alone with `scripts/run_tests.py test_synthetic_fidelity_corpus`). Run them only when there is a reason to test a whole image or the whole
+corpus:
 
 ```bash
 .venv/bin/python scripts/run_tests.py --full-image
