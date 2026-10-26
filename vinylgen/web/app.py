@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import mimetypes
 import asyncio
 import sqlite3
@@ -63,6 +64,9 @@ def _validate_upscale_settings(settings: UpscaleSettings,
         return (f"Tile ControlNet model {DEFAULT_CONTROLNET_MODEL!r} is not "
                 "installed in ComfyUI; install it or turn ControlNet off")
     return None
+
+
+DOWNLOAD_STEM = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def create_app(config: WebConfig | None = None,
@@ -379,9 +383,14 @@ def create_app(config: WebConfig | None = None,
             raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/artifacts/{artifact_id}/content")
-    async def artifact_content(artifact_id: str) -> StreamingResponse:
+    async def artifact_content(artifact_id: str, name: str | None = None) -> StreamingResponse:
+        # ``name`` renames the download: a lowercase, hyphenated stem that keeps the
+        # stored file's extension, so a client can label which stage an image is.
+        if name is not None and not DOWNLOAD_STEM.fullmatch(name):
+            raise HTTPException(422, "name must be lowercase letters, digits and hyphens")
         try:
             row = store.get_artifact(artifact_id)
+            filename = f"{name}{Path(row['filename']).suffix}" if name else row["filename"]
             path = store.artifact_path(artifact_id)
 
             async def chunks():
@@ -391,7 +400,7 @@ def create_app(config: WebConfig | None = None,
 
             return StreamingResponse(
                 chunks(), media_type=row["media_type"],
-                headers={"Content-Disposition": f'attachment; filename="{row["filename"]}"'},
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
         except KeyError as exc:
             raise missing(exc) from exc

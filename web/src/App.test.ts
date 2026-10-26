@@ -981,6 +981,28 @@ describe('application status accessibility', () => {
   })
 })
 
+describe('image export', () => {
+  it('offers the source before Flatten, named by the server', async () => {
+    mocks.projects.mockResolvedValue([project])
+    const jpeg = { ...artifact('source', 'image/jpeg'), filename: 'photo.jpg' }
+    mocks.effectiveArtifacts.mockResolvedValue([jpeg])
+    window.history.replaceState(null, '', `/#stage=export&project=${project.id}&revision=${revision.id}`)
+    render(createElement((await import('./App')).default))
+    const link = await within(screen.getByRole('tabpanel', { name: 'Export' })).findByRole('link', { name: 'Download Source image' })
+    expect(link.getAttribute('href')).toBe('/artifacts/source?name=sky-whale-source')
+    expect(screen.queryByText('Export unavailable')).toBeNull()
+  })
+
+  it('says Export is unavailable while the revision has no image', async () => {
+    mocks.projects.mockResolvedValue([project])
+    window.history.replaceState(null, '', `/#stage=export&project=${project.id}&revision=${revision.id}`)
+    render(createElement((await import('./App')).default))
+    await vi.waitFor(() => expect(screen.getByLabelText('Current work').textContent).toContain('Sky whale'))
+    expect(screen.getByText('Export unavailable')).toBeTruthy()
+    expect(within(screen.getByRole('tabpanel', { name: 'Export' })).queryAllByRole('link')).toEqual([])
+  })
+})
+
 describe('artwork view toggle', () => {
   const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette' }
   const editRevision: Revision = { ...revision, id: 'edit-1', parent_revision_id: 'palette-1', kind: 'label-edit' }
@@ -1854,6 +1876,26 @@ describe('cleanup stage', () => {
       await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-cleanup-1'))
       fireEvent.click(within(group).getByRole('button', { name: 'Edited' }))
       await vi.waitFor(() => expect(workspace()?.preferredLayerId).toBe('flattened-recolour-1'))
+    })
+
+    it('offers each raster view as a named image download on Export, before any trace', async () => {
+      serveTouchUps([recoloured, touched, cleanupRevision, paletteRevision, revision])
+      window.history.replaceState(null, '', `/#stage=export&project=${project.id}&revision=recolour-1`)
+      render(createElement((await import('./App')).default))
+      const exportPanel = panel('Export')
+      const links = () => within(exportPanel).queryAllByRole('link').map(link => [link.textContent, link.getAttribute('href')])
+      // Each download is the image its view shows: Flattened the raster before cleanup,
+      // Cleaned the raster before the first touch-up, Edited the shown one. The server
+      // names each one after `name` (Content-Disposition wins over a download attribute).
+      await vi.waitFor(() => expect(links()).toEqual([
+        ['Download Source image', '/artifacts/source?name=sky-whale-source'],
+        ['Download Flattened image', '/artifacts/flattened-recolour-1-before?name=sky-whale-flattened'],
+        ['Download Cleaned image', '/artifacts/flattened-cleanup-1?name=sky-whale-cleaned'],
+        ['Download Edited image', '/artifacts/flattened-recolour-1?name=sky-whale-edited'],
+      ]))
+      // Without a trace there is nothing to hand off, but the images are still exportable.
+      expect(within(exportPanel).queryByText('Export unavailable')).toBeNull()
+      expect(within(exportPanel).getByText(/Complete Trace to export SVG layers\./)).toBeTruthy()
     })
 
     // The server's Cleaned image behind the touch-ups (`cleaned-flattened`), when a

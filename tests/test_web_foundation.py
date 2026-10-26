@@ -53,6 +53,23 @@ class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored[0].name, "source.png")
         self.assertEqual(stored[0].read_bytes(), b"not-really-a-png")
 
+    async def test_artifact_download_takes_a_stem_and_keeps_the_stored_extension(self) -> None:
+        project = (await self.client.post(
+            "/api/projects/import", data={"name": "Sky Whale"},
+            files={"source": ("photo.jpeg", b"not-really-a-jpeg", "image/jpeg")},
+        )).json()
+        artifact = (await self.client.get(
+            f"/api/revisions/{project['revisions'][0]['id']}/artifacts")).json()[0]
+
+        plain = await self.client.get(artifact["download_url"])
+        self.assertEqual(plain.headers["content-disposition"], 'attachment; filename="photo.jpeg"')
+        named = await self.client.get(artifact["download_url"], params={"name": "sky-whale-source"})
+        self.assertEqual(named.content, b"not-really-a-jpeg")
+        self.assertEqual(named.headers["content-disposition"], 'attachment; filename="sky-whale-source.jpeg"')
+        for unsafe in ("../etc", 'a"b', "Sky-Whale", "a.png", "", "-a", "a--b"):
+            response = await self.client.get(artifact["download_url"], params={"name": unsafe})
+            self.assertEqual(response.status_code, 422, unsafe)
+
     async def test_health_reports_the_configured_upload_limit(self) -> None:
         # Use a non-default cap so this proves the value reflects config, not a constant.
         configured = create_app(WebConfig(Path(self.temp.name), max_upload_bytes=7 * 1024 * 1024))

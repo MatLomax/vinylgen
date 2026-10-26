@@ -1548,6 +1548,14 @@ export default function App() {
         : target === 'edited' ? flattened?.id
           : target === 'cleaned' ? (hasTouchUps ? cleanedLayerId : flattened?.id)
             : beforeCleanupId
+  // The raster views Export offers as downloads, each the image its view shows. The
+  // server names each `<slug>-<view>` with the stored file's extension (a source
+  // uploaded in another format keeps it until Flatten writes its PNG).
+  const selectedSlug = projects.find(project => project.id === selected)?.slug
+  const imageExports = viewOptions.filter(option => option.available && option.id !== 'traced').flatMap(option => {
+    const layer = displayLayers.find(row => row.id === viewLayerId(option.id))
+    return layer ? [{ view: option.id, label: option.label, url: `${layer.url}?name=${encodeURIComponent(`${selectedSlug ?? 'vinylgen'}-${option.id}`)}` }] : []
+  })
   // The size the next trace uses, from the active cleanup, completed from the raster.
   const traceSize = physicalSize(activeCleanup?.settings.cleanup as Partial<CleanupSettings> | undefined, tracedSize)
 
@@ -1874,7 +1882,8 @@ export default function App() {
       </StagePanel>
     </section>
     <section id="workflow-panel-export" role="tabpanel" aria-labelledby="workflow-tab-export" className={`workflow-surface export-surface ${stage === 'export' ? 'mobile-stage-active' : ''}`} data-stage="export">
-      {!handoff && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}
+      {!handoff && !imageExports.length && <section className="mobile-stage-state"><h2>Export unavailable</h2><p>Complete Trace to create validated, exportable SVG layers.</p></section>}
+      {selected && imageExports.length > 0 && <section className="inkscape-handoff image-exports"><h2>Download images</h2><p>The source image and each flattened stage, exactly as the Artwork view shows them.{!handoff && ' Complete Trace to export SVG layers.'}</p><div className="handoff-actions">{imageExports.map(item => <span key={item.view}><a className="button-link" href={item.url} download>Download {item.label} image</a></span>)}</div></section>}
       {selected && revision && handoff && <section className="inkscape-handoff"><h2>Export or finish in Inkscape</h2><p>{handoff.guidance}</p><div className="handoff-actions">{handoff.exports.map(item => <span key={item.id}><a className="button-link" href={item.download_url}>Download {item.filename}</a>{handoff.shared_folder_enabled && <button className="secondary" onClick={() => { const projectId = selected, projectName = selectedProjectName; api.saveForInkscape(revision, item.id).then(saved => { if (stillSelected(projectId)) setHandoffMessage(`Saved ${saved.filename} to the shared folder.`) }).catch(cause => setError(projectFailure(projectId, projectName, `could not save ${item.filename} to the shared folder`, cause))) }}>Save {item.media_type === 'image/png' ? 'PNG' : 'SVG'} to shared folder</button>}</span>)}</div><form onSubmit={reimportSvg}><label className="file">Edited SVG<input name="svg" type="file" accept="image/svg+xml,.svg" required /></label><button type="submit">Validate and reimport</button></form>{handoffMessage && <p className="success" role="status" aria-live="polite">{handoffMessage}</p>}</section>}
     </section>
     <ConfirmDialog open={Boolean(confirmDelete)} title="Delete project?" message={`Delete "${confirmDelete?.name}"? This permanently removes its revisions and artwork and cannot be undone.`} confirmLabel="Delete project" busy={deleting} onConfirm={() => confirmDelete && deleteProject(confirmDelete.id)} onCancel={() => setConfirmDelete(null)} />
