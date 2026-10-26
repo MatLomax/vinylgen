@@ -176,14 +176,16 @@ class PixelRecordTests(unittest.TestCase):
     def test_a_stored_pixel_record_converts_on_its_image(self):
         # A pixel-era web revision: some lengths absent (the pixel-era defaults), no
         # side smoothness (the recorded deviation), an automatic maximum
-        # deviation (2 px), and legacy keys, which are kept for the form to read.
+        # deviation (2 px), legacy keys, which are kept for the form to read, and
+        # the retired corner threshold, which is dropped.
         stored = {"curve_fit_tolerance": 1.6, "straight_line_max_deviation": 1.2,
                   "max_deviation": None, "curve_optimization": False, "width_mm": 400.0,
                   "corner_threshold": 80.0}
         converted = pixel_record_in_units(stored, 4344)
         self.assertEqual(converted["length_unit"], "per_mille")
-        self.assertEqual((converted["curve_optimization"], converted["width_mm"],
-                          converted["corner_threshold"]), (False, 400.0, 80.0))
+        self.assertEqual((converted["curve_optimization"], converted["width_mm"]),
+                         (False, 400.0))
+        self.assertNotIn("corner_threshold", converted)
         settings = TraceSettings(**{key: value for key, value in converted.items()
                                     if key in TraceSettings.__dataclass_fields__})
         self.assertEqual(lengths(resolve_trace_lengths(settings, 4344)), {
@@ -213,8 +215,9 @@ class CliUnitTests(unittest.TestCase):
     def test_a_config_setting_lengths_must_name_their_unit(self):
         with self.assertRaisesRegex(ValueError, "without length_unit"):
             self.settings({"curve_fit_tolerance": 1.5})
-        # Settings without any length need no unit.
-        self.assertEqual(self.settings({"corner_threshold": 45}).length_unit, "per_mille")
+        # Settings without any length need no unit; a retired setting is dropped.
+        self.assertEqual(self.settings({"snap_angle": 3}).length_unit, "per_mille")
+        self.assertEqual(self.settings({"corner_threshold": 45}), TraceSettings())
         pixels = self.settings({"curve_fit_tolerance": 1.5, "length_unit": "px"})
         self.assertEqual(lengths(pixels), {**PX_ERA, "max_deviation": None, "corner_sharpening_allowance": None})
         units = self.settings({"curve_fit_tolerance": 1.5, "length_unit": "per_mille"})
@@ -259,7 +262,7 @@ class RetraceReproducesTests(unittest.TestCase):
 
     RECORDED = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
                 "minimum_straight_length": 3.5, "corner_analysis_span": 7.0,
-                "curve_feature_scale": 3.0, "corner_threshold": 50.0}
+                "curve_feature_scale": 3.0, "snap_angle": 3.0}
 
     def setUp(self) -> None:
         self.work = Path(tempfile.mkdtemp(dir=SCRATCH))

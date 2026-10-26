@@ -29,7 +29,7 @@ export type TraceSettings = {
   overlap: number; solid_underlayers: boolean; layer_order: string[] | null
   // The unit of the eight trace lengths: thousandths of the traced image's longer side.
   // Records from before units carry none, or 'px' (see pixelRecordInUnits).
-  corner_threshold: number; length_unit: 'per_mille'; curve_fit_tolerance: number
+  length_unit: 'per_mille'; curve_fit_tolerance: number
   straight_line_max_deviation: number; minimum_straight_length: number
   max_deviation: number | null; corner_analysis_span: number; side_smoothness: number
   // Null (automatic) follows max_deviation, itself automatic (1‰) when that is null too.

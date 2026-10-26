@@ -1312,14 +1312,14 @@ describe('stepping through trace runs', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
     mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
       [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { corner_threshold: 45 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { snap_angle: 45 } }))
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
     await within(panel).findByText('Iteration 2 of 2')
     const solid = within(panel).getByRole('checkbox', { name: /Solid underlayers/ }) as HTMLInputElement
-    const corner = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
-    await vi.waitFor(() => expect(corner.value).toBe('45'))
+    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
+    await vi.waitFor(() => expect(angle.value).toBe('45'))
 
     fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
     await within(panel).findByText('Iteration 1 of 2')
@@ -1327,14 +1327,14 @@ describe('stepping through trace runs', () => {
     // The older run's own traced SVG, its own variant, and exactly its own settings.
     await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-overlap'))
     expect(solid.checked).toBe(true)
-    expect(corner.value).toBe('60')
+    expect(angle.value).toBe('2')
 
     fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
     await within(panel).findByText('Iteration 2 of 2')
     expect(window.location.hash).toContain('revision=trace-2')
     await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-2-edge'))
     expect(solid.checked).toBe(false)
-    expect(corner.value).toBe('45')
+    expect(angle.value).toBe('45')
     expect((within(panel).getByLabelText('Show the next trace run') as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -1343,32 +1343,32 @@ describe('stepping through trace runs', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
     mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
       [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { corner_threshold: 45 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { snap_angle: 45 } }))
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
     await within(panel).findByText('Iteration 2 of 2')
-    const corner = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
-    await vi.waitFor(() => expect(corner.value).toBe('45'))
-    return { panel, corner }
+    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
+    await vi.waitFor(() => expect(angle.value).toBe('45'))
+    return { panel, angle }
   }
   const storedDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
 
   it('never turns an older run\'s settings into the newest run\'s draft when focus leaves the form', async () => {
-    const { panel, corner } = await openAtNewestRun()
+    const { panel, angle } = await openAtNewestRun()
     const back = within(panel).getByLabelText('Show the previous trace run')
     fireEvent.click(back)
     await within(panel).findByText('Iteration 1 of 2')
-    await vi.waitFor(() => expect(corner.value).toBe('60'))
+    await vi.waitFor(() => expect(angle.value).toBe('2'))
     // Focus leaving the stepper or an edited field at the older run commits no draft.
     fireEvent.focusOut(back)
-    fireEvent.change(corner, { target: { value: '70' } })
-    fireEvent.focusOut(corner)
-    expect(storedDraft()).toEqual({ corner_threshold: 45 })
+    fireEvent.change(angle, { target: { value: '7' } })
+    fireEvent.focusOut(angle)
+    expect(storedDraft()).toEqual({ snap_angle: 45 })
 
     fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
     await within(panel).findByText('Iteration 2 of 2')
-    await vi.waitFor(() => expect(corner.value).toBe('45'))
+    await vi.waitFor(() => expect(angle.value).toBe('45'))
   })
 
   it('keeps the newest run\'s draft when a trace branches from an older run', async () => {
@@ -1383,7 +1383,7 @@ describe('stepping through trace runs', () => {
     fireEvent.click(run)
     await vi.waitFor(() => expect(update).toBeDefined())
     await act(async () => update?.({ ...queuedJob, id: 'job-branch', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' }))
-    expect(storedDraft()).toEqual({ corner_threshold: 45 })
+    expect(storedDraft()).toEqual({ snap_angle: 45 })
   })
 
   it('spends the draft when the newest run is traced again', async () => {
@@ -1394,7 +1394,7 @@ describe('stepping through trace runs', () => {
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
-    expect(mocks.startPipeline).toHaveBeenCalledWith('trace', project.id, 'trace-2', { trace: expect.objectContaining({ corner_threshold: 45 }) })
+    expect(mocks.startPipeline).toHaveBeenCalledWith('trace', project.id, 'trace-2', { trace: expect.objectContaining({ snap_angle: 45 }) })
     await vi.waitFor(() => expect(update).toBeDefined())
     await act(async () => update?.({ ...queuedJob, id: 'job-tip', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-2' }))
     expect(storedDraft()).toBeUndefined()
@@ -2039,7 +2039,7 @@ describe('cleanup stage', () => {
 
   it('moves a pre-cleanup-stage trace draft\'s size and cleanup into the Cleanup draft', async () => {
     serve([paletteRevision, revision])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45, width_mm: 250, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7, min_region_area: 0, remove_below_width: 0 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { ...DEFAULT_TRACE_SETTINGS, snap_angle: 45, width_mm: 250, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7, min_region_area: 0, remove_below_width: 0 } }))
     window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
@@ -2049,7 +2049,7 @@ describe('cleanup stage', () => {
     expect(width.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
     const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
     expect(stored.cleanup).toMatchObject({ width_mm: 250, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7 })
-    expect(stored.trace).toEqual({ ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45 })
+    expect(stored.trace).toEqual({ ...DEFAULT_TRACE_SETTINGS, snap_angle: 45 })
   })
 
   it('loads a pre-cleanup-stage trace run\'s size and cleanup into the Cleanup form, not the Trace form', async () => {
@@ -2144,20 +2144,20 @@ describe('legacy curve optimisation settings', () => {
     // persistDraft stores the whole form, so an older draft carries every field it
     // knew: the curve_optimization flag and no side_smoothness.
     const { side_smoothness: _absent, ...fields } = DEFAULT_TRACE_SETTINGS
-    const legacyDraft = { ...fields, curve_optimization: false, straight_line_max_deviation: 1, corner_threshold: 45 }
+    const legacyDraft = { ...fields, curve_optimization: false, straight_line_max_deviation: 1, snap_angle: 45 }
     localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: legacyDraft }))
     const panel = await openTrace([currentRun])
     const deviation = within(panel).getByLabelText(/Straight-line deviation/) as HTMLInputElement
     const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
-    const threshold = within(panel).getByLabelText(/Corner threshold/) as HTMLInputElement
+    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
     // Corners keep the deviation the draft recorded; the deviation itself becomes 0.
     await vi.waitFor(() => expect(smoothness.value).toBe('1'))
     expect(deviation.value).toBe('0')
-    expect(threshold.value).toBe('45')
+    expect(angle.value).toBe('45')
     fireEvent.blur(deviation)
     const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
     expect(stored).not.toHaveProperty('curve_optimization')
-    expect(stored).toEqual({ ...DEFAULT_TRACE_SETTINGS, straight_line_max_deviation: 0, side_smoothness: 1, corner_threshold: 45 })
+    expect(stored).toEqual({ ...DEFAULT_TRACE_SETTINGS, straight_line_max_deviation: 0, side_smoothness: 1, snap_angle: 45 })
   })
 
   it('maps a draft still keyed corner_straightness onto side_smoothness and never sends the old key', async () => {
@@ -2173,6 +2173,24 @@ describe('legacy curve optimisation settings', () => {
     expect(stored.side_smoothness).toBe(1.9)
   })
 
+  it('drops a stored draft\'s retired corner_threshold on load and never sends it', async () => {
+    const retiredFieldDraft = { ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45 }
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: retiredFieldDraft }))
+    const panel = await openTrace([currentRun])
+    const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
+    await vi.waitFor(() => expect(smoothness.value).toBeTruthy())
+    // Retired field never rendered, and no field carries a dirty dot for it.
+    expect(within(panel).queryByLabelText(/Corner threshold/)).toBeNull()
+    fireEvent.blur(smoothness)
+    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
+    expect(stored).not.toHaveProperty('corner_threshold')
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    const sent = mocks.startPipeline.mock.calls[0][3].trace
+    expect(sent).not.toHaveProperty('corner_threshold')
+  })
+
   it('states the traced image size from the editor state', async () => {
     const panel = await openTrace([currentRun])
     expect(await within(panel).findByText('Traced image: 4344 × 1448 px')).toBeTruthy()
@@ -2182,7 +2200,7 @@ describe('legacy curve optimisation settings', () => {
     // A draft saved before trace lengths were thousandths: pixels, no length_unit, and
     // without fields added since (they take the pixel-era defaults).
     const { length_unit: _unit, curve_feature_scale: _scale, ...fields } = DEFAULT_TRACE_SETTINGS
-    const pixelDraft = { ...fields, curve_fit_tolerance: 2.172, straight_line_max_deviation: 1.6, side_smoothness: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, corner_threshold: 45 }
+    const pixelDraft = { ...fields, curve_fit_tolerance: 2.172, straight_line_max_deviation: 1.6, side_smoothness: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, snap_angle: 45 }
     localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: pixelDraft }))
     const panel = await openTrace([currentRun])
     const tolerance = within(panel).getByLabelText(/Curve-fit tolerance/) as HTMLInputElement
@@ -2196,7 +2214,7 @@ describe('legacy curve optimisation settings', () => {
     // The allowance was absent (automatic) in the pixel-era draft, so it follows the
     // (also absent) maximum deviation's automatic pixel value.
     expect(stored.corner_sharpening_allowance).toBeCloseTo(2000 / 4344, 12)
-    expect(stored.corner_threshold).toBe(45)
+    expect(stored.snap_angle).toBe(45)
     expect(tolerance.closest('label')?.querySelector('small')?.textContent).toMatch(/= 2\.2 px on this image\.$/)
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))

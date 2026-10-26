@@ -59,7 +59,7 @@ class CurveModelSelectionTests(unittest.TestCase):
         points = [(0, 0), (2, .2), (4, .8), (6, 1.8),
                   (6, 8), (0, 8), (0, 0)]
         fitted = ring_path(points, TraceSettings(
-            length_unit="px", corner_threshold=math.degrees(1.2), curve_fit_tolerance=1.0),
+            length_unit="px", curve_fit_tolerance=1.0),
             [HardAnchor((4., .8), "junction")])
         self.assertIn("4 0.8", fitted.path)
         self.assertEqual(fitted.metrics.hard_anchors, 1)
@@ -100,8 +100,7 @@ class CurveModelSelectionTests(unittest.TestCase):
                  (8.1, 2), (7.9, 4), (8.1, 6), (8, 8)]
         fitted = SharedChainFitter().fit(chain, TraceSettings(
             length_unit="px", curve_fit_tolerance=.8, straight_line_max_deviation=.25,
-            minimum_straight_length=3, corner_analysis_span=5,
-            corner_threshold=math.degrees(.7)))
+            minimum_straight_length=3, corner_analysis_span=5))
         self.assertEqual(fitted.metrics.cubics, 0)
         self.assertEqual(fitted.metrics.lines, 2)
         self.assertTrue(any(item.classification == "corner"
@@ -216,7 +215,7 @@ class SideSmoothnessTests(unittest.TestCase):
     CHAIN = [(0, .1), (2, -.1), (4, .1), (6, 0), (8, .1),
              (8.1, 2), (7.9, 4), (8.1, 6), (8, 8)]
     CORNER = dict(curve_fit_tolerance=.8, minimum_straight_length=3,
-                  corner_analysis_span=5, corner_threshold=math.degrees(.7))
+                  corner_analysis_span=5)
 
     def test_none_resolves_to_the_straight_line_deviation(self):
         self.assertEqual(TraceSettings(length_unit="px").side_smoothness, 1.6)
@@ -232,6 +231,12 @@ class SideSmoothnessTests(unittest.TestCase):
         self.assertEqual(upgrade_trace_record({"corner_straightness": .4}), {"side_smoothness": .4})
         self.assertEqual(upgrade_trace_record({"corner_straightness": .4, "side_smoothness": .5}),
                          {"side_smoothness": .5})
+        # A record or request carrying the retired corner threshold is read without it.
+        self.assertEqual(upgrade_trace_record({"corner_threshold": 60.0, "snap_angle": 3.0}),
+                         {"snap_angle": 3.0})
+        job = TraceJobSettings(corner_threshold=60.0)
+        self.assertNotIn("corner_threshold", job.model_dump())
+        self.assertEqual(TraceSettings(**job.model_dump()), TraceSettings())
         # The resolved value survives copies, so later deviation changes leave it alone.
         settings = TraceSettings(length_unit="px", straight_line_max_deviation=.7)
         self.assertEqual(TraceSettings(**asdict(settings)).side_smoothness, .7)

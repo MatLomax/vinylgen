@@ -10,7 +10,7 @@ case's traced subject directory under work/.
 Examples:
   .venv/bin/python scripts/fidelity_sweep.py --fixed
   .venv/bin/python scripts/fidelity_sweep.py --grid --fuzz 0:500 --tier both
-  .venv/bin/python scripts/fidelity_sweep.py --fixed --sizes 64 256 --set corner_threshold=45
+  .venv/bin/python scripts/fidelity_sweep.py --fixed --sizes 64 256 --set side_smoothness=1.2
   .venv/bin/python scripts/fidelity_sweep.py --fixed --config trace.json --tag star
 """
 
@@ -49,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
                    help="trace settings file, read exactly as svg_trace.py --config reads it")
     p.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                    help="a trace setting, as the svg_trace.py flag of that name (repeatable; "
-                        "e.g. corner_threshold=45, nodes_at_bends=false)")
+                        "e.g. side_smoothness=1.2, nodes_at_bends=false)")
     p.add_argument("--jobs", type=int, default=sweep.default_jobs(),
                    help="worker processes (default: CPU count; 1 runs in process)")
     p.add_argument("--out", type=Path, help="output directory (default .tmp/fidelity/sweep-<timestamp>)")

@@ -39,8 +39,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0), (2, 1), (4, 1), (4, 2), (6, 2),
                   (6, 10), (0, 10), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(0.7),
-                                  corner_analysis_span=4,
+            points, TraceSettings(length_unit="px", corner_analysis_span=4,
                                   curve_fit_tolerance=0.8), set())
         self.assertLess(fitted.metrics.final_nodes, len(points) - 1)
         self.assertNotIn("L2 0 L2 1 L4 1", fitted.path)
@@ -59,8 +58,7 @@ class VectorPipelineTests(unittest.TestCase):
                  + [(-8.0, 12.0 - step) for step in range(1, 8)])
         points = [*arc, *sides, arc[0]]
         fitted = ring_path(
-            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(0.8),
-                                  corner_analysis_span=3,
+            points, TraceSettings(length_unit="px", corner_analysis_span=3,
                                   curve_fit_tolerance=0.35), set())
         self.assertGreater(fitted.metrics.cubics, 0)
         self.assertLess(fitted.metrics.cubics, len(arc) // 2)
@@ -71,8 +69,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (1, 0.05), (2, 0), (3, 0.1),
                   (3, 2), (0, 2), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(1.2),
-                                  corner_analysis_span=1,
+            points, TraceSettings(length_unit="px", corner_analysis_span=1,
                                   curve_fit_tolerance=0.2), set())
         numbers = [float(value) for value in __import__('re').findall(
             r'-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?', fitted.path)]
@@ -82,8 +79,7 @@ class VectorPipelineTests(unittest.TestCase):
         points = [(0, 0), (2, 0.2), (4, 0.8), (6, 1.8),
                   (6, 8), (0, 8), (0, 0)]
         fitted = ring_path(
-            points, TraceSettings(length_unit="px", corner_threshold=math.degrees(1.2),
-                                  curve_fit_tolerance=1.0),
+            points, TraceSettings(length_unit="px", curve_fit_tolerance=1.0),
             [HardAnchor((4.0, 0.8), "junction")])
         self.assertIn("4 0.8", fitted.path)
 

@@ -29,7 +29,7 @@ from vinylgen.contracts import (
     TraceSettings,
     upgrade_trace_record,
 )
-from vinylgen.curve_fit import _tip_skip
+from vinylgen.curve_fit import _STAIRCASE_QUANTISATION, _tip_skip
 
 # Resolved pixel lengths are rounded to this many decimal places. A pixel value
 # converted to thousandths and back then returns exactly (a stored 4 px length is
@@ -42,6 +42,12 @@ _PX_DECIMALS = 9
 # run and the live preview resolve the same settings to the same pixels.
 FLOORED_LENGTHS = ("curve_fit_tolerance", "max_deviation", "corner_sharpening_allowance")
 MIN_ACCURACY_PX = 1.0
+
+# Lengths compared with how far boundary samples stray from a fitted line or
+# arc, which never resolve below the samples' own pixel quantisation: below it a
+# slanted pixel staircase is never straight, and a corner's side window never
+# grows past one step of it.
+STAIRCASE_FLOORED_LENGTHS = ("straight_line_max_deviation", "side_smoothness")
 
 # ``minimum_straight_length`` always resolves above one pixel step, by the
 # smallest resolved increment, whatever unit it arrives in. A straight run is
@@ -91,6 +97,7 @@ def resolve_trace_lengths(settings: TraceSettings, reference: int) -> TraceSetti
 
     Automatic lengths (``max_deviation`` None) take their default in the settings'
     own unit. ``FLOORED_LENGTHS`` resolve to ``MIN_ACCURACY_PX`` or more and
+    ``STAIRCASE_FLOORED_LENGTHS`` to ``curve_fit._STAIRCASE_QUANTISATION`` or more,
     ``minimum_straight_length`` to ``MIN_STRAIGHT_RUN_PX`` or more; every other
     pixel length keeps its value exactly.
     """
@@ -99,6 +106,8 @@ def resolve_trace_lengths(settings: TraceSettings, reference: int) -> TraceSetti
         lengths = {name: _to_px(value, reference) for name, value in lengths.items()}
     for name in FLOORED_LENGTHS:
         lengths[name] = max(MIN_ACCURACY_PX, lengths[name])
+    for name in STAIRCASE_FLOORED_LENGTHS:
+        lengths[name] = max(_STAIRCASE_QUANTISATION, lengths[name])
     lengths["minimum_straight_length"] = max(MIN_STRAIGHT_RUN_PX,
                                              lengths["minimum_straight_length"])
     return replace(settings, length_unit=LENGTH_UNIT_PX, **lengths)

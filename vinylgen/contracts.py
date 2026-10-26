@@ -149,6 +149,11 @@ FOLLOWING_LENGTHS = {"side_smoothness": "straight_line_max_deviation",
 # Trace settings renamed since they were first recorded: stored records (web drafts
 # and revisions, CLI configs, trace.json) are read under the new name.
 RENAMED_TRACE_FIELDS = {"corner_straightness": "side_smoothness"}
+# Trace settings that no longer exist: stored records carrying them are read with
+# them dropped. ``corner_threshold`` is a fixed minimum corner turn, which the
+# corner detector does not have: a corner's turn is judged against its sides'
+# direction noise (docs/svg-tracing-spec.md "Corner detection").
+RETIRED_TRACE_FIELDS = ("corner_threshold",)
 # Lengths whose None means "automatic": kept None in the settings and filled with
 # this default (thousandths, pixels) when the lengths are resolved.
 AUTOMATIC_LENGTHS = {"max_deviation": (1.0, 2.0)}
@@ -162,8 +167,11 @@ CURVE_FEATURE_SCALE_RANGE = (0.25, 16.0)
 
 def upgrade_trace_record(values: dict) -> dict:
     """A stored trace settings record with renamed fields under their current
-    names (``RENAMED_TRACE_FIELDS``). A record carrying both keeps the current one."""
-    upgraded = dict(values)
+    names (``RENAMED_TRACE_FIELDS``) and retired fields dropped
+    (``RETIRED_TRACE_FIELDS``). A record carrying both an old and a current name
+    keeps the current one."""
+    upgraded = {key: value for key, value in values.items()
+                if key not in RETIRED_TRACE_FIELDS}
     for old, new in RENAMED_TRACE_FIELDS.items():
         if old in upgraded:
             value = upgraded.pop(old)
@@ -176,7 +184,6 @@ class TraceSettings:
     overlap: float = 0.0
     solid_underlayers: bool = False
     layer_order: list[str] | None = None
-    corner_threshold: float = 60.0
     # The unit of the trace lengths below (``TRACE_LENGTH_FIELDS``, ``LENGTH_UNITS``).
     # A length left None takes that unit's default at construction, or the length
     # it follows (``FOLLOWING_LENGTHS``); an automatic length (``AUTOMATIC_LENGTHS``,

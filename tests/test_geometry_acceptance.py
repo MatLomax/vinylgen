@@ -48,9 +48,7 @@ class GeometryAcceptanceTests(unittest.TestCase):
         ]
         fitted = ring_path(points, TraceSettings(
             length_unit="px", curve_fit_tolerance=0.3,
-            corner_analysis_span=4,
-            corner_threshold=math.degrees(0.7),
-        ))
+            corner_analysis_span=4))
 
         self.assertEqual(fitted.metrics.lines, 4)
         self.assertEqual(fitted.metrics.cubics, 0)

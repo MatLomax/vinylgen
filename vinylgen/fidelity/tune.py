@@ -1,4 +1,4 @@
-"""Tuning loop: search the trace lengths and corner threshold against synthetic truth.
+"""Tuning loop: search the trace lengths against synthetic truth.
 
 The tuner PROPOSES; it never changes the shipped defaults. It iterates on its own
 record of the settings (``asdict`` of a fresh ``TraceSettings``, or of the base
@@ -90,14 +90,12 @@ be re-read at any weight without re-tracing.
 Search
 ------
 A deterministic compass (pattern) search from the base settings on an integer
-lattice: a length is ``start * 2 ** (i / 8)`` and the corner threshold
-``start + 2.5 * i`` degrees for integer ``i``. Steps start at a factor of 2 for a
-length (8 units) and 10 degrees for the threshold (4 units), and halve to one
-unit (a factor of about 1.09; 2.5 degrees). Each sweep tries every parameter up then down and moves on the
+lattice: a length is ``start * 2 ** (i / 8)`` for integer ``i``. Steps start
+at a factor of 2 (8 units) and halve to one unit (a factor of about 1.09). Each sweep tries every parameter up then down and moves on the
 first improvement of ``J``; a sweep with no improvement halves every step. Moves
 are clipped to each parameter's range. Why this rather than CMA-ES: evaluations
 are expensive (each is a batch of real traces), so the budget is tens to a few
-hundred points, below what CMA-ES needs to adapt a covariance in 9 dimensions
+hundred points, below what CMA-ES needs to adapt a covariance in 8 dimensions
 (its population alone is about 10); compass search makes progress from the
 first evaluation, starts from the shipped defaults so the proposal is a small
 readable diff, needs no randomness, and respects the box bounds by clipping. The
@@ -130,6 +128,7 @@ from vinylgen.contracts import (
     TRACE_LENGTH_FIELDS,
     CleanupSettings,
     TraceSettings,
+    upgrade_trace_record,
 )
 from vinylgen.fidelity import sweep
 
@@ -235,14 +234,12 @@ def pareto_front(points: list[tuple[float, float]]) -> list[int]:
 
 @dataclass(frozen=True)
 class Parameter:
-    """A searched setting. ``unit`` is one lattice step: a log2 factor for a
-    length, degrees for the corner threshold. ``step`` is the first step in
-    lattice units."""
+    """A searched trace length. ``unit`` is one lattice step, a log2 factor;
+    ``step`` is the first step in lattice units."""
 
     name: str
     low: float
     high: float
-    log: bool
     unit: float
     step: int
 
@@ -252,10 +249,8 @@ _LENGTH_RANGES = {
     "minimum_straight_length": (0.1, 40.0), "max_deviation": (0.05, 10.0),
     "side_smoothness": (0.05, 10.0), "corner_sharpening_allowance": (0.05, 10.0),
     "corner_analysis_span": (0.25, 40.0), "curve_feature_scale": CURVE_FEATURE_SCALE_RANGE}
-PARAMETERS = tuple(
-    [Parameter(name, *_LENGTH_RANGES[name], log=True, unit=0.125, step=8)
-     for name in TRACE_LENGTH_FIELDS]
-    + [Parameter("corner_threshold", 10.0, 170.0, log=False, unit=2.5, step=4)])
+PARAMETERS = tuple(Parameter(name, *_LENGTH_RANGES[name], unit=0.125, step=8)
+                   for name in TRACE_LENGTH_FIELDS)
 PARAMETER_NAMES = tuple(parameter.name for parameter in PARAMETERS)
 
 
@@ -275,20 +270,14 @@ def start_values(record: dict) -> dict:
 
 
 def lattice_value(parameter: Parameter, start: float, index: int) -> float:
-    if parameter.log:
-        return float(start * 2.0 ** (index * parameter.unit))
-    return float(start + index * parameter.unit)
+    return float(start * 2.0 ** (index * parameter.unit))
 
 
 def lattice_bounds(parameter: Parameter, start: float) -> tuple[int, int]:
     """The lattice indices whose values lie within the parameter's range (the
     start itself is always allowed, even when a base config set it outside)."""
-    if parameter.log:
-        low = math.ceil(math.log2(parameter.low / start) / parameter.unit - 1e-9)
-        high = math.floor(math.log2(parameter.high / start) / parameter.unit + 1e-9)
-    else:
-        low = math.ceil((parameter.low - start) / parameter.unit - 1e-9)
-        high = math.floor((parameter.high - start) / parameter.unit + 1e-9)
+    low = math.ceil(math.log2(parameter.low / start) / parameter.unit - 1e-9)
+    high = math.floor(math.log2(parameter.high / start) / parameter.unit + 1e-9)
     return min(low, 0), max(high, 0)
 
 
@@ -299,7 +288,7 @@ def lattice_values(lattice: dict, starts: dict, parameters=PARAMETERS) -> dict:
 def settings_for(record: dict, values: dict) -> TraceSettings:
     """A new ``TraceSettings`` for searched ``values``; ``record`` is copied, never
     changed."""
-    merged = json.loads(json.dumps(record))
+    merged = upgrade_trace_record(json.loads(json.dumps(record)))
     merged.update(values)
     return TraceSettings(**merged)
 
@@ -833,7 +822,7 @@ def report_markdown(meta: dict, evaluations: list[dict], front: list[int], curre
                   f"{', '.join(meta['no_effect'])}. On small canvases these lengths resolve below "
                   "their pixel floor; their proposed values are untested at larger sizes.", ""]
     lines += ["## Proposed settings diff", "",
-              "Trace lengths in thousandths of the longer side, corner threshold in degrees.", ""]
+              "Trace lengths in thousandths of the longer side.", ""]
     if diff:
         lines += ["| setting | current | proposed |", "|---|---|---|"]
         lines += [f"| {name} | {_f(old)} | {_f(new)} |" for name, (old, new) in diff.items()]

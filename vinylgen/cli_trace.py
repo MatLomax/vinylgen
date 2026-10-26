@@ -50,8 +50,6 @@ def parser() -> argparse.ArgumentParser:
                    help="make each lower layer a solid stacked shape under everything above it, so no cut edges are shared")
     p.add_argument("--remove-colour")
     p.add_argument("--layer-order", help="comma-separated bottom-to-top colour names or hex values")
-    p.add_argument("--corner-threshold", type=float,
-                   help="minimum corner turn in degrees before a bend becomes a hard corner (default 60)")
     p.add_argument("--curve-fit-tolerance", type=float,
                    help=f"Bezier fit tolerance{_UNITS} (default {_default('curve_fit_tolerance')})")
     p.add_argument("--straight-line-max-deviation", type=float,
@@ -120,7 +118,8 @@ def upgrade_legacy_config(values: dict) -> dict:
     ``length_unit`` it is pixels. ``false`` keeps the recorded corners by pinning
     ``side_smoothness`` to the recorded straight-line deviation, then sets the
     deviation to 0; the flag is dropped in every case. Renamed fields
-    (``corner_straightness``) are read under their current names."""
+    (``corner_straightness``) are read under their current names and retired
+    fields (``corner_threshold``) are dropped."""
     values = upgrade_trace_record(values)
     if "curve_optimization" not in values:
         return values

@@ -45,7 +45,8 @@ explicit route and the sample distance it leaves room for. Not derived:
   passes into geometry the ideal segmentation does not describe, so the fitter
   may end a piece at the cut; an allowance, not a derivation;
 - the tip skip in the sharpenable radius: ``curve_fit._TIP_SKIP_ALLOWANCES``,
-  the trace stage's own setting, read as it is;
+  the trace stage's own setting, read as it is; likewise the corner detector's
+  noise ratio ``curve_fit._CORNER_NOISE_RATIO`` in the corner roles;
 - the thin-feature pin ``THIN_RECALL`` and its one-piece companion: the
   fitter's ``M`` allows a feature no wider than ``M`` to move wholly off its
   pixels or break, so holding a thin evidence region to its pixel centres, in
@@ -110,36 +111,46 @@ Quantities
     ``x = sqrt(4 D / |k1 - k2|)``;
   * any branch ends at the next true vertex, which caps a spike's radius by its
     side length.
-- Decidable corners: a side's direction at a corner is read from the chord
-  between boundary samples at the apex and at arc length ``l`` along the side.
-  The true side's point there lies within ``e(l)`` of the apex tangent line and
-  ``c(l)`` from the apex, so the true chord leaves the tangent by at most
-  ``asin(e(l) / c(l))``; both samples lie within ``Q`` of the truth, which turns
-  the chord by at most ``asin(2 Q / c(l))`` more. ``asin`` is superadditive on
-  [0, 1], so the chord gives the tangent to ``asin((2 Q + e(l)) / c(l))``. The
-  certified turn is ``turn_deg`` less both sides' errors, maximised over ``l`` up
-  to the neighbouring true vertices along the boundary (``decidable_turn``; for
-  straight sides ``turn - 2 asin(2 Q / l)``; both sides are read at the same
-  ``l``). A side that curls away within a few pixels has a chord far shorter than
-  its arc, so it certifies little. A ``corner`` whose certified turn reaches the
-  threshold is *required*. Any other
-  corner turning by at least ``threshold - delta``, ``delta = 2 atan(2 Q / s)``
-  with ``s`` the distance to the nearest other true vertex, is *optional* (a cusp
-  is allowed, not demanded). Every junction and edge point is required: the trace
-  always anchors a cusp there.
+- Decidable corners: the corner detector confirms a corner when its turn
+  reaches ``K (u_a + u_b)``, ``K`` its noise ratio
+  (``curve_fit._CORNER_NOISE_RATIO``) and ``u = atan2(e, L)`` each side's
+  direction noise: ``L`` the chord of the side's grown window, ``e`` the larger
+  of the side's fit error and the quantisation. The truth reads the same noise
+  from its own geometry: ``e = Q`` and ``L`` the chord the detector's window can
+  have along that side, from the tip skip (nearer on a short side, keeping the
+  minimum straight length) to the longest window's end (``curve_fit._side_cap``)
+  or the neighbouring true vertex, whichever is nearer (``side_chord``,
+  ``side_reaches``).
+  A side read from samples within ``Q`` of the truth has its direction off by up
+  to its ``u``, so the turn the detector measures lies within ``u_a + u_b`` of the
+  true turn. A ``corner`` whose true turn reaches ``(K + 1) (u_a + u_b)`` is
+  *required* (the measured turn reaches the detector's bound however the noise
+  falls); any other corner turning by at least ``(K - 1) (u_a + u_b)`` is
+  *optional* (a cusp is allowed, not demanded); the rest are *shallow*. Every
+  junction and edge point is required: the trace always anchors a cusp there.
 - Sharpenable rounds: a round turning by ``T`` (below 180 degrees) with radius
   ``r`` has its sharp point (where its two sides meet) ``r (sec(T/2) - 1)`` from
-  its arc. The trace sharpens it only where that point lies within ``A`` of its
-  sample (the move check; GLOSSARY "corner sharpening allowance": a 90 degree
-  round sharpens up to about 2.41 ``A``). Seen through ``Q``: each side is read
+  its arc and its tangent points ``r tan(T/2)`` from the sharp point, so its
+  tangent points lie within the tip skip ``S`` (2.41 ``A``,
+  ``curve_fit._TIP_SKIP_ALLOWANCES``) exactly when its sharp point lies within
+  ``S tan(T/4)`` of its arc. The trace sharpens it only where the cusp lies
+  within ``A`` of its sample (the move check) and, less the sides' error ``e``
+  (at least ``Q``), within ``S tan(T/4)`` of it (the sides reach the corner;
+  GLOSSARY "corner sharpening allowance"). Seen through ``Q``: each side is read
   from samples within ``Q`` of the true side, so it may lie ``Q`` inside it,
   which moves the sides' meeting point up to ``Q sec(T/2)`` towards the arc, and
-  the drawn edge at the arc may lie ``Q`` outside it. So the trace may sharpen a
-  round of radius up to ``sharpenable_radius(T) = (A + (1 + sec(T/2)) Q) /
-  (sec(T/2) - 1)``: at ``A = 1`` px 16.3 px at 60 degrees, 6.54 at 90 (2.71
-  sharpening radii), 3.12 at 120, 1.55 at 150. Which round that is: the corner
+  the drawn edge at the arc may lie ``Q`` outside it; with ``e = Q`` the trace
+  may sharpen a round of radius up to ``sharpenable_radius(T) = (min(A, S tan(T/4)
+  + Q) + (1 + sec(T/2)) Q) / (sec(T/2) - 1)``. At ``A = 1`` px the allowance
+  governs at every turn (``S tan(T/4) + Q`` exceeds it): 16.3 px at 60 degrees,
+  6.54 at 90, 3.12 at 120, 1.55 at 150. At ``A = 4`` px the tip skip governs
+  below 90 degrees: 96.9 px at 30 degrees (154 by the allowance alone), 31.1 at
+  60 (35.7), and 13.8 at 90.
+  The least turn of a sharpenable round is ``(K - 1)`` times two sides' noise
+  over the longest windows (``minimum_round_turn``), the optional corners' bound.
+  Which round that is: the corner
   detector reads the sides up to its reach (``curve_fit._corner_reach`` of the
-  default settings: the tip skip plus 1.75 spans) from a candidate, so the turn
+  default settings: the tip skip plus the longest window) from a candidate, so the turn
   it sees is the *full turn*, the truth's net turn over the stretch extended by
   that reach on each side; a stretch of a longer round is judged by the full
   turn, so a circle or a large round is never sharpenable through a piece of it.
@@ -147,14 +158,11 @@ Quantities
   point is judged by its own disc ``R(c)``). The cusp lies within ``A`` of its
   sample, a sample within ``Q`` of the round's middle, which lies
   ``r (sec(T/2) - 1)`` from the sharp point: so a cusp is allowed where a stretch
-  of true boundary turning by at least the threshold, with its radius ``b`` (its
-  length over its turn in radians) at most ``sharpenable_radius`` of its full
-  turn, has its sharp point within ``A + Q + b (sec(T/2) - 1)`` of the cusp
-  (``round_turn_near``). A cusp on a larger round, or away from a sharpenable
-  one's sharp point, is a kink. The rule is the design's: on rasterised fillets
-  the trace puts no cusp on a 90 or 99 degree round of 0.9 to 1.5 times this
-  radius, but does on some 120 to 165 degree rounds of 1.1 to 1.5 times it
-  (``docs/validation-and-testing.md``), which the rule calls kinks.
+  of true boundary turning by at least the least round turn, with its radius
+  ``b`` (its length over its turn in radians) at most ``sharpenable_radius`` of
+  its full turn, has its sharp point within ``A + Q + b (sec(T/2) - 1)`` of the
+  cusp (``round_turn_near``). A cusp on a larger round, or away from a
+  sharpenable one's sharp point, is a kink.
 
 The truth a trace is judged against
 -----------------------------------
@@ -220,8 +228,8 @@ Assertions (``ASSERTIONS``)
   ``R(c)``. A required vertex inside a zone is optional.
 - ``kinks``: every cusp node lies within ``R(c)`` of a required or optional
   vertex, inside a zone, or on a sharpenable round (within ``A + Q`` of a stretch
-  of the truth turning by at least the threshold as a round of radius ``b`` at
-  most ``sharpenable_radius`` of its turn).
+  of the truth turning by at least the least round turn as a round of radius
+  ``b`` at most ``sharpenable_radius`` of its turn).
 - ``nodes``: boundary nodes outside the zones ``<=`` the node limit
   (``zone_node_limit``), the node count of an explicit route through the
   boundary outside the zones. Its vertex nodes (``_vertex_nodes``): every node
@@ -342,7 +350,8 @@ from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from vinylgen.contracts import TraceSettings
-from vinylgen.curve_fit import _corner_reach, _curve_tolerance
+from vinylgen import curve_fit
+from vinylgen.curve_fit import _corner_reach, _curve_tolerance, _side_cap, _tip_skip
 from vinylgen.fidelity.families import case_palette_settings
 from vinylgen.fidelity.metrics import (DISTANCE_ERROR_BOUND, SAMPLE_SPACING,
                                        _boundary_samples, _geometry_rings, _polygons,
@@ -383,12 +392,42 @@ _VERTEX_MATCH_PX = 0.01
 # Two regions within the topology tolerance of each other may differ by this
 # much area outside each other's buffer (floating-point slack of the buffers).
 _SAME_REGION_AREA = 1e-4
-_CHORD_GROWTH = 1.25
 _FRAME_EPS = 1e-6
 _NODE_DECIMALS = 6
 
 
 # --- lengths --------------------------------------------------------------------------------
+
+
+def corner_windows(lengths: TraceSettings) -> tuple[float, float, float]:
+    """The corner detector's side windows in px for resolved ``lengths``: the
+    longest window (``curve_fit._side_cap``), the tip skip and the minimum
+    straight length (``curve_fit._geometric_corners``)."""
+    minimum = max(1e-4, float(lengths.minimum_straight_length))
+    return float(_side_cap(lengths)), float(_tip_skip(lengths)), minimum
+
+
+def side_chord(distance: float, lengths: TraceSettings) -> float:
+    """The chord of the detector's grown side window along a straight side whose
+    neighbouring true vertex is ``distance`` px from the corner: from the tip
+    skip (nearer when the side is short, keeping the minimum straight length) to
+    the longest window's end or that vertex, whichever is nearer."""
+    window, skip, minimum = corner_windows(lengths)
+    return min(window, max(distance - skip, min(distance, minimum)))
+
+
+def side_noise_deg(chord: float, quantisation: float = Q_PX) -> float:
+    """A side's direction noise (degrees) read over ``chord``: ``atan2(Q, L)``."""
+    return math.degrees(math.atan2(quantisation, chord)) if chord > 0 else 90.0
+
+
+def minimum_round_turn(lengths: TraceSettings) -> float:
+    """The least turn (degrees) of a round a cusp may sharpen: the detector's
+    measured turn may exceed the true one by the two sides' noise, so it reaches
+    the noise ratio times that noise from ``(ratio - 1)`` times it; the least
+    noise is over two of the longest windows."""
+    window, _, _ = corner_windows(lengths)
+    return (curve_fit._CORNER_NOISE_RATIO - 1.0) * 2.0 * side_noise_deg(window)
 
 
 def resolved_lengths(width: int, height: int) -> TraceSettings:
@@ -499,55 +538,11 @@ def _side(ring: np.ndarray, apex: int, direction: int, vertices: np.ndarray) -> 
     return side[:max(2, half + 1)]
 
 
-def _reading_at(side: np.ndarray, length: float) -> tuple[float, float]:
-    """For the point at arc length ``length`` along ``side`` (from the apex, its
-    first point): its chord length from the apex, and the largest distance of the
-    side up to it from the side's tangent line at the apex."""
-    steps = np.hypot(*np.diff(side, axis=0).T)
-    arc = np.concatenate(([0.0], np.cumsum(steps)))
-    first = int(np.argmax(steps > 0))
-    tangent = (side[first + 1] - side[0]) / steps[first]
-    reach = min(int(np.searchsorted(arc, length, side="left")), len(arc) - 1)
-    span = arc[reach] - arc[reach - 1] if reach > 0 else 0.0
-    t = (length - arc[reach - 1]) / span if span > 0 else 1.0
-    point = side[reach - 1] + (side[reach] - side[reach - 1]) * min(1.0, max(0.0, t))
-    offsets = np.vstack((side[:reach], point[None, :])) - side[0]
-    distance = np.abs(offsets[:, 0] * tangent[1] - offsets[:, 1] * tangent[0])
-    return float(np.hypot(*offsets[-1])), float(distance.max())
-
-
 def _other_vertices(vertices: np.ndarray, point) -> np.ndarray:
     if not len(vertices):
         return vertices
     return vertices[np.hypot(vertices[:, 0] - point[0], vertices[:, 1] - point[1])
                     > _VERTEX_MATCH_PX]
-
-
-def decidable_turn(rings: list[np.ndarray], point, turn_deg: float,
-                   vertices: np.ndarray) -> float | None:
-    """The smallest turn the raster certifies at a true corner of turn ``turn_deg``
-    (module docstring); None when no truth ring passes through the corner."""
-    through = _rings_through(rings, point)
-    if not through:
-        return None
-    ring, apex = through[0]
-    others = _other_vertices(vertices, point)
-    sides = [_side(ring, apex, direction, others) for direction in (-1, 1)]
-    arcs = [np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(side, axis=0).T))))
-            for side in sides]
-    if any(arc[-1] <= 0 for arc in arcs):
-        return None
-    best = -math.inf
-    length = 2.0 * Q_PX
-    while all(length <= arc[-1] for arc in arcs):
-        error = 0.0
-        for side in sides:
-            chord, departure = _reading_at(side, length)
-            ratio = (2.0 * Q_PX + departure) / chord if chord > 0 else 1.0
-            error += math.degrees(math.asin(min(1.0, ratio)))
-        best = max(best, turn_deg - error)
-        length *= _CHORD_GROWTH
-    return best
 
 
 def vertex_branches(rings: list[np.ndarray], point, vertices: np.ndarray, width: float,
@@ -590,11 +585,13 @@ def vertex_radius(kind: str, point, branches: list[np.ndarray], bound: float, wi
     return float(max(bound, np.hypot(coords[:, 0] - point[0], coords[:, 1] - point[1]).max()))
 
 
-def corner_roles(truth, rings: list[np.ndarray], threshold: float) -> list[dict]:
-    """Every true vertex with its role: ``required`` (a junction or edge point, or a
-    corner whose ``decidable_turn`` reaches the threshold), ``optional`` (any other
-    corner turning by at least the threshold less ``delta = 2 atan(2 Q / s)``, ``s``
-    the distance to the nearest other true vertex) or ``shallow``."""
+def corner_roles(truth, rings: list[np.ndarray], lengths: TraceSettings) -> list[dict]:
+    """Every true vertex with its role (module docstring, "Decidable corners"):
+    ``required`` (a junction or edge point, or a corner turning by at least the
+    noise ratio plus one times its sides' direction noise), ``optional`` (any
+    other corner turning by at least the noise ratio less one times it) or
+    ``shallow``. ``lengths`` are the resolved default lengths the detector's
+    side windows follow."""
     points = np.asarray([corner.point for corner in truth.corners],
                         dtype=np.float64).reshape(-1, 2)
     if len(points) > 1:
@@ -602,153 +599,205 @@ def corner_roles(truth, rings: list[np.ndarray], threshold: float) -> list[dict]
         nearest = distances[:, 1]
     else:
         nearest = np.full(len(points), math.inf)
+    ratio = float(curve_fit._CORNER_NOISE_RATIO)
     rows = []
     for corner, spacing in zip(truth.corners, nearest):
-        delta = math.degrees(2.0 * math.atan(2.0 * Q_PX / spacing)) if spacing > 0 else 180.0
-        decidable = None
+        noise = None
         if corner.kind != "corner":
             role = "required"
         else:
-            decidable = decidable_turn(rings, corner.point, corner.turn_deg, points)
-            if decidable is None:
-                decidable = corner.turn_deg - delta
-            if decidable >= threshold:
+            reaches = side_reaches(rings, corner.point, points)
+            if reaches is None:
+                reaches = (spacing, spacing)
+            noise = sum(side_noise_deg(side_chord(reach, lengths)) for reach in reaches)
+            if corner.turn_deg >= (ratio + 1.0) * noise:
                 role = "required"
-            elif corner.turn_deg >= threshold - delta:
+            elif corner.turn_deg >= (ratio - 1.0) * noise:
                 role = "optional"
             else:
                 role = "shallow"
         rows.append({"point": [float(corner.point[0]), float(corner.point[1])],
                      "kind": corner.kind, "turn_deg": float(corner.turn_deg),
-                     "delta_deg": float(delta), "decidable_turn_deg": decidable,
-                     "role": role, "narrow": False})
+                     "noise_deg": noise, "role": role, "narrow": False})
     return rows
 
 
-def sharpenable_radius(turn, allowance: float, quantisation: float = Q_PX):
+def side_reaches(rings: list[np.ndarray], point, vertices: np.ndarray
+                 ) -> tuple[float, float] | None:
+    """How far each side of the true corner at ``point`` runs before the next true
+    vertex: the chord from the corner to that vertex (or to half way round a ring
+    with no other vertex). None when no truth ring passes through the corner."""
+    through = _rings_through(rings, point)
+    if not through:
+        return None
+    ring, apex = through[0]
+    others = _other_vertices(vertices, point)
+    sides = [_side(ring, apex, direction, others) for direction in (-1, 1)]
+    return tuple(float(np.hypot(*(side[-1] - side[0]))) for side in sides)
+
+
+def sharpenable_radius(turn, allowance: float, skip: float, quantisation: float = Q_PX):
     """The largest radius of a round turning by ``turn`` radians (``0 < turn <
     pi``; a number or an array) the trace may sharpen (module docstring,
-    "Sharpenable rounds"): its sharp point lies ``r (sec(turn / 2) - 1)`` from its
-    arc, and the move check keeps it within ``A`` of its sample, seen through
-    ``Q``: at most ``A + (1 + sec(turn / 2)) Q``."""
-    secant = 1.0 / np.cos(np.asarray(turn, dtype=np.float64) / 2.0)
-    radius = (allowance + (1.0 + secant) * quantisation) / (secant - 1.0)
+    "Sharpenable rounds"), seen through ``Q``: the smaller of the radius whose
+    sharp point, ``r (sec(turn / 2) - 1)`` from its arc, lies within the
+    allowance, ``(A + (1 + sec(turn / 2)) Q) / (sec(turn / 2) - 1)``, and the
+    radius whose tangent points, ``r tan(turn / 2)`` from its sharp point, lie
+    within the tip skip, ``(S + Q) / tan(turn / 2)``."""
+    turn = np.asarray(turn, dtype=np.float64)
+    secant = 1.0 / np.cos(turn / 2.0)
+    by_allowance = (allowance + (1.0 + secant) * quantisation) / (secant - 1.0)
+    by_skip = (skip + quantisation) / np.tan(turn / 2.0)
+    radius = np.minimum(by_allowance, by_skip)
     return float(radius) if radius.ndim == 0 else radius
 
 
-def round_window(allowance: float, minimum_turn_deg: float,
+def round_window(allowance: float, skip: float, minimum_turn_deg: float,
                  quantisation: float = Q_PX) -> float:
-    """How far from a cusp ``round_turn_near`` looks: ``A + Q`` plus the longest
+    """How far from a cusp a sharpenable round can lie: ``A + Q`` plus the longest
     sharpenable round turning by at least ``minimum_turn_deg`` (its length
-    ``sharpenable_radius(T) T``, largest at the smallest turn)."""
+    ``sharpenable_radius(T) T``; the tip-skip bound keeps it below ``2 (S + Q)``)."""
     turns = np.radians(np.linspace(max(minimum_turn_deg, 1e-3), 179.9, 400))
-    return allowance + quantisation + float((sharpenable_radius(turns, allowance,
+    return allowance + quantisation + float((sharpenable_radius(turns, allowance, skip,
                                                                   quantisation) * turns).max())
 
 
-def round_turn_near(rings: list[np.ndarray], point, allowance: float,
-                    minimum_turn_deg: float, reach: float, vertices=None,
-                    quantisation: float = Q_PX) -> float:
-    """The largest net turn (degrees) of a *sharpenable round* near ``point``
-    (0 when there is none): a stretch of true boundary (vertices ``i..j`` of a
-    ring, turning at each, all the same way, none of them a true vertex of
-    ``vertices``) turning by ``T``, at least ``minimum_turn_deg`` and
-    below 180 degrees, whose radius ``b`` (its length between its first and last
-    vertex over ``T`` in radians) is at most ``sharpenable_radius`` of its *full
-    turn*, and whose sharp point (where the segments into and out of it meet) lies
-    within ``A + Q + b (sec(T/2) - 1)`` of ``point`` (within ``A`` of a sample
-    within ``Q`` of the round's middle, which lies ``b (sec(T/2) - 1)`` from the
-    sharp point). The full turn is the net turn of the truth over the
-    stretch extended by ``reach`` (the corner detector's reach) on each side,
-    (at least the stretch's own), which must stay below 180 degrees. The full
-    turn is what the corner detector
-    reads there, so a stretch of a longer round is judged by the whole round
-    (module docstring, "Sharpenable rounds")."""
-    best = 0.0
-    px, py = point
-    low = math.radians(minimum_turn_deg)
-    near_enough = allowance + quantisation
-    window = round_window(allowance, minimum_turn_deg, quantisation)
-    for ring in rings:
-        closed = ring[:-1] if np.allclose(ring[0], ring[-1]) else ring
-        count = len(closed)
-        if count < 3:
-            continue
-        distance = np.hypot(closed[:, 0] - px, closed[:, 1] - py)
-        if not (distance <= near_enough).any():
-            continue
+# A round's local radius (at each of its vertices, its share of the curve over
+# the vertex's turn) stays within this factor of the round's radius.
+_ROUND_RADIUS_FACTOR = 2.0
+_ROUNDS_CACHE: dict = {}
+
+
+def truth_rounds(ring: np.ndarray, vertices=None) -> list[tuple]:
+    """The rounds of one truth ring (module docstring, "Sharpenable rounds"): each
+    maximal run of consecutive ring vertices, none a true vertex of ``vertices``,
+    turning the same way at roughly constant curvature. The local radius of a
+    vertex is its share of the curve (half of each adjacent segment, a straight
+    stretch counting none) over its turn; a run extends while
+    that stays within ``_ROUND_RADIUS_FACTOR`` of the run's radius (its summed
+    local lengths over its summed turn), so it ends at a straight segment, an
+    inflection, a true vertex or a curvature change beyond that factor. A ring
+    that is one run all the way round (a circle) has no round below 180 degrees.
+
+    Returns ``(turn, radius, sharp_point)`` per round turning by less than 180
+    degrees: its whole turn (radians), its radius, and where the segment into its
+    first vertex and the segment out of its last one meet."""
+    closed = ring[:-1] if np.allclose(ring[0], ring[-1]) else ring
+    vertex_key = None if vertices is None else np.asarray(vertices, dtype=np.float64).tobytes()
+    key = (closed.tobytes(), vertex_key)
+    if key in _ROUNDS_CACHE:
+        return _ROUNDS_CACHE[key]
+    count = len(closed)
+    rounds: list[tuple] = []
+    if count >= 3:
         before = closed - np.roll(closed, 1, axis=0)
         after = np.roll(closed, -1, axis=0) - closed
         turns = np.arctan2(before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0],
                            np.einsum("ij,ij->i", before, after))
-        steps = np.hypot(*after.T)
-        # The ring three times over, so every stretch and its extension by the
-        # reach can be read in one direction: cumulative turn up to and including
-        # each vertex, and arc length at each vertex.
-        turn_sum = np.cumsum(np.tile(turns, 3))
-        arc = np.concatenate(([0.0], np.cumsum(np.tile(steps, 3))))[:3 * count]
-        # A round turns one way and holds no true vertex (a corner, junction or
-        # edge point, judged by its own disc).
-        sign = np.tile(np.sign(np.where(np.abs(turns) > 1e-12, turns, 0.0)), 3)
+        steps_in = np.hypot(*before.T)
+        steps_out = np.hypot(*after.T)
+        # A vertex's share of the curve: half of each adjacent segment, a
+        # straight stretch (a segment more than the factor longer than the other)
+        # counting none.
+        local = 0.5 * (np.where(steps_in > _ROUND_RADIUS_FACTOR * steps_out, 0.0, steps_in)
+                       + np.where(steps_out > _ROUND_RADIUS_FACTOR * steps_in, 0.0, steps_out))
+        sign = np.sign(np.where(np.abs(turns) > 1e-9, turns, 0.0))
         vertex = np.zeros(count, dtype=bool)
         if vertices is not None and len(vertices):
             vertex = cKDTree(np.asarray(vertices, dtype=np.float64).reshape(-1, 2)).query(
                 closed)[0] <= 1e-6
-        vertex = np.tile(vertex, 3)
-        perimeter = float(steps.sum())
-        if 2.0 * reach >= perimeter:
-            continue
-        inside = distance <= window
-        # For each vertex, how many vertices from it on (itself included, round
-        # the ring) lie within the window.
-        run = np.zeros(2 * count, dtype=np.int64)
-        doubled = np.concatenate([inside, inside])
-        for k in range(2 * count - 1, -1, -1):
-            run[k] = (run[k + 1] + 1 if k + 1 < 2 * count else 1) if doubled[k] else 0
-        for i in np.flatnonzero(inside):
-            start = count + int(i)
-            # The stretch runs from ``start`` along vertices within the window.
-            ends = np.arange(start, start + min(int(run[i]), count))
-            stop = vertex[ends] | (sign[ends] * sign[start] < 0) | (sign[start] == 0)
-            if stop.any():
-                ends = ends[:int(np.argmax(stop))]
-            if not len(ends):
+        # A segment much longer than its neighbours is a straight stretch: a round
+        # ends before it.
+        straight_before = steps_in > _ROUND_RADIUS_FACTOR * np.minimum(
+            np.roll(steps_in, 1), steps_out)
+        breaks = np.flatnonzero((sign == 0) | vertex | (sign != np.roll(sign, 1))
+                                | straight_before)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            own_radius = local / np.abs(turns)
+        if len(breaks):
+            start = int(breaks[0])
+        else:
+            # A ring turning one way all round starts at its sharpest curvature
+            # change; if the runs still close up into one, it is a circle.
+            change = np.abs(np.log(own_radius / np.roll(own_radius, 1)))
+            start = int(np.argmax(np.where(np.isfinite(change), change, 0.0)))
+        if True:
+            order = (start + np.arange(count)) % count
+            runs: list[list[int]] = []
+            run: list[int] = []
+            length = turn = 0.0
+            for index in order:
+                index = int(index)
+                usable = sign[index] != 0 and not vertex[index]
+                if run and usable and sign[index] == sign[run[0]] and not straight_before[index]:
+                    radius = length / turn
+                    own = own_radius[index]
+                    if radius / _ROUND_RADIUS_FACTOR <= own <= radius * _ROUND_RADIUS_FACTOR:
+                        run.append(index)
+                        length += local[index]
+                        turn += abs(turns[index])
+                        continue
+                if run:
+                    runs.append(run)
+                run = [index] if usable else []
+                length = float(local[index]) if usable else 0.0
+                turn = float(abs(turns[index])) if usable else 0.0
+            if run:
+                runs.append(run)
+            if len(runs) == 1 and len(runs[0]) == count:
+                runs = []
+            elif (not len(breaks) and len(runs) > 1
+                  and (runs[-1][-1] + 1) % count == runs[0][0]):
+                # A ring turning one way all round: the run closing the ring joins
+                # the first when their curvatures agree.
+                joined = runs[-1] + runs[0]
+                radius = float(local[joined].sum()) / float(np.abs(turns[joined]).sum())
+                own = [float(local[run].sum()) / float(np.abs(turns[run]).sum())
+                       for run in (runs[-1], runs[0])]
+                if all(radius / _ROUND_RADIUS_FACTOR <= value <= radius * _ROUND_RADIUS_FACTOR
+                       for value in own):
+                    runs = [joined] + runs[1:-1]
+            for run in runs:
+                total = float(np.abs(turns[run]).sum())
+                if total >= math.pi:
+                    continue
+                radius = float(local[run].sum()) / total
+                first, last = run[0], run[-1]
+                head = after[(first - 1) % count]
+                tail = after[last]
+                cross = head[0] * tail[1] - head[1] * tail[0]
+                if abs(cross) <= 1e-12:
+                    continue
+                offset = closed[last] - closed[first]
+                along = (offset[0] * tail[1] - offset[1] * tail[0]) / cross
+                rounds.append((total, radius, closed[first] + along * head))
+    if len(_ROUNDS_CACHE) > 4096:
+        _ROUNDS_CACHE.clear()
+    _ROUNDS_CACHE[key] = rounds
+    return rounds
+
+
+def round_turn_near(rings: list[np.ndarray], point, allowance: float, skip: float,
+                    minimum_turn_deg: float, vertices=None,
+                    quantisation: float = Q_PX) -> float:
+    """The largest turn (degrees) of a *sharpenable round* near ``point`` (0 when
+    there is none): a round of the truth (``truth_rounds``) turning by ``T``, at
+    least ``minimum_turn_deg`` and below 180 degrees, whose radius ``b`` is at most
+    ``sharpenable_radius(T)`` and whose sharp point lies within ``A + Q + b
+    (sec(T/2) - 1)`` of ``point`` (within ``A`` of a sample within ``Q`` of the
+    round's middle, which lies ``b (sec(T/2) - 1)`` from the sharp point). A round
+    is judged by its whole turn, so a piece of a large round is never
+    sharpenable."""
+    best = 0.0
+    low = math.radians(minimum_turn_deg)
+    px, py = point
+    for ring in rings:
+        for total, radius, sharp in truth_rounds(ring, vertices):
+            if total < low or radius > sharpenable_radius(total, allowance, skip, quantisation):
                 continue
-            base = turn_sum[start - 1]
-            total = np.abs(turn_sum[ends] - base)
-            length = arc[ends] - arc[start]
-            usable = (total >= low) & (total < math.pi)
-            if not usable.any():
-                continue
-            ends, total, length = ends[usable], total[usable], length[usable]
-            # The stretch's sharp point: where the segment into its first vertex
-            # and the segment out of its last one meet.
-            head = closed[i] - closed[i - 1]
-            tails = closed[(ends + 1) % count] - closed[ends % count]
-            cross = head[0] * tails[:, 1] - head[1] * tails[:, 0]
-            offset = closed[ends % count] - closed[i]
-            along = np.divide(offset[:, 0] * tails[:, 1] - offset[:, 1] * tails[:, 0], cross,
-                              out=np.full(len(ends), np.inf), where=np.abs(cross) > 1e-12)
-            sharp = closed[i] + along[:, None] * head
-            apart = np.hypot(sharp[:, 0] - px, sharp[:, 1] - py)
-            bend = length / total
-            close = apart <= near_enough + bend * (1.0 / np.cos(total / 2.0) - 1.0)
-            if not close.any():
-                continue
-            ends, total, length, bend = ends[close], total[close], length[close], bend[close]
-            first = np.searchsorted(arc, arc[start] - reach, side="left")
-            last = np.searchsorted(arc, arc[ends] + reach, side="right") - 1
-            # A side turning back (an inflection) lowers the net turn; the round
-            # still turns by its own.
-            full = np.maximum(np.abs(turn_sum[last] - turn_sum[first - 1]), total)
-            valid = full < math.pi
-            if not valid.any():
-                continue
-            radius = np.zeros_like(full)
-            radius[valid] = sharpenable_radius(full[valid], allowance, quantisation)
-            good = valid & (bend <= radius)
-            if good.any():
-                best = max(best, math.degrees(float(total[good].max())))
+            reach = allowance + quantisation + radius * (1.0 / math.cos(total / 2.0) - 1.0)
+            if math.hypot(sharp[0] - px, sharp[1] - py) <= reach:
+                best = max(best, math.degrees(total))
     return best
 
 
@@ -1015,7 +1064,8 @@ class CaseBounds:
     rho: float
     round_radius: float
     corner_reach: float
-    threshold: float
+    tip_skip: float
+    minimum_round_turn: float
     evidence_tolerance: float
     corners: list[dict]
     centres: np.ndarray
@@ -1652,16 +1702,18 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     max_deviation = float(lengths.max_deviation)
     allowance = float(lengths.corner_sharpening_allowance)
     bound = boundary_bound(max_deviation)
-    threshold = float(TraceSettings().corner_threshold)
-    # The largest sharpenable radius (a round turning by the threshold) and how
-    # far from a cusp ``round_turn_near`` looks for a round.
-    round_radius = sharpenable_radius(math.radians(threshold), allowance)
-    rho = round_window(allowance, threshold)
+    skip = float(_tip_skip(lengths))
+    # The least turn of a round a cusp may sharpen, the largest sharpenable radius
+    # (a round turning by that much) and how far from a cusp ``round_turn_near``
+    # looks for a round.
+    round_turn = minimum_round_turn(lengths)
+    round_radius = sharpenable_radius(math.radians(round_turn), allowance, skip)
+    rho = round_window(allowance, skip, round_turn)
     rings = truth_rings(truth)
     vertices = np.asarray([corner.point for corner in truth.corners],
                           dtype=np.float64).reshape(-1, 2)
 
-    corners = corner_roles(truth, rings, threshold)
+    corners = corner_roles(truth, rings, lengths)
     for corner in corners:
         branches = vertex_branches(rings, corner["point"], vertices, width, height)
         corner["branches"] = len(branches)
@@ -1765,8 +1817,8 @@ def case_bounds(case, tier: str, truth=None, run=None) -> CaseBounds:
     return CaseBounds(
         tier=tier, width=width, height=height, truth=truth, max_deviation=max_deviation,
         allowance=allowance, bound=bound, rho=rho, round_radius=round_radius,
-        corner_reach=float(_corner_reach(lengths)),
-        threshold=threshold,
+        corner_reach=float(_corner_reach(lengths)), tip_skip=skip,
+        minimum_round_turn=round_turn,
         evidence_tolerance=evidence_tolerance,
         corners=corners, centres=centres, radii=radii, discs=discs,
         resolution_zone=resolution_zone, topology_zone=topology_zone,
@@ -2305,12 +2357,13 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
     for (x, y), zoned in zip(cusp_points, in_zone):
         near_corner = any(math.hypot(x - c["point"][0], y - c["point"][1]) <= c["radius_px"]
                           for c in anchored)
-        turn = round_turn_near(bounds.rings, (x, y), bounds.allowance, bounds.threshold,
-                               bounds.corner_reach,
+        turn = round_turn_near(bounds.rings, (x, y), bounds.allowance, bounds.tip_skip,
+                               bounds.minimum_round_turn,
                                [corner["point"] for corner in bounds.corners])
         cusps.append({"point": [float(x), float(y)], "near_corner": near_corner,
                       "in_zone": bool(zoned), "truth_turn_deg": turn,
-                      "kink": not near_corner and not zoned and turn < bounds.threshold})
+                      "kink": not near_corner and not zoned
+                              and turn < bounds.minimum_round_turn})
 
     node_points = np.asarray([(x, y) for x, y, _ in nodes], dtype=np.float64).reshape(-1, 2)
     outside_flags = ~_inside(excluded, node_points)
@@ -2344,7 +2397,7 @@ def evaluate(case, tier: str, run, bounds: CaseBounds, *, measured: dict | None 
         "audit_max_deviation_px": float(run.audit["lengths"]["px"]["max_deviation"]),
         "allowance_px": bounds.allowance, "rho_px": bounds.rho,
         "round_radius_px": bounds.round_radius,
-        "bound_px": bounds.bound, "threshold_deg": bounds.threshold,
+        "bound_px": bounds.bound, "minimum_round_turn_deg": bounds.minimum_round_turn,
         "geometric": bounds.geometric, "topological": bounds.topological,
         "palette_reasons": list(bounds.palette_reasons), "folded": sorted(bounds.folded),
         "merged": sorted(bounds.aliases),

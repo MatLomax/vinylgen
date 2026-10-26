@@ -72,9 +72,16 @@ class LegacyConfigTests(unittest.TestCase):
 
     def test_cli_flags_still_override_the_upgraded_config(self):
         settings = self.settings(self.legacy_block(curve_optimization=False),
-                                 "--corner-threshold", "45")
-        self.assertEqual((settings.corner_threshold, settings.straight_line_max_deviation,
-                          settings.side_smoothness, settings.length_unit), (45, 0.0, 1.6, "px"))
+                                 "--snap-angle", "4")
+        self.assertEqual((settings.snap_angle, settings.straight_line_max_deviation,
+                          settings.side_smoothness, settings.length_unit), (4, 0.0, 1.6, "px"))
+
+    def test_a_retired_setting_in_a_config_is_dropped(self):
+        settings = self.settings(self.legacy_block(corner_threshold=45.0))
+        self.assertFalse(hasattr(settings, "corner_threshold"))
+        self.assertEqual(settings, self.settings(self.legacy_block()))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser().parse_args(["outputs", "--corner-threshold", "45"])
 
     def test_a_length_flag_over_a_pixel_config_is_rejected(self):
         # The flag is thousandths of the image, the config's lengths pixels: one

@@ -79,18 +79,24 @@ mismatch. The assertions:
   ways (`e` is the max deviation or sharpening allowance, plus half a pixel, plus
   the RGB tier's sub-pixel crossing offset, plus the metric's error), which holds
   features below the resolution floor near their place;
-- a cusp within `R(c)` of every vertex the raster can decide, where `R(c)` is the
+- a cusp within `R(c)` of every vertex the raster can decide (a junction or edge
+  point, or a corner turning by at least `K + 1` times its two sides' direction
+  noise `atan2(Q, L)`, `K` the corner detector's noise ratio and `L` the chord of
+  the detector's long side window along each side, cut at the neighbouring
+  vertex; a corner turning by `K - 1` times that noise may have a cusp), where `R(c)` is the
   farthest point of the intersection of the `D`-bands of the vertex's true
   branches (about `D` at a nearly straight corner, growing only at a sharp tip,
   capped by where tangent branches separate and by the side lengths);
 - no kinks: a cusp away from the vertices and zones is allowed only on a round
-  the trace may sharpen: a stretch turning one way by at least the corner
-  threshold, holding no true vertex, whose radius is at most
-  `(A + (1 + sec(T/2)) Q) / (sec(T/2) - 1)` for its full turn `T` (its sharp
-  point within the allowance of its sample, the move check, seen through `Q`),
-  with the cusp within `A + Q` plus the round's own depth of its sharp point. At
-  `A` = 1 px that radius is 16.3 px at 60°, 6.54 px at 90° (2.71 sharpening
-  radii), 3.12 px at 120° and 1.55 px at 150°. The full turn is the truth's net
+  the trace may sharpen: a stretch turning one way by at least `K - 1` times the
+  noise of two full long side windows, holding no true vertex, whose radius is
+  at most the smaller of `(A + (1 + sec(T/2)) Q) / (sec(T/2) - 1)` (its sharp
+  point within the allowance of its sample, the move check, seen through `Q`)
+  and `((sqrt Q + sqrt(Q + S tan(T/2))) / tan(T/2))^2` (its tangent points
+  within the tip skip `S` of its sharp point, seen through `Q`) for its full
+  turn `T`, with the cusp within `A + Q` plus the round's own depth of its sharp
+  point. At `A` = 1 px that radius is 6.54 px at 90° (2.71 sharpening radii),
+  3.10 px at 120°, 1.12 px at 150° and 56.0 px at 30°. The full turn is the truth's net
   turn over the stretch extended by the corner detector's reach on each side,
   what the detector reads there, so a piece of a longer round, or of a circle,
   is judged by the whole round and a cusp on it is a kink. The fixed set's
@@ -282,7 +288,7 @@ Corner recall is always reported beside cusp precision and their F1, since a
 staircase whose every node is a cusp finds every corner; vertices, kinks and the
 boundary distance are classified by the regression bounds, so the sweep counts
 exactly what the tests assert. The tuner runs a resumable compass search over
-the eight trace lengths and the corner threshold on its own copy of the
+the eight trace lengths on its own copy of the
 defaults, scores training seeds and the fixed set with the regression
 assertions' own measures, each normalised by its bound under the default
 settings (which the settings under test cannot loosen): boundary distance to the

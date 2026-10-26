@@ -297,6 +297,11 @@ describe('legacy trace settings', () => {
     expect(normalizeTraceSettings({ straight_line_max_deviation: 1.3, side_smoothness: .9, corner_straightness: 1.6 })).toEqual({ straight_line_max_deviation: 1.3, side_smoothness: .9 })
     expect(normalizeTraceSettings({ straight_line_max_deviation: 1.3, corner_straightness: 1.6 })).not.toHaveProperty('corner_straightness')
   })
+
+  it('drops a record\'s retired corner_threshold outright (cusps are no longer decided by a turn angle)', () => {
+    expect(normalizeTraceSettings({ overlap: 2, corner_threshold: 45 } as Partial<TraceSettings>)).toEqual({ overlap: 2 })
+    expect(normalizeTraceSettings({ corner_threshold: 45 } as Partial<TraceSettings>)).not.toHaveProperty('corner_threshold')
+  })
 })
 
 describe('side smoothness control', () => {
@@ -353,7 +358,8 @@ describe('corner sharpening allowance control', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
     const help = screen.getByLabelText(/Corner sharpening allowance/).closest('label')?.querySelector('small')?.textContent ?? ''
     expect(help).toMatch(/Automatic: the maximum deviation/)
-    expect(help).toMatch(/2\.4 times it snap sharp/)
+    expect(help).toMatch(/snaps sharp only when both its sharp point is within this distance and its curve begins within about 2\.4 times it of the corner/)
+    expect(help).toMatch(/shallow, wide bends stay round/)
   })
 })
 
@@ -404,11 +410,9 @@ describe('node placement and straight-line snapping', () => {
     expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ ...stored, curve_fit_tolerance: 1 }) }).toEqual({ ...DEFAULT_TRACE_SETTINGS, curve_fit_tolerance: 1 })
   })
 
-  it('says the corner threshold is only the corner detector\'s and the tolerance sets the node count', () => {
+  it('says the curve-fit tolerance, not the corner detector, sets the node count', () => {
     renderTrace(DEFAULT_TRACE_SETTINGS, () => undefined)
-    const corner = screen.getByLabelText(/Corner threshold/).closest('label')?.querySelector('small')?.textContent ?? ''
-    expect(corner).toMatch(/where two smooth sides meet \(straight or curved\) to become a hard corner/)
-    expect(corner).toMatch(/placed by Node placement/)
+    expect(screen.queryByLabelText(/Corner threshold/)).toBeNull()
     const tolerance = screen.getByLabelText(/Curve-fit tolerance/).closest('label')?.querySelector('small')?.textContent ?? ''
     expect(tolerance).toMatch(/sets the node count directly/)
   })

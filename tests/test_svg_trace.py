@@ -187,7 +187,7 @@ class SvgTraceTests(unittest.TestCase):
                             for warning in summary["warnings"]))
 
     def test_shared_curve_fit_smooths_shallow_turns_but_keeps_square_corners(self):
-        settings = TraceSettings(length_unit="px", corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
+        settings = TraceSettings(length_unit="px", curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         square = ring_path(
             [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)], settings)
@@ -209,7 +209,7 @@ class SvgTraceTests(unittest.TestCase):
         self.assertNotIn((5.0, 0.0), nodes)
 
     def test_corner_analysis_looks_past_single_pixel_stair_step(self):
-        settings = TraceSettings(length_unit="px", corner_threshold=math.degrees(1.0), curve_fit_tolerance=0.2,
+        settings = TraceSettings(length_unit="px", curve_fit_tolerance=0.2,
                                  corner_analysis_span=3.0)
         fitted = ring_path(
             [(0, 0), (4, 0), (4, 1), (8, 1), (8, 8), (0, 8), (0, 0)],

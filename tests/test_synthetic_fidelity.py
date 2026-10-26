@@ -32,6 +32,7 @@ import numpy as np
 from shapely.geometry import box
 
 from synthetic_cases import SyntheticCase, assertion_method, generate
+from vinylgen import curve_fit
 from vinylgen.fidelity import bounds, families, regression
 from vinylgen.fidelity.regression import ROOT, all_runs, gate_runs, load_expected_failures
 
@@ -127,30 +128,34 @@ class BoundsHelperTests(unittest.TestCase):
 
     def test_round_turn_near_uses_the_sharpenable_radius_of_each_turn(self):
         allowance, reach = 1.0, 6.0
-        # The move check, seen through Q: the sharp point r (sec(T/2) - 1) from the
-        # arc, at most A + (1 + sec(T/2)) Q.
-        for turn_deg in (60.0, 90.0, 120.0, 150.0):
+        skip = curve_fit._TIP_SKIP_ALLOWANCES * allowance
+        # The move check and the tip-skip bound, seen through Q: the sharp point
+        # r (sec(T/2) - 1) from the arc, at most min(A, S tan(T/4) + Q) + (1 +
+        # sec(T/2)) Q.
+        for turn_deg in (20.0, 40.0, 60.0, 90.0, 120.0, 150.0):
             turn = math.radians(turn_deg)
             secant = 1.0 / math.cos(turn / 2)
+            room = min(allowance, skip * math.tan(turn / 4) + bounds.Q_PX)
             with self.subTest(turn=turn_deg):
-                self.assertAlmostEqual(bounds.sharpenable_radius(turn, allowance),
-                                       (allowance + (1 + secant) * bounds.Q_PX) / (secant - 1))
-        right = bounds.sharpenable_radius(math.pi / 2, allowance)
-        gentle = bounds.sharpenable_radius(math.radians(62), allowance)
-        sharp = bounds.sharpenable_radius(math.radians(150), allowance)
+                self.assertAlmostEqual(bounds.sharpenable_radius(turn, allowance, skip),
+                                       (room + (1 + secant) * bounds.Q_PX) / (secant - 1))
+        right = bounds.sharpenable_radius(math.pi / 2, allowance, skip)
+        gentle = bounds.sharpenable_radius(math.radians(62), allowance, skip)
+        sharp = bounds.sharpenable_radius(math.radians(150), allowance, skip)
         self.assertAlmostEqual(right, (allowance + (1 + math.sqrt(2)) * bounds.Q_PX)
                                / (math.sqrt(2) - 1))
         self.assertLess(sharp, right)
         self.assertLess(right, gentle)
         middle = (0.0, 0.0)
+        minimum = 5.0
 
-        def found(radius, turn, point=middle, vertices=None):
-            return bounds.round_turn_near([self.arc_ring(radius, turn)], point, allowance,
-                                          60.0, reach, vertices)
+        def found(radius, turn, point=middle, vertices=None, allowance=allowance, skip=skip):
+            return bounds.round_turn_near([self.arc_ring(radius, turn)], point, allowance, skip,
+                                          minimum, reach, vertices)
 
         # A whole round within the radius of its turn is found at that turn; a
         # larger one is not, not even through a stretch of it turning by the
-        # threshold, which is judged by the round's full turn.
+        # minimum turn, which is judged by the round's full turn.
         for radius, turn, expected in ((0.9 * right, 90, 90.0), (1.2 * right, 90, 0.0),
                                        (0.9 * gentle, 62, 62.0), (1.1 * gentle, 62, 0.0),
                                        (0.9 * sharp, 150, 150.0), (1.2 * sharp, 150, 0.0)):
@@ -160,11 +165,68 @@ class BoundsHelperTests(unittest.TestCase):
         self.assertEqual(found(0.9 * right, 90, (0.0, -3.0)), 0.0)
         self.assertEqual(found(0.9 * right, 90, (25.0, 0.0)), 0.0)
         # A round turning by less than the minimum turn is never reported.
-        self.assertEqual(found(3.0, 45), 0.0)
+        self.assertEqual(found(3.0, 4), 0.0)
         # A true vertex is no round: a sharp corner is judged by its own disc.
         corner = self.arc_ring(1e-6, 90)
-        self.assertEqual(bounds.round_turn_near([corner], middle, allowance, 60.0, reach,
-                                                [corner[1]]), 0.0)
+        self.assertEqual(bounds.round_turn_near([corner], middle, allowance, skip, minimum,
+                                                reach, [corner[1]]), 0.0)
+
+    def test_a_large_shallow_round_is_sharpenable_only_within_the_tip_skip(self):
+        # At A = 4 px a 30-degree round of radius 120 px has its sharp point
+        # 4.1 px from its arc, within the allowance seen through Q, but its
+        # tangent points 32 px from the sharp point, far beyond the tip skip
+        # (9.7 px): its sides do not reach the corner, so it stays round.
+        allowance = 4.0
+        skip = curve_fit._TIP_SKIP_ALLOWANCES * allowance
+        turn = math.radians(30.0)
+        secant = 1.0 / math.cos(turn / 2)
+        by_allowance = (allowance + (1 + secant) * bounds.Q_PX) / (secant - 1)
+        radius = bounds.sharpenable_radius(turn, allowance, skip)
+        self.assertLess(radius, 0.7 * by_allowance)
+        self.assertLess(120.0, by_allowance)
+        self.assertGreater(120.0, radius)
+        ring = self.arc_ring(120.0, 30.0, arm=80.0)
+        self.assertEqual(bounds.round_turn_near([ring], (0.0, 0.0), allowance, skip, 5.0,
+                                                10.0), 0.0)
+        ring = self.arc_ring(0.9 * radius, 30.0, arm=80.0)
+        self.assertAlmostEqual(bounds.round_turn_near([ring], (0.0, 0.0), allowance, skip,
+                                                      5.0, 10.0), 30.0, delta=0.5)
+
+    def test_corner_roles_follow_the_detectors_noise_rule(self):
+        # A true corner is required when its turn reaches (K + 1) times its two
+        # sides' direction noise atan2(Q, L), optional from (K - 1) times it, and
+        # shallow below; L is the side's grown-window chord, capped by the
+        # detector's longest window and by the neighbouring true vertex.
+        from types import SimpleNamespace
+        lengths = bounds.resolved_lengths(1024, 1024)
+        ratio = curve_fit._CORNER_NOISE_RATIO
+        cap, skip, minimum = bounds.corner_windows(lengths)
+        self.assertAlmostEqual(cap, curve_fit._side_cap(lengths))
+        long_noise = 2 * bounds.side_noise_deg(cap)
+
+        def roles(turn_deg, side):
+            # A kite: the apex at (0, 0) turning by ``turn_deg`` between two
+            # straight sides of length ``side``, closed far away.
+            half = math.radians(180.0 - turn_deg) / 2
+            left = (-side * math.sin(half), side * math.cos(half))
+            right = (side * math.sin(half), side * math.cos(half))
+            ring = np.asarray([(0.0, 0.0), right, (0.0, 4 * side), left, (0.0, 0.0)])
+            corners = [SimpleNamespace(point=(0.0, 0.0), kind="corner", turn_deg=turn_deg)]
+            for point in (right, (0.0, 4 * side), left):
+                corners.append(SimpleNamespace(point=point, kind="corner", turn_deg=90.0))
+            return bounds.corner_roles(SimpleNamespace(corners=corners), [ring], lengths)[0]
+
+        long_side = 4 * (cap + skip)
+        self.assertEqual(roles((ratio + 1) * long_noise + 0.5, long_side)["role"], "required")
+        self.assertEqual(roles((ratio + 1) * long_noise - 0.5, long_side)["role"], "optional")
+        self.assertEqual(roles((ratio - 1) * long_noise + 0.3, long_side)["role"], "optional")
+        self.assertEqual(roles((ratio - 1) * long_noise - 0.3, long_side)["role"], "shallow")
+        # A 20-degree vertex between long straight sides is required; the same
+        # vertex between sides that end 4 px away is not.
+        self.assertEqual(roles(20.0, long_side)["role"], "required")
+        self.assertNotEqual(roles(20.0, skip + minimum)["role"], "required")
+        row = roles(20.0, long_side)
+        self.assertAlmostEqual(row["noise_deg"], long_noise, places=6)
 
     def test_the_node_route_splits_a_span_one_cubic_cannot_draw(self):
         # A quarter circle of radius 100 is one cubic within 0.03 px; a half circle

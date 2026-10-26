@@ -68,6 +68,7 @@ from vinylgen.contracts import (
     FOLLOWING_LENGTHS,
     LENGTH_UNIT_PER_MILLE,
     RENAMED_TRACE_FIELDS,
+    RETIRED_TRACE_FIELDS,
     CleanupSettings,
     TraceSettings,
 )
@@ -681,6 +682,8 @@ def select_cases(*, fixed: bool = False, grid: bool = False, palette_stage: bool
 def _trace_flag(parser, name: str, value: str) -> list[str]:
     """``--set name=value`` as the trace CLI's own flag(s)."""
     name = RENAMED_TRACE_FIELDS.get(name, name)
+    if name in RETIRED_TRACE_FIELDS:
+        raise ValueError(f"trace setting {name!r} is retired (see svg_trace.py --help)")
     for action in parser._actions:
         if action.dest != name or not action.option_strings:
             continue

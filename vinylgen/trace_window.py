@@ -199,7 +199,7 @@ class WindowBoundaries:
         it also caches), keeping only the ``FITTERS_PER_WINDOW`` most recent."""
         key = (settings.curve_fit_tolerance, settings.straight_line_max_deviation,
                settings.minimum_straight_length, settings.corner_analysis_span,
-               settings.corner_threshold, settings.side_smoothness,
+               settings.side_smoothness,
                settings.corner_sharpening_allowance, settings.max_deviation, settings.straight_line_snap, settings.snap_angle,
                settings.node_placement, settings.nodes_at_bends,
                settings.curve_feature_scale, float(overlap_px))

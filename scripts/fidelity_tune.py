@@ -1,4 +1,4 @@
-"""Search the trace lengths and corner threshold against synthetic truth and PROPOSE a set.
+"""Search the trace lengths against synthetic truth and PROPOSE a set.
 
 The tuner never edits TraceSettings or any source: it iterates on its own copy of
 the settings and ends with a proposal. Defaults change only through a reviewed
@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vinylgen.contracts import CleanupSettings, TraceSettings  # noqa: E402
+from vinylgen.contracts import CleanupSettings, TraceSettings, upgrade_trace_record  # noqa: E402
 from vinylgen.fidelity import sweep, tune  # noqa: E402
 
 DEFAULT_CASES_PER_EVAL = 48
@@ -228,7 +228,8 @@ def main() -> None:
         proposed_index = min(range(len(evaluations)),
                              key=lambda i: (evaluations[i]["objective"], i))
         current_index = current_entry["index"]
-        proposed_settings = TraceSettings(**evaluations[proposed_index]["settings"])
+        proposed_settings = TraceSettings(
+            **upgrade_trace_record(evaluations[proposed_index]["settings"]))
         diff = tune.settings_diff(proposed_settings, current_settings)
         weights_table = []
         for w in sorted({0.0, 0.25, 0.5, 1.0, 2.0, 4.0, weight}):

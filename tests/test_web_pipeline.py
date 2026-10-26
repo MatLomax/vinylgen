@@ -235,10 +235,15 @@ class WebPipelineTest(PipelineApiHarness):
         project, palette_revision = await self.flattened_project("Pixel Era")
         recorded = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
                     "minimum_straight_length": 3.0, "corner_analysis_span": 6.0,
-                    "curve_feature_scale": 0.6, "max_deviation": None, "corner_threshold": 50.0}
+                    "curve_feature_scale": 0.6, "max_deviation": None}
         units = {key: value * 1000 / 40 if key in TRACE_LENGTH_FIELDS and value is not None
                  else value for key, value in recorded.items()}
         units = {**units, "max_deviation": 2.0 * 1000 / 40, "length_unit": "per_mille"}
+        # A client still sending the retired corner threshold is accepted, without it.
+        first = (await self.run_job("trace", project["id"], palette_revision,
+                                    trace={**units, "corner_threshold": 50.0}))
+        self.assertNotIn("corner_threshold", self.app.state.store.get_revision(
+            first["result_revision_id"])["settings"]["trace"])
         first = (await self.run_job("trace", project["id"], palette_revision,
                                     trace=units))["result_revision_id"]
         first_artifacts = await self.effective_kinds(first)
@@ -248,11 +253,13 @@ class WebPipelineTest(PipelineApiHarness):
         self.assertEqual(audit["lengths"]["reference_px"], 40)
         self.assertEqual(audit["lengths"]["px"]["curve_fit_tolerance"], 1.2)
         # The pixel-era record of that same run, as a trace revision with its SVG.
-        # It names side smoothness by its former name, corner_straightness, and has no
-        # corner sharpening allowance (that followed the maximum deviation).
+        # It names side smoothness by its former name, corner_straightness, has no
+        # corner sharpening allowance (that followed the maximum deviation) and
+        # carries the retired corner threshold.
         legacy_trace = {("corner_straightness" if key == "side_smoothness" else key): value
                         for key, value in asdict(TraceSettings(length_unit="px", **recorded)).items()
                         if key not in ("length_unit", "corner_sharpening_allowance")}
+        legacy_trace["corner_threshold"] = 50.0
         legacy = self.app.state.store.create_revision(
             project["id"], parent_revision_id=palette_revision, kind="trace",
             message="Recorded in pixels", settings={
@@ -267,6 +274,7 @@ class WebPipelineTest(PipelineApiHarness):
         trace = served["settings"]["trace"]
         self.assertEqual(trace["length_unit"], "per_mille")
         self.assertNotIn("corner_straightness", trace)
+        self.assertNotIn("corner_threshold", trace)
         followed = {"side_smoothness": "straight_line_max_deviation",
                     "corner_sharpening_allowance": "max_deviation"}
         for name in TRACE_LENGTH_FIELDS:

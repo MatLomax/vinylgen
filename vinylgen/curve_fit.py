@@ -306,14 +306,40 @@ _ARC_IMPROVEMENT = 0.8
 # An arc has three parameters: through three or four samples it follows their
 # noise, so a shorter window is fitted with its line.
 _ARC_MIN_SAMPLES = 5
-# One arc through both sides and the tip must miss by more than this many times
-# the worse side's own error plus this many px (raster noise) for a corner.
-_ONE_ARC_RATIO = 1.5
-_ONE_ARC_FLOOR = 0.3
 # A side's arc turns by at most this much (radians) over its window: one that
 # turns further runs round another feature (the floor of a narrow slot), so the
-# side is judged on its nearest minimum length instead (``_side_nb``).
+# side stops growing before it (``_grown_side_nb``).
 _SIDE_SWEEP = math.pi / 2
+# How far a boundary sample may lie from the true boundary: a sample is the
+# midpoint of a pixel edge between two colours, and the true boundary crosses
+# the line joining those two pixel centres within half a pixel of it. A side's
+# direction is never known better than this over its chord.
+_STAIRCASE_QUANTISATION = 0.5
+# The root-mean-square distance of a pixel staircase's samples from the straight
+# or circular edge they rasterise: that quantisation over sqrt 2 (0.35 px; its
+# 99.9th percentile over 300 random straight edges, 48 px windows, is 0.347 px,
+# and over 300 circles of radius 6-40 px 0.28 px). A side window stops growing
+# once its fit's root-mean-square residual passes this multiple of that noise.
+_STAIRCASE_RMS = _STAIRCASE_QUANTISATION / math.sqrt(2.0)
+_SIDE_RMS_RATIO = 1.25
+_SIDE_RMS_LIMIT = _SIDE_RMS_RATIO * _STAIRCASE_RMS
+# The longest side window, in corner analysis spans of arc past the tip skip.
+# A side window grows from the minimum straight length, doubling, then bisecting
+# between its last smooth length and its first rough one this many times.
+_SIDE_CAP_SPANS = 8.0
+_SIDE_GROWTH = 2.0
+_SIDE_BISECTIONS = 3
+# A corner's turn must reach this many times the direction noise of its two
+# sides: each side's direction is uncertain by ``atan2(e, L)``, ``L`` its grown
+# window's chord and ``e`` the larger of its fit error and
+# ``_STAIRCASE_QUANTISATION``. The fidelity bounds label true corners with the
+# same ratio (``fidelity.bounds.corner_roles``).
+_CORNER_NOISE_RATIO = 3.0
+# One arc fitted through both side windows and the tip must fit worse than the
+# two sides' own arcs by more than this root-mean-square excess (px) for a
+# corner: the pixel staircase's zigzag adds the same mean square to both fits,
+# so the difference is the corner's own signal.
+_ONE_ARC_EXCESS = 0.4
 
 
 @njit(cache=True, nogil=True)
@@ -382,9 +408,10 @@ def _fit_side_nb(points: np.ndarray, near: int, far: int, step: int, window: flo
     lengths. Samples run from ``near`` to ``far`` in ``step`` steps; the arc is
     oriented forward along the chain (from the chain-earlier sample onwards).
 
-    Returns ``(is_line, ox, oy, dx, dy, cx, cy, radius, sign, error)``: a line's
-    point and forward unit direction, a circle's centre, radius and turning
-    sign (+1 anticlockwise), and the samples' largest distance from the fit.
+    Returns ``(is_line, ox, oy, dx, dy, cx, cy, radius, sign, error, rss)``: a
+    line's point and forward unit direction, a circle's centre, radius and
+    turning sign (+1 anticlockwise), and the samples' largest distance from the
+    fit and the sum of their squared distances.
     """
     count = abs(far - near) + 1
     mx = 0.0
@@ -482,20 +509,24 @@ def _fit_side_nb(points: np.ndarray, near: int, far: int, step: int, window: flo
                 cx = centre_x + mx
                 cy = centre_y + my
     line_error = 0.0
+    line_rss = 0.0
     for i in range(count):
         p = near + i * step
         e = abs(dir_x * (points[p, 1] - my) - dir_y * (points[p, 0] - mx))
+        line_rss += e * e
         if e > line_error:
             line_error = e
     if is_line:
-        return True, mx, my, dir_x, dir_y, cx, cy, radius, sign, line_error
+        return True, mx, my, dir_x, dir_y, cx, cy, radius, sign, line_error, line_rss
     error = 0.0
+    rss = 0.0
     swept = 0.0
     for i in range(count):
         p = first + i
         ux = points[p, 0] - cx
         uy = points[p, 1] - cy
         e = abs(math.sqrt(ux * ux + uy * uy) - radius)
+        rss += e * e
         if e > error:
             error = e
         if i + 1 < count:
@@ -503,9 +534,9 @@ def _fit_side_nb(points: np.ndarray, near: int, far: int, step: int, window: flo
     # The line is kept unless the arc fits closer (a degenerate solve of nearly
     # collinear samples can return a small, poorly fitting circle).
     if error >= improvement * line_error:
-        return True, mx, my, dir_x, dir_y, cx, cy, radius, sign, line_error
+        return True, mx, my, dir_x, dir_y, cx, cy, radius, sign, line_error, line_rss
     sign = 1.0 if swept >= 0.0 else -1.0
-    return False, mx, my, dir_x, dir_y, cx, cy, radius, sign, error
+    return False, mx, my, dir_x, dir_y, cx, cy, radius, sign, error, rss
 
 
 @njit(cache=True, nogil=True)
@@ -601,68 +632,185 @@ def _meeting_nb(b_line: bool, box: float, boy: float, bdx: float, bdy: float, bc
 
 
 @njit(cache=True, nogil=True)
-def _side_nb(points: np.ndarray, index: int, step: int, skip: float, length: float,
-             minimum: float, smoothness: float, stops: np.ndarray, shrink: bool):
-    """One side of a candidate corner: its window (``_side_window_nb``) and arc
-    (``_fit_side_nb``).
+def _near_rms_nb(points: np.ndarray, near: int, far: int, step: int, fit, minimum: float) -> float:
+    """The root-mean-square distance from a side's arc (``fit``, from
+    ``_fit_side_nb``) of the window's samples within ``minimum`` of arc of its
+    near end (the tip skip): whether the path follows the side right from near
+    the corner, rather than a line pulled towards a round that fills the start
+    of the window."""
+    total = 0.0
+    count = 0
+    walked = 0.0
+    p = near
+    while True:
+        if fit[0]:
+            e = fit[3] * (points[p, 1] - fit[2]) - fit[4] * (points[p, 0] - fit[1])
+        else:
+            ux = points[p, 0] - fit[5]
+            uy = points[p, 1] - fit[6]
+            e = math.sqrt(ux * ux + uy * uy) - fit[7]
+        total += e * e
+        count += 1
+        if p == far:
+            break
+        following = p + step
+        dx = points[following, 0] - points[p, 0]
+        dy = points[following, 1] - points[p, 1]
+        walked += math.sqrt(dx * dx + dy * dy)
+        if walked > minimum:
+            break
+        p = following
+    return math.sqrt(total / count)
 
-    The side must be at least ``minimum`` long, within ``smoothness`` of its arc,
-    and its arc may turn by at most ``_SIDE_SWEEP`` over the window. With
-    ``shrink``, a full window that fails (it runs into another feature, such as
-    round the floor of a narrow slot) is judged on its nearest ``minimum`` past
-    the tip instead, like an edge cut short by a neighbouring corner.
 
-    Returns ``(ok, near, far, cut, stopped, is_line, ox, oy, dx, dy, cx, cy,
-    radius, sign, error)``; ``cut`` is True when the window ended before
-    ``skip + length`` (a stop, the chain end or a shrink), so a longer window
+@njit(cache=True, nogil=True)
+def _side_try_nb(points: np.ndarray, index: int, step: int, skip: float, length: float,
+                 minimum: float, smoothness: float, stops: np.ndarray):
+    """One side window of ``length`` past the tip skip (``_side_window_nb``) and its
+    arc (``_fit_side_nb``), and whether it is smooth: at least ``minimum`` long,
+    within ``smoothness`` of its arc, the arc turning by at most ``_SIDE_SWEEP``
+    over it, and the samples' root-mean-square distance from the arc within
+    ``_SIDE_RMS_LIMIT`` both over the whole window (a residual that no longer
+    looks like staircase noise: the window has run on into a different curve)
+    and over its first ``minimum`` of arc (``_near_rms_nb``: the arc follows the
+    path right from the tip skip, so a round whose tangent points lie beyond
+    the tip skip, filling the start of the window, is read as the side's own
+    arc rather than pulling a longer side's fit towards itself).
+
+    Returns ``(ok, near, far, cut, stopped, fit)``; ``cut`` is True when the window
+    ended before ``skip + length`` (a stop or the chain end), so a longer window
     would be the same.
     """
     near, far, window, travelled, stopped = _side_window_nb(points, index, step, skip, length,
                                                             minimum, stops)
     cut = travelled < skip + length
-    ok = window >= minimum
     fit = _fit_side_nb(points, near, far, step, window)
-    if ok and (fit[9] > smoothness or (not fit[0] and window > _SIDE_SWEEP * fit[7])):
-        ok = False
-        if shrink and not cut and length > minimum:
-            near, far, window, travelled, stopped = _side_window_nb(
-                points, index, step, skip, minimum, minimum, stops)
-            cut = True
-            ok = window >= minimum
-            fit = _fit_side_nb(points, near, far, step, window)
-            ok = ok and fit[9] <= smoothness and (fit[0] or window <= _SIDE_SWEEP * fit[7])
-    return (ok, near, far, cut, stopped, fit[0], fit[1], fit[2], fit[3], fit[4], fit[5],
-            fit[6], fit[7], fit[8], fit[9])
+    ok = (window >= minimum and fit[9] <= smoothness
+          and (fit[0] or window <= _SIDE_SWEEP * fit[7])
+          and fit[10] <= _SIDE_RMS_LIMIT * _SIDE_RMS_LIMIT * (abs(far - near) + 1)
+          and _near_rms_nb(points, near, far, step, fit, minimum) <= _SIDE_RMS_LIMIT)
+    return ok, near, far, cut, stopped, fit
+
+
+@njit(cache=True, nogil=True)
+def _grown_side_nb(points: np.ndarray, index: int, step: int, skip: float, minimum: float,
+                   cap: float, smoothness: float, stops: np.ndarray):
+    """One side of a candidate corner on its maximal window.
+
+    The window starts past the tip skip and grows outward from ``minimum`` of arc
+    for as long as it stays smooth (``_side_try_nb``: within ``smoothness`` and
+    with a staircase-sized residual): it doubles
+    (``_SIDE_GROWTH``) up to ``cap``, and past its last smooth length it is
+    bisected ``_SIDE_BISECTIONS`` times towards its first rough one. It stops at
+    a neighbouring corner marked in ``stops``, at the chain end, or at ``cap``.
+
+    Returns ``(ok, near, far, stopped, fit, chord)``: whether the minimum window
+    is smooth, the grown window's sample indices nearest and furthest from
+    ``index``, the stop that cut it (-1 for none), its arc (``_fit_side_nb``)
+    and the chord between its end samples.
+    """
+    ok, near, far, cut, stopped, fit = _side_try_nb(points, index, step, skip, minimum,
+                                                    minimum, smoothness, stops)
+    if ok:
+        length = minimum
+        while not cut and length < cap:
+            longer = min(cap, length * _SIDE_GROWTH)
+            trial = _side_try_nb(points, index, step, skip, longer, minimum, smoothness, stops)
+            if trial[0]:
+                ok, near, far, cut, stopped, fit = trial
+                length = longer
+                continue
+            low = length
+            high = longer
+            for _ in range(_SIDE_BISECTIONS):
+                middle = 0.5 * (low + high)
+                trial = _side_try_nb(points, index, step, skip, middle, minimum, smoothness,
+                                     stops)
+                if trial[0]:
+                    ok, near, far, cut, stopped, fit = trial
+                    low = middle
+                else:
+                    high = middle
+            break
+    dx = points[far, 0] - points[near, 0]
+    dy = points[far, 1] - points[near, 1]
+    return ok, near, far, stopped, fit, math.sqrt(dx * dx + dy * dy)
+
+
+@njit(cache=True, nogil=True)
+def _one_arc_nb(points: np.ndarray, first: int, last: int):
+    """One arc (a line included) fitted through the samples ``first`` to ``last``
+    (both side windows of a candidate corner and the tip between them): its mean
+    squared distance from them."""
+    length = 0.0
+    for q in range(first, last):
+        dx = points[q + 1, 0] - points[q, 0]
+        dy = points[q + 1, 1] - points[q, 1]
+        length += math.sqrt(dx * dx + dy * dy)
+    fit = _fit_side_nb(points, first, last, 1, length, 1.0)
+    return fit[10] / (last - first + 1)
+
+
+@njit(cache=True, nogil=True)
+def _direction_noise_nb(error: float, chord: float, quantisation: float) -> float:
+    """A side's direction noise (radians): ``atan2(e, L)``, ``L`` its chord and
+    ``e`` the larger of its fit ``error`` and the staircase ``quantisation``."""
+    return math.atan2(max(error, quantisation), chord)
+
+
+@njit(cache=True, nogil=True)
+def _arc_between_nb(points: np.ndarray, first: int, last: int) -> float:
+    """The arc length of the samples from ``first`` to ``last`` (``first <= last``)."""
+    length = 0.0
+    for q in range(first, last):
+        dx = points[q + 1, 0] - points[q, 0]
+        dy = points[q + 1, 1] - points[q, 1]
+        length += math.sqrt(dx * dx + dy * dy)
+    return length
 
 
 @njit(cache=True, nogil=True)
 def _corner_candidates(points: np.ndarray, smoothness: float, minimum: float,
-                       span: float, skip: float, threshold: float, allowance: float,
-                       stops: np.ndarray, active: np.ndarray):
-    """Per-index corner evidence: a direction jump between two smooth sides.
+                       span: float, cap: float, skip: float, noise_ratio: float, quantisation: float,
+                       excess: float, allowance: float, stops: np.ndarray,
+                       active: np.ndarray):
+    """Per-index corner evidence: the path follows two smooth sides right up to
+    the point where they meet.
 
     For every active interior sample each side is fitted with a circular arc
-    (``_fit_side_nb``; a straight line is the arc of infinite radius) on a window
-    that starts ``skip`` of arc from the sample (the tip skip, so a round the
-    allowance would sharpen is left out) and runs ``span`` further, and again
-    ``span * 1.75`` further (``_side_nb``; a span-scale side that is not smooth is
-    judged on its nearest ``minimum`` instead). At both scales each side must be
-    at least ``minimum`` long and within ``smoothness`` of its arc, and the two
-    arcs' forward tangents where they meet (their intersection nearest the sample)
-    must turn by at least ``threshold``. One arc fitted through both long sides
-    and the tip must fit clearly worse than the two sides do
-    (``_ONE_ARC_RATIO``, ``_ONE_ARC_FLOOR``): a smooth curve, a circle however
-    tight or a pixel staircase, is one arc, a corner is two. The long-scale
-    meeting point is the cusp, and it must lie within ``allowance`` of the
-    sample. A side window ends at a neighbouring corner marked in ``stops`` (2
-    confirmed, 1 provisional), so a short edge between two corners is judged on
-    its own; it is then the same window at both scales. ``cuts`` records, per
-    side, the provisional corner that ended its long window (-1 for none), for
-    the mutual support test in ``_geometric_corners``.
+    (``_fit_side_nb``; a straight line is the arc of infinite radius) on its
+    maximal window (``_grown_side_nb``): from ``skip`` of arc past the sample
+    (the tip skip) outward for as long as it stays within ``smoothness`` of its
+    arc, up to ``cap``. A sample is a candidate when all of these hold:
 
-    Emits ``(valid, turn, ix, iy, error, move, cuts)`` per index: the span-scale
-    turn, the cusp, the two long sides' summed error and the cusp's distance
-    from the sample feed the Python non-max suppression.
+
+    - the two arcs meet (their intersection nearest the sample is the cusp) and
+      their forward tangents there turn by at least ``noise_ratio`` times the two
+      sides' direction noise (``_direction_noise_nb``);
+    - the cusp lies within ``allowance`` of the sample, and within
+      ``skip * tan(turn / 4)`` plus the sides' noise ``e`` of it: a round of
+      radius ``r`` has its sharp point ``r (sec(turn / 2) - 1)`` from its arc and
+      its tangent points ``r tan(turn / 2)`` from the sharp point, so this holds
+      exactly when the round's tangent points lie within the tip skip (the sides
+      reach the corner);
+    - one arc through both side windows and the tip between them fits worse
+      than the two sides' own arcs by more than ``excess`` px root-mean-square
+      (the square root of the difference of their mean squared distances): a
+      smooth curve, a circle however tight or a pixel staircase is one arc, a
+      corner is two, and the staircase's zigzag adds the same mean square to
+      both fits.
+
+    A side window ends at a neighbouring corner marked in ``stops`` (2 confirmed,
+    1 provisional), so a short edge between two corners is judged on its own.
+    ``cuts`` records, per side, the provisional corner that ended its window
+    within ``skip + span`` of arc of the sample (-1 for none), for the mutual
+    support test in ``_geometric_corners``: a side cut that short by a corner
+    not yet confirmed is too short to trust on its own, while a longer one fixes
+    its direction whether or not that corner is confirmed.
+
+    Emits ``(valid, turn, ix, iy, error, move, cuts)`` per index: the turn, the
+    cusp, the two sides' summed error and the cusp's distance from the sample
+    feed the Python non-max suppression.
     """
     n = points.shape[0]
     valid = np.zeros(n, dtype=np.bool_)
@@ -677,63 +825,596 @@ def _corner_candidates(points: np.ndarray, smoothness: float, minimum: float,
             continue
         sx = points[index, 0]
         sy = points[index, 1]
-        b = _side_nb(points, index, -1, skip, span, minimum, smoothness, stops, True)
-        if not b[0]:
+        b_ok, b_near, b_far, b_stopped, b, b_chord = _grown_side_nb(
+            points, index, -1, skip, minimum, cap, smoothness, stops)
+        if not b_ok:
             continue
-        a = _side_nb(points, index, 1, skip, span, minimum, smoothness, stops, True)
-        if not a[0]:
+        a_ok, a_near, a_far, a_stopped, a, a_chord = _grown_side_nb(
+            points, index, 1, skip, minimum, cap, smoothness, stops)
+        if not a_ok:
             continue
-        met, _, _, turn = _meeting_nb(b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12],
-                                      b[13], a[5], a[6], a[7], a[8], a[9], a[10], a[11],
-                                      a[12], a[13], sx, sy)
-        if not met or turn < threshold:
+        met, px, py, turn = _meeting_nb(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                                        b[8], a[0], a[1], a[2], a[3], a[4], a[5], a[6],
+                                        a[7], a[8], sx, sy)
+        if not met:
             continue
-        # The long scale: a side cut short is the same window at both scales.
-        lb = b if b[3] else _side_nb(points, index, -1, skip, span * 1.75, minimum,
-                                     smoothness, stops, False)
-        if not lb[0]:
-            continue
-        la = a if a[3] else _side_nb(points, index, 1, skip, span * 1.75, minimum,
-                                     smoothness, stops, False)
-        if not la[0]:
-            continue
-        met, px, py, long_turn = _meeting_nb(lb[5], lb[6], lb[7], lb[8], lb[9], lb[10],
-                                             lb[11], lb[12], lb[13], la[5], la[6], la[7],
-                                             la[8], la[9], la[10], la[11], la[12], la[13],
-                                             sx, sy)
-        if not met or long_turn < threshold:
+        noise = (_direction_noise_nb(b[9], b_chord, quantisation)
+                 + _direction_noise_nb(a[9], a_chord, quantisation))
+        if turn < noise_ratio * noise:
             continue
         move = math.sqrt((px - sx) * (px - sx) + (py - sy) * (py - sy))
-        if move > allowance:
+        if move > allowance or move > skip * math.tan(turn / 4.0):
             continue
-        # One arc through both long sides and the tip.
-        first = lb[2]
-        last = la[2]
-        length = 0.0
-        for q in range(first, last):
-            dx = points[q + 1, 0] - points[q, 0]
-            dy = points[q + 1, 1] - points[q, 1]
-            length += math.sqrt(dx * dx + dy * dy)
-        one_arc = _fit_side_nb(points, first, last, 1, length, 1.0)[9]
-        if one_arc <= _ONE_ARC_RATIO * max(lb[14], la[14]) + _ONE_ARC_FLOOR:
+        sides = (b[10] + a[10]) / (b_near - b_far + a_far - a_near + 2)
+        if math.sqrt(max(0.0, _one_arc_nb(points, b_far, a_far) - sides)) <= excess:
             continue
         valid[index] = True
         turns[index] = turn
         ix[index] = px
         iy[index] = py
-        errors[index] = lb[14] + la[14]
+        errors[index] = b[9] + a[9]
         moves[index] = move
-        if lb[4] >= 0 and stops[lb[4]] == 1:
-            cuts[index, 0] = lb[4]
-        if la[4] >= 0 and stops[la[4]] == 1:
-            cuts[index, 1] = la[4]
+        if (b_stopped >= 0 and stops[b_stopped] == 1
+                and _arc_between_nb(points, b_stopped, index) < skip + span):
+            cuts[index, 0] = b_stopped
+        if (a_stopped >= 0 and stops[a_stopped] == 1
+                and _arc_between_nb(points, index, a_stopped) < skip + span):
+            cuts[index, 1] = a_stopped
     return valid, turns, ix, iy, errors, moves, cuts
 
 
 @njit(cache=True, nogil=True)
+def _fit_gate_crossings_nb(fit, gx: float, gy: float, cx: float, cy: float):
+    """Where a side fit (``_fit_side_nb``) crosses the gate line ``c + s * g``:
+    ``(count, s1, s2)``, the signed offsets along the unit gate direction."""
+    if fit[0]:
+        den = gx * fit[4] - gy * fit[3]
+        if abs(den) < 1e-12:
+            return 0, 0.0, 0.0
+        s = -((cx - fit[1]) * fit[4] - (cy - fit[2]) * fit[3]) / den
+        return 1, s, s
+    fx = cx - fit[5]
+    fy = cy - fit[6]
+    b = gx * fx + gy * fy
+    c = fx * fx + fy * fy - fit[7] * fit[7]
+    disc = b * b - c
+    if disc < 0.0:
+        return 0, 0.0, 0.0
+    root = math.sqrt(disc)
+    return 2, -b - root, -b + root
+
+
+@njit(cache=True, nogil=True)
+def _fit_in_band_nb(points: np.ndarray, gates: np.ndarray, first: int, last: int, fit,
+                    reach: float) -> bool:
+    """Whether a side fit crosses the pixel gate of every sample ``first..last``
+    (either order) within ``reach`` of its centre."""
+    lo = min(first, last)
+    hi = max(first, last)
+    for k in range(lo, hi + 1):
+        if gates[k, 0] == 0.0 and gates[k, 1] == 0.0:
+            continue
+        count, s1, s2 = _fit_gate_crossings_nb(fit, gates[k, 0], gates[k, 1],
+                                               gates[k, 2], gates[k, 3])
+        if count == 0 or min(abs(s1), abs(s2)) > reach:
+            return False
+    return True
+
+
+@njit(cache=True, nogil=True)
+def _tip_in_band_nb(points: np.ndarray, gates: np.ndarray, lo: int, hi: int, b, a,
+                    px: float, py: float, reach: float) -> bool:
+    """Whether the sharp corner (side ``b`` up to the cusp ``(px, py)``, side ``a``
+    after it) crosses the pixel gate of every sample strictly between ``lo`` and
+    ``hi`` within ``reach`` of its centre. Each side counts only on its own side
+    of the cusp, judged by its tangent there."""
+    tbx, tby = _arc_tangent_nb(b[0], b[3], b[4], b[5], b[6], b[8], px, py)
+    tax, tay = _arc_tangent_nb(a[0], a[3], a[4], a[5], a[6], a[8], px, py)
+    for k in range(lo + 1, hi):
+        gx = gates[k, 0]
+        gy = gates[k, 1]
+        if gx == 0.0 and gy == 0.0:
+            continue
+        cx = gates[k, 2]
+        cy = gates[k, 3]
+        best = math.inf
+        count, s1, s2 = _fit_gate_crossings_nb(b, gx, gy, cx, cy)
+        for j in range(count):
+            s = s1 if j == 0 else s2
+            if (cx + s * gx - px) * tbx + (cy + s * gy - py) * tby <= 1e-9:
+                best = min(best, abs(s))
+        count, s1, s2 = _fit_gate_crossings_nb(a, gx, gy, cx, cy)
+        for j in range(count):
+            s = s1 if j == 0 else s2
+            if (cx + s * gx - px) * tax + (cy + s * gy - py) * tay >= -1e-9:
+                best = min(best, abs(s))
+        if best > reach:
+            return False
+    return True
+
+
+# How many curvature steps either side of the samples' own curvature a band
+# side (``_band_side_nb``) tries, and the step as a fraction of the curvature
+# that bends a side's half-chord by one pixel (the band's width).
+_BAND_CURVATURE_STEPS = 12
+_BAND_CURVATURE_STEP = 0.25
+# A corner's turn must exceed this many times the two sides' direction noise
+# (half the range of directions the band allows each side at its near end, over
+# every curvature it allows): at 1 the two ranges do not overlap.
+_BAND_NOISE_RATIO = 1.0
+
+
+@njit(cache=True, nogil=True)
+def _bent_gate_constraint_nb(points: np.ndarray, gates: np.ndarray, k: int, lo: int, hi: int,
+                             ox: float, oy: float, ux: float, uy: float, curvature: float,
+                             poly: np.ndarray, count: int, spare: np.ndarray) -> int:
+    """``_gate_constraint_nb`` for the curves ``y = m x + k + curvature x^2 / 2``."""
+    if gates[k, 0] == 0.0 and gates[k, 1] == 0.0:
+        return count
+    a = max(lo, k - 1)
+    b = min(hi, k + 1)
+    dx = points[b, 0] - points[a, 0]
+    dy = points[b, 1] - points[a, 1]
+    gx = 0.5 * gates[k, 0]
+    gy = 0.5 * gates[k, 1]
+    if dx * gy - dy * gx < 0.0:
+        gx = -gx
+        gy = -gy
+    for side in range(2):
+        ex = gates[k, 2] + (gx if side == 0 else -gx) - ox
+        ey = gates[k, 3] + (gy if side == 0 else -gy) - oy
+        x = ex * ux + ey * uy
+        y = -ex * uy + ey * ux - 0.5 * curvature * x * x
+        if side == 0:
+            count = _clip_half_plane_nb(poly, count, -x, -1.0, y, spare)
+        else:
+            count = _clip_half_plane_nb(poly, count, x, 1.0, -y, spare)
+        if count == 0:
+            return 0
+        poly[:count] = spare[:count]
+    return count
+
+
+@njit(cache=True, nogil=True)
+def _band_curve_nb(points: np.ndarray, gates: np.ndarray, first: int, last: int,
+                   curvature: float, ox: float, oy: float, ux: float, uy: float,
+                   poly: np.ndarray, spare: np.ndarray) -> int:
+    """The (slope, offset) region of the curves ``y = m x + k + curvature x^2 / 2``
+    (frame at ``(ox, oy)``, x along ``(ux, uy)``) that cross every gate of the
+    samples ``first..last`` with each pixel on its own side; its size (0: none)."""
+    poly[0, 0], poly[0, 1] = -3.0, -3.0
+    poly[1, 0], poly[1, 1] = 3.0, -3.0
+    poly[2, 0], poly[2, 1] = 3.0, 3.0
+    poly[3, 0], poly[3, 1] = -3.0, 3.0
+    count = 4
+    for k in range(first, last + 1):
+        count = _bent_gate_constraint_nb(points, gates, k, first, last, ox, oy, ux, uy,
+                                         curvature, poly, count, spare)
+        if count == 0 or count > poly.shape[0] - 4:
+            return 0
+    return count
+
+
+@njit(cache=True, nogil=True)
+def _band_side_nb(points: np.ndarray, gates: np.ndarray, first: int, last: int, near: int,
+                  seed: float, straight_only: bool, sweep: float,
+                  poly: np.ndarray, spare: np.ndarray):
+    """A smooth side through the pixel band over the samples ``first..last``.
+
+    The side is ``y = m x + k + c x^2 / 2`` in the frame of the samples' chord:
+    a straight line (``c = 0``) when one crosses every gate, else the first
+    curvature, from ``seed`` (the samples' own, as a start) outward in steps of
+    ``_BAND_CURVATURE_STEP`` of the band's curvature resolution, for which one
+    does (and which turns by at most ``sweep`` over the side). The side is the
+    middle of the curves the band allows at that curvature. Nothing is fitted to
+    the samples.
+
+    Returns ``(ok, fit, noise)``: ``fit`` the side as ``_fit_side_nb`` gives it
+    (a line, or the circle of the side's curvature, at the ``near`` sample's end,
+    oriented forward) and ``noise`` half the range of directions the band allows
+    it at that end, over every curvature it allows (only straight lines with
+    ``straight_only``).
+    """
+    empty = (True, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    ux = points[last, 0] - points[first, 0]
+    uy = points[last, 1] - points[first, 1]
+    chord = math.sqrt(ux * ux + uy * uy)
+    if chord <= 0.0:
+        return False, empty, 0.0
+    ux /= chord
+    uy /= chord
+    spare2 = np.empty_like(poly)
+    spare3 = np.empty_like(poly)
+    ox = 0.5 * (points[first, 0] + points[last, 0])
+    oy = 0.5 * (points[first, 1] + points[last, 1])
+    half = 0.5 * chord
+    step = _BAND_CURVATURE_STEP * 2.0 / (half * half)
+    tries = 1 if straight_only else 2 + 2 * _BAND_CURVATURE_STEPS
+    for attempt in range(tries):
+        if attempt == 0:
+            curvature = 0.0
+        else:
+            j = attempt - 1
+            curvature = seed + (j // 2) * step * (1.0 if j % 2 == 0 else -1.0)
+            if j == 0:
+                curvature = seed
+            if curvature == 0.0:
+                continue
+        count = _band_curve_nb(points, gates, first, last, curvature, ox, oy, ux, uy,
+                               poly, spare)
+        if count == 0:
+            continue
+        m = 0.0
+        k = 0.0
+        for v in range(count):
+            m += poly[v, 0]
+            k += poly[v, 1]
+        m /= count
+        k /= count
+        if curvature != 0.0:
+            x0 = -half
+            x1 = half
+            turned = abs(math.atan(m + curvature * x1) - math.atan(m + curvature * x0))
+            if turned > sweep:
+                continue
+        ex = points[near, 0] - ox
+        ey = points[near, 1] - oy
+        xn = ex * ux + ey * uy
+        low = math.inf
+        high = -math.inf
+        for v in range(count):
+            slope = poly[v, 0] + curvature * xn
+            low = min(low, slope)
+            high = max(high, slope)
+        if not straight_only:
+            # The directions every other curvature the band allows gives the near
+            # end: the feasible curvatures form one interval round this one.
+            for direction in (-1.0, 1.0):
+                for i in range(1, 4 * _BAND_CURVATURE_STEPS + 1):
+                    other = curvature + direction * i * step
+                    size = _band_curve_nb(points, gates, first, last, other, ox, oy, ux, uy,
+                                          spare2, spare3)
+                    if size == 0:
+                        break
+                    for v in range(size):
+                        slope = spare2[v, 0] + other * xn
+                        low = min(low, slope)
+                        high = max(high, slope)
+        noise = 0.5 * (math.atan(high) - math.atan(low))
+        yn = m * xn + k + 0.5 * curvature * xn * xn
+        slope = m + curvature * xn
+        px = ox + xn * ux - yn * uy
+        py = oy + xn * uy + yn * ux
+        tx = ux - slope * uy
+        ty = uy + slope * ux
+        norm = math.sqrt(tx * tx + ty * ty)
+        tx /= norm
+        ty /= norm
+        bend = curvature / (1.0 + slope * slope) ** 1.5
+        if abs(bend) * chord < 1e-6:
+            return True, (True, px, py, tx, ty, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0), noise
+        radius = 1.0 / abs(bend)
+        sign = 1.0 if bend > 0.0 else -1.0
+        cx = px - sign * radius * ty
+        cy = py + sign * radius * tx
+        return True, (False, px, py, tx, ty, cx, cy, radius, sign, 0.0, 0.0), noise
+    return False, empty, 0.0
+
+
+@njit(cache=True, nogil=True)
+def _seed_curvature_nb(points: np.ndarray, first: int, last: int) -> float:
+    """The samples' own signed curvature over ``first..last`` (a start for the band
+    search, never the answer)."""
+    length = _arc_between_nb(points, first, last)
+    fit = _fit_side_nb(points, first, last, 1, length)
+    if fit[0]:
+        return 0.0
+    return fit[8] / fit[7]
+
+
+@njit(cache=True, nogil=True)
+def _band_side_try_nb(points: np.ndarray, gates: np.ndarray, index: int, step: int, skip: float,
+                      length: float, minimum: float, stops: np.ndarray,
+                      poly: np.ndarray, spare: np.ndarray):
+    """One side window of a candidate corner (``_side_window_nb``) and its band side
+    (``_band_side_nb``). Returns ``(ok, near, far, cut, stopped, fit, noise)``."""
+    near, far, window, travelled, stopped = _side_window_nb(points, index, step, skip, length,
+                                                            minimum, stops)
+    cut = travelled < skip + length
+    first = min(near, far)
+    last = max(near, far)
+    ok = window >= minimum and last - first >= 1
+    fit = (True, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    noise = 0.0
+    if ok:
+        ok, fit, noise = _band_side_nb(points, gates, first, last, near,
+                                       _seed_curvature_nb(points, first, last), False,
+                                       _SIDE_SWEEP, poly, spare)
+    return ok, near, far, cut, stopped, fit, noise
+
+
+@njit(cache=True, nogil=True)
+def _band_grown_side_nb(points: np.ndarray, gates: np.ndarray, index: int, step: int,
+                        skip: float, minimum: float, cap: float, stops: np.ndarray,
+                        poly: np.ndarray, spare: np.ndarray):
+    """One side of a candidate corner on its maximal window: grown from ``minimum``
+    as ``_grown_side_nb`` grows it, for as long as a band side exists.
+    Returns ``(ok, near, far, stopped, fit, noise)``."""
+    ok, near, far, cut, stopped, fit, noise = _band_side_try_nb(
+        points, gates, index, step, skip, minimum, minimum, stops, poly, spare)
+    if ok:
+        length = minimum
+        while not cut and length < cap:
+            longer = min(cap, length * _SIDE_GROWTH)
+            trial = _band_side_try_nb(points, gates, index, step, skip, longer, minimum, stops,
+                                      poly, spare)
+            if trial[0]:
+                ok, near, far, cut, stopped, fit, noise = trial
+                length = longer
+                continue
+            low = length
+            high = longer
+            for _ in range(_SIDE_BISECTIONS):
+                middle = 0.5 * (low + high)
+                trial = _band_side_try_nb(points, gates, index, step, skip, middle, minimum,
+                                          stops, poly, spare)
+                if trial[0]:
+                    ok, near, far, cut, stopped, fit, noise = trial
+                    low = middle
+                else:
+                    high = middle
+            break
+    return ok, near, far, stopped, fit, noise
+
+
+# Tangent-point distances (px from the sharp point) at which a smooth rounding of
+# a candidate corner is tried (``_smooth_fits_nb``).
+# A rounding whose middle 80% of turn spreads over more than this many tip skips
+# of arc is visible (``_smooth_fits_nb``): a round with its tangent points at the
+# tip skip spreads it over about 0.8 x 2 of them.
+_ROUND_SPREAD = 1.6
+_ROUND_REACHES = np.array((0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0,
+                           32.0, 48.0, 64.0))
+
+
+@njit(cache=True, nogil=True)
+def _nearest_sample_nb(points: np.ndarray, lo: int, hi: int, x: float, y: float) -> int:
+    best = math.inf
+    at = lo
+    for k in range(lo, hi + 1):
+        d = (points[k, 0] - x) ** 2 + (points[k, 1] - y) ** 2
+        if d < best:
+            best = d
+            at = k
+    return at
+
+
+@njit(cache=True, nogil=True)
+def _smooth_fits_nb(points: np.ndarray, gates: np.ndarray, index: int, b_far: int, a_far: int,
+                    b_near: int, a_near: int,
+                    b, a, b_len: float, a_len: float, px: float, py: float, reach: float,
+                    skip: float, reaches: np.ndarray) -> bool:
+    """Whether a smooth curve explains the pixels round a candidate corner at
+    ``(px, py)``: side ``b`` up to a tangent point, one cubic leaving and
+    arriving along the sides' tangents there (a round of any shape, its handles
+    set by the band, ``_band_handles_nb``), then side ``a``, all inside the band,
+    with the rounding visible: the cubic spreads the middle 80% of its turn over
+    more than ``_ROUND_SPREAD`` tip skips (``skip``) of arc. A round whose tangent
+    points lie within the tip skip turns within twice it, so a turn packed
+    tighter is one a corner sharpens. Tangent points are tried at each of
+    ``reaches`` from the sharp point, as far as the sides reach."""
+    tbx, tby = _arc_tangent_nb(b[0], b[3], b[4], b[5], b[6], b[8], px, py)
+    tax, tay = _arc_tangent_nb(a[0], a[3], a[4], a[5], a[6], a[8], px, py)
+    for t in reaches:
+        if t > b_len or t > a_len:
+            break
+        # The tangent points, and the sides' tangents there.
+        if b[0]:
+            sx, sy, sdx, sdy = px - t * tbx, py - t * tby, tbx, tby
+        else:
+            angle = -b[8] * t / b[7]
+            ux, uy = px - b[5], py - b[6]
+            c, s = math.cos(angle), math.sin(angle)
+            sx, sy = b[5] + ux * c - uy * s, b[6] + ux * s + uy * c
+            sdx, sdy = _arc_tangent_nb(False, b[3], b[4], b[5], b[6], b[8], sx, sy)
+        if a[0]:
+            ex, ey, edx, edy = px + t * tax, py + t * tay, tax, tay
+        else:
+            angle = a[8] * t / a[7]
+            ux, uy = px - a[5], py - a[6]
+            c, s = math.cos(angle), math.sin(angle)
+            ex, ey = a[5] + ux * c - uy * s, a[6] + ux * s + uy * c
+            edx, edy = _arc_tangent_nb(False, a[3], a[4], a[5], a[6], a[8], ex, ey)
+        ks = _nearest_sample_nb(points, b_far, index, sx, sy)
+        ke = _nearest_sample_nb(points, index, a_far, ex, ey)
+        if ke - ks < 2:
+            continue
+        # The sides hold over their windows; past a window's near end they must
+        # also hold up to the tangent point.
+        if ks > b_near and not _fit_in_band_nb(points, gates, b_near, ks, b, reach):
+            continue
+        if ke < a_near and not _fit_in_band_nb(points, gates, ke, a_near, a, reach):
+            continue
+        chord = math.sqrt((ex - sx) ** 2 + (ey - sy) ** 2)
+        margin, c1x, c1y, c2x, c2y, _ = _band_handles_nb(
+            points, gates, ks, ke, sx, sy, ex, ey, True, sdx, sdy, chord / 3.0,
+            True, edx, edy, chord / 3.0, reach)
+        if margin < 0.0:
+            continue
+        # Cumulative turn and arc along the cubic.
+        steps = 128
+        angles = np.empty(steps + 1)
+        arcs = np.empty(steps + 1)
+        previous_x, _ = _cubic_at_nb(sx, c1x, c2x, ex, 0.0)
+        previous_y, _ = _cubic_at_nb(sy, c1y, c2y, ey, 0.0)
+        arcs[0] = 0.0
+        for j in range(steps + 1):
+            u = j / steps
+            qx, dx = _cubic_at_nb(sx, c1x, c2x, ex, u)
+            qy, dy = _cubic_at_nb(sy, c1y, c2y, ey, u)
+            angle = math.atan2(dy, dx)
+            if j > 0:
+                while angle - angles[j - 1] > math.pi:
+                    angle -= 2.0 * math.pi
+                while angle - angles[j - 1] < -math.pi:
+                    angle += 2.0 * math.pi
+                arcs[j] = arcs[j - 1] + math.sqrt((qx - previous_x) ** 2 + (qy - previous_y) ** 2)
+            angles[j] = angle
+            previous_x = qx
+            previous_y = qy
+        total = angles[steps] - angles[0]
+        if abs(total) < 1e-9:
+            return True
+        low_arc = -1.0
+        high_arc = arcs[steps]
+        for j in range(steps + 1):
+            fraction = (angles[j] - angles[0]) / total
+            if low_arc < 0.0 and fraction >= 0.1:
+                low_arc = arcs[j]
+            if fraction >= 0.9:
+                high_arc = arcs[j]
+                break
+        if high_arc - low_arc > _ROUND_SPREAD * skip:
+            return True
+    return False
+
+
+@njit(cache=True, nogil=True)
+def _band_corner_candidates(points: np.ndarray, gates: np.ndarray, minimum: float,
+                            span: float, cap: float, skip: float, noise_ratio: float,
+                            reach: float, stops: np.ndarray,
+                            active: np.ndarray):
+    """Per-index corner evidence from the pixel band: two smooth sides the band
+    allows meet in a sharp point the band allows, and nothing smooth does.
+
+    For every active interior sample each side is a band side
+    (``_band_grown_side_nb``: a straight line, or a curve of one curvature, that
+    crosses every gate) on its maximal window from ``skip`` of arc past the
+    sample (the tip skip) outward, up to ``cap``. A sample is a candidate when
+    all of these hold:
+
+    - the sides meet (their intersection nearest the sample is the cusp), within
+      the tip skip of the sample, and turn there by at least ``noise_ratio``
+      times the sum of their direction noise (half the range of directions the
+      band allows each at its near end);
+    - the sharp corner, each side running up to the cusp, crosses every gate of
+      the tip between the windows (``_tip_in_band_nb``);
+    - no one smooth side crosses every gate from the far end of one window to the
+      far end of the other (``_band_side_nb`` over the whole span), and no
+      visible rounding of the corner does (``_smooth_fits_nb``: side, one cubic
+      along the sides' tangents turning over more than the tip skip, side).
+
+    Windows end at neighbouring corners marked in ``stops`` as in
+    ``_corner_candidates``, and ``cuts`` is recorded the same way. Emits
+    ``(valid, turn, ix, iy, noise, move, cuts)`` per index.
+    """
+    n = points.shape[0]
+    valid = np.zeros(n, dtype=np.bool_)
+    turns = np.zeros(n, dtype=np.float64)
+    ix = np.zeros(n, dtype=np.float64)
+    iy = np.zeros(n, dtype=np.float64)
+    errors = np.zeros(n, dtype=np.float64)
+    moves = np.zeros(n, dtype=np.float64)
+    cuts = np.full((n, 2), -1, dtype=np.int64)
+    poly = np.empty((512, 2))
+    spare = np.empty((512, 2))
+    for index in range(1, n - 1):
+        if not active[index]:
+            continue
+        sx = points[index, 0]
+        sy = points[index, 1]
+        b_ok, b_near, b_far, b_stopped, b, b_noise = _band_grown_side_nb(
+            points, gates, index, -1, skip, minimum, cap, stops, poly, spare)
+        if not b_ok:
+            continue
+        a_ok, a_near, a_far, a_stopped, a, a_noise = _band_grown_side_nb(
+            points, gates, index, 1, skip, minimum, cap, stops, poly, spare)
+        if not a_ok:
+            continue
+        met, px, py, turn = _meeting_nb(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                                        b[8], a[0], a[1], a[2], a[3], a[4], a[5], a[6],
+                                        a[7], a[8], sx, sy)
+        if not met:
+            continue
+        noise = b_noise + a_noise
+        if turn < noise_ratio * noise:
+            continue
+        move = math.sqrt((px - sx) * (px - sx) + (py - sy) * (py - sy))
+        if move > skip:
+            continue
+        if not _tip_in_band_nb(points, gates, b_near, a_near, b, a, px, py, reach):
+            continue
+        one_ok, _, _ = _band_side_nb(points, gates, b_far, a_far, index,
+                                     _seed_curvature_nb(points, b_far, a_far), False,
+                                     math.pi, poly, spare)
+        if one_ok:
+            continue
+        if _smooth_fits_nb(points, gates, index, b_far, a_far, b_near, a_near, b, a,
+                           _arc_between_nb(points, b_far, index),
+                           _arc_between_nb(points, index, a_far),
+                           px, py, reach, skip, _ROUND_REACHES):
+            continue
+        valid[index] = True
+        turns[index] = turn
+        ix[index] = px
+        iy[index] = py
+        errors[index] = noise
+        moves[index] = move
+        if (b_stopped >= 0 and stops[b_stopped] == 1
+                and _arc_between_nb(points, b_stopped, index) < skip + span):
+            cuts[index, 0] = b_stopped
+        if (a_stopped >= 0 and stops[a_stopped] == 1
+                and _arc_between_nb(points, index, a_stopped) < skip + span):
+            cuts[index, 1] = a_stopped
+    return valid, turns, ix, iy, errors, moves, cuts
+
+
+@njit(cache=True, nogil=True)
+def _band_provisional_corners(points: np.ndarray, gates: np.ndarray, minimum: float,
+                              noise_ratio: float, stops: np.ndarray, active: np.ndarray):
+    """``_provisional_corners`` from the band: samples between two ``minimum``-long
+    runs that each have a straight line through the band, turning by at least
+    ``noise_ratio`` times the two lines' direction noise. Emits ``(valid, turn,
+    noise)`` per index."""
+    n = points.shape[0]
+    valid = np.zeros(n, dtype=np.bool_)
+    turns = np.zeros(n, dtype=np.float64)
+    errors = np.zeros(n, dtype=np.float64)
+    poly = np.empty((512, 2))
+    spare = np.empty((512, 2))
+    for index in range(1, n - 1):
+        if not active[index]:
+            continue
+        near, far, window, _, _ = _side_window_nb(points, index, -1, 0.0, minimum, minimum, stops)
+        if window < minimum or near == far:
+            continue
+        b_ok, b, b_noise = _band_side_nb(points, gates, far, near, near, 0.0, True, 0.0,
+                                         poly, spare)
+        if not b_ok:
+            continue
+        near, far, window, _, _ = _side_window_nb(points, index, 1, 0.0, minimum, minimum, stops)
+        if window < minimum or near == far:
+            continue
+        a_ok, a, a_noise = _band_side_nb(points, gates, near, far, near, 0.0, True, 0.0,
+                                         poly, spare)
+        if not a_ok:
+            continue
+        turn = _angle_between_nb(b[3], b[4], a[3], a[4])
+        noise = b_noise + a_noise
+        if turn < noise_ratio * noise:
+            continue
+        valid[index] = True
+        turns[index] = turn
+        errors[index] = noise
+    return valid, turns, errors
+
+
+@njit(cache=True, nogil=True)
 def _provisional_corners(points: np.ndarray, deviation: float, minimum: float,
-                         threshold: float, stops: np.ndarray, active: np.ndarray):
-    """Samples that turn by ``threshold`` between two ``minimum``-long straight runs.
+                         noise_ratio: float, quantisation: float, stops: np.ndarray,
+                         active: np.ndarray):
+    """Samples that turn between two ``minimum``-long straight runs by at least
+    ``noise_ratio`` times the runs' direction noise (``_direction_noise_nb``).
 
     The shortest-edge form of the corner test, used only to cut the side windows
     of other candidates: two corners joined by a short edge each need the other
@@ -749,14 +1430,16 @@ def _provisional_corners(points: np.ndarray, deviation: float, minimum: float,
     for index in range(1, n - 1):
         if not active[index]:
             continue
-        bdx, bdy, berr, _, _, _, btrav, _ = _side_line(points, index, -1, minimum, stops)
+        bdx, bdy, berr, blen, _, _, btrav, _ = _side_line(points, index, -1, minimum, stops)
         if btrav < minimum or berr > deviation:
             continue
-        adx, ady, aerr, _, _, _, atrav, _ = _side_line(points, index, 1, minimum, stops)
+        adx, ady, aerr, alen, _, _, atrav, _ = _side_line(points, index, 1, minimum, stops)
         if atrav < minimum or aerr > deviation:
             continue
         turn = _angle_between_nb(bdx, bdy, adx, ady)
-        if turn < threshold:
+        noise = (_direction_noise_nb(berr, blen, quantisation)
+                 + _direction_noise_nb(aerr, alen, quantisation))
+        if turn < noise_ratio * noise:
             continue
         valid[index] = True
         turns[index] = turn
@@ -809,30 +1492,40 @@ def _tip_skip(settings: TraceSettings) -> float:
     return _TIP_SKIP_ALLOWANCES * _sharpening_allowance(settings)
 
 
+def _side_cap(settings: TraceSettings) -> float:
+    """The longest side window (px of arc past the tip skip) of a corner test:
+    ``_SIDE_CAP_SPANS`` corner analysis spans, and at least the minimum straight
+    length."""
+    minimum = max(1e-4, float(settings.minimum_straight_length))
+    return max(minimum, _SIDE_CAP_SPANS * max(1e-4, float(settings.corner_analysis_span)))
+
+
 def _corner_reach(settings: TraceSettings) -> float:
     """The furthest arc (px) a corner test reads from its sample: the tip skip plus
-    the long side window."""
-    minimum = max(1e-4, float(settings.minimum_straight_length))
-    span = max(minimum, float(settings.corner_analysis_span))
-    return _tip_skip(settings) + span * 1.75
+    the longest side window."""
+    return _tip_skip(settings) + _side_cap(settings)
 
 
 def _geometric_corners(points: np.ndarray, settings: TraceSettings,
                        closed: bool = False) -> dict[int, Point]:
-    """Find corners: a direction jump between two smooth sides.
+    """Find corners: the path follows two smooth sides right up to where they meet.
 
     Each side of a candidate is fitted with a circular arc (a straight line
-    included) past the tip skip, at two scales, and the arcs' tangents where
-    they meet must turn by ``corner_threshold``; the cusp is their intersection,
-    within ``corner_sharpening_allowance`` of the sample (``_corner_candidates``).
-    A circle's two sides are one arc, so it has no corner however tight; a pixel
+    included) on its maximal window past the tip skip; the arcs' tangents where
+    they meet must turn by more than ``_CORNER_NOISE_RATIO`` times the sides'
+    direction noise, the cusp (their intersection) must lie within
+    ``corner_sharpening_allowance`` of the sample and close enough that a round
+    there has its tangent points within the tip skip, and one arc through both
+    sides must fit clearly worse than the two (``_corner_candidates``). A
+    circle's two sides are one arc, so it has no corner however tight; a pixel
     staircase is a smooth side, not a series of turns; a crescent's tip is two
     arcs crossing. The per-index evidence runs in Numba kernels; the non-max
     suppression stays here.
 
     Corners are confirmed in rounds. Every round cuts side windows at the
     corners confirmed so far and at provisional corners
-    (``_provisional_corners``: a turn between two minimum-length straight runs),
+    (``_provisional_corners``: a turn above the direction noise between two
+    minimum-length straight runs),
     so an edge of at least ``minimum_straight_length`` between two corners (an
     H, a notch, a bar end) keeps both corners, and a sample beside a corner,
     whose window would wrap round it, is cut short there. The first round tests
@@ -848,7 +1541,7 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings,
     smoothness = max(1e-4, float(settings.side_smoothness))
     minimum = max(1e-4, float(settings.minimum_straight_length))
     span = max(minimum, float(settings.corner_analysis_span))
-    threshold = math.radians(float(settings.corner_threshold))
+    cap = _side_cap(settings)
     allowance = _sharpening_allowance(settings)
     skip = _tip_skip(settings)
     reach = _corner_reach(settings)
@@ -932,9 +1625,11 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings,
         kinds[list(confirmed)] = 2
         return kinds[ring_index]
 
+    gates = _sample_gates(array)
+
     def evidence(stops: np.ndarray, active: np.ndarray):
-        valid, turns, ix, iy, errors, moves, cuts = _corner_candidates(
-            array, smoothness, minimum, span, skip, threshold, allowance, stops, active)
+        valid, turns, ix, iy, errors, moves, cuts = _band_corner_candidates(
+            array, gates, minimum, span, cap, skip, _BAND_NOISE_RATIO, _BAND_REACH, stops, active)
         valid &= own
         # A candidate whose two sides both end at provisional corners stands only
         # if both of those are candidates too (a small polygon's corners support
@@ -983,13 +1678,11 @@ def _geometric_corners(points: np.ndarray, settings: TraceSettings,
         return gap <= distance
 
     def propose(stops: np.ndarray, active: np.ndarray) -> dict[int, Point]:
-        valid, turns, errors = _provisional_corners(array, smoothness, minimum, threshold,
-                                                    stops, active)
-        return suppress(
-            [((0.0, -float(errors[position]), float(turns[position])),
-              int(ring_index[position]),
-              (float(array[position, 0]), float(array[position, 1])))
-             for position in np.flatnonzero(valid & own)], chosen)
+        valid, turns, errors = _band_provisional_corners(array, gates, minimum,
+                                                         _BAND_NOISE_RATIO, stops, active)
+        return {int(ring_index[position]): (float(array[position, 0]), float(array[position, 1]))
+                for position in np.flatnonzero(valid & own)
+                if int(ring_index[position]) not in chosen}
 
     chosen: dict[int, Point] = {}
     # Round one tests every sample; later rounds only the samples whose windows
@@ -1258,17 +1951,161 @@ def _angle_between_nb(ax: float, ay: float, bx: float, by: float) -> float:
 
 
 @njit(cache=True, nogil=True)
+def _clip_half_plane_nb(poly: np.ndarray, count: int, a: float, b: float, c: float,
+                        out: np.ndarray) -> int:
+    """Clip the convex polygon ``poly[:count]`` in the (slope, offset) plane to
+    ``a * m + b * k + c >= 0``, writing the result to ``out``; returns its size."""
+    size = 0
+    for i in range(count):
+        j = (i + 1) % count
+        pm, pk = poly[i, 0], poly[i, 1]
+        qm, qk = poly[j, 0], poly[j, 1]
+        vp = a * pm + b * pk + c
+        vq = a * qm + b * qk + c
+        if vp >= 0.0:
+            out[size, 0] = pm
+            out[size, 1] = pk
+            size += 1
+        if (vp >= 0.0) != (vq >= 0.0):
+            f = vp / (vp - vq)
+            out[size, 0] = pm + f * (qm - pm)
+            out[size, 1] = pk + f * (qk - pk)
+            size += 1
+    return size
+
+
+@njit(cache=True, nogil=True)
+def _gate_constraint_nb(points: np.ndarray, gates: np.ndarray, k: int, lo: int, hi: int,
+                        ox: float, oy: float, ux: float, uy: float,
+                        poly: np.ndarray, count: int, spare: np.ndarray) -> int:
+    """Clip the lines ``y = m x + k`` (in the frame at ``(ox, oy)`` with x along
+    ``(ux, uy)``) to those crossing sample ``k``'s gate with the pixel on its
+    left on their left: both gate ends give a half-plane. Returns the new size
+    (the polygon is left in ``poly``)."""
+    if gates[k, 0] == 0.0 and gates[k, 1] == 0.0:
+        return count
+    a = max(lo, k - 1)
+    b = min(hi, k + 1)
+    dx = points[b, 0] - points[a, 0]
+    dy = points[b, 1] - points[a, 1]
+    gx = 0.5 * gates[k, 0]
+    gy = 0.5 * gates[k, 1]
+    # The gate end on the traversal's left (positive cross product) must stay left.
+    if dx * gy - dy * gx < 0.0:
+        gx = -gx
+        gy = -gy
+    for side in range(2):
+        ex = gates[k, 2] + (gx if side == 0 else -gx) - ox
+        ey = gates[k, 3] + (gy if side == 0 else -gy) - oy
+        x = ex * ux + ey * uy
+        y = -ex * uy + ey * ux
+        # Left end: y - m x - k >= 0; right end: m x + k - y >= 0.
+        if side == 0:
+            count = _clip_half_plane_nb(poly, count, -x, -1.0, y, spare)
+        else:
+            count = _clip_half_plane_nb(poly, count, x, 1.0, -y, spare)
+        if count == 0:
+            return 0
+        poly[:count] = spare[:count]
+    return count
+
+
+@njit(cache=True, nogil=True)
+def _band_tangents_nb(points: np.ndarray, gates: np.ndarray, lo: int, hi: int, reach: int):
+    """Each gated sample's tangent from the pixel band, into ``gates[:, 4:6]``.
+
+    Around sample ``i`` the window of samples grows one sample on each side at a
+    time (within ``lo..hi`` and ``reach`` samples) for as long as some straight
+    line still crosses every gate in it, each with the pixel on its left kept on
+    its left. The lines that do form a convex region of slopes and offsets,
+    clipped by each gate; the tangent is the middle of the slopes left when the
+    window can grow no further. Nothing is fitted to the samples: the band's
+    straight stretches set the direction.
+    """
+    poly = np.empty((64, 2))
+    spare = np.empty((64, 2))
+    keep = np.empty((64, 2))
+    for i in range(lo, hi + 1):
+        if gates[i, 0] == 0.0 and gates[i, 1] == 0.0:
+            continue
+        a = max(lo, i - 2)
+        b = min(hi, i + 2)
+        ux = points[b, 0] - points[a, 0]
+        uy = points[b, 1] - points[a, 1]
+        norm = math.sqrt(ux * ux + uy * uy)
+        if norm == 0.0:
+            continue
+        ux /= norm
+        uy /= norm
+        ox = gates[i, 2]
+        oy = gates[i, 3]
+        poly[0, 0], poly[0, 1] = -2.0, -2.0
+        poly[1, 0], poly[1, 1] = 2.0, -2.0
+        poly[2, 0], poly[2, 1] = 2.0, 2.0
+        poly[3, 0], poly[3, 1] = -2.0, 2.0
+        count = _gate_constraint_nb(points, gates, i, lo, hi, ox, oy, ux, uy, poly, 4, spare)
+        if count == 0:
+            continue
+        kept = count
+        keep[:count] = poly[:count]
+        left = i
+        right = i
+        for _ in range(reach):
+            grew = False
+            for side in range(2):
+                k = left - 1 if side == 0 else right + 1
+                if k < lo or k > hi:
+                    continue
+                count = _gate_constraint_nb(points, gates, k, lo, hi, ox, oy, ux, uy,
+                                            poly, count, spare)
+                if count == 0 or count > 60:
+                    break
+                if side == 0:
+                    left = k
+                else:
+                    right = k
+                grew = True
+            if count == 0 or count > 60 or not grew:
+                break
+            kept = count
+            keep[:count] = poly[:count]
+        low = math.inf
+        high = -math.inf
+        for v in range(kept):
+            low = min(low, keep[v, 0])
+            high = max(high, keep[v, 0])
+        slope = 0.5 * (low + high)
+        tx = ux - slope * uy
+        ty = uy + slope * ux
+        length = math.sqrt(tx * tx + ty * ty)
+        gates[i, 4] = tx / length
+        gates[i, 5] = ty / length
+
+
+@njit(cache=True, nogil=True)
+def _band_tangent_at_nb(gates: np.ndarray, index: int, fx: float, fy: float):
+    """Sample ``index``'s band tangent oriented along ``(fx, fy)``, and whether it has one."""
+    tx = gates[index, 4]
+    ty = gates[index, 5]
+    if tx == 0.0 and ty == 0.0:
+        return fx, fy, False
+    if tx * fx + ty * fy < 0.0:
+        return -tx, -ty, True
+    return tx, ty, True
+
+
+@njit(cache=True, nogil=True)
 def _join_nb(points: np.ndarray, index: int, lo: int, hi: int,
              in_line: bool, in_x: float, in_y: float,
-             out_line: bool, out_x: float, out_y: float, large: float):
+             out_line: bool, out_x: float, out_y: float, large: float, gates: np.ndarray):
     """The shared forward unit tangent of the symmetric node at ``index``.
 
     A straight-line side's direction (``in_x, in_y`` or ``out_x, out_y``, its
     chord) wins, so the line stays straight and the curve's handle continues it.
-    Otherwise it is the total-least-squares direction of the samples within
-    ``large`` of arc on both sides (windows limited to ``lo..hi``), oriented
-    forward; a degenerate window falls back to the chord of the two neighbouring
-    samples.
+    Otherwise it is the sample's band tangent (``_band_tangents_nb``) where it has
+    one, else the total-least-squares direction of the samples within ``large``
+    of arc on both sides (windows limited to ``lo..hi``), oriented forward; a
+    degenerate window falls back to the chord of the two neighbouring samples.
     """
     if in_line:
         return in_x, in_y
@@ -1278,7 +2115,8 @@ def _join_nb(points: np.ndarray, index: int, lo: int, hi: int,
     last = _walk_nb(points, index, 1, large, lo, hi)
     tx, ty, ok = _tls_direction_nb(points, first, last)
     if ok:
-        return tx, ty
+        bx, by, band = _band_tangent_at_nb(gates, index, tx, ty)
+        return bx, by
     first = max(lo, index - 1)
     last = min(hi, index + 1)
     tx, ty, _ = _chord_direction_nb(points, first, last)
@@ -2017,7 +2855,7 @@ def _inflections_nb(theta: np.ndarray, sx: np.ndarray, sy: np.ndarray,
 def _unit_candidates_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                         scale: float, bends: bool, tolerance: float, theta: np.ndarray,
                         c_index: np.ndarray, c_tx: np.ndarray, c_ty: np.ndarray,
-                        c_kind: np.ndarray) -> int:
+                        c_kind: np.ndarray, gates: np.ndarray) -> int:
     """Candidate nodes strictly inside the curve unit ``first..last``.
 
     On the samples smoothed at ``scale`` (``_smooth_unit_nb``), with the floors
@@ -2101,6 +2939,7 @@ def _unit_candidates_nb(points: np.ndarray, first: int, last: int, lo: int, hi: 
         elif dx * tx[local] + dy * ty[local] < 0.0:
             dx = -dx
             dy = -dy
+        dx, dy, _ = _band_tangent_at_nb(gates, index, dx, dy)
         c_index[count] = index
         c_tx[count] = dx
         c_ty[count] = dy
@@ -2139,9 +2978,10 @@ def _unit_candidates_nb(points: np.ndarray, first: int, last: int, lo: int, hi: 
             turn = (theta[right] - theta[left]) * sign
             minor = turn < 2.0 * _LOBE_TURN or _bulge_nb(sx, sy, left, right) < floor
             norm = math.sqrt(tx[local] * tx[local] + ty[local] * ty[local])
+            bx, by, _ = _band_tangent_at_nb(gates, first + local, tx[local] / norm, ty[local] / norm)
             c_index[count] = first + local
-            c_tx[count] = tx[local] / norm
-            c_ty[count] = ty[local] / norm
+            c_tx[count] = bx
+            c_ty[count] = by
             c_kind[count] = _KIND_MINOR_BEND if minor else _KIND_BEND
             count += 1
     return count
@@ -2409,12 +3249,236 @@ def _legs_cross_nb(p0x: float, p0y: float, c1x: float, c1y: float,
 
 
 @njit(cache=True, nogil=True)
+def _cubic_at_nb(a: float, b: float, c: float, d: float, t: float):
+    s = 1.0 - t
+    value = s * s * s * a + 3.0 * s * s * t * b + 3.0 * s * t * t * c + t * t * t * d
+    slope = 3.0 * (s * s * (b - a) + 2.0 * s * t * (c - b) + t * t * (d - c))
+    return value, slope
+
+
+@njit(cache=True, nogil=True)
+def _gate_offset_nb(p0x: float, p0y: float, c1x: float, c1y: float, c2x: float, c2y: float,
+                    p3x: float, p3y: float, axis: int, cx: float, cy: float, reach: float,
+                    guess: float, steps: int) -> float:
+    """How far from the gate's centre ``(cx, cy)``, along the gate's ``axis``, the
+    cubic crosses the gate's line: Newton from ``guess``, and when that crossing
+    is not within ``reach``, the nearest of every crossing found on ``steps``
+    even pieces. ``inf`` when the cubic never crosses the line."""
+    if axis == 0:
+        a, b, c, d, level = p0y, c1y, c2y, p3y, cy
+        e, f, g, h, centre = p0x, c1x, c2x, p3x, cx
+    else:
+        a, b, c, d, level = p0x, c1x, c2x, p3x, cx
+        e, f, g, h, centre = p0y, c1y, c2y, p3y, cy
+    t = guess
+    for _ in range(12):
+        value, slope = _cubic_at_nb(a, b, c, d, t)
+        value -= level
+        if abs(value) < 1e-10:
+            break
+        if slope == 0.0:
+            break
+        t = min(1.0, max(0.0, t - value / slope))
+    best = math.inf
+    value, _ = _cubic_at_nb(a, b, c, d, t)
+    if abs(value - level) < 1e-8:
+        along, _ = _cubic_at_nb(e, f, g, h, t)
+        best = abs(along - centre)
+        if best <= reach:
+            return best
+    previous, _ = _cubic_at_nb(a, b, c, d, 0.0)
+    previous -= level
+    for k in range(1, steps + 1):
+        t1 = k / steps
+        current, _ = _cubic_at_nb(a, b, c, d, t1)
+        current -= level
+        if previous == 0.0 or previous * current < 0.0 or (current == 0.0 and k == steps):
+            t0 = (k - 1) / steps
+            u = t0 if previous == 0.0 else (t1 if current == 0.0 else
+                                            t0 + (t1 - t0) * previous / (previous - current))
+            along, _ = _cubic_at_nb(e, f, g, h, u)
+            best = min(best, abs(along - centre))
+        previous = current
+    return best
+
+
+@njit(cache=True, nogil=True)
+def _band_margin_nb(points: np.ndarray, gates: np.ndarray, start: int, end: int,
+                    p0x: float, p0y: float, c1x: float, c1y: float, c2x: float, c2y: float,
+                    p3x: float, p3y: float, reach: float, floor: float):
+    """How far inside the pixel band the piece stays: the least, over the gates
+    of the samples strictly inside it, of ``reach`` minus where it crosses the
+    gate (negative when it misses one), and that sample's offset. Stops early
+    once the margin drops to ``floor``. ``(inf, -1)`` for a piece spanning no
+    gate."""
+    m = end - start + 1
+    total = 0.0
+    for k in range(start + 1, end + 1):
+        dx = points[k, 0] - points[k - 1, 0]
+        dy = points[k, 1] - points[k - 1, 1]
+        total += math.sqrt(dx * dx + dy * dy)
+    arc = 0.0
+    steps = 8 * (m - 1) + 16
+    least = math.inf
+    at = -1
+    for k in range(start + 1, end):
+        dx = points[k, 0] - points[k - 1, 0]
+        dy = points[k, 1] - points[k - 1, 1]
+        arc += math.sqrt(dx * dx + dy * dy)
+        if gates[k, 0] == 0.0 and gates[k, 1] == 0.0:
+            continue
+        axis = 0 if gates[k, 0] != 0.0 else 1
+        guess = arc / total if total > 0.0 else 0.5
+        offset = _gate_offset_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y, axis,
+                                 gates[k, 2], gates[k, 3], reach, guess, steps)
+        margin = reach - offset if offset < math.inf else -2.0 * reach
+        if margin < least:
+            least = margin
+            at = k - start
+            if least <= floor:
+                break
+    return least, at
+
+
+@njit(cache=True, nogil=True)
+def _band_handles_nb(points: np.ndarray, gates: np.ndarray, start: int, end: int,
+                     p0x: float, p0y: float, p3x: float, p3y: float,
+                     s_fixed: bool, d0x: float, d0y: float, a: float,
+                     e_fixed: bool, d3x: float, d3y: float, b: float, reach: float):
+    """The handles that keep the piece most central in the pixel band.
+
+    The handles are ``P0 + a * D0`` and ``P3 - b * D3``: from the given
+    lengths and unit directions, a pattern search over the lengths (kept between
+    ``_MIN_HANDLE`` of the chord and the chord) and, at a free end, the
+    direction's angle maximises ``_band_margin_nb``, keeping only
+    chord-monotone pieces. It is seeded from the given handles and from third-of-chord
+    ones. Nothing is fitted to the samples' positions: the band is the target.
+    Returns ``(margin, c1x, c1y, c2x, c2y, worst)``.
+    """
+    chord = math.sqrt((p3x - p0x) ** 2 + (p3y - p0y) ** 2)
+    low = _BAND_HANDLE_MIN * chord
+    high = _BAND_HANDLE_MAX * chord
+    best_margin = -math.inf
+    best = np.empty(4)
+    best_worst = -1
+    for seed in range(2):
+        la = a if seed == 0 else chord / 3.0
+        lb = b if seed == 0 else chord / 3.0
+        la = min(high, max(low, la))
+        lb = min(high, max(low, lb))
+        angle0 = 0.0
+        angle3 = 0.0
+        c1x = p0x + la * d0x
+        c1y = p0y + la * d0y
+        c2x = p3x - lb * d3x
+        c2y = p3y - lb * d3y
+        if not _BAND_MONOTONE or _chord_monotone_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y):
+            margin, worst = _band_margin_nb(points, gates, start, end, p0x, p0y, c1x, c1y,
+                                            c2x, c2y, p3x, p3y, reach, -math.inf)
+        else:
+            margin, worst = -math.inf, (end - start) // 2
+        step = 0.25 * chord
+        turn = 0.3
+        for _ in range(60):
+            improved = False
+            for coordinate in range(4):
+                if coordinate == 2 and s_fixed:
+                    continue
+                if coordinate == 3 and e_fixed:
+                    continue
+                for sign in (-1.0, 1.0):
+                    na, nb, n0, n3 = la, lb, angle0, angle3
+                    if coordinate == 0:
+                        na = min(high, max(low, la + sign * step))
+                    elif coordinate == 1:
+                        nb = min(high, max(low, lb + sign * step))
+                    elif coordinate == 2:
+                        n0 = angle0 + sign * turn
+                    else:
+                        n3 = angle3 + sign * turn
+                    cos0, sin0 = math.cos(n0), math.sin(n0)
+                    cos3, sin3 = math.cos(n3), math.sin(n3)
+                    e0x = d0x * cos0 - d0y * sin0
+                    e0y = d0x * sin0 + d0y * cos0
+                    e3x = d3x * cos3 - d3y * sin3
+                    e3y = d3x * sin3 + d3y * cos3
+                    q1x = p0x + na * e0x
+                    q1y = p0y + na * e0y
+                    q2x = p3x - nb * e3x
+                    q2y = p3y - nb * e3y
+                    if _BAND_MONOTONE and not _chord_monotone_nb(p0x, p0y, q1x, q1y, q2x, q2y,
+                                                                 p3x, p3y):
+                        continue
+                    trial, trial_worst = _band_margin_nb(points, gates, start, end, p0x, p0y,
+                                                         q1x, q1y, q2x, q2y, p3x, p3y, reach,
+                                                         margin)
+                    if trial > margin + 1e-9:
+                        margin, worst = trial, trial_worst
+                        la, lb, angle0, angle3 = na, nb, n0, n3
+                        c1x, c1y, c2x, c2y = q1x, q1y, q2x, q2y
+                        improved = True
+            if not improved:
+                step *= 0.5
+                turn *= 0.5
+                if step < 0.005 * chord and turn < 0.005:
+                    break
+        if margin > best_margin:
+            best_margin = margin
+            best[0], best[1], best[2], best[3] = c1x, c1y, c2x, c2y
+            best_worst = worst
+        if best_margin >= 0.0:
+            break
+    return best_margin, best[0], best[1], best[2], best[3], best_worst
+
+
+@njit(cache=True, nogil=True)
+def _crosses_gate_nb(p0x: float, p0y: float, c1x: float, c1y: float, c2x: float, c2y: float,
+                     p3x: float, p3y: float, axis: int, cx: float, cy: float, reach: float,
+                     guess: float, steps: int) -> bool:
+    """Whether the cubic crosses the gate through ``(cx, cy)`` along ``axis``
+    within ``reach`` of it (``_gate_offset_nb``)."""
+    return _gate_offset_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y, axis, cx, cy, reach,
+                           guess, steps) <= reach + 1e-9
+
+
+@njit(cache=True, nogil=True)
+def _band_miss_nb(points: np.ndarray, gates: np.ndarray, start: int, end: int,
+                  p0x: float, p0y: float, c1x: float, c1y: float, c2x: float, c2y: float,
+                  p3x: float, p3y: float, reach: float) -> int:
+    """Offset from ``start`` of the first interior sample whose pixel gate the
+    piece misses (``_sample_gates``), or -1 when it crosses every one. A line is
+    the cubic with its controls on its ends."""
+    if reach <= 0.0 or end - start < 2:
+        return -1
+    total = 0.0
+    for k in range(start + 1, end + 1):
+        dx = points[k, 0] - points[k - 1, 0]
+        dy = points[k, 1] - points[k - 1, 1]
+        total += math.sqrt(dx * dx + dy * dy)
+    arc = 0.0
+    steps = 8 * (end - start) + 16
+    for k in range(start + 1, end):
+        dx = points[k, 0] - points[k - 1, 0]
+        dy = points[k, 1] - points[k - 1, 1]
+        arc += math.sqrt(dx * dx + dy * dy)
+        if gates[k, 0] == 0.0 and gates[k, 1] == 0.0:
+            continue
+        axis = 0 if gates[k, 0] != 0.0 else 1
+        guess = arc / total if total > 0.0 else 0.5
+        if not _crosses_gate_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y, axis,
+                                gates[k, 2], gates[k, 3], reach, guess, steps):
+            return k - start
+    return -1
+
+
+@njit(cache=True, nogil=True)
 def _pair_fit_nb(points: np.ndarray, start: int, end: int,
                  s_fixed: bool, stx: float, sty: float,
                  e_fixed: bool, etx: float, ety: float,
                  tolerance: float, pad_cap: float, window: float, refine: bool,
                  t: np.ndarray, fitted: np.ndarray,
-                 arc: np.ndarray, table: np.ndarray, base: int):
+                 arc: np.ndarray, table: np.ndarray, base: int,
+                 gates: np.ndarray, band_reach: float):
     """One piece from node ``start`` to node ``end`` and whether it is acceptable.
 
     Two free ends straight within ``tolerance`` (or adjacent) give a line.
@@ -2439,7 +3503,8 @@ def _pair_fit_nb(points: np.ndarray, start: int, end: int,
         if m <= 2:
             return True, 0.0, 0.0, True, p0x, p0y, p3x, p3y, 0
         line_error, line_split = _distance_to_line_nb(points, start, end)
-        if line_error <= tolerance:
+        if line_error <= tolerance and _band_miss_nb(points, gates, start, end, p0x, p0y, p0x, p0y,
+                                                     p3x, p3y, p3x, p3y, band_reach) < 0:
             return True, 0.0, line_error, True, p0x, p0y, p3x, p3y, line_split
     if m <= 2:
         c1x, c1y, c2x, c2y = _constrained_cubic_nb(
@@ -2479,6 +3544,31 @@ def _pair_fit_nb(points: np.ndarray, start: int, end: int,
             error = new_error
             worst = new_worst
     valid = error <= tolerance and _chord_monotone_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y)
+    if band_reach > 0.0 and error <= _BAND_SEARCH_GATE * tolerance:
+        # The band, not the samples, sets the handles: from the least-squares
+        # handles as a seed, the handles that stay most central in it.
+        la = math.sqrt((c1x - p0x) ** 2 + (c1y - p0y) ** 2)
+        lb = math.sqrt((p3x - c2x) ** 2 + (p3y - c2y) ** 2)
+        if s_fixed:
+            d0x, d0y = stx, sty
+        elif la > 0.0:
+            d0x, d0y = (c1x - p0x) / la, (c1y - p0y) / la
+        else:
+            d0x, d0y = _arrival_tangent_nb(p0x, p0y, True, 0.0, 0.0, p3x, p3y)
+        if e_fixed:
+            d3x, d3y = etx, ety
+        elif lb > 0.0:
+            d3x, d3y = (p3x - c2x) / lb, (p3y - c2y) / lb
+        else:
+            d3x, d3y = _arrival_tangent_nb(p0x, p0y, True, 0.0, 0.0, p3x, p3y)
+        margin, n1x, n1y, n2x, n2y, band_worst = _band_handles_nb(
+            points, gates, start, end, p0x, p0y, p3x, p3y, s_fixed, d0x, d0y, la,
+            e_fixed, d3x, d3y, lb, band_reach)
+        if margin < math.inf:
+            c1x, c1y, c2x, c2y = n1x, n1y, n2x, n2y
+            valid = margin >= 0.0
+            if not valid and band_worst > 0:
+                worst = band_worst
     quality = float(clamps)
     if _legs_cross_nb(p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y):
         quality += 1.0
@@ -2522,7 +3612,7 @@ def _greedy_split_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, h
                            ranges: np.ndarray, tangents: np.ndarray,
                            t: np.ndarray, fitted: np.ndarray,
                            out_index: np.ndarray, out_tx: np.ndarray,
-                           out_ty: np.ndarray) -> int:
+                           out_ty: np.ndarray, gates: np.ndarray, band_reach: float) -> int:
     """The split points (sample index and shared tangent) of the worst-sample
     recursion over ``first..last``: a range whose piece ``_pair_fit_nb`` accepts
     is kept, else it splits at its worst-fitting sample with the tangent
@@ -2554,7 +3644,7 @@ def _greedy_split_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, h
             continue
         valid, _, _, _, _, _, _, _, split = _pair_fit_nb(
             points, start, end, s_fixed, stx, sty, e_fixed, etx, ety, tolerance, pad_cap, newton,
-            True, t, fitted, arc, table, base)
+            True, t, fitted, arc, table, base, gates, band_reach)
         if valid:
             continue
         if not (0 < split < m - 1):
@@ -2562,10 +3652,12 @@ def _greedy_split_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, h
         if not (0 < split < m - 1):
             split = m // 2
         index = start + split
-        in_tx, in_ty = _join_nb(points, index, lo, hi, False, 0.0, 0.0, False, 0.0, 0.0, large)
-        in_tx, in_ty = _best_split_tangent_nb(
-            points, start, index, end, lo, hi, tolerance, pad_cap, s_fixed, stx, sty,
-            e_fixed, etx, ety, in_tx, in_ty, small, large, t, fitted)
+        in_tx, in_ty = _join_nb(points, index, lo, hi, False, 0.0, 0.0, False, 0.0, 0.0, large,
+                                gates)
+        if gates[index, 4] == 0.0 and gates[index, 5] == 0.0:
+            in_tx, in_ty = _best_split_tangent_nb(
+                points, start, index, end, lo, hi, tolerance, pad_cap, s_fixed, stx, sty,
+                e_fixed, etx, ety, in_tx, in_ty, small, large, t, fitted)
         out_index[found] = index
         out_tx[found] = in_tx
         out_ty[found] = in_ty
@@ -2635,7 +3727,8 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                     tolerance: float, pad_cap: float, small: float, large: float,
                     mode: int, bends: bool, scale: float, streak: int,
                     prune_factor: float, newton: float, records: np.ndarray, count: int, ranges: np.ndarray,
-                    tangents: np.ndarray, t: np.ndarray, fitted: np.ndarray) -> int:
+                    tangents: np.ndarray, t: np.ndarray, fitted: np.ndarray,
+                    gates: np.ndarray, band_reach: float) -> int:
     """Fit one curve unit through chosen candidate nodes, appending to ``records``.
 
     1. Candidates (``_unit_candidates_nb``): axis extremes, inflections and, with
@@ -2674,7 +3767,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
     if m <= 2:
         valid, quality, error, is_line, c1x, c1y, c2x, c2y, worst = _pair_fit_nb(
             points, first, last, first_fixed, ftx, fty, last_fixed, ltx, lty, tolerance, pad_cap, newton,
-            True, t, fitted, np.zeros(1), np.zeros((1, 4, 1)), first)
+            True, t, fitted, np.zeros(1), np.zeros((1, 4, 1)), first, gates, band_reach)
         if last_fixed:
             ntx, nty = ltx, lty
         else:
@@ -2691,7 +3784,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
     c_ty = np.empty(room, dtype=np.float64)
     c_kind = np.empty(room, dtype=np.int64)
     found = _unit_candidates_nb(points, first, last, lo, hi, scale, bends, tolerance, theta,
-                                c_index, c_tx, c_ty, c_kind)
+                                c_index, c_tx, c_ty, c_kind, gates)
     s_index = np.empty(m, dtype=np.int64)
     s_tx = np.empty(m, dtype=np.float64)
     s_ty = np.empty(m, dtype=np.float64)
@@ -2699,7 +3792,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
         splits = _greedy_split_nodes_nb(points, first, last, lo, hi, first_fixed, ftx, fty,
                                         last_fixed, ltx, lty, tolerance, pad_cap, small, large, newton,
                                         arc, table, first, ranges, tangents, t, fitted,
-                                        s_index, s_tx, s_ty)
+                                        s_index, s_tx, s_ty, gates, band_reach)
         for k in range(splits):
             c_index[found] = s_index[k]
             c_tx[found] = s_tx[k]
@@ -2831,7 +3924,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                         valid, quality, error, _, _, _, _, _, _ = _pair_fit_nb(
                             points, i_index, j_index, n_fixed[i], n_tx[i], n_ty[i],
                             n_fixed[j], n_tx[j], n_ty[j], tolerance, pad_cap, newton, False, t, fitted,
-                            arc, table, first)
+                            arc, table, first, gates, band_reach)
                         if valid:
                             state = 1
                         elif tolerance < error < newton * tolerance and j_index - i_index >= 3:
@@ -2877,7 +3970,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                     continue
                 valid, quality, error, _, _, _, _, _, _ = _pair_fit_nb(
                     points, n_index[i], j_index, n_fixed[i], n_tx[i], n_ty[i],
-                    n_fixed[j], n_tx[j], n_ty[j], tolerance, pad_cap, newton, True, t, fitted, arc, table, first)
+                    n_fixed[j], n_tx[j], n_ty[j], tolerance, pad_cap, newton, True, t, fitted, arc, table, first, gates, band_reach)
                 edge_state[i, j] = 1 if valid else 2
                 edge_quality[i, j] = quality
                 edge_error[i, j] = error
@@ -2939,7 +4032,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
         added = _greedy_split_nodes_nb(points, start, end, lo, hi, n_fixed[r], n_tx[r], n_ty[r],
                                        n_fixed[b], n_tx[b], n_ty[b], tolerance, pad_cap, small, large,
                                        newton, arc, table, first, ranges, tangents, t, fitted,
-                                       s_index, s_tx, s_ty)
+                                       s_index, s_tx, s_ty, gates, band_reach)
         if nodes + added > capacity:
             grown = max(capacity * 2, nodes + added + 8)
             extra = grown - capacity
@@ -2993,7 +4086,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
             _, quality, error, _, _, _, _, _, _ = _pair_fit_nb(
                 points, n_index[previous], n_index[node], n_fixed[previous], n_tx[previous],
                 n_ty[previous], n_fixed[node], n_tx[node], n_ty[node], tolerance, pad_cap,
-                newton, True, t, fitted, arc, table, first)
+                newton, True, t, fitted, arc, table, first, gates, band_reach)
             n_pred[node] = previous
             n_pred_quality[node] = quality
             n_pred_error[node] = error
@@ -3013,7 +4106,7 @@ def _place_nodes_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
         j = route[k - 1]
         valid, quality, error, is_line, c1x, c1y, c2x, c2y, worst = _pair_fit_nb(
             points, n_index[i], n_index[j], n_fixed[i], n_tx[i], n_ty[i],
-            n_fixed[j], n_tx[j], n_ty[j], tolerance, pad_cap, newton, True, t, fitted, arc, table, first)
+            n_fixed[j], n_tx[j], n_ty[j], tolerance, pad_cap, newton, True, t, fitted, arc, table, first, gates, band_reach)
         if n_fixed[j]:
             ntx, nty = n_tx[j], n_ty[j]
         else:
@@ -3084,7 +4177,8 @@ def _fit_section_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                     tolerance: float, pad_cap: float, minimum: float, small: float, large: float,
                     mode: int, bends: bool, scale: float,
                     snap: int, snap_angle: float, straight_deviation: float,
-                    streak: int, prune_factor: float, newton: float):
+                    streak: int, prune_factor: float, newton: float,
+                    gates: np.ndarray, band_reach: float):
     """Fit samples ``first..last`` so that every node inside it is a symmetric node.
 
     ``first`` and ``last`` have free tangents (hard cusps) unless fixed by
@@ -3154,15 +4248,25 @@ def _fit_section_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
             pieces += 1
             continue
         line_error, line_split = _distance_to_line_nb(points, start, end)
-        if line_error <= tolerance:
+        if line_error <= tolerance and _band_miss_nb(
+                points, gates, start, end, points[start, 0], points[start, 1],
+                points[start, 0], points[start, 1], points[end, 0], points[end, 1],
+                points[end, 0], points[end, 1], band_reach) < 0:
             piece_kind[pieces] = 0
             piece_start[pieces] = start
             piece_end[pieces] = end
             pieces += 1
             continue
-        _cubic_solve_nb(points, start, end, tolerance, pad_cap, t[:m], fitted[:m])
+        q1x, q1y, q2x, q2y = _cubic_solve_nb(points, start, end, tolerance, pad_cap, t[:m], fitted[:m])
         max_error, split = _max_error_nb(points, start, m, fitted)
+        miss = -1
         if max_error <= tolerance:
+            miss = _band_miss_nb(points, gates, start, end, points[start, 0], points[start, 1],
+                                 q1x, q1y, q2x, q2y,
+                                 points[end, 0], points[end, 1], band_reach)
+            if miss >= 0:
+                split = miss
+        if max_error <= tolerance and miss < 0:
             piece_kind[pieces] = 1
             piece_start[pieces] = start
             piece_end[pieces] = end
@@ -3305,7 +4409,7 @@ def _fit_section_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                 tx, ty = _join_nb(
                     work, index, lo, hi,
                     kind[left] == 0, dir_x[left], dir_y[left],
-                    kind[right] == 0, dir_x[right], dir_y[right], large)
+                    kind[right] == 0, dir_x[right], dir_y[right], large, gates)
             if kind[left] == 1:
                 end_fixed[left] = True
                 end_tx[left] = tx
@@ -3331,7 +4435,7 @@ def _fit_section_nb(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                 start_fixed[u], start_tx[u], start_ty[u],
                 end_fixed[u], end_tx[u], end_ty[u],
                 tolerance, pad_cap, small, large, mode, bends, scale, streak, prune_factor, newton,
-                records, count, ranges, tangents, t, fitted)
+                records, count, ranges, tangents, t, fitted, gates, band_reach)
             records[count - 1, 7] = float(end_kind)
             last_record[u] = count - 1
 
@@ -3460,13 +4564,17 @@ def _placement_arguments(settings: TraceSettings) -> tuple:
     return (mode, bool(settings.nodes_at_bends), max(1e-3, float(settings.curve_feature_scale)),
             snap, math.radians(float(settings.snap_angle)),
             _straight_deviation(settings),
-            _PRUNE_STREAK, _PRUNE_FACTOR, _NEWTON_WINDOW)
+            0 if "D" in _BAND_EXPERIMENT else _PRUNE_STREAK, _PRUNE_FACTOR, _NEWTON_WINDOW)
 
 
 def _fit_section_records(points: np.ndarray, first: int, last: int, lo: int, hi: int,
                          settings: TraceSettings, cyclic: bool = False,
                          first_tangent: tuple[float, float] | None = None,
-                         last_tangent: tuple[float, float] | None = None) -> np.ndarray:
+                         last_tangent: tuple[float, float] | None = None,
+                         gates: np.ndarray | None = None) -> np.ndarray:
+    """``_fit_section_nb``'s records for ``settings``. With ``gates``
+    (``_sample_gates``, aligned with ``points``) every piece stays in the pixel
+    band; without, only the distance tolerance applies."""
     _require_pixels(settings)
     small, large = _join_scales(settings)
     ftx, fty = first_tangent or (0.0, 0.0)
@@ -3477,7 +4585,8 @@ def _fit_section_records(points: np.ndarray, first: int, last: int, lo: int, hi:
         last_tangent is not None, float(ltx), float(lty),
         _curve_tolerance(settings), _pad_cap(settings), float(settings.minimum_straight_length),
         small, large,
-        *_placement_arguments(settings))
+        *_placement_arguments(settings),
+        _no_gates(points) if gates is None else gates, 0.0 if gates is None else _BAND_REACH)
 
 
 def _fit_curve_section(points: np.ndarray, first: int, last: int, lo: int, hi: int,
@@ -3648,6 +4757,294 @@ def _tight_step(start: Point, fitted: list[Primitive],
             (end[0] - handle * back[0], end[1] - handle * back[1]), end)
 
 
+# Tolerances, as fractions of the curve tolerance, a piece that misses a pixel
+# gate is refitted at in turn until every gate it spans is passed.
+_GATE_TIGHTENING = (1.0, 0.7, 0.5, 0.35, 0.25, 0.18, 0.12)
+# How far (px) from its sample, along its gate, a traced boundary may cross the
+# gate: to the centre of either pixel the sample's edge separates. Every curve
+# that crosses all its gates within this leaves each boundary pixel's centre on
+# its own colour's side, so it rasterises to the same pixels; this corridor is
+# the pixel band, and a piece is acceptable only inside it (``_band_miss_nb``).
+_BAND_REACH = 0.5
+# Temporary experiment switches (master-case check of what limits the band
+# fit), set by letters in VINYLGEN_BAND_EXPERIMENT: A searches every piece's
+# handles however poor its least-squares fit, B widens handle lengths to
+# 0.02-2 chords, C allows pieces that turn back along their chord, D never
+# stops extending a piece for missing samples.
+_BAND_EXPERIMENT = os.environ.get("VINYLGEN_BAND_EXPERIMENT", "")
+_BAND_SEARCH_GATE = math.inf if "A" in _BAND_EXPERIMENT else 2.0
+_BAND_HANDLE_MIN = 0.02 if "B" in _BAND_EXPERIMENT else _MIN_HANDLE
+_BAND_HANDLE_MAX = 2.0 if "B" in _BAND_EXPERIMENT else 1.0
+_BAND_MONOTONE = "C" not in _BAND_EXPERIMENT
+# The most samples a band tangent's window grows by on each side.
+_BAND_TANGENT_REACH = 256
+# Temporary corner-rule comparison, set by VINYLGEN_CORNER_MODE: "a" tries a
+# cusp in place of every run of symmetric nodes with a handle under
+# ``_SHORT_HANDLE`` px after fitting (``_short_handle_cusps``); "b" judges the
+# corner rule's sides and tip against the pixel band
+# (``_band_corner_candidates``); "c" is "b" that also rejects a corner any
+# visible smooth rounding explains (``_smooth_fits_nb``); unset keeps the
+# corner rule as it is.
+_CORNER_MODE = os.environ.get("VINYLGEN_CORNER_MODE", "")
+_SHORT_HANDLE = 1.0
+_KIND_CUSP = 9
+
+
+def _cusp_trial(points: np.ndarray, gates: np.ndarray, i_s: int, i_e: int,
+                s_point: np.ndarray, e_point: np.ndarray,
+                s_tangent: tuple[float, float] | None, e_tangent: tuple[float, float] | None,
+                p: np.ndarray):
+    """Two band-fitted pieces from ``s_point`` (sample ``i_s``) to a cusp at ``p``
+    and on to ``e_point`` (sample ``i_e``), the cusp taking the sample nearest
+    it. Returns ``(margin, k, a_controls, b_controls)``: the least band margin
+    over both pieces and the cusp sample's own gate."""
+    inner = points[i_s + 1:i_e]
+    k = i_s + 1 + int(np.argmin(np.hypot(*(inner - p).T)))
+    px, py = float(p[0]), float(p[1])
+    sx, sy = float(s_point[0]), float(s_point[1])
+    ex, ey = float(e_point[0]), float(e_point[1])
+    la = math.hypot(px - sx, py - sy)
+    lb = math.hypot(ex - px, ey - py)
+    if la < 1e-6 or lb < 1e-6:
+        return -math.inf, k, None, None
+    ca = ((px - sx) / la, (py - sy) / la)
+    cb = ((ex - px) / lb, (ey - py) / lb)
+    d0 = s_tangent or ca
+    d3 = e_tangent or cb
+    ma, a1x, a1y, a2x, a2y, _ = _band_handles_nb(
+        points, gates, i_s, k, sx, sy, px, py, s_tangent is not None, d0[0], d0[1], la / 3,
+        False, ca[0], ca[1], la / 3, _BAND_REACH)
+    mb, b1x, b1y, b2x, b2y, _ = _band_handles_nb(
+        points, gates, k, i_e, px, py, ex, ey, False, cb[0], cb[1], lb / 3,
+        e_tangent is not None, d3[0], d3[1], lb / 3, _BAND_REACH)
+    margin = min(ma, mb)
+    if gates[k, 0] != 0.0 or gates[k, 1] != 0.0:
+        axis = 0 if gates[k, 0] != 0.0 else 1
+        offset = min(
+            _gate_offset_nb(sx, sy, a1x, a1y, a2x, a2y, px, py, axis, gates[k, 2], gates[k, 3],
+                            _BAND_REACH, 1.0, 64),
+            _gate_offset_nb(px, py, b1x, b1y, b2x, b2y, ex, ey, axis, gates[k, 2], gates[k, 3],
+                            _BAND_REACH, 0.0, 64))
+        margin = min(margin, _BAND_REACH - offset if offset < math.inf else -2 * _BAND_REACH)
+    return margin, k, (a1x, a1y, a2x, a2y), (b1x, b1y, b2x, b2y)
+
+
+def _try_cusp(points: np.ndarray, gates: np.ndarray, records: np.ndarray, first: int,
+              r: int, s: int, first_tangent, last_tangent, allowance: float):
+    """Replace rows ``r..s + 1`` (the pieces round the symmetric nodes ending
+    rows ``r..s``) with two band-fitted pieces meeting at a cusp, or None.
+
+    The cusp starts at each node and where the outer pieces' tangents meet, and a
+    pattern search moves it, within ``allowance`` of a node, to where both
+    pieces sit deepest in the band. It is kept when both stay in the band and
+    the turn there exceeds ``_CORNER_NOISE_RATIO`` times the two pieces'
+    direction noise."""
+    if r > 0:
+        i_s, s_point = int(records[r - 1, 10]), records[r - 1, 5:7]
+        s_tangent = (float(records[r - 1, 8]), float(records[r - 1, 9]))
+    else:
+        i_s, s_point, s_tangent = first, points[first], first_tangent
+    end = records[s + 1]
+    i_e, e_point = int(end[10]), end[5:7]
+    e_tangent = (last_tangent if s + 1 == len(records) - 1
+                 else (float(end[8]), float(end[9])))
+    if i_e - i_s < 2:
+        return None
+    nodes = records[r:s + 1, 5:7]
+    seeds = [node for node in nodes]
+    out_dir = (records[r, 1:3] - s_point) if records[r, 0] == 1.0 else (records[r, 5:7] - s_point)
+    in_dir = (end[5:7] - end[3:5]) if end[0] == 1.0 else (end[5:7] - nodes[-1])
+    cross = out_dir[0] * in_dir[1] - out_dir[1] * in_dir[0]
+    if abs(cross) > 1e-12:
+        t = ((e_point[0] - s_point[0]) * in_dir[1] - (e_point[1] - s_point[1]) * in_dir[0]) / cross
+        seeds.append(s_point + t * out_dir)
+
+    def admissible(p):
+        return float(np.min(np.hypot(*(nodes - p).T))) <= allowance
+
+    def trial(p):
+        return _cusp_trial(points, gates, i_s, i_e, s_point, e_point, s_tangent, e_tangent, p)
+
+    best_p, best = None, (-math.inf,)
+    for seed in seeds:
+        seed = np.asarray(seed, dtype=np.float64)
+        if admissible(seed):
+            result = trial(seed)
+            if result[0] > best[0]:
+                best_p, best = seed, result
+    if best_p is None:
+        return None
+    step = 0.5
+    while step >= 0.02:
+        improved = False
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            p = best_p + step * np.array((dx, dy))
+            if not admissible(p):
+                continue
+            result = trial(p)
+            if result[0] > best[0] + 1e-9:
+                best_p, best, improved = p, result, True
+        if not improved:
+            step *= 0.5
+    margin, k, a, b = best
+    if margin < 0.0 or a is None:
+        return None
+    px, py = float(best_p[0]), float(best_p[1])
+    tin = np.array((px - a[2], py - a[3]))
+    tout = np.array((b[0] - px, b[1] - py))
+    if np.hypot(*tin) < 1e-9 or np.hypot(*tout) < 1e-9:
+        return None
+    tin /= np.hypot(*tin)
+    tout /= np.hypot(*tout)
+    turn = _angle_between_nb(tin[0], tin[1], tout[0], tout[1])
+    noise = (_direction_noise_nb(0.0, math.dist(s_point, best_p), _STAIRCASE_QUANTISATION)
+             + _direction_noise_nb(0.0, math.dist(best_p, e_point), _STAIRCASE_QUANTISATION))
+    if turn < _CORNER_NOISE_RATIO * noise:
+        return None
+    rows = np.zeros((2, _RECORD_COLUMNS), dtype=np.float64)
+    rows[0] = (1.0, *a, px, py, _KIND_CUSP, tin[0], tin[1], k)
+    rows[1] = (1.0, *b, *end[5:7], end[7], end[8], end[9], i_e)
+    return rows
+
+
+def _short_handle_cusps(points: np.ndarray, gates: np.ndarray, records: np.ndarray, first: int,
+                        first_tangent, last_tangent, settings: TraceSettings) -> np.ndarray:
+    """``records`` with each run of symmetric nodes that has a handle shorter than
+    ``_SHORT_HANDLE`` px replaced by a cusp where one fits the band
+    (``_try_cusp``): the whole run first, then its nodes one at a time."""
+    allowance = _sharpening_allowance(settings)
+
+    def short(r: int) -> bool:
+        row, following = records[r], records[r + 1]
+        if row[0] != 1.0 or following[0] != 1.0:
+            return False
+        return min(math.dist(row[3:5], row[5:7]), math.dist(following[1:3], row[5:7])) < _SHORT_HANDLE
+
+    flags = [short(r) for r in range(len(records) - 1)]
+    runs, r = [], 0
+    while r < len(flags):
+        if flags[r]:
+            s = r
+            while s + 1 < len(flags) and flags[s + 1]:
+                s += 1
+            runs.append((r, s))
+            r = s + 1
+        else:
+            r += 1
+    # Work from the end so earlier row indices stay valid.
+    for r, s in reversed(runs):
+        rows = _try_cusp(points, gates, records, first, r, s, first_tangent, last_tangent,
+                         allowance)
+        if rows is not None:
+            records = np.vstack((records[:r], rows, records[s + 2:]))
+            continue
+        if s > r:
+            for j in range(s, r - 1, -1):
+                if j + 1 >= len(records):
+                    continue
+                rows = _try_cusp(points, gates, records, first, j, j, first_tangent,
+                                 last_tangent, allowance)
+                if rows is not None:
+                    records = np.vstack((records[:j], rows, records[j + 2:]))
+    return records
+
+
+def _sample_gates(raw: np.ndarray) -> np.ndarray:
+    """Each sample's pixel gate, ``(n, 6)``: its direction, its centre, and room
+    for its band tangent (``_band_tangents_nb``, zero until filled).
+
+    The direction is ``(1, 0)`` for the midpoint of a vertical pixel edge,
+    ``(0, 1)`` for a horizontal one and ``(0, 0)`` for a sample that is not an
+    edge midpoint (a junction, chain end or canvas corner, which has no gate).
+    The centre is the sample where the edge sampling put it (``raw``), so a node
+    moved by the fit keeps its gate.
+    """
+    x, y = raw[:, 0], raw[:, 1]
+    whole_x = np.abs(x - np.round(x)) < 1e-9
+    whole_y = np.abs(y - np.round(y)) < 1e-9
+    half_x = np.abs(x - np.floor(x) - 0.5) < 1e-9
+    half_y = np.abs(y - np.floor(y) - 0.5) < 1e-9
+    gates = np.zeros((len(raw), 6), dtype=np.float64)
+    gates[whole_x & half_y, 0] = 1.0
+    gates[whole_y & half_x, 1] = 1.0
+    gates[:, 2:4] = raw
+    return gates
+
+
+def _no_gates(points: np.ndarray) -> np.ndarray:
+    return np.zeros((len(points), 6), dtype=np.float64)
+
+
+def _record_passes_gates(points: np.ndarray, start: np.ndarray, row: np.ndarray, first: int,
+                         gates: np.ndarray) -> bool:
+    """Whether one fitted piece crosses the gates of the samples strictly inside it."""
+    last = int(row[10])
+    if row[0] == 0.0:
+        c1x, c1y, c2x, c2y = float(start[0]), float(start[1]), float(row[5]), float(row[6])
+    else:
+        c1x, c1y, c2x, c2y = (float(v) for v in row[1:5])
+    return _band_miss_nb(points, gates, first, last, float(start[0]), float(start[1]),
+                         c1x, c1y, c2x, c2y, float(row[5]), float(row[6]), _BAND_REACH) < 0
+
+
+def _gate_refine(points: np.ndarray, gates: np.ndarray, records: np.ndarray,
+                 first: int, lo: int, hi: int,
+                 first_tangent: tuple[float, float] | None,
+                 last_tangent: tuple[float, float] | None,
+                 settings: TraceSettings) -> np.ndarray:
+    """``records`` with every piece that misses a pixel gate refitted between its
+    own two nodes, keeping their positions and tangents, at the first of
+    ``_GATE_TIGHTENING`` that passes every gate it spans (the tightest else)."""
+    if not len(records):
+        return records
+    base = _curve_tolerance(settings)
+    pad = _pad_cap(settings)
+    small, large = _join_scales(settings)
+    mode, bends, scale, _, _, _, streak, prune, newton = _placement_arguments(settings)
+    out = []
+    start_index, start = first, np.asarray(points[first], dtype=np.float64)
+    for r, row in enumerate(records):
+        end_index = int(row[10])
+        if end_index - start_index < 2 or _record_passes_gates(points, start, row, start_index, gates):
+            out.append(row[None])
+        else:
+            if r > 0:
+                start_fixed, stx, sty = True, float(records[r - 1, 8]), float(records[r - 1, 9])
+            else:
+                start_fixed = first_tangent is not None
+                stx, sty = first_tangent or (0.0, 0.0)
+            if r < len(records) - 1:
+                end_fixed, etx, ety = True, float(row[8]), float(row[9])
+            else:
+                end_fixed = last_tangent is not None
+                etx, ety = last_tangent or (0.0, 0.0)
+            work = points.copy()
+            work[start_index] = start
+            work[end_index] = row[5:7]
+            size = len(points) + 1
+            for factor in _GATE_TIGHTENING:
+                buffer = np.empty((size, _RECORD_COLUMNS), dtype=np.float64)
+                count = _place_nodes_nb(
+                    work, start_index, end_index, lo, hi,
+                    start_fixed, float(stx), float(sty), end_fixed, float(etx), float(ety),
+                    base * factor, pad, small, large, mode, bends, scale, streak, prune, newton,
+                    buffer, 0, np.empty((size, 2), dtype=np.int64), np.empty((size, 6)),
+                    np.empty(size), np.empty((size, 2)), gates, _BAND_REACH)
+                refit = buffer[:count].copy()
+                at, at_point, passed = start_index, start, True
+                for piece in refit:
+                    if not _record_passes_gates(work, at_point, piece, at, gates):
+                        passed = False
+                        break
+                    at, at_point = int(piece[10]), piece[5:7]
+                if passed:
+                    break
+            refit[-1, 7] = row[7]
+            out.append(refit)
+        start_index, start = end_index, np.asarray(row[5:7], dtype=np.float64)
+    return np.vstack(out)
+
+
 def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
                        settings: TraceSettings, step_key: tuple = ((), ())) -> ChainFit:
     """Fit one canonical chain from its samples, anchors, and constraints.
@@ -3775,6 +5172,11 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
             points, raw, sections,
             [flag and not repair for flag, repair in zip(straight, repair_line)],
             {index for index in movable_corners}, key, settings)
+        gates = _sample_gates(raw)
+        spans = ([(0, len(points) - 1)] if cyclic or len(hard_positions) < 2
+                 else list(zip(hard_positions, hard_positions[1:])))
+        for span_lo, span_hi in spans:
+            _band_tangents_nb(points, gates, span_lo, span_hi, _BAND_TANGENT_REACH)
         first_tangent: list = [None] * len(sections)
         last_tangent: list = [None] * len(sections)
         for left, right, position in joins:
@@ -3786,7 +5188,7 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
             lo = min(lo, enclosing(*sections[right])[0]) if not cyclic else lo
             hi = max(hi, enclosing(*sections[right])[1]) if not cyclic else hi
             tangent = _join_nb(points, position, lo, hi, in_line, in_dir[0], in_dir[1],
-                               out_line, out_dir[0], out_dir[1], large)
+                               out_line, out_dir[0], out_dir[1], large, gates)
             last_tangent[left] = tangent
             first_tangent[right] = tangent
         if seam_tangent is not None:
@@ -3798,14 +5200,33 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
         for index, (first, last) in enumerate(sections):
             start, end = source(first - context), source(last - context)
             residual = snapped.get(index, evidence[index][1])
-            if straight[index]:
-                pieces.append(("L", tuple(map(float, points[last]))))
-                section_diagnostics.append(RunDiagnostic("straight", start, end, residual, 1))
-                continue
             lo, hi = enclosing(first, last)
+            if straight[index]:
+                line = np.zeros((1, _RECORD_COLUMNS), dtype=np.float64)
+                line[0, 5:7] = points[last]
+                line[0, 10] = last
+                if repair_line[index] or _record_passes_gates(points, points[first], line[0], first, gates):
+                    pieces.append(("L", tuple(map(float, points[last]))))
+                    section_diagnostics.append(RunDiagnostic("straight", start, end, residual, 1))
+                    continue
+                fitted = _fit_records(_gate_refine(points, gates, line, first, lo, hi,
+                                                   first_tangent[index], last_tangent[index],
+                                                   settings))
+                pieces.extend(fitted)
+                section_diagnostics.append(RunDiagnostic("curve", start, end,
+                                                         min(residual, tolerance), len(fitted)))
+                continue
             records = _fit_section_records(points, first, last, lo, hi, settings,
                                            cyclic and len(sections) == 1,
-                                           first_tangent[index], last_tangent[index])
+                                           first_tangent[index], last_tangent[index],
+                                           None if repair_tight[index] else gates)
+            if not repair_tight[index]:
+                records = _gate_refine(points, gates, records, first, lo, hi,
+                                       first_tangent[index], last_tangent[index], settings)
+                if _CORNER_MODE == "a":
+                    records = _short_handle_cusps(points, gates, records, first,
+                                                  first_tangent[index], last_tangent[index],
+                                                  settings)
             if cyclic and len(sections) == 1:
                 seam_records = (records, context)
             fitted = _fit_records(records)
@@ -3830,7 +5251,7 @@ def _compute_chain_fit(canonical: tuple, anchors: tuple, constraint_key: tuple,
         # Most natural first: extreme, line join, inflection, bend, anything else.
         rank = {_KIND_EXTREME: 0, _KIND_LINE_JOIN: 1, _KIND_INFLECTION: 2, _KIND_BEND: 3}
         choices = [(rank.get(int(row[7]), 4), (int(row[10]) - context) % count, row)
-                   for row in records[:-1]]
+                   for row in records[:-1] if int(row[7]) != _KIND_CUSP]
         if choices:
             _, seam, row = min(choices, key=lambda item: (item[0], item[1]))
             refit = layout(seam, (float(row[8]), float(row[9])))
@@ -3964,7 +5385,7 @@ class SharedChainFitter:
                float(settings.curve_fit_tolerance),
                float(settings.straight_line_max_deviation),
                float(settings.minimum_straight_length),
-               float(settings.corner_analysis_span), float(settings.corner_threshold),
+               float(settings.corner_analysis_span),
                float(settings.side_smoothness), settings.max_deviation,
                _sharpening_allowance(settings),
                settings.straight_line_snap, float(settings.snap_angle),

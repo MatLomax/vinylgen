@@ -273,9 +273,9 @@ class SearchTests(unittest.TestCase):
     def evaluator(self, out_dir, max_evals, resume=False, cases=("case",)):
         """A real Evaluator whose traces are replaced by rows scored from the settings."""
         def fake_run(cases, tiers, settings, work, **kwargs):
-            # A bowl with its minimum at curve_fit_tolerance 1.5 and corner threshold 40.
+            # A bowl with its minimum at curve_fit_tolerance 1.5 and analysis span 8.
             distance = (abs(math.log2(settings.curve_fit_tolerance / 1.5))
-                        + abs(settings.corner_threshold - 40.0) / 40.0)
+                        + abs(math.log2(settings.corner_analysis_span / 8.0)))
             return [row("a", hausdorff_px=0.1 + distance, nodes=4, ideal_nodes=4)]
 
         patcher = mock.patch.object(sweep, "run_cases", side_effect=fake_run)
@@ -287,7 +287,7 @@ class SearchTests(unittest.TestCase):
 
     def test_search_improves_and_resumes_on_the_same_path(self):
         parameters = [p for p in tune.PARAMETERS
-                      if p.name in ("curve_fit_tolerance", "corner_threshold")]
+                      if p.name in ("curve_fit_tolerance", "corner_analysis_span")]
         record = tune.base_record()
         (ROOT / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as name:
@@ -309,7 +309,7 @@ class SearchTests(unittest.TestCase):
             keys = [json.loads(line)["key"] for line in lines]
             self.assertEqual(len(keys), len(set(keys)))  # no settings traced twice
             self.assertLessEqual(final["objective"], best["objective"])
-            self.assertAlmostEqual(final["values"]["corner_threshold"], 40.0, delta=2.5)
+            self.assertAlmostEqual(final["values"]["corner_analysis_span"], 8.0, delta=0.8)
             self.assertAlmostEqual(final["values"]["curve_fit_tolerance"], 1.5, delta=0.15)
             by_index = {entry["index"]: entry for entry in resumed.evaluations}
             self.assertEqual(tune.no_effect_parameters(list(by_index.values())), [])
@@ -324,7 +324,7 @@ class SettingsIsolationTests(unittest.TestCase):
         record = tune.base_record()
         record_copy = copy.deepcopy(record)
         values = {**tune.start_values(record), "curve_fit_tolerance": 3.0,
-                  "max_deviation": 2.5, "corner_threshold": 35.0}
+                  "max_deviation": 2.5, "corner_analysis_span": 5.0}
         (ROOT / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as name:
             evaluator = tune.Evaluator(hand_built_cases()[:1], ["labels"], Path(name), jobs=1,
@@ -352,9 +352,9 @@ class SettingsIsolationTests(unittest.TestCase):
 class SettingsParsingTests(unittest.TestCase):
     def test_set_values_go_through_the_trace_cli(self):
         settings, cleanup = sweep.settings_from_options(
-            None, ["corner_threshold=45", "nodes_at_bends=false", "curve-fit-tolerance=0.5",
+            None, ["snap_angle=4", "nodes_at_bends=false", "curve-fit-tolerance=0.5",
                    "solid_underlayers=false", "corner_straightness=0.9"])
-        self.assertEqual(settings.corner_threshold, 45.0)
+        self.assertEqual(settings.snap_angle, 4.0)
         self.assertFalse(settings.nodes_at_bends)
         self.assertFalse(settings.solid_underlayers)
         self.assertEqual(settings.curve_fit_tolerance, 0.5)
@@ -364,13 +364,15 @@ class SettingsParsingTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # the trace CLI's own range check
             sweep.settings_from_options(None, ["curve_feature_scale=100"])
         with self.assertRaises(ValueError):  # the trace CLI's own type check
-            sweep.settings_from_options(None, ["corner_threshold=steep"])
+            sweep.settings_from_options(None, ["snap_angle=steep"])
+        with self.assertRaisesRegex(ValueError, "retired"):
+            sweep.settings_from_options(None, ["corner_threshold=45"])
 
     def test_proposed_config_reproduces_the_proposed_settings(self):
         record = tune.base_record()
         proposed = tune.settings_for({**record, "nodes_at_bends": False},
                                      {**tune.start_values(record), "curve_fit_tolerance": 1.5,
-                                      "max_deviation": 2.0, "corner_threshold": 45.0})
+                                      "max_deviation": 2.0, "corner_analysis_span": 5.0})
         config = tune.proposed_config(proposed, None)
         self.assertEqual(config["nodes_at_bends"], False)
         (ROOT / ".tmp").mkdir(exist_ok=True)
@@ -449,8 +451,11 @@ class EndToEndSweepTests(unittest.TestCase):
             self.assertEqual(s["structural_failures"], 0)
             self.assertEqual(s["topology_mismatches"], 0)
         square = rows[0]["summary"]
-        self.assertEqual(square["required_corners"], 4)
-        self.assertEqual(square["required_found"], 4)
+        # At 96 px the default lengths give 1.75 px long side windows, whose
+        # direction noise (about 22 degrees a side) leaves a 90 degree corner
+        # optional rather than required; the trace still finds all four.
+        self.assertEqual((square["corners_true"], square["corners_found"]), (4, 4))
+        self.assertEqual(square["required_found"], square["required_corners"])
         # The disc's truth has four ideal nodes and no corners.
         self.assertEqual(rows[1]["summary"]["ideal_nodes"], 4)
         self.assertEqual(rows[1]["summary"]["required_corners"], 0)

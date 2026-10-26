@@ -145,7 +145,6 @@ class TraceJobSettings(BaseModel):
     overlap: float = Field(default=0.0, ge=0)
     solid_underlayers: bool = False
     layer_order: list[str] | None = None
-    corner_threshold: float = Field(default=60.0, ge=0, le=180)
     # The eight lengths below are in thousandths of the traced image's longer side
     # (docs/svg-tracing-spec.md "Trace length units"). A request setting any of them
     # must say so: a client still sending pixel values carries no marker and is
@@ -175,9 +174,10 @@ class TraceJobSettings(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def renamed_fields(cls, values):
+    def upgraded_record(cls, values):
         """A request from a client that still sends a renamed field
-        (``corner_straightness``) is read under the current name."""
+        (``corner_straightness``) is read under the current name, and one that
+        still sends a retired field (``corner_threshold``) is read without it."""
         return upgrade_trace_record(values) if isinstance(values, dict) else values
 
     @model_validator(mode="after")

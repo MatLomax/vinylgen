@@ -193,8 +193,7 @@ it read-only and changing it means running cleanup again.
   `corner_sharpening_allowance`, `curve_feature_scale` and `max_deviation`. The traced image is the flattened
   (or edited) raster, with any palette-stage `flatten_upscale` already applied;
   the SVG `viewBox` is the same pixel grid. Setting a physical size never
-  changes how curves are fitted. Angles (`corner_threshold`, `snap_angle`) are
-  degrees.
+  changes how curves are fitted. The one angle, `snap_angle`, is in degrees.
 - Physical settings are `overlap`, `min_detail_width`, `remove_below_width`
   (lengths) and `min_region_area` (an area). When a width or height is
   supplied they are millimetres and square millimetres, converted to pixels
@@ -709,11 +708,14 @@ diagonals or curves while sustained corners remain sharp.
 ### Corner detection
 
 The corner detector (`_geometric_corners`) is the only source of cusp nodes
-other than junctions, so `corner_threshold` has exactly one meaning: the turn a
-confirmed corner must reach. A corner is a direction jump between two smooth
-sides, straight or curved, so a crescent's tip, a leaf's point, a gothic
-arch's apex and a heart's notch are corners as well as a building's. A sample
-is a corner when all of these hold (`_corner_candidates`):
+other than junctions. A corner is a direction jump between two smooth sides,
+straight or curved, so a crescent's tip, a leaf's point, a gothic arch's apex
+and a heart's notch are corners as well as a building's. Whether a turn is a
+cusp or a symmetric node depends on how soon the drawn edge leaves the two side
+lines at the corner, never on the size of the turn alone: a 20° vertex between
+two long straight sides is a corner, and a 90° bend that leaves its sides well
+before the corner is a round. A sample is a corner when all of these hold
+(`_corner_candidates`):
 
 - **Smooth sides past the tip, at two scales.** Each side window starts past
   the **tip skip** (2.41 corner sharpening allowances of arc, below) and runs
@@ -727,34 +729,60 @@ is a corner when all of these hold (`_corner_candidates`):
   a curvature fitted to it is noise. A span-scale side that fails (it runs
   round another feature, such as the floor of a narrow slot) is judged on its
   nearest `minimum_straight_length` past the tip instead.
-- **The turn.** The angle between the two arcs' forward tangents where they
-  meet (their intersection nearest the sample) reaches `corner_threshold` at
-  both scales.
+- **The turn exceeds the sides' direction noise.** Each long side's direction
+  is uncertain by `u = atan2(e, L)`: `L` is its window's chord and `e` the
+  larger of its own fit error and the staircase quantisation √2/2 px (a
+  pixel-edge sample lies within that of the true boundary). The angle between
+  the two arcs' forward tangents where they meet (their intersection nearest
+  the sample) must reach `K (u_a + u_b)` at both scales, `K` =
+  `_CORNER_NOISE_RATIO` = 2, set by measurement on the synthetic corpus (every
+  size, both tiers: the ratio with the best corner F1 that adds no cusp to
+  smooth truth or to rounds that must stay round). Between two straight sides
+  of the long window (14 px at the pixel-era lengths) that is about 12°.
 - **Two arcs, not one.** One arc fitted through both long sides and the tip
   misses by more than 1.5 times the worse side's own error plus 0.3 px. A
   circle's two sides are one arc, so a circle has no corner however tight
-  (radius 3 to 100 px, at thresholds of 30, 45 and 60 degrees, and at every
-  image size); nor has a pixel staircase or a gentle curve. Without this test,
-  noise in each side's fitted curvature, carried across the tip, gave
-  half-pixel-snapped and rasterised circles corners at every image size. It
-  replaces the former scale-invariance check (long-scale turn at most 1.2 times
-  the span-scale turn), which the line-sided detector needed because a curve's
-  turn between straight windows grows with the window; with arc sides that
-  check is redundant.
+  (radius 3 to 100 px, at every image size); nor has a pixel staircase or a
+  gentle curve. At a shallow turn this test, not the noise, can decide: at the
+  pixel-era lengths one arc through a 20° or 34° vertex's staircase sides can
+  miss by only about 1 px, within 1.5 times their 0.6 px error plus 0.3 px, so
+  such a vertex stays a symmetric node. Without this test, noise in each side's
+  fitted curvature, carried across the tip, gave half-pixel-snapped and
+  rasterised circles corners at every image size.
 - **The cusp.** The long-scale arcs' meeting point is the corner node, and it
   must lie within `corner_sharpening_allowance` of the sample (‰, default the
   maximum deviation, independent of it). The long scale is used because its
   arcs are the steadier estimate and reach furthest past a round.
+- **The sides reach the corner.** A round of radius r turning by T lies
+  r(sec(T/2) − 1) from its sharp point and has its tangent points r tan(T/2)
+  from it, so its tangent points lie within the tip skip exactly when its sharp
+  point lies within `skip tan(T/4)` of it. The cusp's distance from the sample,
+  less the long sides' larger `e`, must be at most that.
+- **The turn is the same at both scales.** The long-scale turn may exceed 1.2
+  times the span-scale turn by at most the long sides' direction noise
+  `u_a + u_b`, and the span-scale turn may not exceed 1.2 times the long-scale
+  turn (`_SCALE_TURN_RATIO`): a curve that tightens into a round (an ellipse's
+  end) turns further the further its sides reach, however well arcs fit each
+  side, and where a line meets an arc a short window reads the arc's chord as a
+  turn a longer one does not.
 
-**Rounded corners.** A round is sharpened into a cusp exactly when the sharp
-point stays within the allowance: a 90-degree round of radius r lies
-r(√2 − 1) from its sharp point, so rounds up to (1 + √2), about 2.41,
-allowances in radius snap sharp (a shallower turn admits a larger radius). The
-tip skip is that radius, so the side windows start past such a round's
-tangent points (0.79 r of arc from its middle) and the smoothness and turn
-tests never veto a round the allowance would snap. A larger round stays round:
-its sides stay straight, the curve begins at symmetric nodes, and no cusp is
-placed (the sides' meeting point lies beyond the allowance).
+**Rounded corners.** A round is sharpened into a cusp only when both of its
+bounds hold: its sharp point lies within the allowance of its arc, and its
+tangent points, `r tan(turn / 2)` from the sharp point, lie within the tip skip
+(2.41 allowances). A 90-degree round of radius r lies r(√2 − 1) from its sharp
+point, so at 90 degrees both bounds admit rounds up to (1 + √2), about 2.41,
+allowances in radius. At a shallower turn the tip-skip bound governs: a
+30-degree round of 20 allowances has its sharp point 0.7 allowances from its
+arc, within the allowance, but its tangent points 5.4 allowances out, so it
+stays round. The cusp's distance is read less the sides' error (at least the
+√2/2 px staircase quantisation), so where the allowance is itself about a
+pixel such a round is within the noise of a corner and may sharpen; with a 4 px
+allowance a 30-degree round of radius 80 px stays round and one of 20 px
+sharpens. The side windows start at the tip skip, past a sharpenable round's
+tangent points (0.79 r of arc from its middle at 90 degrees), so the smoothness
+and turn tests never veto a round the bounds would snap. A larger round stays
+round: its sides stay straight, the curve begins at symmetric nodes, and no
+cusp is placed.
 
 Neighbouring candidates of one physical corner are suppressed by arc length:
 two candidates are one corner within half the span of arc, or when their cusps
@@ -762,12 +790,18 @@ lie within half the span (or the allowance) of each other and their samples
 within half the span plus twice the allowance of arc (on sparse samples, such
 as a polygon's vertices or a buffered overlap ring, both samples beside one
 corner propose it). The candidate nearest its cusp wins (the apex, or the
-middle of a round), then the smoother sides, then the stronger turn.
+middle of a round), then the smoother sides, then the stronger turn. A sample
+on a side near a corner, whose long window runs past that corner, sees only
+part of its turn: where two candidates' windows run past each other, the one
+with the smaller long-scale turn waits for the next round, and a candidate whose
+window runs past a corner already confirmed waits too; in the next round that
+corner is a stop that cuts its window.
 
 **Short edges between corners.** Corners are confirmed in rounds. A side
 window stops at a neighbouring confirmed corner, and at a *provisional*
-corner: a sample that turns by the threshold between two straight runs
-`minimum_straight_length` long (the shortest-edge form of the test, ranked by
+corner: a sample that turns between two straight runs
+`minimum_straight_length` long by at least `K` times the runs' summed direction
+noise (the shortest-edge form of the test, each run's `L` its extent, ranked by
 straightness). A neighbour closer than `minimum_straight_length` is the same
 corner, not a stop. A window cut short keeps the last
 `minimum_straight_length` before the stop, starting nearer than the tip skip
@@ -781,9 +815,12 @@ do not. Rounds repeat, re-testing the samples whose windows reach a new stop,
 until no corner is added. So an H-shaped region, a rectangular notch, or a bar
 end with an edge of 4 px (the pixel-era minimum straight length) or more gets
 separate 90° corners instead of a U, and an edge under 4 px still rounds off.
+Two corners closer than that are one corner: a 2 px notch's two mouth corners
+are one.
 
-At the pixel-era lengths squares and triangles to hexagons keep every corner
-(a hexagon turns by exactly 60°, so only below a 60° threshold).
+At the pixel-era lengths squares and triangles to hexagons keep every corner,
+and so do regular polygons of 8 to 18 sides (45° to 20° turns) whose sides are
+28 px or longer.
 
 A closed interface (an island ring) is analysed as a ring: the side windows
 run across its seam, so a corner at the seam is found like any other.

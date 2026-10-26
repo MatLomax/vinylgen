@@ -451,6 +451,22 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
             protected_ids.update(
                 (left_key[mask] * edge_multiplier + right_key[mask]).tolist())
 
+    # Each pixel edge's sample: its midpoint, moved across the edge (along the
+    # line joining the two pixel centres) by its own crossing offset. The true
+    # boundary crosses that centre-to-centre line, so the midpoint is its
+    # unbiased estimate on a hard-edged map, where the offset is 0.
+    mid_keys: list[np.ndarray] = []
+    mid_x: list[np.ndarray] = []
+    mid_y: list[np.ndarray] = []
+    if vertical_y.size:
+        mid_keys.append(top_key * edge_multiplier + bottom_key)
+        mid_x.append((vertical_x + 1).astype(np.float64) + origin[0] + x_offset_values[0][:vertical_y.size])
+        mid_y.append(vertical_y.astype(np.float64) + 0.5 + origin[1])
+    if horizontal_y.size:
+        mid_keys.append(left_key * edge_multiplier + right_key)
+        mid_x.append(horizontal_x.astype(np.float64) + 0.5 + origin[0])
+        mid_y.append((horizontal_y + 1).astype(np.float64) + origin[1] + y_offset_values[0][:horizontal_y.size])
+
     if height and width:
         columns = np.arange(width, dtype=np.int64)
         rows = np.arange(height, dtype=np.int64)
@@ -466,6 +482,11 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         for lo_key, hi_key, border_labels in border_specs:
             key_lo.append(lo_key)
             key_hi.append(hi_key)
+            mid_keys.append(lo_key * edge_multiplier + hi_key)
+            mid_x.append(((lo_key // height_stride + hi_key // height_stride) / 2.0
+                          + origin[0]).astype(np.float64))
+            mid_y.append(((lo_key % height_stride + hi_key % height_stride) / 2.0
+                          + origin[1]).astype(np.float64))
             pair_lo.append(np.full(border_labels.shape[0], outside, dtype=np.int64))
             pair_hi.append(border_labels)
 
@@ -511,6 +532,40 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
     fitted_by_key = {int(key): (float(fx), float(fy)) for key, fx, fy
                      in zip(endpoint_keys.tolist(), fitted_x.tolist(),
                             fitted_y.tolist())}
+
+    if mid_keys:
+        all_mid_keys = np.concatenate(mid_keys)
+        mid_order = np.argsort(all_mid_keys, kind="stable")
+        sorted_mid_keys = all_mid_keys[mid_order]
+        sorted_mid_x = np.concatenate(mid_x)[mid_order]
+        sorted_mid_y = np.concatenate(mid_y)[mid_order]
+    else:
+        sorted_mid_keys = np.empty(0, dtype=np.int64)
+        sorted_mid_x = sorted_mid_y = np.empty(0, dtype=np.float64)
+
+    canvas_corners = {(0, 0), (width, 0), (0, height), (width, height)}
+
+    def _midpoint_samples(grid: list[GridPoint], fitted: list[Point], keep_ends: bool
+                          ) -> list[Point]:
+        """The chain's samples: its pixel edges' midpoints, between its two end
+        vertices when ``keep_ends`` (a chain end: a junction, an endpoint, a
+        checkerboard vertex or the image frame, which only the vertex locates)."""
+        keys = np.asarray([x * height_stride + y for x, y in grid], dtype=np.int64)
+        low = np.minimum(keys[:-1], keys[1:])
+        high = np.maximum(keys[:-1], keys[1:])
+        where = np.searchsorted(sorted_mid_keys, low * edge_multiplier + high)
+        mids = list(zip(sorted_mid_x[where].tolist(), sorted_mid_y[where].tolist()))
+        # A canvas corner stays a sample, so the frame keeps its corners.
+        samples: list[Point] = [fitted[0]] if keep_ends else []
+        for index, mid in enumerate(mids):
+            if index and grid[index] in canvas_corners:
+                samples.append(fitted[index])
+            samples.append(mid)
+        if keep_ends:
+            return [*samples, fitted[-1]]
+        if grid[0] in canvas_corners:
+            samples.insert(0, fitted[0])
+        return [*samples, samples[0]]
 
     lines: list[LineString] = []
     tracked_chains: list[SharedBoundaryChain] = []
@@ -564,6 +619,10 @@ def shared_boundary_polygons(labels: np.ndarray, included: list[int],
         loop_node = chain[0] if node_loop else None
         loop_node_fitted = fitted_chain[0] if node_loop else None
         chain, fitted_chain = _canonical_samples(chain, fitted_chain)
+        keep_ends = chain[0] != chain[-1] or node_loop
+        fitted_chain = _midpoint_samples(chain, fitted_chain, keep_ends)
+        if node_loop:
+            loop_node_fitted = fitted_chain[0]
         line = LineString(fitted_chain)
         protected_edge_indices = tuple(
             index for index in range(len(chain) - 1)
