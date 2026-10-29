@@ -13,7 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
+import numba
 import numpy as np
+import scipy
 from numba import njit, prange
 from PIL import Image, ImageDraw
 from scipy import ndimage
@@ -423,6 +425,77 @@ class TraceTicks:
 UNPAINTED_RGB = (255, 255, 255)
 
 
+def planar_map_gate(pm: dict, painted: np.ndarray) -> tuple[dict, dict]:
+    """The planar map's gate, run on the read-back map before anything is derived from it:
+    ``t3api.planar_map_check`` with no violation, then the map's paint
+    (``t3api.paint_planar_map``) equal to t3's painted labels at every centre. Returns the
+    check and ``{"differ": 0}``; either failure raises a ``RuntimeError`` naming its count."""
+    import t3api
+
+    check = t3api.planar_map_check(pm)
+    if check["violations"]:
+        raise RuntimeError(f"map.json fails planar_map_check with {check['violations']} "
+                           f"violation(s): {check['problems']}")
+    differ = int(np.count_nonzero(t3api.paint_planar_map(pm) != painted))
+    if differ:
+        raise RuntimeError(f"map.json read back paints {differ} centre(s) other than t3's "
+                           "painted labels")
+    return check, {"differ": differ}
+
+
+def changed_explicit_components(explicit: np.ndarray, labels: np.ndarray,
+                                painted: np.ndarray) -> list[dict]:
+    """Each explicit protected component the drawing changes: a 4-connected one-colour region
+    of the explicit mask (vinylgen's explicit component protection) holding at least one
+    centre whose painted label differs from the traced label. Each row holds the component's
+    ``label``, ``bounds`` (left, top, right, bottom; right and bottom exclusive), ``size``,
+    ``count`` of changed centres and the ``changed`` mask, in label then raster order."""
+    explicit = np.asarray(explicit, dtype=bool)
+    rows: list[dict] = []
+    if not explicit.any():
+        return rows
+    differs = np.asarray(painted) != labels
+    four = ndimage.generate_binary_structure(2, 1)
+    for label in np.unique(labels[explicit]).tolist():
+        regions, _ = ndimage.label(explicit & (labels == label), structure=four)
+        for number, window in enumerate(ndimage.find_objects(regions), start=1):
+            if window is None:
+                continue
+            mask = regions[window] == number
+            changed = mask & differs[window]
+            count = int(changed.sum())
+            if not count:
+                continue
+            full = np.zeros(labels.shape, dtype=bool)
+            full[window] = changed
+            rows.append({"label": int(label),
+                         "bounds": (window[1].start, window[0].start, window[1].stop,
+                                    window[0].stop),
+                         "size": int(mask.sum()), "count": count, "changed": full})
+    return rows
+
+
+def node_limit_warnings(edge_stats: list[dict], settings: TraceSettings) -> list[str]:
+    """The soft node limits' warnings: one per path over ``soft_path_nodes`` naming its id,
+    one per layer over ``soft_layer_nodes`` naming it, and one for a document over
+    ``soft_document_nodes``. Nodes are Inkscape's count, as ``geometry.edge`` records them."""
+    warnings = []
+    for layer in edge_stats:
+        for row in layer["components"]:
+            if row["nodes"] > settings.soft_path_nodes:
+                warnings.append(f"path {row['id']} has {row['nodes']} nodes, over the soft "
+                                f"path-node limit of {settings.soft_path_nodes}")
+    for layer in edge_stats:
+        if layer["nodes"] > settings.soft_layer_nodes:
+            warnings.append(f"layer {layer['name']} has {layer['nodes']} nodes, over the soft "
+                            f"layer-node limit of {settings.soft_layer_nodes}")
+    total = sum(layer["nodes"] for layer in edge_stats)
+    if total > settings.soft_document_nodes:
+        warnings.append(f"traced-edge.svg has {total} nodes, over the soft document-node "
+                        f"limit of {settings.soft_document_nodes}")
+    return warnings
+
+
 def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
                   progress: Progress | None = None, *, cleanup: CleanupSettings | None = None,
                   clean_inline: bool = False, removed_index: int | None = None) -> dict:
@@ -517,9 +590,17 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # The trace: one call, at t3's one setting, on every CPU the process may use.
     result = t3api.trace(labels, on_event=TraceTicks(tick))
     tick(0.8, "Writing the planar map and the edge SVG")
+    # A trace.json left by an earlier trace of this folder describes the map.json about to be
+    # replaced: it goes before the new map is written, so a failed gate leaves no record
+    # vouching for a map other than the one on disk.
+    audit_path = subject_dir / "trace.json"
+    audit_path.unlink(missing_ok=True)
     map_path = subject_dir / "map.json"
     map_path.write_text(t3api.planar_map_json(t3api.planar_map(result, palette)))
     pm = t3api.read_planar_map(map_path.read_text())
+    painted = np.asarray(result.painted)
+    check, read_back = planar_map_gate(pm, painted)
+
     paths = t3api.planar_map_paths(pm)
     areas = face_areas(pm)
     elements = face_elements(pm)
@@ -536,19 +617,12 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     # left by an earlier trace of this folder would describe another drawing.
     for stale in ("traced-overlap.svg", "trace-fallbacks.png", "trace-fallbacks-overlay.png"):
         (subject_dir / stale).unlink(missing_ok=True)
-
     tick(0.85, "Checking the planar map")
-    check = t3api.planar_map_check(pm)
-    if check["violations"]:
-        raise RuntimeError(f"map.json fails planar_map_check with {check['violations']} "
-                           f"violation(s): {check['problems']}")
-    painted = np.asarray(result.painted)
-    read_back = t3api.paint_planar_map(pm)
-    differ = int(np.count_nonzero(read_back != painted))
-    if differ:
-        raise RuntimeError(f"map.json read back paints {differ} centre(s) other than t3's "
-                           "painted labels")
-    validations = {"edge": validate_svg(edge_path, palette, included)}
+    gap_stats: dict = {}
+    t3api.faces_svg_from_planar_map(
+        pm, [dict(row, index=i) for i, row in enumerate(palette)], gap_stats)
+    validations = {"edge": {**validate_svg(edge_path, palette, included),
+                            "planar_map_check": check, "read_back": read_back}}
 
     tick(0.88, "Semantic audit")
     # The audit reads the exact raster of the drawing, t3's painted labels, at t3's tube
@@ -569,36 +643,60 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     write_trace_html(subject_dir, width, height)
     semantic_inspection = subject_dir / "trace-semantic-warnings.png"
     semantic_overlay = subject_dir / "trace-missed-details-overlay.png"
+    # The missed detail: the source pixels the audit finds beyond its limit, and every changed
+    # centre of each explicit protected component the drawing changes. The overlay marks it
+    # all; the opaque inspection image, written when the audit fails, marks the same pixels.
+    missed = np.zeros(labels.shape, dtype=bool)
     if not validations["semantic"]["passed"]:
         missing = semantic_warning_mask(
             original, vector_rgb, maximum_deviation=tolerance,
             source_features=semantic_cache.get("source_features"))
+        missed |= missing
+        warnings.append(
+            f"semantic feature audit found {int(missing.sum())} source pixels beyond "
+            f"the {tolerance:g}px deviation limit; see {semantic_inspection.name} and "
+            f"{semantic_overlay.name}")
+    for component in changed_explicit_components(
+            segmentation.explicit_protected_features, labels, painted):
+        missed |= component["changed"]
+        x0, y0, x1, y1 = component["bounds"]
+        warnings.append(
+            f"explicit protected component of {palette[component['label']]['name']} at pixel "
+            f"bounds [{x0}, {y0}, {x1}, {y1}] (left, top, right, bottom) is changed by the "
+            f"trace: {component['count']} of {component['size']} centres changed; see "
+            f"{semantic_overlay.name}")
+    if not validations["semantic"]["passed"]:
         faded = Image.blend(Image.fromarray(original),
                             Image.new("RGB", (width, height), "white"), 0.82)
         overlay = np.asarray(faded).copy()
-        overlay[missing] = (220, 35, 35)
+        overlay[missed] = MISSED_DETAIL_RGBA[:3]
         Image.fromarray(overlay).save(semantic_inspection)
-        missed_detail_overlay(missing).save(semantic_overlay)
-        warnings.append(
-            f"semantic feature audit found {int(missing.sum())} source pixels beyond "
-            f"the {tolerance:g}px deviation limit; see {semantic_inspection.name}")
     else:
         semantic_inspection.unlink(missing_ok=True)
+    if missed.any():
+        missed_detail_overlay(missed).save(semantic_overlay)
+    else:
         semantic_overlay.unlink(missing_ok=True)
-    if sum(layer["nodes"] for layer in edge_stats) > settings.soft_document_nodes:
-        warnings.append("traced-edge.svg exceeds the soft document-node limit")
+    warnings.extend(node_limit_warnings(edge_stats, settings))
+    if gap_stats["gaps"]:
+        warnings.append(
+            f"the planar map holds {gap_stats['gaps']} gap connector(s), the longest "
+            f"{gap_stats['gap_max']:g}px: a drawn edge does not reach its neighbour there")
     audit = {"subject": subject_dir.name,
              "sources": {"original": str(original_path), "flattened": str(flattened_path),
                          "palette": str(palette_path),
-                         "segmentation": str(segmentation_path)},
+                         "segmentation": str(segmentation_path), "map": str(map_path)},
              "raster_dimensions": [width, height],
              "mode": "physical" if physical_mm is not None else "pixels",
              "physical_dimensions_mm": list(physical_mm) if physical_mm is not None else None,
              "settings": asdict(settings),
              "cleanup_settings": asdict(physical),
-             "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION},
+             "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION,
+                         "setting": t3api.SETTING, "numpy": np.__version__,
+                         "scipy": scipy.__version__, "numba": numba.__version__},
              "t3": {"summary": result.summary, "seconds": result.seconds,
-                    "warm_s": result.warm_s, "workers": result.workers},
+                    "warm_s": result.warm_s, "workers": result.workers,
+                    "gaps": gap_stats["gaps"], "gap_max": gap_stats["gap_max"]},
              "colours": {"included": [palette[i] for i in included],
                          "omitted": palette[omitted] if omitted is not None else None},
              "cleanup": cleanup_summary, "geometry": {"edge": edge_stats},
@@ -612,7 +710,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     audit["preview"] = {"file": "traced.png",
                         **{key: value for key, value in plan.items() if key != "arguments"}}
     tick(0.9, "Writing artifacts")
-    (subject_dir / "trace.json").write_text(json.dumps(audit, indent=2) + "\n")
+    audit_path.write_text(json.dumps(audit, indent=2) + "\n")
     tick(0.95, "Rendering preview")
     subprocess.run([
         str(renderer), str(edge_path),

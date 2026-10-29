@@ -151,21 +151,29 @@ revisions traced before t3, from `traced-overlap.svg`) and must be regenerated
 whenever the SVG changes. It targets 768 DPI, but its longer side is capped at
 1920 px; `trace.json` records the effective preview size under `preview`.
 `trace-semantic-warnings.png` is written only when the semantic feature audit
-fails; it paints the missed source pixels red over the source faded toward
-white, as a standalone audit image. Its transparent RGBA twin
-`trace-missed-details-overlay.png` is written under exactly the same condition
-and removed with it: every missed source pixel in opaque red, every other pixel
-fully transparent, the size of the traced pixel grid (`flattened.png`, the SVG
-viewBox), so it registers exactly over the traced SVG. The web app offers only
-the twin, as the Trace canvas toggle "Missed source details (red)".
+fails; it paints the missed detail red over the source faded toward white, as
+a standalone audit image. Its transparent RGBA twin
+`trace-missed-details-overlay.png` is written when the audit fails or the
+drawing changes an explicit protected component, and removed otherwise. Both
+mark the same missed detail: every source pixel the audit misses and every
+changed centre of a changed explicit protected component, in opaque red in
+the overlay, every other pixel fully transparent. The overlay is the size of
+the traced pixel grid (`flattened.png`, the SVG viewBox), so it registers
+exactly over the traced SVG. The web app offers only the twin, as the Trace
+canvas toggle "Missed source details (red)".
 
-`trace.json` is the audit: the sources, the size and mode, the trace settings
-as given (`settings`; t3 has one setting, so none steers the trace) and the
+`trace.json` is the audit: the sources (`map.json` among them), the size and
+mode, the trace settings as given (`settings`; t3 has one setting, so none steers the trace) and the
 cleanup settings with the physical size resolved (`cleanup_settings`), the
-tracer (`backend`: `tracer` `"t3api"`, `build`, `version`), t3's record (`t3`:
-its result `summary`, the trace call's `seconds`, the engine warm-up `warm_s`
-and `workers`), the included and omitted colours, per-layer and per-path
-counts (`geometry.edge`), structural and semantic validation, warnings, and
+tracer (`backend`: `tracer` `"t3api"`, `build`, `version`, `setting` and the
+`numpy`, `scipy` and `numba` versions), t3's record (`t3`: its result
+`summary`, the trace call's `seconds`, the engine warm-up `warm_s`, `workers`,
+and the planar map's gap connectors `gaps` and `gap_max`), the included and
+omitted colours, per-layer and per-path counts (`geometry.edge`), structural
+validation (`validation.edge`: `validate_svg`, the planar map's
+`planar_map_check` counts and the read-back paint's `differ`) and semantic
+validation, warnings (the audit's failure, each changed explicit protected
+component, the soft node limits and any gap connector), and
 `determinism` (`input_sha256` and `map_sha256`, the sha256 of `map.json`).
 The full list is in [SVG tracing specification](svg-tracing-spec.md) "Audit
 report". A `trace.json` written before t3 also carries `lengths`, `topology`,

@@ -44,7 +44,13 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   `t3api.read_planar_map`, and every later step reads that document.
 - **The planar map's gate.** `t3api.planar_map_check` finds no violation, and
   the read-back map painted (`t3api.paint_planar_map`) equals t3's painted
-  labels at every pixel centre. Either failing stops the trace with an error.
+  labels at every pixel centre. The gate runs on the read-back map before
+  anything is derived from it (`tracing.planar_map_gate`). Either failing stops
+  the trace with a `RuntimeError` naming the count (the violations, or the
+  differing centres); the CLI reports it as an error. A `trace.json` left by an
+  earlier trace of the folder is removed before the new `map.json` is written,
+  so a failed trace leaves no record vouching for a map other than the one on
+  disk.
 - **The edge SVG** (`svg_writer.add_face_layer(root, row, pm)`, one call per
   included colour in palette order, into `svg_document(W, H, physical_mm)`):
   one Inkscape layer per colour with `inkscape:groupmode="layer"`, label
@@ -1098,7 +1104,10 @@ after rounding.
 
 Node-count limits are initially soft limits. Accuracy takes precedence over an
 arbitrary node budget; excessive per-path, per-layer, or whole-document counts
-produce warnings rather than additional lossy simplification.
+produce warnings rather than additional lossy simplification: one per path
+over `soft_path_nodes` naming its id, one per layer over `soft_layer_nodes`
+naming it, and one for a document over `soft_document_nodes` (see "Audit
+report").
 
 The implemented backend uses the persisted segmentation confidence to construct
 one shared sub-pixel boundary graph, then emits deterministic line and cubic
@@ -1294,17 +1303,21 @@ symmetric detail controls.
 
 `trace.json` records:
 
-- `subject`, `sources` (source, flattened, palette and segmentation paths),
+- `subject`, `sources` (source, flattened, palette and segmentation paths, and
+  `map`, the planar-map file `map.json`),
   `raster_dimensions`, `mode` and `physical_dimensions_mm`.
 - `settings`, the trace settings as given (none steers t3), and
   `cleanup_settings` (size, removed colour, cleanup).
-- `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`) and `version`
-  (`t3api.VERSION`).
+- `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
+  (`t3api.VERSION`), `setting` (`t3api.SETTING`, the one setting traced at)
+  and the `numpy`, `scipy` and `numba` versions.
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),
   `seconds` (the trace call's wall time), `warm_s` (the engine warm-up within
-  it) and `workers`.
+  it), `workers`, and the planar map's gap connectors as
+  `t3api.faces_svg_from_planar_map` reports them for `map.json`: `gaps` (their
+  count) and `gap_max` (the longest, px).
 - `colours`: the included colours in palette order and the omitted one.
 - `cleanup`: regions removed, widened, or left unchanged with warnings, when
   the CLI cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
@@ -1314,12 +1327,28 @@ symmetric detail controls.
   layer's pieces by kind: `L`, `A circular`, `A elliptical`, `C`, and the
   `border` and `gap` connectors) and `node_types` (`c` and `s` counts), with
   `components[]` per path (`id`, `face`, `nodes`, `holes`).
-- `validation.edge` (`validate_svg` on `traced-edge.svg`) and
+- `validation.edge`: `validate_svg` on `traced-edge.svg`, plus
+  `planar_map_check` (the check's counts: `nodes`, `edges`, `border_edges`,
+  `drawn_null_sides`, `faces`, `rings`, `references`, `pieces`, `violations`
+  0, and its empty `problems`) and `read_back` (`differ` 0, the centres where
+  the read-back paint differs from t3's painted labels); and
   `validation.semantic` (the semantic preservation audit of t3's painted
   labels at `maximum_deviation` 1.75 px, t3's tube half-width, and
   `minimum_feature_span` 6 px).
-- `warnings`: the semantic audit's failure with its overlay, and the soft
-  document-node limit.
+- `warnings`, none of which blocks the export:
+  - the semantic audit's failure, naming `trace-semantic-warnings.png` and
+    `trace-missed-details-overlay.png`;
+  - each explicit protected component the drawing changes (a 4-connected
+    one-colour region of `explicit_protected_features` holding a centre whose
+    painted label differs from the traced label), with its colour name, pixel
+    bounds `[left, top, right, bottom]` (right and bottom exclusive), its share
+    `"<changed> of <size>"` centres and the missed-detail overlay. t3 has one
+    setting, so a re-run draws the same: the fix is the user's (edit the
+    labels, widen the feature, trace again);
+  - the soft node limits: each path over `soft_path_nodes` (named by its id),
+    each layer over `soft_layer_nodes` (named) and the document over
+    `soft_document_nodes`;
+  - any gap connector in the planar map (`t3.gaps` > 0), with the longest.
 - `determinism`: `input_sha256` (flattened, palette and segmentation) and
   `map_sha256` (the bytes of `map.json`).
 - `preview`: the `traced.png` plan.
