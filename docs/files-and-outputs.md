@@ -16,11 +16,9 @@ vinylgen/
 │       ├── segmentation.npz
 │       ├── palette.json
 │       ├── report.png
-│       ├── traced-overlap.svg
-│       ├── traced-edge.svg
+│       ├── map.json            # the planar-map file, the trace's geometry
+│       ├── traced-edge.svg     # written from map.json
 │       ├── traced.png
-│       ├── trace-fallbacks.png  # only when local fallbacks occur
-│       ├── trace-fallbacks-overlay.png  # transparent twin of trace-fallbacks.png
 │       ├── trace-semantic-warnings.png  # only when the semantic audit fails
 │       ├── trace-missed-details-overlay.png  # transparent twin of trace-semantic-warnings.png
 │       ├── trace.html
@@ -129,52 +127,55 @@ contract.
 
 ### Trace artifacts
 
-`traced-edge.svg` is a gap-free planar partition built from boundaries shared
-verbatim by neighbouring colours. `traced-overlap.svg` uses the same partition
-and expands lower layers when overlap is configured above zero. Every path in
-both carries `sodipodi:nodetypes` (one `c`/`s`/`z` node type per node, with the
-`sodipodi` namespace declared on the root); the rules and the string layout are
-in [SVG tracing specification](svg-tracing-spec.md) "Path node types". SVGs
-traced before the attribute existed have none, and the Trace canvas's Nodes
-overlay says so instead of guessing. `traced.png` is
-the current preview rendered from `traced-overlap.svg` and must be
-regenerated whenever either SVG changes. It targets 768 DPI, but its longer
-side is capped at 1920 px; `trace.json` records the effective preview size under `preview`. `trace-fallbacks.png` is emitted only
-when a shared chain falls back to its dense boundary (after protected-feature
-recovery or crossing repair), and `trace-semantic-warnings.png` only
-when the semantic feature audit fails; both paint their marks over the source
-faded toward white, as standalone audit images. Each has a transparent RGBA
-twin written under exactly the same condition and removed with it:
-`trace-fallbacks-overlay.png` draws every tightened (dense-fallback) boundary
-as a cyan stroke over a dark halo, and `trace-missed-details-overlay.png` marks
-every missed source pixel in opaque red. Every other pixel of both is fully
-transparent, and both are the size of the traced pixel grid (`flattened.png`,
-the SVG viewBox), so they register exactly over the traced SVG. The web app
-offers only these transparent twins, as the Trace canvas toggles "Tightened
-boundaries" and "Missed source details (red)"; it never shows the opaque
-images as layers. Runs traced before the twins existed have none and show no
-toggle. `trace.json` records effective
-configuration, backend versions, colour names/order, component/node/hole
-counts, render comparisons, warnings, and structural validation. Its
-`settings` block holds the trace settings and `cleanup_settings` the size,
-removed colour and cleanup settings it used, with the physical size resolved.
-The trace settings include the node placement (`node_placement`,
-`nodes_at_bends`, `curve_feature_scale`) and straight-line snapping
-(`straight_line_snap`, `snap_angle`); a `trace.json` written before those
-existed lacks them and was traced by the earlier worst-sample fitter without
-snapping. The eight trace lengths in `settings` are thousandths of the traced
-raster's longer side (`length_unit: "per_mille"`, with the automatic maximum
-deviation and a corner sharpening allowance that follows it filled in), and
-`lengths` records how they resolved:
-`reference_px` (that longer side), `per_mille` and `px` (each length in
-thousandths and in the pixels the fit used). A `trace.json` written before units
-has no `length_unit` and no `lengths`: its lengths are pixels, and used as a CLI
-`--config` it is converted on each image it traces (see [SVG tracing
-specification](svg-tracing-spec.md) "Trace length units"). A `corner_straightness`
-in an older `trace.json` is read as `side_smoothness`, its current name.
-`cleanup` holds the cleanup summary when the trace CLI cleaned inline, and is
-`null` when the labels came from the cleanup stage, whose `cleanup.json` holds
-that summary.
+`map.json` is the planar-map file (the tracer repo's
+`cards/vinylgen-on-t3/planar-map-file.md`): t3's drawing as a label map, every
+boundary edge stored once with the faces on its two sides and every face as
+rings of signed edge references, in paint order, every number exact. It is the
+trace's artefact (web artifact kind `traced-map`) and the one source of its
+geometry: every later step reads it back with `t3api.read_planar_map`.
+`traced-edge.svg` is a one-way export from it for the cutter and the web
+viewer: one Inkscape layer per included colour in palette order, one even-odd
+path per face (its holes as further rings of the same path) with path data
+`M L A C Z` and t3's `sodipodi:nodetypes` (`c` and `s`), numbered largest first
+by drawn area. The omitted colour is traced like any other and gets no layer.
+The rules are in [SVG tracing specification](svg-tracing-spec.md) "The trace
+stage: t3". Older trace revisions also hold `traced-overlap.svg`, the old
+fitter's overlap variant, and may hold `trace-fallbacks.png` and its
+transparent twin `trace-fallbacks-overlay.png`; a trace no longer writes them,
+and a CLI retrace of a subject folder removes them. SVGs traced before node
+types existed have no `sodipodi:nodetypes`, and the Trace canvas's Nodes
+overlay says so instead of guessing.
+
+`traced.png` is the current preview rendered from `traced-edge.svg` (in
+revisions traced before t3, from `traced-overlap.svg`) and must be regenerated
+whenever the SVG changes. It targets 768 DPI, but its longer side is capped at
+1920 px; `trace.json` records the effective preview size under `preview`.
+`trace-semantic-warnings.png` is written only when the semantic feature audit
+fails; it paints the missed source pixels red over the source faded toward
+white, as a standalone audit image. Its transparent RGBA twin
+`trace-missed-details-overlay.png` is written under exactly the same condition
+and removed with it: every missed source pixel in opaque red, every other pixel
+fully transparent, the size of the traced pixel grid (`flattened.png`, the SVG
+viewBox), so it registers exactly over the traced SVG. The web app offers only
+the twin, as the Trace canvas toggle "Missed source details (red)".
+
+`trace.json` is the audit: the sources, the size and mode, the trace settings
+as given (`settings`; t3 has one setting, so none steers the trace) and the
+cleanup settings with the physical size resolved (`cleanup_settings`), the
+tracer (`backend`: `tracer` `"t3api"`, `build`, `version`), t3's record (`t3`:
+its result `summary`, the trace call's `seconds`, the engine warm-up `warm_s`
+and `workers`), the included and omitted colours, per-layer and per-path
+counts (`geometry.edge`), structural and semantic validation, warnings, and
+`determinism` (`input_sha256` and `map_sha256`, the sha256 of `map.json`).
+The full list is in [SVG tracing specification](svg-tracing-spec.md) "Audit
+report". A `trace.json` written before t3 also carries `lengths`, `topology`,
+`layer_order`, `raster_partition_validation` and the overlap variant's
+geometry and validation; its `settings` lengths are thousandths of the traced
+raster's longer side (`length_unit: "per_mille"`), or pixels when it has no
+`length_unit` (see "Trace length units" in the specification), and a
+`corner_straightness` in it is read as `side_smoothness`. `cleanup` holds the
+cleanup summary when the trace CLI cleaned inline, and is `null` when the
+labels came from the cleanup stage, whose `cleanup.json` holds that summary.
 
 ### Cleanup artifacts
 

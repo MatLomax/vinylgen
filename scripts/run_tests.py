@@ -176,6 +176,29 @@ def _execute(units: list[list[str]], jobs: int, report) -> list[list[str]]:
     return lost
 
 
+WARM_SCRIPT = ROOT / "scripts" / "warm_t3_cache.py"
+
+
+def _warm_t3_cache() -> None:
+    """Warm the t3 engine's kernel cache before any test runs, once per cache.
+
+    Every web trace job is a fresh ``pipeline_worker`` process, and on a cold cache its
+    first ``t3api.trace`` compiles the engine's kernels (tens of seconds, longer than a web
+    test's job budget). ``scripts/warm_t3_cache.py`` (the deploy's warm) pays that once, here,
+    and records it in ``<t3api.cache_dir()>/warm.json``; a cache holding that record is warm
+    and is left alone. Its line is printed, so the cost is measured in the run's log."""
+    import subprocess
+
+    import t3api
+
+    record = Path(t3api.cache_dir()) / "warm.json"
+    if record.exists():
+        return
+    completed = subprocess.run([sys.executable, str(WARM_SCRIPT)], cwd=ROOT, text=True,
+                               capture_output=True, timeout=600)
+    print((completed.stdout + completed.stderr).strip(), flush=True)
+
+
 def _load_durations() -> dict[str, float]:
     try:
         return json.loads(DURATIONS_FILE.read_text())
@@ -196,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _worker_init()
+    _warm_t3_cache()
     loader = unittest.defaultTestLoader
     if args.names:
         suite = loader.loadTestsFromNames(args.names)

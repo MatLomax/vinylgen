@@ -6,11 +6,11 @@ Vinylgen is intended to become a low-effort, configurable workflow that turns a
 short sci-fi/fantasy subject description into limited-colour artwork and then
 into practical, Inkscape-friendly vinyl-cutter SVG layers.
 
-The project now has deterministic raster processing and an initial SVG tracing
-vertical slice. It can infer a palette, flatten and clean a raster, create
-shared-boundary overlap/edge SVG layers and emit trace audits. Both SVG variants
-now pass structural validation across the nine-image corpus; physical cutter
-readiness is not yet claimed.
+The project now has deterministic raster processing and SVG tracing. It can
+infer a palette, flatten and clean a raster, trace the cleaned labels with t3
+(the `t3api` wheel) into the planar-map file `map.json`, export the edge SVG
+layers from it, and emit trace audits. Physical cutter readiness is not yet
+claimed.
 
 ## Working rules
 
@@ -46,10 +46,10 @@ readiness is not yet claimed.
   known harmless Inkscape 1.2.2 `GtkRecentManager` startup warning. Other stderr
   output and the Inkscape exit status remain visible.
 - Whenever traced SVG output is regenerated or changed, always regenerate the
-  subject's `traced.png` from `traced-overlap.svg` in the same task, using the
-  preview policy in `vinylgen/preview.py` (768 DPI, longer side capped at
-  1920 px). Never leave
-  `traced.png` stale relative to the SVGs.
+  subject's `traced.png` from `traced-edge.svg` in the same task (a trace
+  writes it so), using the preview policy in `vinylgen/preview.py` (768 DPI,
+  longer side capped at 1920 px). Never leave `traced.png` stale relative to
+  the SVG. Revisions traced before t3 rendered it from `traced-overlap.svg`.
 - Put durable generated results in `outputs/<subject>/`.
 - Use lowercase, hyphenated, descriptive subject names.
 - Keep deterministic guarantees separate from generative or visual judgments.
@@ -182,12 +182,14 @@ them.
 
 ## Immediate next technical milestone
 
-The shared-boundary tracer has moved beyond the initial three-subject set. Its
-current corpus sweep uses zero removal, filling, and widening thresholds by
-default. All nine subjects have been regenerated with colour-area-preserving
-local boundary fallback and current capped-size `traced.png` previews. Conditional
-`trace-fallbacks.png` artifacts identify tightened boundaries. Visual inspection
-and physical cutter testing remain necessary before claiming cutter readiness.
+Tracing moves to t3 in build cards (the tracer repo's
+`cards/vinylgen-on-t3/card.md`, vinylgen worklog task
+`trace-with-t3-vinylgen-s-trace-stage-calls-t3api-writes-map`): the trace stage
+calls t3 and writes `map.json` and the edge SVG; the audit, the settings and web
+controls, the old fitter's retirement and the deploy follow. The nine corpus
+subjects under `outputs/` were traced by the old shared-boundary fitter. Visual
+inspection and physical cutter testing remain necessary before claiming cutter
+readiness.
 
 A generative pre-flatten tiled-upscale stage drives the local ComfyUI directly
 so the manual export/upscale/reimport round trip is gone: on a source revision

@@ -720,7 +720,9 @@ export default function App() {
   // choice and its label always describe the file shown, even mid-reload.
   const tracedRunId = artifacts.find(row => TRACED_SVG_KINDS.has(row.kind))?.revision_id
   const tracedRunSettings = (revisions.find(row => row.id === tracedRunId)?.settings.trace ?? pipelineBaseline.trace) as Partial<TraceSettings> | undefined
+  // A run traced with t3 writes the edge variant only, whatever overlap setting it carries.
   const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(tracedRunSettings))
+    ?? artifacts.find(row => row.kind === 'traced-edge')
   const cleanupLookup = useMemo(() => nearestCleanup(revisions, current?.id || null), [revisions, current?.id])
   const activeCleanup = cleanupLookup.stale ? null : cleanupLookup.revision
   // The artwork changed after the last Cleanup, so tracing waits for Cleanup to re-run.

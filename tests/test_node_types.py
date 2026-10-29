@@ -14,13 +14,13 @@ from vinylgen.boundary_graph import shared_boundary_polygons
 from vinylgen.contracts import SegmentationBundle, TraceSettings
 from vinylgen.trace_window import (PreviewSegmentation, Window, preview_trace_settings,
                                    render_window_svg, window_boundaries)
-from vinylgen.tracing import trace_subject
 
 from vinylgen import node_types
 from vinylgen.node_types import (ANGLE_TOLERANCE_DEG, LENGTH_TOLERANCE, classify_join,
                                  cusp_anchor_keys, junction_keys, parse_path, path_nodetypes,
                                  point_key,
                                  subpath_nodetypes)
+from vinylgen.tracing import ensure_palette_names
 from vinylgen.svg_writer import SODIPODI, SVG, add_layer, svg_document
 
 
@@ -237,7 +237,23 @@ def inkscape_type_count(d: str) -> int:
 
 
 class RealTraceNodeTypeTests(unittest.TestCase):
-    def test_every_traced_and_previewed_path_has_one_type_per_inkscape_node(self):
+    """The live window preview, the classifier's production caller: the trace's own
+    paths carry the node types t3 writes (``tests/test_t3_trace.py``)."""
+
+    def preview(self, subject: Path, values: dict) -> ET.Element:
+        report = json.loads((subject / "palette.json").read_text())
+        ensure_palette_names(report, {})
+        palette = report["palette"]
+        segmentation = PreviewSegmentation.load(subject / "segmentation.npz")
+        window = Window(0, 0, segmentation.width, segmentation.height)
+        boundaries = window_boundaries(segmentation, [0, 1, 2], window)
+        settings = preview_trace_settings({"length_unit": "px", **values}, segmentation.width,
+                                          segmentation.height)
+        order = segmentation.automatic_order([0, 1, 2], palette, settings)
+        return ET.fromstring(render_window_svg(boundaries, window, order, palette, settings,
+                                               float(settings.overlap)))
+
+    def test_every_previewed_path_has_one_type_per_inkscape_node(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as name:
             subject = junction_subject(Path(name))
             segmentation = SegmentationBundle.load(subject / "segmentation.npz")
@@ -254,39 +270,36 @@ class RealTraceNodeTypeTests(unittest.TestCase):
             seen_types: set[str] = set()
             junction_nodes = 0
             for settings in ({}, {"overlap": 1.5}, {"solid_underlayers": True}):
-                trace_subject(subject, TraceSettings(length_unit="px", **settings), {})
-                for variant in ("edge", "overlap"):
-                    root = ET.parse(subject / f"traced-{variant}.svg").getroot()
-                    paths = list(root.iter(f"{{{SVG}}}path"))
-                    self.assertTrue(paths)
-                    for path in paths:
-                        with self.subTest(settings=settings, variant=variant, path=path.get("id")):
-                            types = path.get(f"{{{SODIPODI}}}nodetypes")
-                            self.assertIsNotNone(types)
-                            self.assertRegex(types, r"^[csz]+$")
-                            self.assertEqual(len(types), inkscape_type_count(path.get("d")))
-                            seen_types.update(types)
-                            # The written types are the classification with the track's
-                            # real junction anchors.
-                            self.assertEqual(types, path_nodetypes(path.get("d"), junctions))
-                            # And every node the file writes at a junction anchor is a cusp,
-                            # read from the written string itself (a closed subpath's start
-                            # takes its repeated last character, as Inkscape reads it).
-                            cursor = 0
-                            for start, segments, closed in parse_path(path.get("d")):
-                                nodes = [start, *(segment[-1] for segment in segments)]
-                                if closed and nodes[-1] == start:
-                                    nodes.pop()
-                                width = len(nodes) + (1 if closed else 0)
-                                written = types[cursor:cursor + width]
-                                cursor += width
-                                for position, node in enumerate(nodes):
-                                    if point_key(node) in junctions:
-                                        junction_nodes += 1
-                                        char = written[-1] if closed and position == 0 else written[position]
-                                        self.assertEqual(char, "c")
+                paths = list(self.preview(subject, settings).iter(f"{{{SVG}}}path"))
+                self.assertTrue(paths)
+                for path in paths:
+                    with self.subTest(settings=settings, path=path.get("id")):
+                        types = path.get(f"{{{SODIPODI}}}nodetypes")
+                        self.assertIsNotNone(types)
+                        self.assertRegex(types, r"^[csz]+$")
+                        self.assertEqual(len(types), inkscape_type_count(path.get("d")))
+                        seen_types.update(types)
+                        # The written types are the classification with the track's
+                        # real junction anchors.
+                        self.assertEqual(types, path_nodetypes(path.get("d"), junctions))
+                        # And every node the file writes at a junction anchor is a cusp,
+                        # read from the written string itself (a closed subpath's start
+                        # takes its repeated last character, as Inkscape reads it).
+                        cursor = 0
+                        for start, segments, closed in parse_path(path.get("d")):
+                            nodes = [start, *(segment[-1] for segment in segments)]
+                            if closed and nodes[-1] == start:
+                                nodes.pop()
+                            width = len(nodes) + (1 if closed else 0)
+                            written = types[cursor:cursor + width]
+                            cursor += width
+                            for position, node in enumerate(nodes):
+                                if point_key(node) in junctions:
+                                    junction_nodes += 1
+                                    char = written[-1] if closed and position == 0 else written[position]
+                                    self.assertEqual(char, "c")
             self.assertIn("c", seen_types)
-            self.assertTrue(junction_nodes, "the traced paths must pass through junction anchors")
+            self.assertTrue(junction_nodes, "the previewed paths must pass through junction anchors")
 
             # With the geometric tolerances opened wide, every join with a curve on
             # either side would be symmetric or smooth, so only the junction rule can
@@ -294,30 +307,13 @@ class RealTraceNodeTypeTests(unittest.TestCase):
             # the writer and this goes red, whatever the fitter does at junctions.
             with mock.patch.object(node_types, "ANGLE_TOLERANCE_DEG", 180.0), \
                     mock.patch.object(node_types, "LENGTH_TOLERANCE", float("inf")):
-                trace_subject(subject, TraceSettings(length_unit="px"), {})
                 exercised = 0
-                for variant in ("edge", "overlap"):
-                    root = ET.parse(subject / f"traced-{variant}.svg").getroot()
-                    for path in root.iter(f"{{{SVG}}}path"):
-                        written = path.get(f"{{{SODIPODI}}}nodetypes")
-                        self.assertEqual(written, path_nodetypes(path.get("d"), junctions))
-                        without = path_nodetypes(path.get("d"))
-                        exercised += sum(a == "c" and b != "c" for a, b in zip(written, without))
+                for path in self.preview(subject, {}).iter(f"{{{SVG}}}path"):
+                    written = path.get(f"{{{SODIPODI}}}nodetypes")
+                    self.assertEqual(written, path_nodetypes(path.get("d"), junctions))
+                    without = path_nodetypes(path.get("d"))
+                    exercised += sum(a == "c" and b != "c" for a, b in zip(written, without))
                 self.assertTrue(exercised, "no junction node relied on the junction rule")
-                # The live preview of the whole image writes the same types as the trace,
-                # its junction rule included.
-                traced = ET.parse(subject / "traced-edge.svg").getroot()
-                palette = json.loads((subject / "palette.json").read_text())["palette"]
-                preview_segmentation = PreviewSegmentation.load(subject / "segmentation.npz")
-                window = Window(0, 0, preview_segmentation.width, preview_segmentation.height)
-                boundaries = window_boundaries(preview_segmentation, [0, 1, 2], window)
-                settings = preview_trace_settings({"length_unit": "px"}, preview_segmentation.width,
-                                                  preview_segmentation.height)
-                order = preview_segmentation.automatic_order([0, 1, 2], palette, settings)
-                preview = ET.fromstring(render_window_svg(boundaries, window, order, palette, settings, 0.0))
-                key = lambda root: sorted((path.get("d"), path.get(f"{{{SODIPODI}}}nodetypes"))
-                                          for path in root.iter(f"{{{SVG}}}path"))
-                self.assertEqual(key(preview), key(traced))
 
 
 if __name__ == "__main__":

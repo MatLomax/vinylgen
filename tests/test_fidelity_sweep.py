@@ -1,11 +1,9 @@
 import contextlib
-import copy
 import io
 import json
 import math
 import tempfile
 import unittest
-from dataclasses import asdict, fields
 from pathlib import Path
 from unittest import mock
 
@@ -316,28 +314,6 @@ class SearchTests(unittest.TestCase):
 
 
 class SettingsIsolationTests(unittest.TestCase):
-    def test_tuner_evaluation_never_mutates_the_defaults(self):
-        defaults = asdict(TraceSettings())
-        field_defaults = {f.name: f.default for f in fields(TraceSettings)}
-        tables = copy.deepcopy((contracts.PER_MILLE_DEFAULTS, contracts.PX_DEFAULTS,
-                                contracts.FOLLOWING_LENGTHS, contracts.AUTOMATIC_LENGTHS))
-        record = tune.base_record()
-        record_copy = copy.deepcopy(record)
-        values = {**tune.start_values(record), "curve_fit_tolerance": 3.0,
-                  "max_deviation": 2.5, "corner_analysis_span": 5.0}
-        (ROOT / ".tmp").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=ROOT / ".tmp") as name:
-            evaluator = tune.Evaluator(hand_built_cases()[:1], ["labels"], Path(name), jobs=1,
-                                       log=lambda message: None)
-            entry = evaluator(tune.settings_for(record, values))
-        self.assertEqual(entry["failures"], 0)
-        self.assertEqual(entry["settings"]["curve_fit_tolerance"], 3.0)
-        self.assertEqual(record, record_copy)
-        self.assertEqual(asdict(TraceSettings()), defaults)
-        self.assertEqual({f.name: f.default for f in fields(TraceSettings)}, field_defaults)
-        self.assertEqual((contracts.PER_MILLE_DEFAULTS, contracts.PX_DEFAULTS,
-                          contracts.FOLLOWING_LENGTHS, contracts.AUTOMATIC_LENGTHS), tables)
-
     def test_base_record_makes_automatic_lengths_explicit_without_changing_the_trace(self):
         record = tune.base_record()
         self.assertEqual(record["max_deviation"], contracts.DEFAULT_MAX_DEVIATION_PER_MILLE)

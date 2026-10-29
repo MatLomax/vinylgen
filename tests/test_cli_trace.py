@@ -171,21 +171,21 @@ class CliCleanupParityTests(unittest.TestCase):
                         int(original.protected_features.sum()))
         report = trace_subject(staged, settings, {}, cleanup=cleanup)
         self.assertIsNone(report["cleanup"])
-        for variant in ("traced-edge.svg", "traced-overlap.svg"):
-            self.assertEqual((staged / variant).read_bytes(), (cli / variant).read_bytes(), variant)
+        for written in ("map.json", "traced-edge.svg"):
+            self.assertEqual((staged / written).read_bytes(), (cli / written).read_bytes(), written)
         # Both validate against the raster that was traced, the cleaned one, so the
         # whole audit agrees apart from input provenance and the inline summary.
         # The colour records match too, except the share each palette.json states:
         # the cleanup stage refreshes it, the CLI leaves the subject's file as flattened.
         staged_audit = json.loads((staged / "trace.json").read_text())
         for key in ("mode", "physical_dimensions_mm", "settings", "cleanup_settings",
-                    "layer_order", "geometry", "topology", "validation", "warnings"):
+                    "backend", "geometry", "validation", "warnings"):
             self.assertEqual(staged_audit[key], cli_audit[key], key)
         unshared = lambda rows: [{k: v for k, v in row.items() if k != "share_percent"} for row in rows]
         self.assertEqual(unshared(staged_audit["colours"]["included"]), unshared(cli_audit["colours"]["included"]))
         self.assertEqual(staged_audit["colours"]["omitted"], cli_audit["colours"]["omitted"])
-        for image in ("trace-fallbacks.png", "trace-semantic-warnings.png",
-                      "trace-fallbacks-overlay.png", "trace-missed-details-overlay.png"):
+        self.assertEqual(staged_audit["determinism"]["map_sha256"], cli_audit["determinism"]["map_sha256"])
+        for image in ("trace-semantic-warnings.png", "trace-missed-details-overlay.png"):
             self.assertEqual((staged / image).exists(), (cli / image).exists(), image)
             if (cli / image).exists():
                 self.assertEqual((staged / image).read_bytes(), (cli / image).read_bytes(), image)

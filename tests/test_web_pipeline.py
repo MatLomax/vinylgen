@@ -96,8 +96,9 @@ class WebPipelineTest(PipelineApiHarness):
         trace_artifacts = (await self.client.get(
             f"/api/revisions/{trace_revision}/artifacts")).json()
         trace_kinds = {row["kind"] for row in trace_artifacts}
-        self.assertTrue({"traced-edge", "traced-overlap", "traced-preview", "trace-audit"}
+        self.assertTrue({"traced-edge", "traced-map", "traced-preview", "trace-audit"}
                         .issubset(trace_kinds))
+        self.assertNotIn("traced-overlap", trace_kinds)
         preview = next(row for row in trace_artifacts if row["kind"] == "traced-preview")
         preview_content = await self.client.get(preview["download_url"])
         self.assertTrue(preview_content.content.startswith(b"\x89PNG"))
@@ -230,8 +231,8 @@ class WebPipelineTest(PipelineApiHarness):
     async def test_a_pixel_era_trace_is_served_in_thousandths_and_retraces_identically(self) -> None:
         # A trace revision recorded before trace lengths were thousandths of the
         # image's longer side stores pixels and no length_unit. The API serves it
-        # converted on the raster that run traced (40 px here), so a run posting the
-        # served settings resolves back to the recorded pixels and the same geometry.
+        # converted on the raster that run traced (40 px here), and a run posting the
+        # served settings draws the same geometry.
         project, palette_revision = await self.flattened_project("Pixel Era")
         recorded = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
                     "minimum_straight_length": 3.0, "corner_analysis_span": 6.0,
@@ -248,10 +249,6 @@ class WebPipelineTest(PipelineApiHarness):
                                     trace=units))["result_revision_id"]
         first_artifacts = await self.effective_kinds(first)
         first_svg = (await self.client.get(first_artifacts["traced-edge"]["download_url"])).content
-        audit = json.loads((await self.client.get(
-            first_artifacts["trace-audit"]["download_url"])).content)
-        self.assertEqual(audit["lengths"]["reference_px"], 40)
-        self.assertEqual(audit["lengths"]["px"]["curve_fit_tolerance"], 1.2)
         # The pixel-era record of that same run, as a trace revision with its SVG.
         # It names side smoothness by its former name, corner_straightness, has no
         # corner sharpening allowance (that followed the maximum deviation) and
@@ -1834,8 +1831,8 @@ class WebCleanupStageTest(PipelineApiHarness):
 
 
 class AutomaticLayerOrderTest(PipelineApiHarness):
-    """The automatic layer order is the one a trace of the revision infers when layer
-    order can matter; a trace where it cannot does not infer one."""
+    """The automatic layer order the controls show is the inferred stacking, not palette
+    order, and leaves a removed colour out. The trace stacks no layers, so it records none."""
 
     def three_colour_png(self) -> bytes:
         # Navy fills the border; a large orange block sits inside, and a small cream block
@@ -1847,18 +1844,6 @@ class AutomaticLayerOrderTest(PipelineApiHarness):
         buffer = io.BytesIO()
         Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
         return buffer.getvalue()
-
-    async def trace_audit(self, project_id: str, revision_id: str, **trace) -> dict:
-        traced = (await self.run_job("trace", project_id, revision_id,
-                                     trace=trace))["result_revision_id"]
-        rows = {row["kind"]: row for row in (await self.client.get(
-            f"/api/revisions/{traced}/effective-artifacts")).json()}
-        return json.loads((await self.client.get(rows["trace-audit"]["download_url"])).content)
-
-    async def traced_inferred_hex(self, project_id: str, revision_id: str) -> list[str]:
-        audit = await self.trace_audit(project_id, revision_id, solid_underlayers=True)
-        by_name = {row["name"]: row["hex"] for row in audit["colours"]["included"]}
-        return [by_name[name] for name in audit["layer_order"]["inferred_bottom_to_top"]]
 
     async def automatic(self, revision_id: str) -> list[str] | None:
         response = await self.client.get(f"/api/revisions/{revision_id}/automatic-layer-order")
@@ -1883,7 +1868,7 @@ class AutomaticLayerOrderTest(PipelineApiHarness):
         automatic = await self.automatic(flattened)
         # Not palette order: returning it instead would fail here.
         self.assertNotEqual(automatic, palette_order)
-        self.assertEqual(automatic, await self.traced_inferred_hex(project["id"], flattened))
+        self.assertEqual(sorted(automatic), sorted(palette_order))
 
         # A cleanup removing a colour (named as the tracer resolves it): the order leaves it
         # out, and still differs from the remaining colours' palette order.
@@ -1896,24 +1881,6 @@ class AutomaticLayerOrderTest(PipelineApiHarness):
         self.assertNotIn(navy["hex"], cleaned_automatic)
         self.assertNotEqual(cleaned_automatic,
                             [row["hex"] for row in cleaned_state["palette"] if row["hex"] != navy["hex"]])
-        self.assertEqual(cleaned_automatic, await self.traced_inferred_hex(project["id"], cleaned))
-
-    async def test_a_trace_where_order_cannot_matter_infers_none(self) -> None:
-        imported = await self.client.post(
-            "/api/projects/import", data={"name": "Order Fixture"},
-            files={"source": ("fixture.png", self.three_colour_png(), "image/png")})
-        project = imported.json()
-        flattened = (await self.run_job(
-            "palette", project["id"], project["revisions"][0]["id"],
-            palette={"initial_colours": 3, "min_colour_share": 0, "min_region_pixels": 0,
-                     "dither_radius": 0}))["result_revision_id"]
-        palette = (await self.client.get(f"/api/revisions/{flattened}/editor")).json()["palette"]
-        audit = await self.trace_audit(project["id"], flattened)
-        order = audit["layer_order"]
-        self.assertIsNone(order["inferred_bottom_to_top"])
-        self.assertIsNotNone(order["not_inferred"])
-        self.assertEqual(order["warnings"], [])
-        self.assertEqual(order["effective_bottom_to_top"], [row["name"] for row in palette])
 
 
 class PipelineWorkerTest(unittest.TestCase):
@@ -1952,7 +1919,8 @@ class PipelineWorkerTest(unittest.TestCase):
                       "settings": asdict(TraceSettings()), "colour_names": {}}
         run_worker(trace_spec, on_progress=lambda value, message: seen.append((value, message)),
                    cancelled=lambda: False)
-        self.assertTrue((subject / "traced-overlap.svg").exists())
+        self.assertTrue((subject / "map.json").exists())
+        self.assertFalse((subject / "traced-overlap.svg").exists())
         self.assertTrue(seen, "expected relayed trace progress events")
         self.assertEqual([value for value, _ in seen], sorted(value for value, _ in seen))
         self.assertEqual(seen[-1][0], 1.0)

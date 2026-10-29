@@ -15,7 +15,10 @@ NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=%h/vinylgen/.vinylgen-data %h/vinylgen/.tmp
+# The t3 engine keeps its compiled kernels in its default cache, ~/.cache/t3api/<build id>
+# (t3api.cache_dir()), which `just deploy` warms before the restart; numba keeps a kernel only
+# where it can write, so the service must be able to write there.
+ReadWritePaths=%h/vinylgen/.vinylgen-data %h/vinylgen/.tmp %h/.cache/t3api
 # Numba writes its JIT cache at import time and fails hard when every candidate
 # location is read-only, so point it inside a writable path.
 Environment=NUMBA_CACHE_DIR=%h/vinylgen/.tmp/numba-cache

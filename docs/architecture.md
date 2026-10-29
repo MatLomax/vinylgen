@@ -11,12 +11,12 @@ source raster
   -> contracts.py      versioned segmentation.npz handoff
   -> cutter_cleanup.py cleanup stage: physical size, removed colour, optional
                        physical feature removal/widening of the labels
-  -> boundary_graph.py dense confidence-adjusted shared sub-pixel evidence
-  -> curve_fit.py      straight sections, corners, and cubic Bezier emission
-  -> svg_writer.py     Inkscape layers and SVG serialization
-  -> validation.py     SVG structural validation
-  -> tracing.py        vector-stage orchestration and audit
-     trace_window.py   the same vector stage on one window, for the live preview
+  -> tracing.py        trace stage: one t3api.trace call on the cleaned labels,
+                       map.json (the planar-map file), its gate, the audit
+  -> svg_writer.py     the edge SVG from map.json (add_face_layer), serialization
+  -> validation.py     SVG structural validation, the semantic audit
+     trace_window.py   the old shared-boundary fitter on one window, for the live
+                       preview (boundary_graph.py, curve_fit.py)
      cleanup_window.py cutter cleanup of one window, for the live cleanup preview
 ```
 
@@ -186,8 +186,8 @@ downloads are explicit choices, and configured shared-folder saves are atomic.
 Reimport accepts only passive, self-contained SVG, renders it headlessly with
 the shared preview policy (`vinylgen/preview.py`), and stores a neutral edited-SVG artifact, fresh inspection preview,
 and validation audit on a new `inkscape-edit` revision. Because an arbitrary
-edit cannot honestly be classified as both edge and overlap trace geometry,
-trace, validation, and export are stale until retracing, and a retrace hides the
+edit cannot honestly be classified as the trace's geometry (that is `map.json`,
+from which the edge SVG is exported), trace, validation, and export are stale until retracing, and a retrace hides the
 edit's artifacts with the rest of the older run's output. The generated trace on
 the parent is untouched.
 The hosted service never claims that a phone or remote browser can launch a
@@ -205,8 +205,11 @@ the image in traced-image px (the flattened grid, including any flatten
 upscale); it is previewed only while it covers at most 600 × 600 px, otherwise
 the canvas reads "Zoom in to preview". A pan, a zoom or any setting change
 re-previews once it has been still for 150 ms, and a newer change aborts the
-request in flight. The server resolves exactly what "Trace and validate" from
-that revision would trace: the effective (cleaned) segmentation, the active
+request in flight. The preview draws with the old shared-boundary fitter, which
+a trace no longer runs (a trace is drawn by t3, see
+[SVG tracing specification](svg-tracing-spec.md#the-trace-stage-t3)), so it
+shows that fitter's geometry, not the trace's. The server resolves the input
+"Trace and validate" from that revision would trace: the effective (cleaned) segmentation, the active
 cleanup's removed colour and physical size (a stale cleanup blocks the preview
 as it blocks the trace), and the layer order a trace would use (inferred from the
 whole image when solid underlayers or an overlap make order matter, otherwise
@@ -244,7 +247,7 @@ into the window too (the margin moves most of it out of view, never all of it;
 [measurement](svg-tracing-spec.md#preview-margin-measurement)), and underlayer
 adjacency and overlap buffers see only the crop; validation and protected-feature
 recovery are skipped; and nothing is saved. "Trace and validate" still creates the revision. When the window's
-margin reaches every image edge, the preview is the full trace path for path.
+margin reaches every image edge, the preview is the old fitter's full trace path for path.
 
 The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served
 on the same preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its

@@ -9,7 +9,6 @@ import json
 import re
 import subprocess
 import base64
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
@@ -17,28 +16,17 @@ from pathlib import Path
 import numpy as np
 from numba import njit, prange
 from PIL import Image, ImageDraw
-import shapely
 from scipy import ndimage
-from shapely.geometry import box
 from shapely.ops import unary_union
 
-from vinylgen.colour import colour_names, nearest_palette_labels
-from vinylgen.contracts import (
-    DEFAULT_MAX_DEVIATION_PER_MILLE, FOLLOWING_LENGTHS, CleanupSettings, SegmentationBundle, TraceSettings)
-from vinylgen.cutter_cleanup import apply_cleanup, pixel_scale, resolve_physical_size
-from vinylgen.curve_fit import (
-    SharedChainFitter, geometry_components, region_components, shared_boundary_components)
+from vinylgen.colour import colour_names
+from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
+from vinylgen.cutter_cleanup import apply_cleanup, resolve_physical_size
+from vinylgen.curve_fit import SharedChainFitter, geometry_components, region_components
 from vinylgen.palette import Progress, _noop
 from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
 from vinylgen.preview import preview_plan
-from vinylgen.boundary_graph import (
-    shared_boundary_polygons,
-    component_sizes,
-)
-from vinylgen.node_types import cusp_anchor_keys
-from vinylgen.svg_writer import add_layer, svg_document, write_svg
-from vinylgen.trace_lengths import (
-    length_audit, length_reference, resolve_trace_lengths, trace_lengths_in_units)
+from vinylgen.svg_writer import add_face_layer, face_areas, face_elements, svg_document, write_svg
 from vinylgen.validation import (
     semantic_warning_mask,
     validate_semantic_preservation,
@@ -312,7 +300,7 @@ def overlap_layer_components(position: int, order: list[int], edge_components: l
 
 def write_trace_html(subject_dir: Path, width: int, height: int) -> None:
     """Write a self-contained overlay viewer with inline PNG and SVG data."""
-    svg = (subject_dir / "traced-overlap.svg").read_text()
+    svg = (subject_dir / "traced-edge.svg").read_text()
     svg = re.sub(r"<\?xml[^>]*>\s*", "", svg, count=1)
     source_data = base64.b64encode((subject_dir / "source.png").read_bytes()).decode("ascii")
     title = html.escape(subject_dir.name.replace("-", " ").title())
@@ -382,21 +370,87 @@ def tightened_boundary_overlay(chains: list[list[tuple[float, float]]], width: i
 
 
 
+def source_component_count(mask: np.ndarray) -> int:
+    """The 4-connected raster components of one colour's mask (edge-sharing connectivity, the
+    cutter's authoritative region model)."""
+    return int(ndimage.label(mask, structure=ndimage.generate_binary_structure(2, 1))[1])
+
+
+class TraceTicks:
+    """``trace_subject``'s progress band from 0.03 to 0.80, filled by t3's own counts (card
+    section 1): f = 0.03 + 0.77 (j + c) / (J + N), j junction edges and c chains drawn out of
+    J and N. J is the ``edges`` event's ``junction_edges``; N is a ``chain`` event's
+    ``total``, taken as the ``edges`` event's ``count`` (an upper bound) until the first chain
+    arrives. j and c only grow, and N only falls to its true value before c counts, so the bar
+    never moves backwards. Called as t3api's ``on_event``."""
+
+    BAND_START, BAND_END = 0.03, 0.80
+
+    def __init__(self, tick: Progress) -> None:
+        self.tick = tick
+        self.started = False
+        self.junction_edges = 0
+        self.upper = 0
+        self.j = 0
+        self.c = 0
+
+    def __call__(self, kind: str, payload: dict) -> None:
+        if kind in ("start", "paths") and not self.started:
+            self.started = True
+            self.tick(0.02, "Tracing: planar map")
+        elif kind == "edges":
+            self.junction_edges = int(payload["junction_edges"])
+            self.upper = int(payload["count"])
+        elif kind == "junction_edge":
+            self.j += 1
+            self.tick(self.band(self.j, self.junction_edges + self.upper),
+                      f"Tracing: junction edges {self.j} of {self.junction_edges}")
+        elif kind == "chain":
+            total = int(payload["total"])
+            self.c = max(self.c, int(payload["drawn"]))
+            self.tick(self.band(self.junction_edges + self.c, self.junction_edges + total),
+                      f"Tracing: chains {self.c} of {total}")
+
+    def band(self, done: int, total: int) -> float:
+        """0.03 + 0.77 done / total, never past the band's end: at done = total the float sum
+        can round above 0.80, the next tick's fraction."""
+        fraction = self.BAND_START + (self.BAND_END - self.BAND_START) * done / max(1, total)
+        return min(self.BAND_END, fraction)
+
+
+# The paper behind the cut vinyl: the colour the semantic audit sees at a centre no drawn
+# face holds (t3's painted label -1).
+UNPAINTED_RGB = (255, 255, 255)
+
+
 def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
                   progress: Progress | None = None, *, cleanup: CleanupSettings | None = None,
                   clean_inline: bool = False, removed_index: int | None = None) -> dict:
-    """Trace a subject's segmentation into layered SVGs.
+    """Trace a subject's segmentation with t3 into ``map.json`` and the edge SVG.
 
-    ``cleanup`` supplies the physical size and the removed colour; without it the
-    trace is in pixels and cuts every colour. ``removed_index``, when given, is the
-    palette index of the removed colour as the caller already resolved it: the web
-    pipeline resolves the cleanup's ``remove_colour`` against the palette that cleanup
-    ran with, because ``name_overrides`` may since have renamed its colours. Without
-    it ``cleanup.remove_colour`` is resolved against this trace's (renamed) palette. The segmentation is traced as it is
-    stored, which in the web pipeline is the cleanup stage's cleaned labels. With
-    ``clean_inline`` (the trace CLI) the cutter cleanup in ``cleanup`` is first
-    applied to the labels in memory, through the same function the cleanup stage uses.
+    One ``t3api.trace`` call on the cleaned labels (``int16`` palette indices, every colour,
+    the omitted one too) at t3's one setting. Its planar map is written as ``map.json``
+    (``t3api.planar_map_json``) and read back (``t3api.read_planar_map``) for every later
+    step: the planar map's gate (``planar_map_check`` with no violation, and the read-back
+    paint equal to t3's painted labels at every centre, else a ``RuntimeError``), the edge
+    SVG ``traced-edge.svg`` (one layer per included colour, ``svg_writer.add_face_layer``),
+    and its ``traced.png`` preview. The semantic audit reads t3's painted labels at t3's
+    tube half-width.
+
+    ``cleanup`` supplies the physical size and the removed colour; without it the trace is in
+    pixels and cuts every colour. ``removed_index``, when given, is the palette index of the
+    removed colour as the caller already resolved it: the web pipeline resolves the
+    cleanup's ``remove_colour`` against the palette that cleanup ran with, because
+    ``name_overrides`` may since have renamed its colours. Without it
+    ``cleanup.remove_colour`` is resolved against this trace's (renamed) palette. The
+    segmentation is traced as it is stored, which in the web pipeline is the cleanup
+    stage's cleaned labels. With ``clean_inline`` (the trace CLI) the cutter cleanup in
+    ``cleanup`` is first applied to the labels in memory, through the same function the
+    cleanup stage uses. ``settings`` is recorded; t3 has one setting, so none of its fit
+    fields steers the trace.
     """
+    import t3api
+
     tick = progress or _noop
     cleanup = cleanup or CleanupSettings()
     tick(0.01, "Reading segmentation")
@@ -429,7 +483,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         raise ValueError("segmentation palette does not match palette.json")
     if segmentation.labels.shape != (height, width):
         raise ValueError("segmentation dimensions do not match flattened.png")
-    labels = segmentation.labels.copy()
+    labels = segmentation.labels
     if removed_index is None:
         omitted = resolve_colour(cleanup.remove_colour, palette)
     elif isinstance(removed_index, bool) or not 0 <= removed_index < len(palette):
@@ -441,8 +495,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         raise ValueError("cannot omit the only palette colour")
     if clean_inline:
         # From here on the trace sees exactly what the cleanup stage would have
-        # stored: layer order, validation, fallback and warning images all use the
-        # cleaned labels and the raster derived from them, never the uncleaned one.
+        # stored: the trace, the audit and the warning images all use the cleaned
+        # labels and the raster derived from them, never the uncleaned one.
         labels, protected, cleanup_summary, _ = apply_cleanup(
             labels, palette, cleanup, omitted,
             protected_features=segmentation.protected_features,
@@ -452,270 +506,67 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         source = segmentation.palette_rgb[labels].astype(np.uint8)
     else:
         cleanup_summary = None
-    working = labels
-    automatic, order_warnings, inferred = automatic_order(labels, included, palette, settings)
-    order, override = apply_order_override(automatic, settings.layer_order, palette)
-    if any(i not in included for i in order):
-        raise ValueError("omitted colour cannot occur in layer order")
+    if labels.dtype != np.int16:
+        raise ValueError(f"the labels t3 traces are int16 palette indices, not {labels.dtype}")
     physical = resolve_physical_size(cleanup, width, height)
-    units_per_pixel = pixel_scale(physical, width)
     physical_mm = ((physical.width_mm, physical.height_mm)
                    if physical.width_mm is not None else None)
-    # The trace lengths are in thousandths of the traced raster's longer side (a
-    # pixel-era record is converted on this image); the fitter gets them in
-    # pixels. Only overlap and the cutter-cleanup thresholds are physical and
-    # converted through units_per_pixel.
-    reference = length_reference(width, height)
-    settings = trace_lengths_in_units(settings, reference)
-    if settings.max_deviation is None:
-        settings.max_deviation = DEFAULT_MAX_DEVIATION_PER_MILLE
-    # A length following the automatic deviation is recorded as the value it took.
-    for name, followed in FOLLOWING_LENGTHS.items():
-        if getattr(settings, name) is None:
-            setattr(settings, name, getattr(settings, followed))
-    tracing_settings = resolve_trace_lengths(settings, reference)
-    overlap_px = settings.overlap / units_per_pixel
-    warnings = list(order_warnings)
-    scratch = Path(__file__).resolve().parents[1] / ".tmp"
-    scratch.mkdir(exist_ok=True)
-    tolerance = float(tracing_settings.max_deviation or 0.0)
-    minimum_feature_span = feature_span(tolerance)
-    tick(0.05, "Building shared boundaries")
-    partition, boundary_track, topology = shared_boundary_polygons(
-        working, included, segmentation.palette_costs,
-        protected_features=segmentation.protected_features)
-    fault = partition_watertight_fault(topology, float(width * height))
-    if fault is not None:
-        raise RuntimeError(fault)
-    # Junction anchors (three or more colours) and endpoint anchors (the other
-    # chain ends: image edge, corner contact) are always cusp nodes in the SVG.
-    junctions = cusp_anchor_keys(boundary_track)
-    fallback_image = subject_dir / "trace-fallbacks.png"
-    fallback_overlay = subject_dir / "trace-fallbacks-overlay.png"
-    # Unique per trace: concurrent traces of same-named subjects (parallel jobs,
-    # parallel tests) must not overwrite or delete each other's render.
-    semantic_render = scratch / f"{subject_dir.name}-{uuid.uuid4().hex}-semantic-validation.png"
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
-    palette_rgb = segmentation.palette_rgb.astype(np.int32)
-    canvas = box(0, 0, width, height)
-    # Raster component sizes depend only on the cleaned labels, so they are
-    # measured once per colour rather than on every recovery pass.
-    raster_component_sizes = {index: component_sizes(working == index) for index in order}
-    # The overlap-variant geometry of each layer derives from the fixed partition
-    # alone, so it is built once here.
-    layer_geometry = underlayer_geometry(
-        partition, order, solid_underlayers=settings.solid_underlayers,
-        overlap_px=overlap_px, canvas=canvas)
+    warnings: list[str] = []
 
-    # One fitter persists across every recovery pass. Its cache key encodes the
-    # per-chain settings recovery varies, so an unchanged chain returns from cache
-    # instead of re-running the curve fit on each of the up-to-five passes.
-    shared_fitter = SharedChainFitter()
-    # Source-side semantic-validation work is identical every pass (only the
-    # rasterized vector changes), so it is computed once and reused.
+    # The trace: one call, at t3's one setting, on every CPU the process may use.
+    result = t3api.trace(labels, on_event=TraceTicks(tick))
+    tick(0.8, "Writing the planar map and the edge SVG")
+    map_path = subject_dir / "map.json"
+    map_path.write_text(t3api.planar_map_json(t3api.planar_map(result, palette)))
+    pm = t3api.read_planar_map(map_path.read_text())
+    paths = t3api.planar_map_paths(pm)
+    areas = face_areas(pm)
+    elements = face_elements(pm)
+    root = svg_document(pm["W"], pm["H"], physical_mm)
+    edge_stats = []
+    for index in included:
+        stats = add_face_layer(root, palette[index], pm, paths=paths, areas=areas,
+                               elements=elements)
+        stats["source_colour_components"] = source_component_count(labels == index)
+        edge_stats.append(stats)
+    edge_path = subject_dir / "traced-edge.svg"
+    write_svg(edge_path, root)
+    # The overlap variant and the recovery fallbacks are not written by this tracer; a file
+    # left by an earlier trace of this folder would describe another drawing.
+    for stale in ("traced-overlap.svg", "trace-fallbacks.png", "trace-fallbacks-overlay.png"):
+        (subject_dir / stale).unlink(missing_ok=True)
+
+    tick(0.85, "Checking the planar map")
+    check = t3api.planar_map_check(pm)
+    if check["violations"]:
+        raise RuntimeError(f"map.json fails planar_map_check with {check['violations']} "
+                           f"violation(s): {check['problems']}")
+    painted = np.asarray(result.painted)
+    read_back = t3api.paint_planar_map(pm)
+    differ = int(np.count_nonzero(read_back != painted))
+    if differ:
+        raise RuntimeError(f"map.json read back paints {differ} centre(s) other than t3's "
+                           "painted labels")
+    validations = {"edge": validate_svg(edge_path, palette, included)}
+
+    tick(0.88, "Semantic audit")
+    # The audit reads the exact raster of the drawing, t3's painted labels, at t3's tube
+    # half-width: every drawn piece lies within it of its edge's points.
+    tolerance = float(t3api.SETTING["w"]) / 2.0
+    minimum_feature_span = feature_span(tolerance)
+    vector_labels = painted.astype(np.int16)
+    palette_rgb = segmentation.palette_rgb.astype(np.uint8)
+    vector_rgb = np.where((painted >= 0)[..., None], palette_rgb[np.maximum(painted, 0)],
+                          np.asarray(UNPAINTED_RGB, dtype=np.uint8)).astype(np.uint8)
     semantic_cache: dict = {}
-    # Recovery re-fits only a handful of chains per pass, so most of the rendered
-    # vector is byte-identical between passes. These hold the previous pass's
-    # rendered RGB and its nearest-palette labels so a later pass can recompute
-    # labels only where the RGB actually changed and reuse them everywhere else.
-    prev_vector_rgb = None
-    prev_vector_labels = None
-
-    def build_and_validate(recovery: dict[str, dict[str, object]], report=_noop):
-        nonlocal prev_vector_rgb, prev_vector_labels
-        components_by_colour, chain_fits, fit_audit = shared_boundary_components(
-            boundary_track, included, tracing_settings, recovery,
-            progress=lambda fraction, message: report(fraction * 0.6, message),
-            fitter=shared_fitter)
-        variant_stats: dict[str, list[dict]] = {"overlap": [], "edge": []}
-        roots = {name: svg_document(width, height, physical_mm) for name in variant_stats}
-        for position, index in enumerate(order):
-            report(0.6 + 0.2 * position / len(order),
-                   f"Fitting layer {position + 1} of {len(order)}")
-            edge_components = components_by_colour[index]
-            edge_stats = add_layer(roots["edge"], palette[index], edge_components, "",
-                                   subject_dir.name, "edge", 0.0, junctions)
-            edge_stats["construction"] = "canonical shared-chain fit"
-            edge_stats["source_colour_components"] = len(raster_component_sizes[index])
-            variant_stats["edge"].append(edge_stats)
-            overlap_components, construction = overlap_layer_components(
-                position, order, edge_components, layer_geometry, boundary_track,
-                chain_fits, tracing_settings, overlap_px, shared_fitter)
-            overlap_stats = add_layer(roots["overlap"], palette[index], overlap_components, "",
-                                      subject_dir.name, "overlap", 0.0, junctions)
-            overlap_stats["construction"] = construction
-            overlap_stats["raster_component_pixels_descending"] = raster_component_sizes[index]
-            variant_stats["overlap"].append(overlap_stats)
-        for variant, root in roots.items():
-            write_svg(subject_dir / f"traced-{variant}.svg", root)
-        report(0.85, "Rendering for validation")
-        validations = {
-            variant: validate_svg(subject_dir / f"traced-{variant}.svg", palette, order)
-            for variant in variant_stats
-        }
-        subprocess.run([
-            str(renderer), str(subject_dir / "traced-overlap.svg"),
-            "--export-type=png", f"--export-width={width}",
-            f"--export-filename={semantic_render}",
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            vector_rgb = np.asarray(Image.open(semantic_render).convert("RGB"))
-        finally:
-            semantic_render.unlink(missing_ok=True)
-        if prev_vector_rgb is None:
-            # First render: seed the labels with the per-pixel nearest-palette
-            # argmin over the whole image. A guarded Numba kernel computes the
-            # same first-minimum argmin of squared RGB distance bit-for-bit
-            # without ever materialising the (rows, columns, colours, channels)
-            # distance tensor.
-            vector_labels = nearest_palette_labels(vector_rgb, palette_rgb)
-        else:
-            # Later passes: only the re-fitted region of the render differs, so
-            # recompute labels solely where the RGB changed and reuse last pass's
-            # labels elsewhere. This is bit-identical to the full recomputation:
-            # unchanged pixels keep labels that equal the full argmin of the
-            # identical RGB there, and changed pixels use the IDENTICAL distance
-            # formula and dtypes (int32 diff, squared, summed as int64, argmin,
-            # cast int16). argmin's first-minimum tie-break is the same for the
-            # full 3-D reduction and the per-pixel 2-D reduction.
-            changed = np.any(vector_rgb != prev_vector_rgb, axis=2)
-            vector_labels = prev_vector_labels.copy()
-            if changed.any():
-                sub = vector_rgb[changed].astype(np.int32)
-                sub_d = np.sum((sub[:, None, :] - palette_rgb[None, :, :]) ** 2,
-                               axis=2, dtype=np.int64)
-                vector_labels[changed] = sub_d.argmin(axis=1).astype(np.int16)
-        prev_vector_rgb = vector_rgb
-        prev_vector_labels = vector_labels
-        # Only vector_postfit drives the re-fit decision below; the whole-image
-        # dark-support metrics feed the final audit alone, so defer them here and
-        # compute them once after the loop over the settled vector.
-        validations["semantic"] = validate_semantic_preservation(
-            original, source, vector_rgb=vector_rgb,
-            protected_features=segmentation.protected_features,
-            segmentation_labels=segmentation.labels, vector_labels=vector_labels,
-            maximum_deviation=tolerance, minimum_feature_span=minimum_feature_span,
-            invariant_cache=semantic_cache, defer_vector_dark_metrics=True)
-        report(1.0, "Validated")
-        return variant_stats, validations, vector_rgb, fit_audit
-
-    chain_bounds = {}
-    for chain in boundary_track.chains:
-        xs = [point[0] for point in chain.source_points]
-        ys = [point[1] for point in chain.source_points]
-        chain_bounds[chain.identity] = (min(xs), min(ys), max(xs), max(ys))
-    recovery: dict[str, dict[str, object]] = {}
-    protected_components, _ = ndimage.label(
-        segmentation.protected_features, structure=np.ones((3, 3), dtype=np.uint8))
-    # Recovery is deliberately ordered and local. It first improves the model,
-    # then introduces one non-corner fit constraint, and only finally emits the
-    # dense evidence as an explicit, reported fallback.
-    def _attempt_report(attempt: int):
-        if attempt == 0:
-            # The first pass is the common case and owns the whole 0.05..0.85 band.
-            return lambda fraction, message: tick(0.05 + fraction * 0.80, message)
-        # Protected-feature recovery re-runs are rare; report them in a compressed
-        # tail so the bar keeps advancing without ever jumping backwards.
-        return lambda fraction, message: tick(
-            0.85 + min(1.0, fraction) * 0.03,
-            f"Refining protected features (pass {attempt + 1})")
-
-    for fit_attempt in range(5):
-        variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
-            recovery, _attempt_report(fit_attempt))
-        failures = []
-        for row in validations["semantic"]["protected_features"]["vector_postfit"]["components"]:
-            if row["passed"]:
-                continue
-            if np.any(segmentation.explicit_protected_features
-                      & (protected_components == int(row["component"]))):
-                failures.append(row)
-        if not failures:
-            break
-        changed = False
-        advanced: set[str] = set()
-        for failure in failures:
-            x0, y0, x1, y1 = failure["source_bounds_px"]
-            source_label = failure["source_label"]
-            for chain in boundary_track.chains:
-                if chain.identity in advanced:
-                    continue
-                if source_label not in chain.pair:
-                    continue
-                left, top, right, bottom = chain_bounds[chain.identity]
-                if right < x0 - tolerance or left > x1 + tolerance or bottom < y0 - tolerance or top > y1 + tolerance:
-                    continue
-                state = recovery.setdefault(chain.identity, {"stage": 0})
-                next_stage = min(4, int(state["stage"]) + 1)
-                if int(state["stage"]) == next_stage:
-                    continue
-                state["stage"] = next_stage
-                if next_stage >= 3:
-                    centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-                    state["constraint"] = min(
-                        chain.points,
-                        key=lambda point: ((point[0] - centre[0]) ** 2
-                                           + (point[1] - centre[1]) ** 2))
-                advanced.add(chain.identity)
-                changed = True
-        if not changed:
-            break
-    else:
-        # The final pass advanced recovery without a following build. Rebuild so
-        # the emitted SVG and every audit artifact describe the same recovery
-        # state that the reporting below counts.
-        variant_stats, validations, vector_rgb, shared_fit_audit = build_and_validate(
-            recovery, _attempt_report(4))
-    # Every pass above deferred the whole-image dark-support metrics; compute
-    # them once now over the settled vector. vector_postfit re-runs fully spliced
-    # (the labels are unchanged since the last pass), so the reported audit is
-    # byte-identical to computing these metrics on every pass.
     validations["semantic"] = validate_semantic_preservation(
         original, source, vector_rgb=vector_rgb,
         protected_features=segmentation.protected_features,
-        segmentation_labels=segmentation.labels, vector_labels=prev_vector_labels,
+        segmentation_labels=segmentation.labels, vector_labels=vector_labels,
         maximum_deviation=tolerance, minimum_feature_span=minimum_feature_span,
         invariant_cache=semantic_cache)
     write_trace_html(subject_dir, width, height)
-    topology["shared_curve_fit"] = shared_fit_audit
-    # A chain falls back dense after protected-feature recovery or when local
-    # crossing repair could not keep it from crossing a boundary.
-    dense_fallbacks = sorted(
-        {identity for identity, state in recovery.items() if int(state["stage"]) >= 4}
-        | {identity for identity, state in shared_fit_audit["crossing_recovery"].items()
-           if state["dense_fallback"]})
-    # The overlap buffer's rings are fitted and repaired on their own.
-    dense_overlap_rings = sum(
-        int(path.get("crossing_repair", {}).get("dense_fallback_rings", 0))
-        for layer in variant_stats["overlap"] for path in layer["components"])
-    if dense_overlap_rings:
-        warnings.append(
-            f"{dense_overlap_rings} overlap-buffer rings fell back to their dense boundary "
-            "so that no path crosses itself")
-    if recovery:
-        warnings.append(
-            f"{len(recovery)} shared curves used ordered local recovery after "
-            "protected-feature validation")
-    if dense_fallbacks:
-        by_identity = {chain.identity: chain for chain in boundary_track.chains}
-        faded = Image.blend(Image.fromarray(source),
-                            Image.new("RGB", (width, height), "white"), 0.82)
-        draw = ImageDraw.Draw(faded)
-        for identity in dense_fallbacks:
-            chain = by_identity[identity]
-            colours = [index for index in chain.pair if index in included]
-            colour = tuple(palette[colours[0]]["rgb"]) if colours else (0, 0, 0)
-            draw.line(chain.points, fill=colour, width=2, joint="curve")
-        faded.save(fallback_image)
-        tightened_boundary_overlay(
-            [by_identity[identity].points for identity in dense_fallbacks],
-            width, height).save(fallback_overlay)
-        warnings.append(
-            f"{len(dense_fallbacks)} shared boundaries required a reported dense fallback; "
-            f"see {fallback_image.name}")
-    else:
-        fallback_image.unlink(missing_ok=True)
-        fallback_overlay.unlink(missing_ok=True)
     semantic_inspection = subject_dir / "trace-semantic-warnings.png"
     semantic_overlay = subject_dir / "trace-missed-details-overlay.png"
     if not validations["semantic"]["passed"]:
@@ -734,9 +585,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     else:
         semantic_inspection.unlink(missing_ok=True)
         semantic_overlay.unlink(missing_ok=True)
-    for variant, layers in variant_stats.items():
-        if sum(layer["nodes"] for layer in layers) > settings.soft_document_nodes:
-            warnings.append(f"traced-{variant}.svg exceeds the soft document-node limit")
+    if sum(layer["nodes"] for layer in edge_stats) > settings.soft_document_nodes:
+        warnings.append("traced-edge.svg exceeds the soft document-node limit")
     audit = {"subject": subject_dir.name,
              "sources": {"original": str(original_path), "flattened": str(flattened_path),
                          "palette": str(palette_path),
@@ -745,32 +595,27 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "mode": "physical" if physical_mm is not None else "pixels",
              "physical_dimensions_mm": list(physical_mm) if physical_mm is not None else None,
              "settings": asdict(settings),
-             "lengths": length_audit(settings, tracing_settings, reference),
              "cleanup_settings": asdict(physical),
-             "backend": {"tracer": "shared raster boundary graph",
-                         "planar_geometry": f"Shapely {shapely.__version__}"},
-             "colours": {"included": [palette[i] for i in order], "omitted": palette[omitted] if omitted is not None else None},
-             "layer_order": {"inferred_bottom_to_top": ([palette[i]["name"] for i in automatic]
-                                                        if inferred else None),
-                             "not_inferred": None if inferred else ORDER_NOT_INFERRED,
-                             "effective_bottom_to_top": [palette[i]["name"] for i in order],
-                             "override": [palette[i]["name"] for i in override], "warnings": order_warnings},
-             "cleanup": cleanup_summary, "geometry": variant_stats, "topology": topology,
-             "validation": validations, "warnings": warnings,
-             "raster_partition_validation": {"edge_has_gaps_or_overlaps": False,
-                                             "method": "global polygonization of once-simplified shared boundaries"}}
-    audit["determinism"] = {"input_sha256": hashlib.sha256(
-        flattened_path.read_bytes() + palette_path.read_bytes()
-        + segmentation_path.read_bytes()).hexdigest()}
+             "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION},
+             "t3": {"summary": result.summary, "seconds": result.seconds,
+                    "warm_s": result.warm_s, "workers": result.workers},
+             "colours": {"included": [palette[i] for i in included],
+                         "omitted": palette[omitted] if omitted is not None else None},
+             "cleanup": cleanup_summary, "geometry": {"edge": edge_stats},
+             "validation": validations, "warnings": warnings}
+    audit["determinism"] = {
+        "input_sha256": hashlib.sha256(
+            flattened_path.read_bytes() + palette_path.read_bytes()
+            + segmentation_path.read_bytes()).hexdigest(),
+        "map_sha256": hashlib.sha256(map_path.read_bytes()).hexdigest()}
+    plan = preview_plan(edge_path)
     audit["preview"] = {"file": "traced.png",
-                        **{key: value for key, value in preview_plan(
-                            subject_dir / "traced-overlap.svg").items() if key != "arguments"}}
+                        **{key: value for key, value in plan.items() if key != "arguments"}}
     tick(0.9, "Writing artifacts")
     (subject_dir / "trace.json").write_text(json.dumps(audit, indent=2) + "\n")
     tick(0.95, "Rendering preview")
-    plan = preview_plan(subject_dir / "traced-overlap.svg")
     subprocess.run([
-        str(renderer), str(subject_dir / "traced-overlap.svg"),
+        str(renderer), str(edge_path),
         "--export-type=png", *plan["arguments"],
         f"--export-filename={subject_dir / 'traced.png'}",
     ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

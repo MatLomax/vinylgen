@@ -126,20 +126,6 @@ class WindowTraceTests(unittest.TestCase):
             float(settings.get("overlap", 0.0))))
         return traced, preview, crop
 
-    def test_a_whole_image_window_matches_the_full_trace_exactly(self):
-        # With nothing split at a crop edge the preview is the trace itself: same
-        # boundaries, same fitter, same layer construction and order.
-        for settings in ({}, {"solid_underlayers": True}, {"overlap": 1.5},
-                         {"curve_fit_tolerance": 0.4, "straight_line_max_deviation": 0.3}):
-            with self.subTest(settings=settings):
-                traced, preview, _ = self.trace_and_preview(settings)
-                self.assertEqual(layer_paths(preview), layer_paths(traced))
-                self.assertEqual(
-                    [layer.attrib["fill"] for layer in preview.iter(f"{{{SVG}}}g")
-                     if "fill" in layer.attrib],
-                    [layer.attrib["fill"] for layer in traced.iter(f"{{{SVG}}}g")
-                     if "fill" in layer.attrib])
-
     def test_a_window_is_drawn_at_its_image_position_with_the_margin_hidden(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as name:
             subject = nested_subject(Path(name), height=300, width=320, origin=(135, 145))

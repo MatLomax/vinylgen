@@ -141,7 +141,9 @@ CLEANUP_FILES = {
 }
 TRACE_FILES = {
     "palette": "palette.json",
-    "traced-overlap": "traced-overlap.svg", "traced-edge": "traced-edge.svg",
+    # The planar-map file, the trace's artefact and the one source of its geometry.
+    "traced-map": "map.json",
+    "traced-edge": "traced-edge.svg",
     "traced-preview": "traced.png", "trace-audit": "trace.json",
     "trace-fallbacks": "trace-fallbacks.png",
     "trace-semantic-warnings": "trace-semantic-warnings.png", "trace-inspection": "trace.html",
@@ -630,18 +632,23 @@ class PipelineRunner:
 
     def _validate(self, project_id: str, parent_id: str, work: Path, progress: Progress) -> str:
         _require_fresh(self.store, parent_id, {"trace"})
-        required = {"palette", "trace-audit", "traced-edge", "traced-overlap"}
-        artifacts = self._copy_inputs(parent_id, work, required)
+        required = {"palette", "trace-audit", "traced-edge"}
+        # A run traced before t3 also wrote the overlap variant, validated with it.
+        variants = ["edge"] + (["overlap"] if "traced-overlap" in
+                               self.store.effective_artifacts(parent_id) else [])
+        artifacts = self._copy_inputs(
+            parent_id, work, required | {f"traced-{variant}" for variant in variants})
         palette_report = json.loads((work / artifacts["palette"]["filename"]).read_text())
         trace_audit = json.loads((work / artifacts["trace-audit"]["filename"]).read_text())
         palette = palette_report["palette"]
-        names = trace_audit["layer_order"]["effective_bottom_to_top"]
+        # The layers in document order: the included colours as the trace recorded them.
+        names = [row["name"] for row in trace_audit["colours"]["included"]]
         by_name = {row["name"]: index for index, row in enumerate(palette)}
         order = [by_name[name] for name in names]
         progress(0.3, "Validating SVG structure")
         result = {
             variant: validate_svg(work / artifacts[f"traced-{variant}"]["filename"], palette, order)
-            for variant in ("edge", "overlap")
+            for variant in variants
         }
         validation_path = work / "validation.json"
         validation_path.write_text(json.dumps(result, indent=2) + "\n")
@@ -652,7 +659,7 @@ class PipelineRunner:
     def _export(self, project_id: str, parent_id: str, work: Path, progress: Progress) -> str:
         _require_fresh(self.store, parent_id, {"trace", "validation"})
         artifacts = self.store.effective_artifacts(parent_id)
-        if not {"traced-edge", "traced-overlap", "traced-preview"}.issubset(artifacts):
+        if not {"traced-edge", "traced-preview"}.issubset(artifacts):
             raise ValueError("revision has no complete traced output to export")
         # A trace run hides every older validation (Store.effective_artifacts), so an
         # effective validation is one of the current run. Its absence is stale

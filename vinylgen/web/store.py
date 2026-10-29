@@ -53,7 +53,7 @@ STALE_ARTIFACT_KINDS = {
                 "before-cleanup-palette", "before-cleanup-report"},
     "cleanup": {"cleanup-audit", "cleanup-changes-overlay", "cleaned-flattened", "cleaned-labels"},
     "trace": {
-        "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
+        "traced-map", "traced-overlap", "traced-edge", "traced-preview", "trace-audit",
         "trace-fallbacks", "trace-semantic-warnings", "trace-inspection",
         "trace-fallbacks-overlay", "trace-missed-details-overlay",
         "inkscape-svg", "inkscape-preview", "inkscape-audit",

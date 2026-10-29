@@ -2,27 +2,106 @@
 
 ## Scope
 
-The first tracing milestone converts an existing flattened palette raster into
-two deterministic, Inkscape-oriented SVG files for layered adhesive vinyl:
+The trace stage converts a subject's segmentation (the cleaned `int16` palette
+labels of `segmentation.npz`) into a planar-map file and one deterministic,
+Inkscape-oriented SVG for layered adhesive vinyl:
 
 ```text
 outputs/<subject>/
-├── traced-overlap.svg
-├── traced-edge.svg
-└── trace.json
+├── map.json            the planar-map file: the trace's artefact and its geometry
+├── traced-edge.svg     the edge SVG, written from map.json alone
+├── traced.png          the preview, rendered from traced-edge.svg
+└── trace.json          the audit
 ```
 
-Tracing is a separate command that consumes `flattened.png` and `palette.json`.
-It must be possible to pipeline palette processing and tracing, but the tools
-remain independently runnable. The first validation set is `desert-mech`,
-`crashed-ring`, and `cosmic-jellyfish`. The remaining corpus is deferred until
-those three are satisfactory.
+Tracing is a separate command that consumes `flattened.png`, `palette.json` and
+`segmentation.npz`. It must be possible to pipeline palette processing and
+tracing, but the tools remain independently runnable.
 
 The initial compatibility target is Inkscape. Registration marks, production
 tiling for large designs, heat-transfer vinyl, stencils, and physical cut tests
 are later work.
 
+## The trace stage: t3
+
+The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
+(`wheels/`, `requirements-web.txt`). Its design is the tracer repo's card
+`cards/vinylgen-on-t3/card.md`; the file format is that card's
+`planar-map-file.md`.
+
+- **One call per trace.** `trace_subject` (`vinylgen/tracing.py`) calls
+  `t3api.trace(labels, on_event=...)` once on the cleaned labels: 2-D, `int16`,
+  every colour included, the omitted one too (its regions are real faces and
+  its boundaries are the other colours' cut lines). No setting is passed, so t3
+  runs at `t3api.SETTING` (w 3.5, A1 22.5, A2 45, L 4), the one setting it is
+  validated at, and `workers=None` lets `t3api.workers_of` use every CPU the
+  process may use. No trace setting in `TraceSettings` steers the trace; the
+  settings are recorded only.
+- **`map.json`** is `t3api.planar_map_json(t3api.planar_map(result, palette))`
+  with the subject's `palette.json` list: every boundary edge once with the
+  faces on its two sides, every face as rings of signed edge references, in
+  paint order, every number exact. It is read back with
+  `t3api.read_planar_map`, and every later step reads that document.
+- **The planar map's gate.** `t3api.planar_map_check` finds no violation, and
+  the read-back map painted (`t3api.paint_planar_map`) equals t3's painted
+  labels at every pixel centre. Either failing stops the trace with an error.
+- **The edge SVG** (`svg_writer.add_face_layer(root, row, pm)`, one call per
+  included colour in palette order, into `svg_document(W, H, physical_mm)`):
+  one Inkscape layer per colour with `inkscape:groupmode="layer"`, label
+  `"{name} ({hex})"`, `id="layer-{slug}"`, the exact fill, `stroke="none"` and
+  `fill-rule="evenodd"`; one path per face of that colour, its outer ring and
+  holes as one even-odd path, with `d` and `sodipodi:nodetypes` exactly as
+  `t3api.planar_map_paths` gives them (path data `M L A C Z`). Paths are
+  numbered from 001 largest first by the face's drawn area, by Green's theorem
+  over its pieces in closed form (`svg_writer.face_areas`), ties to the face
+  id: `id="edge-{slug}-{nnn}"`, `inkscape:label="{name} {nnn}"`. The omitted
+  colour gets no layer: its faces are already holes in the faces around them.
+  The viewBox is the pixel grid, `0 0 W H`. The SVG depends on `map.json` and
+  the palette alone, so exporting it again from `map.json` gives the same
+  bytes.
+- **Node types** are t3's: `c` (cusp) or `s` (Inkscape smooth, Vinylgen's
+  symmetric node), one per Inkscape node; an `A` counts as the cubics Inkscape
+  converts it to. t3 writes no `z`.
+- **The semantic audit** reads t3's painted labels, the exact raster of the
+  drawing (a centre no face holds reads as white paper), at t3's tube
+  half-width `w / 2` = 1.75 px; see [Audit report](#audit-report).
+- **The preview** `traced.png` is rendered from `traced-edge.svg` by Inkscape.
+- **The engine cache.** t3's numba kernels are compiled on first use into
+  `t3api.cache_dir()` (`~/.cache/t3api/<build id>`); a cold cache costs the
+  first trace about 28 to 45 s. `scripts/warm_t3_cache.py` traces the test
+  array (`tests/fixtures/t3-test-array/`) once and records
+  `{build, seconds, warm_s, workers}` in `<cache_dir>/warm.json`; `just deploy`
+  runs it after installing the requirements and before the health check, and
+  `scripts/run_tests.py` runs it before the suite when the cache has no
+  `warm.json`.
+
+Progress (`trace_subject`'s `progress`, relayed by the web job as
+0.1 + 0.8 f):
+
+| tick | message |
+|---|---|
+| 0.01 | Reading segmentation |
+| 0.02 | Tracing: planar map (t3's `start`) |
+| 0.03 to 0.80 | Tracing: junction edges j of J, then Tracing: chains c of N; f = 0.03 + 0.77 (j + c) / (J + N), with N the `edges` event's `count` until a `chain` event gives its `total` |
+| 0.80 | Writing the planar map and the edge SVG |
+| 0.85 | Checking the planar map |
+| 0.88 | Semantic audit |
+| 0.90 | Writing artifacts |
+| 0.95 | Rendering preview |
+| 1.00 | Complete |
+
+The overlap variant (`traced-overlap.svg`), solid underlayers, layer order,
+the Inkscape validation render and the recovery passes are not part of a
+trace: older trace revisions keep their files. The old shared-boundary fitter
+described in the sections below (the geometry model, layer order, trace
+lengths, corner detection, joins, node placement, crossing repair) is reached
+only by the live window preview (`vinylgen/trace_window.py`).
+
 ## Geometry model
+
+This section and the fitter sections after it describe the old shared-boundary
+fitter, which only the [live window preview](#live-window-preview) still runs;
+a trace is drawn by t3 ([The trace stage: t3](#the-trace-stage-t3)).
 
 Each final palette colour becomes a named Inkscape layer. Disconnected regions
 remain separately selectable paths, numbered largest-first with stable names.
@@ -1213,31 +1292,37 @@ symmetric detail controls.
 
 ## Audit report
 
-`trace.json` records at least:
+`trace.json` records:
 
-- Source artifact paths and dimensions.
-- Effective tracing configuration and the cleanup settings used (size, removed
-  colour, cleanup). `settings` holds the lengths in thousandths
-  (`length_unit: "per_mille"`, an automatic maximum deviation filled in);
-  `lengths` records the reference (`reference_px`, the traced raster's longer
-  side) and every length in thousandths (`per_mille`) and in the pixels it
-  resolved to (`px`).
-- Tracing backend and version.
-- Physical size or pixel-mode status.
-- Included and omitted palette colours and their names.
-- Inferred layer order (or why it was not inferred), the effective order, user
-  overrides, and ordering warnings.
-- Path and node counts per component, layer, and document.
-- Compound-path and hole counts.
-- Regions removed, widened, or left unchanged with warnings, when the CLI
-  cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
-- Rendered comparison metrics against `flattened.png`.
-- Local boundary-fallback locations and effective tolerances.
-- Crossing repair: `topology.shared_curve_fit.crossing_passes` and, per repaired
-  chain, `crossing_recovery` (its round, whether it fell back dense, its
-  pinned samples, and its tight steps and repair lines as sample pairs); each overlap-buffer path's `crossing_repair` counts its
-  repaired and dense rings.
-- Structural validation results.
+- `subject`, `sources` (source, flattened, palette and segmentation paths),
+  `raster_dimensions`, `mode` and `physical_dimensions_mm`.
+- `settings`, the trace settings as given (none steers t3), and
+  `cleanup_settings` (size, removed colour, cleanup).
+- `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`) and `version`
+  (`t3api.VERSION`).
+- `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
+  corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
+  `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),
+  `seconds` (the trace call's wall time), `warm_s` (the engine warm-up within
+  it) and `workers`.
+- `colours`: the included colours in palette order and the omitted one.
+- `cleanup`: regions removed, widened, or left unchanged with warnings, when
+  the CLI cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
+- `geometry.edge`, per layer: `index`, `name`, `hex`, `paths`, `nodes` (the
+  Inkscape node count), `holes`, `construction` (`"t3 planar map"`),
+  `source_colour_components` (4-connected raster components), `elements` (the
+  layer's pieces by kind: `L`, `A circular`, `A elliptical`, `C`, and the
+  `border` and `gap` connectors) and `node_types` (`c` and `s` counts), with
+  `components[]` per path (`id`, `face`, `nodes`, `holes`).
+- `validation.edge` (`validate_svg` on `traced-edge.svg`) and
+  `validation.semantic` (the semantic preservation audit of t3's painted
+  labels at `maximum_deviation` 1.75 px, t3's tube half-width, and
+  `minimum_feature_span` 6 px).
+- `warnings`: the semantic audit's failure with its overlay, and the soft
+  document-node limit.
+- `determinism`: `input_sha256` (flattened, palette and segmentation) and
+  `map_sha256` (the bytes of `map.json`).
+- `preview`: the `traced.png` plan.
 
 ## Validation
 
@@ -1254,8 +1339,10 @@ Automated checks must cover:
 - No open cut paths, self-intersections (checked and repaired at fit time; see
   [No path crosses itself](#no-path-crosses-itself)), duplicate paths, or
   unsupported SVG effects.
-- Consistent shared boundaries in `traced-edge.svg` with no gaps or overlaps.
-- Correct overlap amount and stacking in `traced-overlap.svg`.
+- The planar map's gate: `t3api.planar_map_check` with no violation, and
+  `map.json` read back and painted equal to t3's painted labels at every
+  centre (a trace stops with an error otherwise). Shared boundaries are stored
+  once in `map.json`, so adjacent faces share them bit for bit.
 - Correct optional colour omission.
 - Canvas, crop, aspect ratio, physical dimensions, and `viewBox` behavior.
 - Minimum-width and minimum-area cleanup behavior, including constrained widen

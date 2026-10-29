@@ -4,7 +4,6 @@ import re
 import tempfile
 import unittest
 from dataclasses import replace
-from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -244,48 +243,6 @@ class SvgTraceTests(unittest.TestCase):
         ).save(subject / "segmentation.npz")
         return subject
 
-    def _trace_capturing_fit_settings(self, subject: Path, settings: TraceSettings,
-                                      cleanup: CleanupSettings | None = None):
-        """Trace, returning the report, the settings the curve fitter received, and edge paths."""
-        seen: list[TraceSettings] = []
-        real = tracing.shared_boundary_components
-
-        def spy(track, included, fit_settings, *args, **kwargs):
-            seen.append(fit_settings)
-            return real(track, included, fit_settings, *args, **kwargs)
-
-        with mock.patch.object(tracing, "shared_boundary_components", spy):
-            report = trace_subject(subject, settings, {}, cleanup=cleanup)
-        root = ET.parse(subject / "traced-edge.svg").getroot()
-        paths = [path.attrib["d"] for path in root.iter(f"{{{SVG}}}path")]
-        return report, seen, paths
-
-    def test_max_deviation_is_in_traced_pixels_whatever_the_physical_size(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.fixture(Path(name))
-            # 400 mm over the 40 px fixture is 10 mm per pixel, so any mm conversion
-            # would move the fitting limit by a factor of ten.
-            # 1.5 px, not below the 1 px floor every resolved deviation is held at.
-            for explicit in (None, 1.5):
-                pixels, pixel_fits, pixel_paths = self._trace_capturing_fit_settings(
-                    subject, TraceSettings(length_unit="px", max_deviation=explicit))
-                physical, physical_fits, physical_paths = self._trace_capturing_fit_settings(
-                    subject, TraceSettings(length_unit="px", max_deviation=explicit),
-                    cleanup=CleanupSettings(width_mm=400))
-                expected = 2.0 if explicit is None else explicit
-                self.assertEqual(physical["mode"], "physical")
-                for report, fits in ((pixels, pixel_fits), (physical, physical_fits)):
-                    self.assertEqual(report["lengths"]["px"]["max_deviation"], expected)
-                    # The settings record thousandths of the 40 px fixture's longer side.
-                    self.assertEqual(report["settings"]["length_unit"], "per_mille")
-                    self.assertAlmostEqual(report["settings"]["max_deviation"], expected * 25.0)
-                    self.assertEqual(
-                        report["validation"]["semantic"]["settings"]["maximum_deviation_px"], expected)
-                    self.assertTrue(fits)
-                    self.assertTrue(all(fit.max_deviation == expected for fit in fits))
-                # A physical size changes cut dimensions, never the fitted geometry.
-                self.assertEqual(pixel_paths, physical_paths)
-
     def test_layers_components_holes_and_determinism(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
@@ -297,10 +254,10 @@ class SvgTraceTests(unittest.TestCase):
             self.assertIn('<img src="data:image/png;base64,', overlay)
             self.assertIn("<svg", overlay)
             self.assertNotIn("traced-overlap.svg\"", overlay)
+            self.assertFalse((subject / "traced-overlap.svg").exists())
             self.assertTrue(first["validation"]["edge"]["passed"])
-            self.assertTrue(second["validation"]["overlap"]["passed"])
-            self.assertEqual(first["topology"]["partition_gap_area"], 0.0)
-            self.assertEqual(first["topology"]["overlap_area"], 0.0)
+            self.assertTrue(second["validation"]["edge"]["passed"])
+            self.assertEqual(first["determinism"]["map_sha256"], second["determinism"]["map_sha256"])
             root = ET.parse(subject / "traced-edge.svg").getroot()
             self.assertEqual(len(root.findall(f"{{{SVG}}}g")), 2)
             for layer in root.findall(f"{{{SVG}}}g"):
@@ -310,191 +267,12 @@ class SvgTraceTests(unittest.TestCase):
             self.assertEqual(orange["source_colour_components"], 2)
             self.assertGreaterEqual(sum(layer["holes"] for layer in first["geometry"]["edge"]), 1)
             audit = json.loads((subject / "trace.json").read_text())
-            expected = preview_plan(subject / "traced-overlap.svg")
+            expected = preview_plan(subject / "traced-edge.svg")
             self.assertEqual(audit["preview"], {"file": "traced.png", **{
                 key: value for key, value in expected.items() if key != "arguments"}})
             with Image.open(subject / "traced.png") as preview:
                 self.assertEqual(preview.size, (expected["width"], expected["height"]))
             self.assertLessEqual(max(preview.size), PREVIEW_MAX_SIDE)
-
-    def test_solid_underlayers_make_lower_layers_solid_without_shared_edges(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
-            # The edge variant remains the gap-free registration partition, so the
-            # bottom layer still carries the shared-edge cutout under the top layer.
-            self.assertGreaterEqual(
-                sum(layer["holes"] for layer in report["geometry"]["edge"]), 1)
-            # In the overlap variant the bottom layer absorbs everything above it and
-            # becomes a hole-free solid, so no edge is shared with the top layer.
-            background = next(layer for layer in report["geometry"]["overlap"]
-                              if layer["hex"] == "#0F233C")
-            self.assertEqual(background["holes"], 0)
-            self.assertEqual(background["construction"], "solid stacked underlayer")
-            self.assertTrue(report["validation"]["overlap"]["passed"])
-
-    def nested_fixture(self, root: Path) -> Path:
-        # A blue background, an orange block inside it, and a green square fully
-        # enclosed by the orange block. The green square borders only orange, never
-        # the background.
-        subject = root / "nested"
-        subject.mkdir()
-        pixels = np.zeros((32, 40, 3), dtype=np.uint8)
-        pixels[:] = (15, 35, 60)
-        pixels[8:24, 10:30] = (225, 95, 45)
-        pixels[13:19, 16:24] = (60, 180, 90)
-        Image.fromarray(pixels, "RGB").save(subject / "flattened.png")
-        Image.fromarray(pixels, "RGB").save(subject / "source.png")
-        palette = {"dimensions": [40, 32], "palette": [
-            {"index": 0, "hex": "#0F233C", "rgb": [15, 35, 60], "share_percent": 55},
-            {"index": 1, "hex": "#E15F2D", "rgb": [225, 95, 45], "share_percent": 35},
-            {"index": 2, "hex": "#3CB45A", "rgb": [60, 180, 90], "share_percent": 10}]}
-        (subject / "palette.json").write_text(json.dumps(palette))
-        centres = np.array([[15, 35, 60], [225, 95, 45], [60, 180, 90]])
-        labels = np.argmin(
-            np.sum((pixels.astype(np.int32)[:, :, None, :] - centres[None, None]) ** 2, axis=3),
-            axis=2).astype(np.int16)
-        costs = np.full((*labels.shape, 3), 50.0, dtype=np.float32)
-        np.put_along_axis(costs, labels[..., None], 0.0, axis=2)
-        SegmentationBundle(
-            labels=labels,
-            protected_features=np.zeros(labels.shape, dtype=bool),
-            explicit_protected_features=np.zeros(labels.shape, dtype=bool),
-            palette_rgb=centres.astype(np.uint8),
-            palette_costs=costs,
-        ).save(subject / "segmentation.npz")
-        return subject
-
-    def test_solid_underlayers_skip_non_adjacent_upper_colours(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.nested_fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
-            overlap = {layer["hex"]: layer for layer in report["geometry"]["overlap"]}
-            # The orange middle layer borders the green square, so it backs it into a
-            # hole-free solid.
-            self.assertEqual(overlap["#E15F2D"]["holes"], 0)
-            self.assertEqual(overlap["#E15F2D"]["construction"], "solid stacked underlayer")
-            # The background never touches the green square (orange encloses it), so it
-            # is not extended beneath it: the square stays a hole instead of stacking an
-            # identical fourth-of-the-same-shape layer.
-            self.assertGreaterEqual(overlap["#0F233C"]["holes"], 1)
-            self.assertTrue(report["validation"]["overlap"]["passed"])
-
-    def palette_first_fixture(self, root: Path) -> Path:
-        """The nested fixture with its palette listed orange, green, navy: palette order
-        then differs from the inferred order, which puts the canvas-touching navy lowest."""
-        root.mkdir(parents=True, exist_ok=True)
-        subject = self.nested_fixture(root)
-        permutation = [1, 2, 0]
-        report = json.loads((subject / "palette.json").read_text())
-        report["palette"] = [dict(report["palette"][old], index=new)
-                             for new, old in enumerate(permutation)]
-        (subject / "palette.json").write_text(json.dumps(report))
-        bundle = SegmentationBundle.load(subject / "segmentation.npz")
-        remap = np.argsort(permutation).astype(np.int16)
-        SegmentationBundle(
-            labels=remap[bundle.labels],
-            protected_features=bundle.protected_features,
-            explicit_protected_features=bundle.explicit_protected_features,
-            palette_rgb=bundle.palette_rgb[permutation],
-            palette_costs=bundle.palette_costs[..., permutation],
-        ).save(subject / "segmentation.npz")
-        return subject
-
-    def layer_shapes(self, svg_path: Path) -> tuple[list[str], dict[str, list[str]]]:
-        """The SVG's layer fills bottom to top, and each fill's sorted path data."""
-        layers = ET.parse(svg_path).getroot().findall(f"{{{SVG}}}g")
-        return ([layer.attrib["fill"] for layer in layers],
-                {layer.attrib["fill"]: sorted(path.attrib["d"]
-                                              for path in layer.iter(f"{{{SVG}}}path"))
-                 for layer in layers})
-
-    def test_edge_to_edge_trace_skips_order_inference_with_identical_geometry(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            root = Path(name)
-            skipped = self.palette_first_fixture(root / "skipped")
-            with mock.patch.object(tracing, "infer_order",
-                                   side_effect=AssertionError("infer_order ran")):
-                report = trace_subject(skipped, TraceSettings(length_unit="px"), {})
-            order = report["layer_order"]
-            self.assertIsNone(order["inferred_bottom_to_top"])
-            self.assertEqual(order["not_inferred"], tracing.ORDER_NOT_INFERRED)
-            self.assertEqual(order["warnings"], [])
-            names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
-            self.assertEqual(order["effective_bottom_to_top"],
-                             [names[value] for value in ("#E15F2D", "#3CB45A", "#0F233C")])
-
-            # The same subject traced in the order inference would have chosen.
-            inferred_subject = self.palette_first_fixture(root / "inferred")
-            palette = json.loads((inferred_subject / "palette.json").read_text())["palette"]
-            labels = SegmentationBundle.load(inferred_subject / "segmentation.npz").labels
-            inferred, _ = tracing.infer_order(labels, [0, 1, 2], palette)
-            inferred_hex = [palette[index]["hex"] for index in inferred]
-            self.assertEqual(inferred_hex, ["#0F233C", "#E15F2D", "#3CB45A"])
-            trace_subject(inferred_subject, TraceSettings(length_unit="px", layer_order=inferred_hex), {})
-            for variant in ("edge", "overlap"):
-                skipped_fills, skipped_shapes = self.layer_shapes(skipped / f"traced-{variant}.svg")
-                inferred_fills, inferred_shapes = self.layer_shapes(
-                    inferred_subject / f"traced-{variant}.svg")
-                self.assertEqual(skipped_fills, ["#E15F2D", "#3CB45A", "#0F233C"])
-                self.assertEqual(inferred_fills, inferred_hex)
-                # Only the stacking differs: every colour's shapes are the same.
-                self.assertEqual(skipped_shapes, inferred_shapes, variant)
-
-    def test_edge_to_edge_trace_honours_an_explicit_layer_order(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.palette_first_fixture(Path(name))
-            with mock.patch.object(tracing, "infer_order",
-                                   side_effect=AssertionError("infer_order ran")):
-                report = trace_subject(subject, TraceSettings(length_unit="px", layer_order=["#0F233C"]), {})
-            names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
-            # The named colour first, then the rest in palette order.
-            self.assertEqual(report["layer_order"]["effective_bottom_to_top"],
-                             [names[value] for value in ("#0F233C", "#E15F2D", "#3CB45A")])
-            self.assertEqual(report["layer_order"]["override"], [names["#0F233C"]])
-            self.assertEqual(self.layer_shapes(subject / "traced-edge.svg")[0],
-                             ["#0F233C", "#E15F2D", "#3CB45A"])
-
-    def test_order_is_inferred_when_underlayers_or_overlap_make_it_matter(self):
-        for settings in (TraceSettings(length_unit="px", solid_underlayers=True), TraceSettings(length_unit="px", overlap=1.0)):
-            with self.subTest(settings=settings), tempfile.TemporaryDirectory(
-                    dir=Path(__file__).parents[1] / ".tmp") as name:
-                subject = self.palette_first_fixture(Path(name))
-                with mock.patch.object(tracing, "infer_order",
-                                       wraps=tracing.infer_order) as spy:
-                    report = trace_subject(subject, settings, {})
-                spy.assert_called_once()
-                names = {row["hex"]: row["name"] for row in report["colours"]["included"]}
-                inferred = [names[value] for value in ("#0F233C", "#E15F2D", "#3CB45A")]
-                self.assertEqual(report["layer_order"]["inferred_bottom_to_top"], inferred)
-                self.assertIsNone(report["layer_order"]["not_inferred"])
-                self.assertEqual(report["layer_order"]["effective_bottom_to_top"], inferred)
-                self.assertEqual(self.layer_shapes(subject / "traced-overlap.svg")[0],
-                                 ["#0F233C", "#E15F2D", "#3CB45A"])
-
-    def drawing_commands(self, svg_path: Path) -> list[str]:
-        # Every line/curve command in the file; the M start is excluded because a ring's
-        # start vertex depends on assembly order, not on the fitted geometry.
-        tree = ET.parse(svg_path)
-        commands: list[str] = []
-        for path in tree.iter(f"{{{SVG}}}path"):
-            commands.extend(token.strip()
-                            for token in re.findall(r"[LC][^MLCZ]*", path.attrib["d"]))
-        return commands
-
-    def test_solid_underlayers_reuse_shared_fits_without_reoptimising(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.nested_fixture(Path(name))
-            trace_subject(subject, TraceSettings(length_unit="px", solid_underlayers=True), {})
-            edge = set(self.drawing_commands(subject / "traced-edge.svg"))
-            overlap = self.drawing_commands(subject / "traced-overlap.svg")
-            self.assertTrue(overlap, "expected the solid underlayers to emit fitted geometry")
-            # Each solid-underlayer edge is a canonical shared-chain fit reused verbatim, so
-            # it registers against its neighbours. A re-optimised union would introduce
-            # curves absent from the gap-free edge variant and reopen the gaps.
-            introduced = sorted(command for command in overlap if command not in edge)
-            self.assertEqual(introduced, [],
-                             f"solid underlayers re-optimised {len(introduced)} segment(s)")
 
     def test_trace_reports_monotonic_progress(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
@@ -504,13 +282,13 @@ class SvgTraceTests(unittest.TestCase):
                           progress=lambda fraction, message: seen.append((fraction, message)))
             self.assertTrue(seen, "expected trace to report progress")
             fractions = [fraction for fraction, _ in seen]
-            # The bar only ever advances: fitting, per-layer assembly, render, and
-            # write each report a higher fraction than the stage before it.
+            # The bar only ever advances: the engine's chain ticks, the map and SVG
+            # writes, the checks, the render and the write each report a higher fraction.
             self.assertEqual(fractions, sorted(fractions))
             self.assertLessEqual(fractions[0], 0.1)
             self.assertEqual(fractions[-1], 1.0)
             self.assertTrue(all(message for _, message in seen))
-            self.assertTrue(any("layer 1 of" in message.lower() for _, message in seen))
+            self.assertTrue(any(message.startswith("Tracing: chains") for _, message in seen))
 
     def test_optional_colour_removal(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
@@ -526,20 +304,22 @@ class InspectionOverlayTests(unittest.TestCase):
 
     WIDTH, HEIGHT = 40, 32
 
-    def fixture(self, root: Path) -> Path:
-        # A dark source line the flattened raster lost (a semantic miss) and a
-        # one-pixel explicitly protected spike that a coarse fit tightens.
-        subject = root / "fixture"
+    def fixture(self, root: Path, *, details: bool = True, name: str = "fixture") -> Path:
+        # With details: a dark source line the flattened raster lost (a semantic miss)
+        # and a one-pixel explicitly protected spike that a coarse fit tightens.
+        subject = root / name
         subject.mkdir()
         pixels = np.zeros((self.HEIGHT, self.WIDTH, 3), dtype=np.uint8)
         pixels[:] = (15, 35, 60)
         pixels[5:27, 8:32] = (225, 95, 45)
         pixels[11:20, 15:24] = (15, 35, 60)
         pixels[2:5, 35:38] = (225, 95, 45)
-        pixels[27:31, 20:21] = (225, 95, 45)
+        if details:
+            pixels[27:31, 20:21] = (225, 95, 45)
         Image.fromarray(pixels, "RGB").save(subject / "flattened.png")
         source = pixels.copy()
-        source[22:24, 9:31] = (5, 5, 5)
+        if details:
+            source[22:24, 9:31] = (5, 5, 5)
         Image.fromarray(source, "RGB").save(subject / "source.png")
         palette = {"dimensions": [self.WIDTH, self.HEIGHT], "palette": [
             {"index": 0, "hex": "#0F233C", "rgb": [15, 35, 60], "share_percent": 60},
@@ -549,7 +329,8 @@ class InspectionOverlayTests(unittest.TestCase):
         costs = np.full((*labels.shape, 2), 50.0, dtype=np.float32)
         np.put_along_axis(costs, labels[..., None], 0.0, axis=2)
         protected = np.zeros(labels.shape, dtype=bool)
-        protected[27:31, 20:21] = True
+        if details:
+            protected[27:31, 20:21] = True
         SegmentationBundle(
             labels=labels, protected_features=protected, explicit_protected_features=protected,
             palette_rgb=np.array([[15, 35, 60], [225, 95, 45]], dtype=np.uint8),
@@ -577,29 +358,20 @@ class InspectionOverlayTests(unittest.TestCase):
             self.assertTrue(np.all(overlay[visible] == tracing.MISSED_DETAIL_RGBA))
             self.assertTrue(np.all(overlay[~visible] == 0))
 
-    def test_tightened_boundaries_overlay_marks_only_the_fallback_chains(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
-            subject = self.fixture(Path(name))
-            report = trace_subject(subject, TraceSettings(length_unit="px", max_deviation=50.0), {})
-            self.assertTrue(any("dense fallback" in warning for warning in report["warnings"]))
-            self.assertTrue((subject / "trace-fallbacks.png").exists())
-            overlay = self.rgba(subject / "trace-fallbacks-overlay.png")
-            visible = overlay[..., 3] > 0
-            self.assertTrue(visible.any())
-            self.assertFalse(visible.all())
-            self.assertTrue(np.all(overlay[~visible] == 0))
-            colours = {tuple(int(v) for v in pixel) for pixel in overlay[visible]}
-            self.assertIn(tracing.TIGHTENED_BOUNDARY_RGBA, colours)
-            self.assertLessEqual(colours, {tracing.TIGHTENED_BOUNDARY_RGBA,
-                                           tracing.TIGHTENED_BOUNDARY_HALO_RGBA})
-
     def test_overlays_are_absent_without_warnings_and_removed_when_a_rerun_clears_them(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             subject = self.fixture(Path(name))
-            trace_subject(subject, TraceSettings(length_unit="px", max_deviation=50.0), {})
-            self.assertTrue((subject / "trace-fallbacks-overlay.png").exists())
+            # Files an earlier fitter run left behind; this trace writes no fallbacks.
+            for stale in ("trace-fallbacks.png", "trace-fallbacks-overlay.png"):
+                Image.new("RGBA", (self.WIDTH, self.HEIGHT)).save(subject / stale)
+            trace_subject(subject, TraceSettings(length_unit="px"), {})
             self.assertTrue((subject / "trace-missed-details-overlay.png").exists())
-            report = trace_subject(subject, TraceSettings(length_unit="px", max_deviation=6.0), {})
+            self.assertFalse((subject / "trace-fallbacks-overlay.png").exists())
+            # The same subject re-cleaned without the lost line and the spike: nothing is missed.
+            clean = self.fixture(Path(name), details=False, name="clean")
+            for input_name in ("flattened.png", "source.png", "segmentation.npz"):
+                (subject / input_name).write_bytes((clean / input_name).read_bytes())
+            report = trace_subject(subject, TraceSettings(length_unit="px"), {})
             self.assertEqual(report["warnings"], [])
             for name in ("trace-fallbacks.png", "trace-fallbacks-overlay.png",
                          "trace-semantic-warnings.png", "trace-missed-details-overlay.png"):

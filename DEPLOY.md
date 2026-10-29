@@ -11,6 +11,20 @@ identity header; direct localhost health checks remain read-only.
 `VINYLGEN_PUBLIC_URL` to the deployment's real public origin in the untracked
 `.vinylgen-data/vinylgen.env`; the template value is a placeholder.
 
+`just deploy` runs the test suite and the frontend build, then (unless a job is
+active) installs `requirements-web.txt` into `.venv` (the `t3api` wheel under
+`wheels/` among them), warms the t3 engine's kernel cache with
+`scripts/warm_t3_cache.py` (one trace of the test array; a cold cache otherwise
+costs the first trace 28 to 45 s), restarts the service and checks local and
+public health. The cache is t3api's default, `~/.cache/t3api/<build id>`, keyed
+per build; the warm records `{build, seconds, warm_s, workers}` in its
+`warm.json`. The warm runs as the service's user, outside the unit's sandbox,
+and the unit lists `%h/.cache/t3api` in `ReadWritePaths` so the service can read
+and write that cache under `ProtectSystem=strict` (numba keeps a kernel only
+where it can write). Neither the unit nor `vinylgen.env` sets
+`T3API_CACHE_DIR`; setting it in one would leave the warm and the service on
+different caches.
+
 Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop
 handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
 100 MiB, at most two jobs may be active, and completed job metadata is pruned
@@ -36,6 +50,8 @@ owned process tree and discard its `.tmp/codex-image-*` directory.
 ## Install or update workstation services
 
 ```bash
+.venv/bin/pip install -r requirements-web.txt
+.venv/bin/python scripts/warm_t3_cache.py   # creates and warms ~/.cache/t3api
 npm --prefix web ci
 npm --prefix web run build
 install -Dm600 deploy/vinylgen.env .vinylgen-data/vinylgen.env

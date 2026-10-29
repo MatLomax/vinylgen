@@ -88,14 +88,16 @@ automatically interchangeable when an entry calls out a narrower meaning.
 
 | Canonical term | Definition | Accepted aliases | Avoid or qualify |
 |---|---|---|---|
-| **tracing** | Deterministically converting the segmentation contract into shared-boundary SVG geometry and audits. | trace stage, SVG tracing | vectorisation, if shared-boundary guarantees matter |
+| **tracing** | Deterministically converting the segmentation contract's labels into the planar-map file with one call to t3 (`t3api.trace`), and from it the edge variant and the audits. | trace stage, SVG tracing | vectorisation, if shared-boundary guarantees matter |
+| **t3** | The turbo tube tiler, the tracing engine, installed as the `t3api` wheel; it draws lines, circular and elliptical arcs and cubics within a tube of half-width 1.75 px around the label boundaries, at its one setting. | turbo tube tiler, `t3api` | the old fitter (`curve_fit.py`, which only the live window preview still runs) |
+| **planar-map file** | `map.json`: t3's drawing as a label map, every boundary edge stored once with the faces on its two sides and every face as rings of signed edge references, in paint order, every number exact. The trace's artefact and the one source of its geometry. | planar map, `map.json`, traced map | face map file (`faces.json`, which stores every shared boundary twice) |
 | **canonical boundary** | The single shared interface fitted once and consumed in reverse by the neighbouring colour. | shared boundary, canonical interface | two matching paths, independently traced edge |
 | **colour layer** | The named SVG layer containing the cut geometry owned by one final palette colour. | palette layer, vinyl layer when material use is intended | region, component |
 | **layer order** | The bottom-to-top stacking order used to construct overlap and edge variants. | stacking order, z-order | palette order, area order |
 | **omitted colour** | A palette colour intentionally excluded from traced cut layers. | excluded colour, omitted layer colour | removed colour, deleted colour, background colour |
 | **overlap distance** | The configured distance by which lower colour layers extend beneath upper layers. | overlap, underlap allowance | stroke, bleed unless explicitly defined |
-| **overlap variant** | `traced-overlap.svg`, in which lower layers may extend beneath upper layers. | overlap SVG | layered SVG, without naming the variant |
-| **edge variant** | `traced-edge.svg`, the gap-free edge-to-edge partition derived from ordered overlap geometry. | edge-to-edge SVG, edge SVG | tiled SVG, independently traced SVG |
+| **overlap variant** | `traced-overlap.svg`, in which lower layers may extend beneath upper layers; written by trace revisions made before t3, and by the live window preview. | overlap SVG | layered SVG, without naming the variant |
+| **edge variant** | `traced-edge.svg`, the gap-free edge-to-edge partition, exported one way from the planar-map file: one layer per included colour, one even-odd path per face. | edge-to-edge SVG, edge SVG | tiled SVG, independently traced SVG |
 | **cutter cleanup** | Optional trace-stage cleanup of a trace-local copy of the labelled partition, before boundary fitting, using physical or pixel width/area thresholds. It does not alter `flattened.png`. | trace cleanup, cut-detail cleanup | small-region cleanup, post-fit SVG editing, vector cleanup when it implies path mutation; physical-detail cleanup outside physical mode |
 | **remove** | Replacing grouped undersized labelled regions with a stable touching colour. | remove undersized regions, fill into neighbour | delete, erase, gap fill |
 | **widen** | Expanding a narrow labelled region into neighbouring labelled regions until the threshold is met, unless neighbour constraints make it unsafe. | thicken, widen feature | dilate, gap widen as a separate algorithm |
@@ -117,7 +119,10 @@ automatically interchangeable when an entry calls out a narrower meaning.
 A **node** is an endpoint shared by two consecutive path segments; each cubic
 segment gives the node a **handle** (control point) on that side. Node types are
 defined by the node's two handles. The shape is the marker used to draw that
-type wherever Vinylgen shows nodes.
+type wherever Vinylgen shows nodes. A traced node is a cusp or a symmetric node,
+from t3 (`sodipodi:nodetypes` `c` or `s`): t3's smooth joins are tangent joins,
+not equal-handle ones, so it writes no smooth node, and an elliptical or
+circular arc counts as the cubics Inkscape converts it to.
 
 | Canonical term | Definition | Shape | Avoid or qualify |
 |---|---|---|---|

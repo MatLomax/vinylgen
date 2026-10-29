@@ -90,32 +90,6 @@ class TracePreviewApiTest(unittest.IsolatedAsyncioTestCase):
         return await self.client.post(f"/api/revisions/{revision_id}/trace-preview", json={
             "window": window, **({"trace": trace} if trace is not None else {}), **extra})
 
-    async def test_preview_traces_the_window_like_the_trace_run(self) -> None:
-        project_id, _, palette_revision = await self.flattened_project()
-        # A window whose margin reaches every image edge covers exactly what the trace
-        # run traces, so the preview must reproduce that run's geometry path for path.
-        window = {"x": 10, "y": 8, "width": WIDTH - 20, "height": HEIGHT - 16}
-        for trace in ({}, {"solid_underlayers": True, "curve_fit_tolerance": 0.8,
-                           "length_unit": "per_mille"}):
-            with self.subTest(trace=trace):
-                response = await self.preview(palette_revision, window, trace)
-                self.assertEqual(response.status_code, 200, response.text)
-                body = response.json()
-                variant = "traced-overlap" if trace.get("solid_underlayers") else "traced-edge"
-                self.assertEqual(body["variant"], variant)
-                self.assertEqual(body["window"], window)
-                self.assertEqual(body["crop"], {"x": 0, "y": 0, "width": WIDTH, "height": HEIGHT})
-                self.assertEqual(body["image"], {"width": WIDTH, "height": HEIGHT})
-                svg = ET.fromstring(body["svg"])
-                self.assertEqual(svg.attrib["viewBox"], f"10 8 {WIDTH - 20} {HEIGHT - 16}")
-                trace_revision = await self.run_job(
-                    "trace", project_id, palette_revision, trace=trace)
-                artifacts = (await self.client.get(
-                    f"/api/revisions/{trace_revision}/artifacts")).json()
-                traced_svg = next(row for row in artifacts if row["kind"] == variant)
-                traced = await self.client.get(traced_svg["download_url"])
-                self.assertEqual(layer_paths(svg), layer_paths(ET.fromstring(traced.content)))
-
     async def test_the_preview_infers_layer_order_only_when_it_can_matter(self) -> None:
         _, _, palette_revision = await self.flattened_project()
         window = {"x": 10, "y": 8, "width": WIDTH - 20, "height": HEIGHT - 16}

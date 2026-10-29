@@ -91,7 +91,8 @@ logs lines="100":
 restart:
     systemctl --user restart vinylgen
 
-# Build, test, restart, and check both routes. Refuses to restart while a job is
+# Build, test, install the requirements (the t3api wheel among them), warm the t3
+# engine's kernel cache, restart, and check both routes. Refuses to restart while a job is
 # active, because the restart would interrupt it and surface a spurious "Worker
 # process stopped before completion"; pass force=true to override. just hands a
 # recipe parameter its command-line word verbatim, so both "force=true" and a bare
@@ -104,17 +105,21 @@ deploy force="false": test build
         echo "Wait for them to finish, or run 'just deploy force=true' to override." >&2; \
         exit 1; \
     fi
+    .venv/bin/pip install -r requirements-web.txt
+    .venv/bin/python scripts/warm_t3_cache.py
     systemctl --user restart vinylgen
     just health
     just health-public
 
-# Explicit administrative operation, not part of normal deployment.
+# Explicit administrative operation, not part of normal deployment. The unit's
+# ReadWritePaths names the t3 kernel cache, ~/.cache/t3api, which must exist.
 install-services:
     if [[ ! -e .vinylgen-data/vinylgen.env ]]; then \
         install -Dm600 deploy/vinylgen.env .vinylgen-data/vinylgen.env; \
     else \
         echo "Preserving existing .vinylgen-data/vinylgen.env"; \
     fi
+    mkdir -p ~/.cache/t3api
     install -Dm644 deploy/vinylgen-user.service \
         ~/.config/systemd/user/vinylgen.service
     install -Dm644 deploy/vinylgen-tunnel-user.service \

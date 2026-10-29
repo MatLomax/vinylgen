@@ -2,37 +2,30 @@
 
 Covers the resolver (including the live preview resolving on the whole image, not
 its window), pixel-era records (trace.json, CLI configs, web revision settings)
-converting so that a re-trace reproduces the recorded geometry, and the scale
-invariance units exist for.
+converting to thousandths, and the scale invariance units exist for.
 """
 
-import contextlib
-import io
 import json
 import math
 import random
-import shutil
 import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 from PIL import Image
 
 from vinylgen.boundary_graph import shared_boundary_polygons
-from vinylgen.cli_trace import main, parser, settings_from_args
+from vinylgen.cli_trace import parser, settings_from_args
 from vinylgen.contracts import (
     PER_MILLE_DEFAULTS,
     PX_DEFAULTS,
     TRACE_LENGTH_FIELDS,
-    PaletteSettings,
     TraceSettings,
 )
 from vinylgen.curve_fit import shared_boundary_components
 from vinylgen.node_types import path_nodetypes
-from vinylgen.palette import infer_palette
 from vinylgen.trace_lengths import (
     FLOORED_LENGTHS,
     MIN_ACCURACY_PX,
@@ -46,7 +39,6 @@ from vinylgen.trace_lengths import (
     trace_lengths_in_units,
 )
 from vinylgen.trace_window import preview_trace_settings
-from vinylgen.tracing import trace_subject
 
 SCRATCH = Path(__file__).resolve().parents[1] / ".tmp"
 PX_ERA = {**PX_DEFAULTS, "max_deviation": 2.0, "side_smoothness": 1.6,
@@ -238,79 +230,6 @@ class CliUnitTests(unittest.TestCase):
     def test_the_curve_feature_scale_flag_is_range_checked(self):
         with self.assertRaisesRegex(ValueError, "curve-feature-scale"):
             self.settings(None, "--curve-feature-scale", "20")
-
-
-def subject_fixture(root: Path) -> Path:
-    """A flattened subject with corners, curves and a thin bar (120 x 90 px)."""
-    height, width = 90, 120
-    yy, xx = np.mgrid[0:height, 0:width]
-    pixels = np.full((height, width, 3), (240, 220, 160), dtype=np.uint8)
-    pixels[(xx - 40) ** 2 + (yy - 45) ** 2 < 26 ** 2] = (225, 95, 45)
-    pixels[15:70, 70:108] = (15, 35, 60)
-    pixels[30:40, 80:100] = (240, 220, 160)
-    pixels[75:80, 10:110] = (15, 35, 60)
-    source = root / "subject.png"
-    Image.fromarray(pixels, "RGB").save(source)
-    infer_palette(source, root / "flat", PaletteSettings(
-        initial_colours=3, min_colour_share=0, min_region_pixels=0, dither_radius=0))
-    return root / "flat" / "subject"
-
-
-class RetraceReproducesTests(unittest.TestCase):
-    """Re-running a pixel-era trace with its recorded settings, converted to
-    thousandths on its image, reproduces its geometry exactly."""
-
-    RECORDED = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
-                "minimum_straight_length": 3.5, "corner_analysis_span": 7.0,
-                "curve_feature_scale": 3.0, "snap_angle": 3.0}
-
-    def setUp(self) -> None:
-        self.work = Path(tempfile.mkdtemp(dir=SCRATCH))
-        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
-        self.subject = subject_fixture(self.work)
-
-    def trace(self, settings: TraceSettings) -> tuple[bytes, bytes, dict]:
-        report = trace_subject(self.subject, settings, {})
-        return ((self.subject / "traced-edge.svg").read_bytes(),
-                (self.subject / "traced-overlap.svg").read_bytes(), report)
-
-    def test_a_pixel_record_retraced_in_thousandths_is_identical(self):
-        old_edge, old_overlap, old = self.trace(TraceSettings(length_unit="px", **self.RECORDED))
-        # trace.json records the lengths in thousandths and the pixels they resolved to.
-        self.assertEqual(old["settings"]["length_unit"], "per_mille")
-        self.assertEqual(old["lengths"]["reference_px"], 120)
-        self.assertEqual(old["lengths"]["px"], {
-            **PX_ERA, **{key: value for key, value in self.RECORDED.items()
-                         if key in TRACE_LENGTH_FIELDS},
-            "side_smoothness": 1.3})
-        for name, value in old["lengths"]["px"].items():
-            self.assertAlmostEqual(old["lengths"]["per_mille"][name], value * 1000 / 120)
-        # The web revision path: a stored pixel record converted on its image.
-        stored = {key: value for key, value in asdict(
-            TraceSettings(length_unit="px", **self.RECORDED)).items() if key != "length_unit"}
-        converted = pixel_record_in_units(stored, 120)
-        edge, overlap, again = self.trace(TraceSettings(**converted))
-        self.assertEqual((edge, overlap), (old_edge, old_overlap))
-        self.assertEqual(again["lengths"]["px"], old["lengths"]["px"])
-        # The recorded trace.json settings (thousandths) re-run to the same geometry too.
-        edge, overlap, _ = self.trace(TraceSettings(**old["settings"]))
-        self.assertEqual((edge, overlap), (old_edge, old_overlap))
-
-    def test_the_cli_retraces_a_pixel_era_trace_json_identically(self):
-        old_edge, old_overlap, old = self.trace(TraceSettings(length_unit="px", **self.RECORDED))
-        # A trace.json written before units: its settings block in pixels, no unit.
-        legacy = {**old, "settings": {key: value for key, value in asdict(
-            TraceSettings(length_unit="px", **self.RECORDED)).items() if key != "length_unit"}}
-        config = self.work / "legacy-trace.json"
-        config.write_text(json.dumps(legacy))
-        with mock.patch("sys.argv", ["svg_trace.py", str(self.subject), "--config", str(config)]), \
-                contextlib.redirect_stdout(io.StringIO()):
-            main()
-        self.assertEqual((self.subject / "traced-edge.svg").read_bytes(), old_edge)
-        self.assertEqual((self.subject / "traced-overlap.svg").read_bytes(), old_overlap)
-        audit = json.loads((self.subject / "trace.json").read_text())
-        self.assertEqual(audit["settings"]["length_unit"], "per_mille")
-        self.assertEqual(audit["lengths"]["px"], old["lengths"]["px"])
 
 
 def shape_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:

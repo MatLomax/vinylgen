@@ -217,10 +217,8 @@ def main() -> None:
         reports = [trace_subject(path, TraceSettings(**asdict(settings)), overrides,
                                  cleanup=CleanupSettings(**asdict(cleanup)), clean_inline=True)
                    for path in resolve_subjects(args.inputs)]
-        print(json.dumps({r["subject"]: {"valid": all(
-                                                    r["validation"][variant]["passed"]
-                                                    for variant in ("edge", "overlap")),
-                                                "warnings": len(r["warnings"])} for r in reports}, indent=2))
+        print(json.dumps({r["subject"]: {"valid": r["validation"]["edge"]["passed"],
+                                         "warnings": len(r["warnings"])} for r in reports}, indent=2))
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(2)
