@@ -1,0 +1,60 @@
+{
+ "crop": "fox-owl-table-2",
+ "x": 1600,
+ "y": 400,
+ "size": 400,
+ "palette": [
+  {
+   "index": 0,
+   "name": "Black",
+   "hex": "#050301",
+   "rgb": [
+    5,
+    3,
+    1
+   ],
+   "share_percent": 60.0623,
+   "regions": 176,
+   "largest_region_share": 0.987239940248651
+  },
+  {
+   "index": 1,
+   "name": "Golden Yellow",
+   "hex": "#E4B33A",
+   "rgb": [
+    228,
+    179,
+    58
+   ],
+   "share_percent": 24.3114,
+   "regions": 393,
+   "largest_region_share": 0.0949114087173019
+  },
+  {
+   "index": 2,
+   "name": "Cream",
+   "hex": "#F4E6AD",
+   "rgb": [
+    244,
+    230,
+    173
+   ],
+   "share_percent": 10.5471,
+   "regions": 221,
+   "largest_region_share": 0.0444148847634794
+  },
+  {
+   "index": 3,
+   "name": "Burnt Orange",
+   "hex": "#CF632C",
+   "rgb": [
+    207,
+    99,
+    44
+   ],
+   "share_percent": 5.0792,
+   "regions": 399,
+   "largest_region_share": 0.28336221719671606
+  }
+ ]
+}
