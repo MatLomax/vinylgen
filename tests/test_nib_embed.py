@@ -17,17 +17,28 @@ document the reader or the check refuses, ``"mismatch"`` for another size or pal
 ``planar_map_check`` refuses, ``violations`` (its count). A revision with no ``map.json`` answers
 404.
 
-Every test runs through the live app (the frozen ``test_t3_trace`` helpers' in-process ASGI client,
-the identity header required as on the deployed service) on the test array traced by the web
-pipeline's trace job.
+Every route test runs through the live app (the frozen ``test_t3_trace`` helpers' in-process ASGI
+client, the identity header required as on the deployed service) on the test array traced by the
+web pipeline's trace job.
+
+Card 8 (tracer ``cards/vinylgen-on-t3/build-8a-brief.md``) moves the embed to ``@nib/core`` 0.2.0,
+whose chrome vinylgen mounts. ``VendoredNibCoreTest`` pins the package: the tarball packed from nib
+at tag ``core-v0.2.0`` (commit ``e6465ab2fa124243da15889e38a21147880b9858``) as
+``web/vendor/nib-core-0.2.0.tgz`` with its sha256, the 0.1.0 tarball gone, ``web/vendor/README.md``
+naming the tag, the commit and the hash, ``web/package.json`` and its lockfile depending on it by
+``file:`` path, and the package exporting ``mountChrome`` and ``./chrome.css``. The editor version a
+save records is the package's, ``0.2.0``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 import json
+import re
+import tarfile
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -43,11 +54,22 @@ from vinylgen.svg_writer import add_face_layer, svg_document, write_svg
 
 IDENTITY = {"X-Gandalf-User": "nib-embed@example.test"}
 
+# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.2.0; the pack
+# is reproducible.
+ROOT = Path(__file__).resolve().parents[1]
+VENDOR = ROOT / "web" / "vendor"
+NIB_CORE_VERSION = "0.2.0"
+NIB_CORE_TARBALL = f"nib-core-{NIB_CORE_VERSION}.tgz"
+NIB_CORE_SHA256 = "9639e05c8f0e8d1a403e9eb0a363bf5035ac3df801d78e207b8622105f34bb89"
+NIB_CORE_TAG = "core-v0.2.0"
+NIB_CORE_COMMIT = "e6465ab2fa124243da15889e38a21147880b9858"
+
 # The edited document: one node moved by (0.25, 0.25) with nib's node tool. Produced by nib's
 # core at tag core-v0.1.0 (21e34c1), run under Node from packages/core/dist:
 # LabelMapSession.fromText(the fixture's map.json), the view node of face 15 at edge 10's piece
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
-# 0.25), then session.text(). checkLabelMap reported no violation. Its sha256:
+# 0.25), then session.text(). checkLabelMap reported no violation. The 0.2.0 tarball's
+# dist/label-map-session.js writes the same bytes from the same steps. Its sha256:
 NIB_MOVE_SHA256 = "b1b1af569263cdbf91ab83821bfaf26eac66e479b26ae28284b6c1a8dc749a36"
 MOVED_EDGE, MOVED_J, MOVE = 10, 1, (0.25, 0.25)
 
@@ -242,7 +264,7 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
     def test_trace_json_records_the_editor_the_map_and_the_parents_t3_summary(self):
         audit = self.child_audit()
         self.assertTrue(str(audit["sources"]["map"]).endswith("map.json"), audit["sources"])
-        self.assertEqual(audit["backend"]["editor"], {"name": "nib", "version": "0.1.0"})
+        self.assertEqual(audit["backend"]["editor"], {"name": "nib", "version": NIB_CORE_VERSION})
         self.assertEqual(audit["backend"]["tracer"], "t3api")
         self.assertEqual(audit["backend"]["build"], t3api.BUILD_ID)
         self.assertEqual(audit["determinism"]["map_sha256"], sha256(self.moved.encode("utf-8")))
@@ -371,6 +393,63 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
                     headers={"Content-Type": "application/json"})
             self.assertEqual(response.status_code, 403, response.text)
             self.assertEqual(await api.revision_ids(self.project_id), before)
+
+
+class VendoredNibCoreTest(unittest.TestCase):
+    """``@nib/core`` 0.2.0 is the vendored tarball the web client installs, and it carries the
+    chrome vinylgen mounts."""
+
+    def tarball(self) -> bytes:
+        path = VENDOR / NIB_CORE_TARBALL
+        self.assertTrue(path.is_file(), f"{path} is vendored")
+        return path.read_bytes()
+
+    def member(self, name: str) -> bytes:
+        with tarfile.open(VENDOR / NIB_CORE_TARBALL) as archive:
+            names = archive.getnames()
+            self.assertIn(name, names)
+            return archive.extractfile(name).read()
+
+    def test_the_tarball_is_the_pack_of_core_v0_2_0_and_the_0_1_0_tarball_is_gone(self):
+        self.assertEqual(sha256(self.tarball()), NIB_CORE_SHA256)
+        self.assertEqual(sorted(path.name for path in VENDOR.glob("*.tgz")), [NIB_CORE_TARBALL])
+        self.assertFalse((VENDOR / "nib-core-0.1.0.tgz").exists())
+
+    def test_the_readme_names_the_tarball_its_tag_commit_and_hash(self):
+        readme = (VENDOR / "README.md").read_text()
+        for text in (f"## {NIB_CORE_TARBALL}", f"`{NIB_CORE_SHA256}`", NIB_CORE_TAG, NIB_CORE_COMMIT):
+            self.assertTrue(text in readme, f"README.md names {text}")
+        for text in ("nib-core-0.1.0.tgz", "core-v0.1.0"):
+            self.assertFalse(text in readme, f"README.md no longer names {text}")
+
+    def test_the_web_client_depends_on_it_by_file_path_and_the_lockfile_holds_its_integrity(self):
+        package = json.loads((ROOT / "web" / "package.json").read_text())
+        self.assertEqual(package["dependencies"]["@nib/core"], f"file:vendor/{NIB_CORE_TARBALL}")
+        lock = json.loads((ROOT / "web" / "package-lock.json").read_text())
+        self.assertEqual(lock["packages"][""]["dependencies"]["@nib/core"], f"file:vendor/{NIB_CORE_TARBALL}")
+        entry = lock["packages"]["node_modules/@nib/core"]
+        self.assertEqual(entry["version"], NIB_CORE_VERSION)
+        self.assertEqual(entry["resolved"], f"file:vendor/{NIB_CORE_TARBALL}")
+        integrity = "sha512-" + base64.b64encode(hashlib.sha512(self.tarball()).digest()).decode()
+        self.assertEqual(entry["integrity"], integrity)
+
+    def test_the_package_exports_mount_chrome_and_its_stylesheet(self):
+        manifest = json.loads(self.member("package/package.json"))
+        self.assertEqual((manifest["name"], manifest["version"]), ("@nib/core", NIB_CORE_VERSION))
+        exports = manifest["exports"]
+        # The stylesheet subpath, and the file it names in the tarball.
+        self.assertIn("./chrome.css", exports)
+        stylesheet = exports["./chrome.css"]
+        self.assertIsInstance(stylesheet, str)
+        self.assertIn(".nib-chrome", self.member("package/" + stylesheet.removeprefix("./")).decode("utf-8"))
+        # mountChrome beside mountEditor, from the entry "." names, code and declarations.
+        entry = exports["."]
+        for key in ("default", "types"):
+            text = self.member("package/" + entry[key].removeprefix("./")).decode("utf-8")
+            exported = set()
+            for names in re.findall(r"^export\s*\{([^}]*)\}", text, re.M):
+                exported.update(name.strip().split(" as ")[-1] for name in names.split(","))
+            self.assertTrue({"mountChrome", "mountEditor"} <= exported, (key, sorted(exported)))
 
 
 if __name__ == "__main__":
