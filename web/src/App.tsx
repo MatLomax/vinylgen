@@ -661,6 +661,9 @@ export default function App() {
   // The settings that produced the shown image, recorded on its nearest ancestor.
   const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
   const tracedSvg = artifacts.find(row => row.kind === 'traced-edge')
+  // The planar map the shown trace was drawn from, which nib's editor opens; none for a
+  // revision traced before t3.
+  const tracedMap = artifacts.find(row => row.kind === 'traced-map')
   const cleanupLookup = useMemo(() => nearestCleanup(revisions, current?.id || null), [revisions, current?.id])
   const activeCleanup = cleanupLookup.stale ? null : cleanupLookup.revision
   // The artwork changed after the last Cleanup, so tracing waits for Cleanup to re-run.
@@ -1323,6 +1326,13 @@ export default function App() {
     if (step === 'palette') delete draft.palette_revision
     localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
   }
+  // A save from nib's editor made a new trace revision: it is shown as a finished trace's
+  // result is, on its Traced view, unless the user has since left its project.
+  function mapSaved(next: Revision) {
+    if (!stillSelected(next.project_id)) return
+    setRevision(next.id)
+    setPendingView({ view: 'traced', revision: next.id })
+  }
   async function reimportSvg(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selected || !revision) return
@@ -1601,10 +1611,9 @@ export default function App() {
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionKinds={canvasOverlayKinds(stage, Boolean(selectionMode))}
-          // The Trace canvas marks path nodes, types read from sodipodi:nodetypes: those of
-          // the traced SVG it shows (the variant the run's settings chose) when the revision
-          // has one, and the live preview's within its window.
-          pathNodes={stage === 'trace' && !selectionMode ? { url: tracedSvg?.download_url } : undefined}
+          // The Trace canvas's Nodes overlay is nib's editor on the shown revision's planar map,
+          // saved for the trace revision that owns the map; a save lands on its new revision.
+          nodes={stage === 'trace' && !selectionMode ? { revisionId: tracedMap?.revision_id ?? revision ?? '', mapUrl: tracedMap?.download_url ?? null, onSaved: mapSaved } : undefined}
           // Preservation points are source pixels; the canvas scales them onto a larger
           // flattened raster. They are mapped onto the selected revision's source, so they
           // wait until the shown artifacts are that revision's own.

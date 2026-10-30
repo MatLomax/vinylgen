@@ -1,11 +1,11 @@
-import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, PointerEvent, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { LoaderCircle, Maximize, Pause, Play, ZoomIn, ZoomOut } from 'lucide-react'
 import { clamp, defaultComparePair, distance, fitTransform, keepCentre, gridsRegister, lineageRegisters, midpoint, pixelLine, sameImageSize, splitPositionInImage, zoomAt, type ImageSize, type Point, type UpscaleLineage, type ViewTransform } from './workspace'
 import type { OverlayFrame } from './regionSelection'
 import { LiveTraceLayer, type LiveFaces } from './LiveTrace'
 import type { PaletteColour } from './api'
 import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
-import { NODE_TYPE_LABELS, NODE_TYPES, NodeShape, committedLayer, drawNodeMarkers, useTracedNodes, type NodeLayer, type NodeType } from './PathNodes'
+import { NibEditor, type NibEditorProps } from './NibEditor'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
@@ -35,10 +35,11 @@ export type CanvasMarkerKind = 'protect' | 'preserve' | 'pair'
 export type CanvasMarker = { id: string; kind: CanvasMarkerKind; label: string; points: [number, number][]; pending?: boolean }
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
 // The switch of the Trace canvas's Nodes overlay, kept with the inspection toggles.
-const PATH_NODES_KEY = 'path-nodes'
-// The canvas can mark path nodes (`pathNodes`): those of the committed traced SVG at
-// `url` when the revision has one.
-export type CanvasPathNodes = { url?: string }
+const NODES_KEY = 'path-nodes'
+// The canvas can show nib's editor (`nodes`) on a trace revision's planar map: `revisionId`
+// owns the map at `mapUrl`, absent for a revision with none (traced before t3), and
+// `onSaved` receives the revision a save makes.
+export type CanvasNodes = NibEditorProps
 // Screen-space sizes of the marker shapes and the pick-mode crosshair arms, in CSS px.
 const MARKER_RADIUS = 7
 const AIM_GAP = 3
@@ -65,10 +66,9 @@ function storeCompareMode(mode: CompareMode) {
   try { localStorage.setItem(CANVAS_COMPARE_STORAGE_KEY, mode) } catch { /* storage unavailable */ }
 }
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint: selectPointRequested, paintMode: paintRequested = false, onPaint: paintHandler, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim: aimRequested = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, liveTrace, cleanupPreview, livePreviewPaused = false, livePreviewStatus, compareBefore = [], compareLineage, compareStatus, compareRemembered = true, compareKey, compareLocksEditing = false, onComparingChange, pathNodes, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; liveTrace?: CanvasLiveTrace; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; compareBefore?: readonly string[]; compareLineage?: CanvasCompareLineage; compareStatus?: CanvasCompareStatus; compareRemembered?: boolean; compareKey?: string; compareLocksEditing?: boolean; onComparingChange?: (comparing: boolean) => void; pathNodes?: CanvasPathNodes; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint: selectPointRequested, paintMode: paintRequested = false, onPaint: paintHandler, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim: aimRequested = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, liveTrace, cleanupPreview, livePreviewPaused = false, livePreviewStatus, compareBefore = [], compareLineage, compareStatus, compareRemembered = true, compareKey, compareLocksEditing = false, onComparingChange, nodes, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; liveTrace?: CanvasLiveTrace; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; compareBefore?: readonly string[]; compareLineage?: CanvasCompareLineage; compareStatus?: CanvasCompareStatus; compareRemembered?: boolean; compareKey?: string; compareLocksEditing?: boolean; onComparingChange?: (comparing: boolean) => void; nodes?: CanvasNodes; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
-  const nodeCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
   const pointers = useRef(new Map<number, Point>())
   const pointerStarts = useRef(new Map<number, Point>())
@@ -208,9 +208,8 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const compatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
   const incompatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
   const drawnInspections = comparing ? [] : compatibleInspections
-  // The Nodes switch; the overlay it turns on is settled with the live preview below.
-  const nodesSwitched = Boolean(pathNodes) && Boolean(enabledInspections[PATH_NODES_KEY])
-  const committedNodes = useTracedNodes(nodesSwitched ? pathNodes?.url ?? null : null)
+  // The Nodes switch; the editor it turns on is settled with the live preview below.
+  const nodesSwitched = Boolean(nodes) && Boolean(enabledInspections[NODES_KEY])
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -587,49 +586,11 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size,
     { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && drawnInspections.includes(appliedChanges)) },
     previewHeld, livePreviewStatus)
-  // The Nodes overlay is offered while there are nodes to mark: a committed trace. It marks
-  // the trace's path nodes; like every overlay it is hidden while comparing.
-  const nodesAvailable = Boolean(pathNodes?.url)
+  // The Nodes overlay is offered for a revision with a planar map: nib's editor on it, over
+  // the canvas. Like every overlay it is hidden while comparing.
+  const nodesAvailable = Boolean(nodes?.mapUrl)
   const nodesOn = nodesAvailable && nodesSwitched
-  const nodesDrawn = nodesOn && !comparing
-  // The legend counts the nodes in view, as drawn, within the visible viewport. Each draw measures them, and
-  // the counts are tagged with the drawing they came from (`nodeDrawing`: the same nodes
-  // placed the same way, drawn without a break), so counts of other nodes or of a view
-  // before a break are never shown. A draw whose counts are unchanged sets no state.
-  const [nodesInView, setNodesInView] = useState<{ drawing: object; counts: Record<NodeType, number> } | null>(null)
-  const lastNodesInView = useRef(nodesInView)
-  const nodeCountsId = useId()
-  const committedNodeLayer = committedNodes.status === 'ready' && size.width ? committedLayer(committedNodes.index, size) : null
-  const nodeLayers: NodeLayer[] = nodesDrawn && committedNodeLayer ? [committedNodeLayer] : []
-  const nodeLayersKey = JSON.stringify(committedNodeLayer && [committedNodeLayer.scaleX, committedNodeLayer.scaleY])
-  const nodeDrawing = useMemo(() => ({}), [nodesDrawn, committedNodes.status === 'ready' ? committedNodes.index : null, nodeLayersKey, size.width, size.height])
-  // Counts show while nodes are drawn, 0 where none is in view; they are hidden while
-  // comparing and while there are no nodes to draw (none to mark yet, or a trace without
-  // node types).
-  const shownNodeCounts = nodesDrawn && nodeLayers.some(layer => layer.index.nodes.xs.length > 0) && nodesInView?.drawing === nodeDrawing ? nodesInView.counts : null
-  useEffect(() => {
-    // Drawn in screen space on a viewport-sized canvas (like the editor overlay above),
-    // so markers keep their size at any zoom; only the nodes in view are visited, and
-    // pan/zoom frames coalesce into one draw per animation frame.
-    const canvas = nodeCanvas.current
-    if (!canvas || !nodesDrawn) return
-    const draw = () => {
-      const dpr = window.devicePixelRatio || 1
-      const width = canvas.clientWidth, height = canvas.clientHeight
-      const backingWidth = Math.max(1, Math.round(width * dpr)), backingHeight = Math.max(1, Math.round(height * dpr))
-      if (canvas.width !== backingWidth || canvas.height !== backingHeight) { canvas.width = backingWidth; canvas.height = backingHeight }
-      const context = canvas.getContext('2d')
-      if (!context) return
-      const { inView } = drawNodeMarkers(context, nodeLayers, transform, { width, height }, dpr)
-      const last = lastNodesInView.current
-      if (last?.drawing === nodeDrawing && NODE_TYPES.every(type => last.counts[type] === inView[type])) return
-      lastNodesInView.current = { drawing: nodeDrawing, counts: inView }
-      setNodesInView(lastNodesInView.current)
-    }
-    if (typeof window.requestAnimationFrame !== 'function') { draw(); return }
-    const frame = window.requestAnimationFrame(draw)
-    return () => window.cancelAnimationFrame(frame)
-  }, [nodeDrawing, transform])
+  const nodesShown = nodesOn && !comparing
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -786,7 +747,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {!previewHeld && cleanupLivePreview.stageLayer}
       </div>
       {overlay && !comparing && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
-      {nodesDrawn && <canvas ref={nodeCanvas} className="node-overlay" aria-hidden="true" />}
+      {nodesShown && nodes && <NibEditor revisionId={nodes.revisionId} mapUrl={nodes.mapUrl} onSaved={nodes.onSaved} />}
       {activeMode === 'split' && compareLayer && <div
         className="split-divider"
         role="slider"
@@ -809,27 +770,16 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
       {editorMode && (toggledInspections.length > 0 || nodesAvailable) && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
         {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
-        {nodesAvailable && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [PATH_NODES_KEY]: event.target.checked }))} />Nodes</label>}
-        {nodesOn && <div className="node-legend">
-          {shownNodeCounts && <p className="node-legend-heading" id={nodeCountsId}>Nodes in view</p>}
-          <ul aria-label="Node types" aria-describedby={shownNodeCounts ? nodeCountsId : undefined}>{NODE_TYPES.map(type => <li key={type}><NodeShape type={type} />{NODE_TYPE_LABELS[type]}{shownNodeCounts && <span className="node-count">{shownNodeCounts[type].toLocaleString()}</span>}</li>)}</ul>
-          {committedNodes.status === 'loading' && <p className="node-status" role="status">Loading nodes…</p>}
-          {committedNodes.status === 'error' && <p className="node-status error" role="status">Nodes unavailable: {committedNodes.message}</p>}
-          {committedNodes.status === 'ready' && committedNodes.index.nodes.untyped > 0 && <p className="node-status" role="status">{committedNodes.index.nodes.xs.length === 0
-            ? 'This trace has no node types. Re-run Trace to record them.'
-            : `${committedNodes.index.nodes.untyped.toLocaleString()} nodes without a recorded type are not marked.`}</p>}
-          {committedNodes.status === 'ready' && committedNodes.index.nodes.arcNodes > 0 && <p className="node-status" role="status">{`${committedNodes.index.nodes.arcNodes.toLocaleString()} nodes on paths with arcs are not marked.`}</p>}
-          {committedNodes.status === 'ready' && size.width > 0 && !committedNodeLayer && <p className="layer-warning" role="status">Nodes hidden: the traced SVG's grid does not register with the shown image.</p>}
-        </div>}
+        {nodesAvailable && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [NODES_KEY]: event.target.checked }))} />Nodes</label>}
         {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
       </div>}
       {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
       {cleanupLivePreview.controls}
-      <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
+      {!nodesShown && <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Fit image" title="Fit image" onClick={() => fit()}><Maximize aria-hidden="true" /></button>
-      </div>
+      </div>}
     </div>
     <div className="layer-probes" inert={sheetOpen} aria-hidden="true">{layers.map(layer => <img key={layer.id} src={layer.url} alt="" onLoad={event => imageLoaded(layer.id, event)} />)}</div>
     {!editorMode && <div className="desktop-view-controls" inert={sheetOpen}>{controls}</div>}

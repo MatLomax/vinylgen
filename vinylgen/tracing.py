@@ -365,6 +365,13 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     is), checked with ``planar_map_check``, and everything after the trace (the edge SVG,
     the checks, the audit and the preview) is rebuilt from it with these settings. No
     ``t3api.trace`` call is made.
+
+    ``reuse`` with an ``editor`` (``{"name", "version"}``) re-exports a map edited in that
+    editor from revision ``revision``'s map, which the web pipeline wrote into ``subject_dir``
+    as posted. It is the same path with three differences: the map is never rewritten (a
+    header whose palette or names are not this trace's raises), its build need not be the
+    installed one (the geometry is the editor's, checked here), and the audit records the
+    editor (``backend.editor``) and ``t3.edited``.
     """
     import t3api
 
@@ -448,14 +455,18 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         t3_record = {"summary": result.summary, "seconds": result.seconds,
                      "warm_s": result.warm_s, "workers": result.workers}
     else:
-        tick(0.8, "Reusing the planar map of the same labels and t3 build")
+        editor = reuse.get("editor")
+        tick(0.8, "Reusing the planar map of the same labels and t3 build" if editor is None
+             else f"Reading the planar map edited in {editor['name']}")
         pm = t3api.read_planar_map(map_path.read_text())
-        if pm["build"] != t3api.BUILD_ID:
+        if editor is None and pm["build"] != t3api.BUILD_ID:
             raise RuntimeError(f"the reused map.json was written by t3api {pm['build']}, "
                                f"not {t3api.BUILD_ID}")
         if (pm["W"], pm["H"]) != (width, height):
             raise RuntimeError("the reused map.json is not the size of the traced labels")
         named = map_with_palette(pm, palette)
+        if named is not pm and editor is not None:
+            raise RuntimeError("the edited map.json's palette and names are not the trace's")
         if named is not pm:
             map_path.write_text(t3api.planar_map_json(named))
             pm = t3api.read_planar_map(map_path.read_text())
@@ -466,10 +477,17 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         # The map's paint is the one its own trace's gate found equal to t3's painted labels:
         # the faces are the same bytes, and the header holds no geometry.
         painted = np.asarray(t3api.paint_planar_map(pm))
-        read_back = {"differ": 0, "reused_from": reuse["revision"]}
-        t3_record = {**{key: reuse["t3"][key] for key in ("summary", "seconds", "warm_s",
-                                                           "workers")},
-                     "reused_from": reuse["revision"]}
+        t3_record = {key: reuse["t3"][key] for key in ("summary", "seconds", "warm_s", "workers")}
+        if editor is None:
+            read_back = {"differ": 0, "reused_from": reuse["revision"]}
+            t3_record["reused_from"] = reuse["revision"]
+        else:
+            # The posted map's paint against the stored map's: the file is stored as written,
+            # so this reads the same bytes back.
+            stored = np.asarray(t3api.paint_planar_map(t3api.read_planar_map(map_path.read_text())))
+            read_back = {"differ": int(np.count_nonzero(stored != painted)),
+                         "edited_from": reuse["revision"]}
+            t3_record.update(edited=True, edited_from=reuse["revision"])
 
     paths = t3api.planar_map_paths(pm)
     areas = face_areas(pm)
@@ -563,7 +581,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "cleanup_settings": asdict(physical),
              "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION,
                          "setting": t3api.SETTING, "numpy": np.__version__,
-                         "scipy": scipy.__version__, "numba": numba.__version__},
+                         "scipy": scipy.__version__, "numba": numba.__version__,
+                         **({"editor": dict(reuse["editor"])}
+                            if reuse is not None and reuse.get("editor") else {})},
              "t3": {**t3_record, "gaps": gap_stats["gaps"], "gap_max": gap_stats["gap_max"]},
              "colours": {"included": [palette[i] for i in included],
                          "omitted": palette[omitted] if omitted is not None else None},

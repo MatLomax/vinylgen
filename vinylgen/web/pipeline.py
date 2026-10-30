@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -24,6 +25,7 @@ from vinylgen.tracing import ensure_palette_names, resolve_colour
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
+from .nib import EDITED_MESSAGE, NIB_EDITOR, MapRefused, map_refusal
 from .store import CLEANED_IMAGE_KINDS, Store
 from .touch_ups import (CLEANED_FLATTENED_FILE, CLEANED_LABELS_FILE, TOUCH_UPS_FILE,
                         TOUCH_UPS_KIND, pending_touch_ups)
@@ -493,10 +495,10 @@ class PipelineRunner:
         return artifacts
 
     def _commit(self, project_id: str, parent_id: str, stage: str, files: dict[str, Path],
-                settings: dict) -> str:
+                settings: dict, message: str | None = None) -> str:
         revision = self.store.create_revision(
             project_id, parent_revision_id=parent_id, kind=stage,
-            message=f"Deterministic {stage} pipeline", settings=settings)
+            message=message or f"Deterministic {stage} pipeline", settings=settings)
         for kind, path in files.items():
             if not path.exists():
                 continue
@@ -612,11 +614,21 @@ class PipelineRunner:
             return None
         if header.get("build") != t3api.BUILD_ID:
             return None
+        # A map edited in nib is not t3's trace of these labels, so a trace traces them afresh.
+        if audit["t3"].get("edited"):
+            return None
         return {"artifact": mapped, "reuse": {"revision": owner, "t3": t3_record}}
 
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
                colour_names: dict[str, str], progress: Progress, cancelled: Cancelled,
-               on_event: Callable[[dict], None] | None = None) -> str:
+               on_event: Callable[[dict], None] | None = None,
+               edited: dict | None = None) -> str:
+        """A trace revision, child of ``parent_id``: t3's trace of its labels, or a re-export of
+        the planar map a trace of the same labels already wrote (``reusable_map``), or, with
+        ``edited``, a re-export of a map edited in nib. ``edited`` is ``{"map": the posted
+        bytes, "t3": the parent's t3 record}``, with ``parent_id`` the trace revision the map was
+        edited from: the map is stored byte for byte and everything after the trace is rebuilt
+        from it by ``tracing.trace_subject``'s ``reuse`` path."""
         _require_fresh(self.store, parent_id, {"palette"})
         cleanup_revision, cleanup_stale = nearest_cleanup(self.store, parent_id)
         if cleanup_stale:
@@ -635,12 +647,18 @@ class PipelineRunner:
                 "cleanup": cleanup_settings, "removed_index": removed_index}
         # Re-export without a trace: the same labels traced by the same t3 build give the
         # same planar map, so only what is built from it is redone.
-        reusable = self.reusable_map(parent_id)
-        if reusable is not None:
-            shutil.copyfile(self.store.artifact_path(reusable["artifact"]["id"]),
-                            subject / TRACE_FILES["traced-map"])
-            spec["reuse"] = reusable["reuse"]
+        if edited is not None:
+            (subject / TRACE_FILES["traced-map"]).write_bytes(edited["map"])
+            spec["reuse"] = {"revision": parent_id, "t3": edited["t3"], "editor": NIB_EDITOR}
+            reusable = spec["reuse"]
+        else:
+            reusable = self.reusable_map(parent_id)
+            if reusable is not None:
+                shutil.copyfile(self.store.artifact_path(reusable["artifact"]["id"]),
+                                subject / TRACE_FILES["traced-map"])
+                spec["reuse"] = reusable["reuse"]
         progress(0.1, "Tracing shared boundaries" if reusable is None
+                 else "Re-exporting the planar map edited in nib" if edited is not None
                  else "Re-exporting the planar map of the same labels")
         run_worker(
             spec,
@@ -651,7 +669,38 @@ class PipelineRunner:
         files = {kind: subject / filename for kind, filename in TRACE_FILES.items()}
         palette_settings, _ = _effective_settings(self.store, parent_id)
         return self._commit(project_id, parent_id, "trace", files,
-                            _provenance("trace", palette_settings, effective))
+                            _provenance("trace", palette_settings, effective),
+                            EDITED_MESSAGE if edited is not None else None)
+
+    def save_map(self, revision_id: str, body: bytes) -> str:
+        """Save the planar-map file ``body`` edited in nib from trace revision ``revision_id``'s
+        own ``map.json`` as a new trace revision, its child, and return the new revision's id.
+
+        A revision holding no ``map.json`` of its own raises ``KeyError``. A document
+        ``nib.map_refusal`` refuses raises ``nib.MapRefused`` and makes no revision. Otherwise
+        the child (message ``nib.EDITED_MESSAGE``, the parent's trace settings) is made by
+        ``_trace`` with ``edited``, as a trace re-exports a map."""
+        revision = self.store.get_revision(revision_id)
+        own = {row["kind"]: row for row in self.store.list_artifacts(revision_id)}
+        if "traced-map" not in own:
+            raise KeyError(f"{revision_id} has no map.json")
+        refusal = map_refusal(body, self.store.artifact_path(own["traced-map"]["id"]).read_bytes())
+        if refusal is not None:
+            raise MapRefused(refusal)
+        if "trace-audit" not in own:
+            raise ValueError("the revision's map.json has no trace.json beside it")
+        audit = json.loads(self.store.artifact_path(own["trace-audit"]["id"]).read_text())
+        t3_record = {key: audit["t3"][key] for key in ("summary", "seconds", "warm_s", "workers")}
+        values = upgrade_trace_record(revision["settings"].get("trace") or {})
+        work = self.scratch_root / f"map-{uuid.uuid4().hex}"
+        work.mkdir(parents=True)
+        try:
+            return self._trace(revision["project_id"], revision_id, work, values, {},
+                               progress=lambda fraction, message: None,
+                               cancelled=lambda: False,
+                               edited={"map": body, "t3": t3_record})
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
     def _validate(self, project_id: str, parent_id: str, work: Path, progress: Progress) -> str:
         _require_fresh(self.store, parent_id, {"trace"})

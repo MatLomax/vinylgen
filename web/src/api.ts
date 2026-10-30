@@ -46,6 +46,11 @@ export type UpscaleOptions =
 export type UpscaleStarted = { project: Project; job: Job }
 export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number; tracer?: TracerInfo | null }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
+// Why the server refused a planar map saved from nib's editor (HTTP 422): `invalid` (t3 cannot
+// read it, or its check finds `violations`), `mismatch` (another size or palette than the
+// revision it edits) or `unchanged` (nothing was edited).
+export type MapRefusal = { detail: string; reason: 'invalid' | 'mismatch' | 'unchanged'; problems: string[]; violations?: number }
+export type MapSaved = { revision: Revision } | { refusal: MapRefusal }
 
 type ValidationIssue = { loc?: unknown[]; msg?: unknown }
 
@@ -142,6 +147,17 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, project_id: projectId, revision_id: revisionId, ...settings }),
   }).then(result<Job>),
+  // A planar map edited in nib, the exact text nib wrote, saved for the trace revision that owns
+  // the map it was opened from: a new trace revision, or the server's refusal.
+  saveMap: (revisionId: string, text: string) => fetch(`/api/revisions/${revisionId}/map`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text,
+  }).then(async (response): Promise<MapSaved> => {
+    if (response.status === 422) {
+      const body = await response.clone().json().catch(() => null) as Partial<MapRefusal> | null
+      if (body && typeof body.reason === 'string' && typeof body.detail === 'string') return { refusal: { problems: [], ...body } as MapRefusal }
+    }
+    return { revision: await result<Revision>(response) }
+  }),
   cancelJob: (jobId: string) => fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' }).then(result<Job>),
   upscaleOptions: (signal?: AbortSignal) => fetch('/api/upscale/options', { signal }).then(result<UpscaleOptions>),
   upscale: (projectId: string, revisionId: string, settings: UpscaleSettings) => fetch(`/api/projects/${projectId}/revisions/${revisionId}/upscale`, {

@@ -216,6 +216,24 @@ its colours differently, and calls `t3api.trace` not at all
 (`PipelineRunner.reusable_map`): only the edge SVG, the checks and the audit are
 rebuilt, with the revision's own palette, omitted colour and limits, and recorded
 in its own `trace.json` (`t3.reused_from` names the revision whose map it reused).
+A map edited in nib is never reused this way: a trace from an edited revision
+traces afresh.
+
+The Trace canvas's Nodes overlay is nib's editor (`web/src/NibEditor.tsx`). It
+mounts `@nib/core`'s `Editor` through `mountEditor` on its own canvas, with a
+server host: `open` is a GET of the revision's `map.json` artifact, and `save`
+is `POST /api/revisions/{revision_id}/map` with the exact text nib wrote. The
+package is the vendored tarball `web/vendor/nib-core-0.1.0.tgz`, installed by
+`file:` path. The route (`web/app.py`) hands the body to
+`PipelineRunner.save_map` (`web/pipeline.py`). That function refuses a document
+with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`, of
+another size or palette than the parent's, or unchanged). Otherwise it makes a
+child trace revision, "edited in nib", through `PipelineRunner._trace`, the one
+function that also traces and re-exports. The posted map is written into the
+work folder and `trace_subject` rebuilds everything after the trace from it, as
+it does for a re-export. The save runs in the request (in the compute worker
+subprocess, as a trace does) and answers 201 with the new revision. The parent's
+artifacts are untouched.
 
 The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served
 on a dedicated preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its
@@ -281,7 +299,7 @@ to about 1.3 s for widen on 1.5-megapixel subjects) are documented in the
   Its planar map, `map.json`, stores every boundary edge once with the faces
   on its two sides, so adjacent colours share their boundary bit for bit; it is
   checked and read back before anything is built from it, and every later step
-  (the edge SVG, the audit, a re-export) reads that file.
+  (the edge SVG, the audit, a re-export, a save from nib) reads that file.
 - Post-trace validation audits protected component survival on t3's painted
   labels. A changed explicit protection is a warning; nothing re-runs or
   repairs the trace.

@@ -18,6 +18,7 @@ from vinylgen.tracing import tracer_info
 from .config import WebConfig
 from .comfy_client import COMFY_NOT_RUNNING, ComfyClient, ComfyUIError, ComfyUnavailable
 from .jobs import JobManager
+from .nib import MapRefused
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
 from .editor import apply_edits, editor_state
@@ -353,6 +354,25 @@ def create_app(config: WebConfig | None = None,
             raise missing(exc) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/revisions/{revision_id}/map", response_model=Revision, status_code=201)
+    async def save_map(revision_id: str, request: Request):
+        # The planar-map file nib's editor wrote for the trace revision ``revision_id``, the
+        # exact text as the body. It becomes a new trace revision, the revision's child
+        # (``PipelineRunner.save_map``), or is refused with 422 and the reasons
+        # (``nib.map_refusal``). A revision with no map.json of its own answers 404.
+        body = await request.body()
+        if len(body) > config.max_upload_bytes:
+            raise HTTPException(413, "Upload exceeds the configured limit")
+        try:
+            result_id = await asyncio.to_thread(jobs.pipeline.save_map, revision_id, body)
+            return served_revisions(store, [store.get_revision(result_id)])[0]
+        except MapRefused as refused:
+            return JSONResponse(refused.body, status_code=422)
+        except KeyError as exc:
+            raise missing(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/revisions/{revision_id}/editor", response_model=EditorState)
     async def get_editor_state(revision_id: str) -> dict:

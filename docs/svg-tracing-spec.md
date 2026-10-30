@@ -104,7 +104,32 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   names its colours differently, passes `planar_map_check`, and the edge SVG,
   the audit and `trace.json` are built from it with this revision's own
   settings. `t3.reused_from` and `validation.edge.read_back.reused_from` name
-  the revision whose trace drew it, and `t3` repeats that trace's timings.
+  the revision whose trace drew it, and `t3` repeats that trace's timings. A
+  map edited in nib (below) is never reused this way: it is not t3's trace of
+  the labels, so a trace from an edited revision traces afresh.
+- **Editing the trace in nib.** The Trace canvas's Nodes overlay is nib's
+  editor (`@nib/core` 0.1.0, `web/vendor/`) on the shown revision's `map.json`.
+  Saving posts the exact text nib wrote to
+  `POST /api/revisions/{revision_id}/map`, where `revision_id` is the trace
+  revision that owns the map. Revisions are immutable, so a save makes a child
+  revision of kind `trace` with the message "edited in nib" and the parent's
+  palette and trace settings (`PipelineRunner.save_map`). Its `map.json` is the
+  posted document byte for byte. The edge SVG, the checks, the audit,
+  `traced.png` and `trace.json` are rebuilt from it by the re-export path
+  (`trace_subject` with `reuse` naming the editor), with two differences: the
+  map is never rewritten, and its header's build need not be the installed
+  one. Before anything is made, the server refuses with HTTP 422 a document
+  that fails one of these checks, in this order:
+  1. `t3api.read_planar_map` reads it (`reason` `"invalid"`).
+  2. `planar_map_check` finds no violation (`"invalid"`, with `violations`).
+  3. Its `W`, `H`, `palette` and `names` are the parent's (`"mismatch"`).
+  4. It is not byte-equal to the parent's map (`"unchanged"`: nothing was
+     edited).
+
+  The 422 body is `{detail, reason, problems[, violations]}`. A revision with no
+  `map.json` of its own answers 404. The client shows "unchanged" as a notice
+  and every other refusal as an error listing the problems. After a save it
+  shows the new revision on its Traced view, as it does a finished trace's.
 - **The live trace view.** While a web trace runs, each of t3's `face` events
   (the face's id, colour label, rings as SVG path data and node types) is
   written by the worker as a JSON line and sent on the job's event stream as
@@ -530,14 +555,19 @@ symmetric detail controls.
   `cleanup_settings` (size, removed colour, cleanup).
 - `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
   (`t3api.VERSION`), `setting` (`t3api.SETTING`, the one setting traced at)
-  and the `numpy`, `scipy` and `numba` versions.
+  and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
+  nib adds `editor` (`{"name": "nib", "version": "0.1.0"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),
   `seconds` (the trace call's wall time), `warm_s` (the engine warm-up within
   it), `workers`, and the planar map's gap connectors as
   `t3api.faces_svg_from_planar_map` reports them for `map.json`: `gaps` (their
-  count) and `gap_max` (the longest, px).
+  count) and `gap_max` (the longest, px). A re-export adds `reused_from`. A
+  save from nib repeats its parent's `summary`, `seconds`, `warm_s` and
+  `workers`, and adds `edited` (`true`) and `edited_from` (the parent revision).
+  Its `validation.edge.read_back` compares the posted map's paint with the
+  stored map's (`differ` 0) and names `edited_from`.
 - `colours`: the included colours in palette order and the omitted one.
 - `cleanup`: regions removed, widened, or left unchanged with warnings, when
   the CLI cleaned inline (otherwise in the cleanup stage's `cleanup.json`).
