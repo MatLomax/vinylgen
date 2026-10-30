@@ -115,61 +115,30 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   the finished edge SVG paints. The view clears when the job ends; a client
   that subscribes late gets no earlier faces.
 
-The overlap variant (`traced-overlap.svg`), solid underlayers, layer order,
-the Inkscape validation render and the recovery passes are not part of a
-trace: older trace revisions keep their files. The old shared-boundary fitter
-described in the sections below (the geometry model, corner detection, joins,
-node placement, crossing repair) draws no trace and no preview, and no
-longer runs: `vinylgen/curve_fit.py` reads the retired trace settings and fails
-to import, and with it `vinylgen/fidelity/`, `tests/test_synthetic_fidelity.py`,
-the full-image corpus tests that use it (`tests/fullimage/`) and
-`scripts/tracer_contact_sheet.py`. `boundary_graph`, `path_crossings` and
-`node_types` still import, but a trace calls none of them.
-
 ## Geometry model
 
-This section and the fitter sections after it describe the old shared-boundary
-fitter, which draws no trace or preview; a trace is drawn by t3 ([The trace stage: t3](#the-trace-stage-t3)).
+The trace's geometry is t3's planar map, `map.json` (the tracer repo's
+`cards/vinylgen-on-t3/planar-map-file.md`): a partition of the canvas into
+faces. Each face is one 8-connected component of one label, held as rings (its
+outer boundary first, then its holes) of signed references to edges. Each edge
+is stored once, with the faces on its two sides, as a chain of pieces: lines
+(`L`), circular and elliptical arcs (`A`) and cubic Béziers (`C`), plus the
+connectors a ring needs where it has no drawn boundary: `border` edges along
+the canvas edge and `gap` edges between a terminus end and its cut (each gap
+is a warning in `trace.json`). Two adjacent faces meet along one stored edge,
+so neighbouring colours share their boundary bit for bit and meet edge to edge;
+no stacking order changes which colour a point gets. Where two regions of one
+colour touch only at a pixel corner, t3's pinch assignment draws them as one
+face or as two; the cutter cleanup, which runs on the labels before the trace,
+still treats them as separate four-connected regions.
 
-Each final palette colour becomes a named Inkscape layer. Disconnected regions
-remain separately selectable paths, numbered largest-first with stable names.
-Holes are real holes represented by compound paths, not white cover shapes,
-masks, or clipping paths.
-
-Every interface between two colours is extracted into a global planar boundary
-graph. Pair-specific Lab costs place interfaces at subpixel equal-cost
-crossings. The graph retains every dense sample as evidence and performs no
-geometric simplification; protected evidence is metadata, never a request to
-preserve a pixel staircase. A multi-scale modeller classifies sustained
-straight runs, continuously turning curves, and corners: direction jumps
-between two smooth sides, straight or curved. Each canonical interface is fitted once, and its neighbour
-consumes the exact reverse of that line/Bézier sequence.
-
-The graph's chains are the colour interfaces split only where they must be. A
-chain is a maximal run of one colour pair's pixel edges whose interior
-vertices all have pair degree two (exactly two of that pair's edges meet
-there): it runs from a vertex of other pair degree to the next, or it is a
-ring of degree-two vertices. Pair degree is not two where the interface ends
-at a third colour or the image edge (degree one) and where two regions of one
-colour touch only at a corner (degree four). The chains are the same whichever
-edge the walk seeds a chain at, so an interface is never split at an arbitrary
-degree-two vertex. Every chain end carries an anchor: a **junction anchor**
-where three or more colours meet, else an **endpoint anchor** (the image edge,
-a corner contact). A loop that leaves a
-vertex of degree four and returns to it is closed but carries one anchor
-there, its two ends; a ring of degree-two vertices carries none.
-
-The two SVG variants are:
-
-- `traced-overlap.svg`: lower layers may extend beneath upper layers by a
-  configured overlap distance.
-- `traced-edge.svg`: boolean subtraction derives final edge-to-edge cut shapes
-  from the ordered overlap geometry. Shared edges therefore come from the same
-  construction rather than independently fitted curves.
-
-An overlap of zero means colours meet on exactly shared geometry. A positive
-overlap extends lower layers beneath upper layers by that distance. The default
-is zero. The setting is configurable.
+`traced-edge.svg` is the one SVG a trace writes, exported from `map.json`
+([The trace stage: t3](#the-trace-stage-t3)). Each included palette colour
+becomes a named Inkscape layer and each of its faces one separately selectable
+path, numbered largest-first with stable names. Holes are real holes, the
+face's hole rings in its own even-odd compound path, never white cover shapes,
+masks or clipping paths. The omitted colour's faces are holes in the faces
+around them.
 
 The canvas tightly matches the cropped artwork, with no automatic outer margin.
 SVG fills use the exact palette RGB values. Cut paths have no cosmetic stroke;
@@ -181,30 +150,19 @@ cut geometry.
 
 Every traced path carries `sodipodi:nodetypes` (namespace
 `http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd`, declared on the root), so
-Inkscape's node tool shows the same node types Vinylgen reports. Terms follow
-[GLOSSARY.md](../GLOSSARY.md) "Path nodes". `vinylgen/node_types.py` classifies
-each node from the path data exactly as written (absolute `M`, `L`, `C`, `Z`);
-the SVG writer (`svg_writer.add_layer`) applies it to both variants.
+Inkscape's node tool shows the node types Vinylgen reports. The string is t3's
+(`t3api.planar_map_paths`), one character per node of Inkscape 1.2.2's node
+tool; an `A` counts as the cubics Inkscape converts it to, with `s` at its inner
+nodes. Terms follow [GLOSSARY.md](../GLOSSARY.md) "Path nodes".
 
-| Character | Vinylgen term | Inkscape name | Rule |
+| Character | Vinylgen term | Inkscape name | Where t3 writes it |
 |---|---|---|---|
-| `c` | cusp node | cusp | The two tangent directions are more than **0.5°** from 180° apart; or both sides are straight lines (always, even when collinear); or the node is a junction anchor, where three or more colours meet, or an endpoint anchor, where a chain ends with fewer than three colours: at the image edge, a corner contact, or in the live preview a crop edge (always). |
-| `s` | symmetric node | smooth | The tangent directions are at 180° within 0.5°, and the handle lengths differ by more than 1%, or one side is a straight line. A line has no handle, so a line next to a collinear curve is `s`, never `z`. |
-| `z` | smooth node | symmetric | Both sides are cubics, the tangents are at 180° within 0.5°, and the handle lengths are equal within **1%** of the longer handle. Two zero-length handles are `s`. |
+| `c` | cusp node | cusp | A corner, and every end of an open edge: a junction cut, a chain end, the canvas border or a gap. |
+| `s` | symmetric node | smooth | A tangent join between two pieces, and the inner nodes of an arc. |
 
-A line's direction is its tangent. A zero-length cubic handle falls back to the
-direction toward that cubic's next control point, then its far end point.
-Junction and endpoint anchors are matched by their written coordinate text
-(`node_types.cusp_anchor_keys`).
-
-The string follows Inkscape's layout (`PathManipulator::_createTypeString`):
-one character per node of each subpath in order. A subpath's nodes are its start
-and each segment's end, except that a closed subpath's last segment ends on the
-start node rather than adding one; when the last explicit segment ends away from
-the start, the implicit closing line is that last segment. A closed subpath
-then repeats its start node's character at the end, and the start node is
-classified from its closing join. A subpath with no segments has no characters.
-Rendering ignores the attribute.
+t3 writes no `z` (Inkscape's symmetric, Vinylgen's smooth node): its smooth
+joins are tangent joins, not equal-handle ones. Rendering ignores the
+attribute.
 
 ## Palette names and optional colour removal
 
@@ -259,8 +217,8 @@ The cleanup's physical settings are `min_detail_width`, `remove_below_width`
 they are millimetres and square millimetres, converted to pixels through the
 physical scale; without physical dimensions they are pixels and square pixels.
 
-**Retired trace settings.** The old fitter's settings are retired
-(`RETIRED_TRACE_FIELDS`): its eight lengths (`curve_fit_tolerance`,
+**Retired trace settings.** Settings no trace reads are retired
+(`RETIRED_TRACE_FIELDS`): eight lengths (`curve_fit_tolerance`,
 `straight_line_max_deviation`, `minimum_straight_length`, `max_deviation`,
 `corner_analysis_span`, `side_smoothness`, `corner_sharpening_allowance`,
 `curve_feature_scale`), their unit `length_unit`, the corner, node and snap
@@ -277,9 +235,8 @@ it used.
 
 ## Cutter cleanup (raster labels)
 
-Physical/detail cleanup is its own stage between editing and tracing, before
-shared-boundary construction and curve fitting. In the web workflow it writes a
-`cleanup` revision with cleaned labels and a derived `flattened.png`, so its
+Physical/detail cleanup is its own stage between editing and tracing. In the
+web workflow it writes a `cleanup` revision with cleaned labels and a derived `flattened.png`, so its
 cost is paid once and every trace of that revision's boundaries depends only
 on the cleaned raster. A cleanup always starts from the raster before any
 earlier cleanup, so cleanups never stack. After a flatten or edit that follows
@@ -471,10 +428,10 @@ measurements. While the revision
 shows a cleaned raster its labels are held beside the uncleaned one, 2 more bytes
 per pixel (about 50 MB on `sourceup`, 180 MB on 11264 × 7920), loaded before the
 windowed clean and dropped as soon as a previewed revision shows the uncleaned
-raster itself. Alternating
-between the Cleanup and Trace canvases with both previews on therefore reloads
-each time, and each return to Cleanup measures the whole raster again (about
-6.4 s on `sourceup`, 22 s on 11264 × 7920) before its first preview appears.
+raster itself. Previewing
+another revision therefore reloads, and each return to a revision measures the
+whole raster again (about 6.4 s on `sourceup`, 22 s on 11264 × 7920) before its
+first preview appears.
 
 So that the wait is explained, the server reports the measuring at
 `GET /api/revisions/{id}/cleanup-preview/regions` as `{"measured", "measuring"}`:
@@ -495,549 +452,43 @@ the shown cleanup's own settings, nothing is measured and the badge keeps
 
 ## Trace accuracy and complexity
 
-This section and its subsections describe the old shared-boundary fitter
-([Geometry model](#geometry-model)), which draws no trace; its settings are
-retired from the trace ([Retired trace settings](#size-units-and-cropping))
-and are the fitter's own parameters only.
+t3 traces the cleaned labels at its one setting, `t3api.SETTING` (tube width
+w 3.5 px, A1 22.5, A2 45, L 4); no vinylgen setting changes the geometry. Its
+corners, joins, node placement and piece kinds are t3's, decided from the
+labels alone, and its design and proofs live in the tracer repository. What a
+trace holds vinylgen to:
 
-Maximum contour deviation (`max_deviation`) is configurable in thousandths of
-the traced image's longer side. Its automatic value is 1‰ (2 px on a 2000 px
-image) in both pixel and physical mode, and `trace.json` records it and the
-pixels it resolved to. It does two things, and is the default of a third
-setting:
-
-- It caps both fit bounds: curve fitting uses `min(curve_fit_tolerance,
-  max_deviation)` and straightening `min(straight_line_max_deviation,
-  max_deviation)`, so only a value below one of them changes the fit
-  (tighter, more nodes).
-- It is the threshold of the post-fit semantic audit. Lower values flag more
-  features as drifting and trigger local recovery of explicitly protected
-  details sooner; higher values relax the audit.
-- The corner sharpening allowance follows it unless set
-  (`corner_sharpening_allowance`, [Corner detection](#corner-detection)), so by
-  default a sharpened corner lies no further from the drawn edge than the
-  audit allows. The allowance is independent: setting it leaves the fit and
-  the audit alone.
-
-
-The default curve-fit tolerance is 0.75‰, 1.5 px on a 2000 px image. There it
-clears the half-pixel sampling error of a one-pixel staircase, allowing it to
-collapse into a broad Bézier while staying inside the 2 px maximum-deviation
-audit. Pixel figures in the rest of this section are at the pixel-era defaults.
-
-Straightening is controlled by `straight_line_max_deviation` (default 0.8‰,
-no upper limit, capped at `max_deviation`). A run between two nodes becomes one
-straight segment, its chord, when that chord is at least
-`minimum_straight_length` long and every sample of the run lies within the
-capped deviation of the chord as a segment (a sample beyond either end counts
-its distance to that end). The test is on the chord because the chord is what
-is written: a bowed run can lie within the deviation of its best-fit line while
-its chord misses the middle by twice as much, and a run that folds back on
-itself, such as a whole hairline ring from its seam round to it again, lies
-along one line but is not one segment. Every other run is fitted within the
-curve-fit tolerance. Higher values straighten
-more. At 0 the straight-line shortcut applies only to exactly straight runs,
-but the curve fitter may still emit a line for a piece that bows less than the
-curve-fit tolerance, because a line within tolerance is a valid fit (at the
-1.5 px default, a 40 px arc with a 1 px bow becomes one line). Lower the
-curve-fit tolerance to keep such gentle bows as curves.
-
-**What the fit guarantees at each sample.** Distances are to the path as
-written, after corner sharpening, straight-line snapping and every node move:
-
-- A straight run (a run that passed the straight-line test above, or a line
-  the fitter found inside a curve run and snapped): every sample it replaces
-  lies within `min(straight_line_max_deviation, max_deviation)` of its
-  segment.
-- Every other piece, including an unsnapped line inside a curve run: every
-  sample lies within `min(curve_fit_tolerance, max_deviation)` of it.
-- A confirmed corner's own sample lies within `corner_sharpening_allowance` of
-  the corner node, wherever the node ended up (the detector's cusp, or a snap's
-  intersection). The allowance may exceed `max_deviation`, and then that one
-  sample may lie further than `max_deviation` from the path; its neighbours
-  may not: the lines and curves on either side hold every other sample to
-  their own bounds above, measured from the moved node.
-- Junctions, chain ends, recovery constraints and other forced nodes never
-  move, so the path passes through their samples.
-
-So with the allowance at or below `max_deviation` (its default), no sample lies
-further than `max_deviation` from the path. Local recovery only tightens these
-bounds, and a final dense fallback passes through every sample.
-
-Corner detection has its own smoothness limit, `side_smoothness` (‰, formerly
-`corner_straightness`). A hard corner needs a smooth side on each side of it,
-each within this distance of its best-fit circular arc (a straight line
-included) and at least `minimum_straight_length` long ([Corner
-detection](#corner-detection)). Lower values confirm corners only between clean
-sides; higher values let rougher sides form sharp corners. It is independent of
-`straight_line_max_deviation`, so lowering the deviation does not soften
-corners. When omitted (`null` or absent) it resolves, once, at settings
-construction, to the straight-line deviation, which reproduces the corners of
-stored settings that lack the field; `trace.json` records the resolved value.
-Consequently a CLI run or config that sets `straight_line_max_deviation` to 0
-without `side_smoothness` also disables most corner detection; pass
-`--side-smoothness` (for example 0.8) to keep corners. The web client default
-is 0.8‰, and it loads stored settings that lack the field with their recorded
-straight-line deviation. Local recovery halves it together with the
-straight-line deviation at the reclassification stage.
-
-The cleaned flattened raster is authoritative. A surviving explicitly
-protected feature is recovered locally and in a fixed order: tighten its curve
-fit, reconsider its line/curve classification, add one non-corner fit
-constraint (a corner there stays on its sample), and finally emit the dense
-boundary only when every modelled form still fails validation. Every attempt and final fallback is recorded. Both
-adjacent colours reuse the same recovered chain. `trace-fallbacks.png` is
-emitted only for final dense fallbacks, together with its transparent RGBA
-twin `trace-fallbacks-overlay.png` (the tightened chains only, on the traced
-pixel grid; see [files and outputs](files-and-outputs.md)).
-
-Straight classification has its own maximum residual and minimum sustained-run
-length; it is independent of Bézier tolerance. Corner classification uses a
-configurable analysis scale (`corner_analysis_span`, 4‰ by default, 8 px on a
-2000 px image). It is relative to the traced image, never to the physical
-size. Direction is measured across that wider neighbourhood rather than from
-individual incident segments, so pixel staircases are treated as sampled
-diagonals or curves while sustained corners remain sharp.
-
-### Corner detection
-
-The corner detector (`_geometric_corners`) is the only source of cusp nodes
-other than junctions. A corner is a direction jump between two smooth sides,
-straight or curved, so a crescent's tip, a leaf's point, a gothic arch's apex
-and a heart's notch are corners as well as a building's. Whether a turn is a
-cusp or a symmetric node depends on how soon the drawn edge leaves the two side
-lines at the corner, never on the size of the turn alone: a 20° vertex between
-two long straight sides is a corner, and a 90° bend that leaves its sides well
-before the corner is a round. A sample is a corner when all of these hold
-(`_corner_candidates`):
-
-- **Smooth sides past the tip, at two scales.** Each side window starts past
-  the **tip skip** (2.41 corner sharpening allowances of arc, below) and runs
-  `corner_analysis_span` (the span) further, and again 1.75 times the span
-  further. Each window is fitted with a circular arc (Taubin's algebraic circle
-  fit, closed form; a straight line is the arc of infinite radius) and must be
-  at least `minimum_straight_length` long, within `side_smoothness` of its arc,
-  and turn by at most 90 degrees along it. The arc is used only when it fits at
-  least 20% closer than the side's straight line and has five or more samples:
-  a pixel staircase's zigzag is about as far from any arc as from its line, so
-  a curvature fitted to it is noise. A span-scale side that fails (it runs
-  round another feature, such as the floor of a narrow slot) is judged on its
-  nearest `minimum_straight_length` past the tip instead.
-- **The turn exceeds the sides' direction noise.** Each long side's direction
-  is uncertain by `u = atan2(e, L)`: `L` is its window's chord and `e` the
-  larger of its own fit error and the staircase quantisation √2/2 px (a
-  pixel-edge sample lies within that of the true boundary). The angle between
-  the two arcs' forward tangents where they meet (their intersection nearest
-  the sample) must reach `K (u_a + u_b)` at both scales, `K` =
-  `_CORNER_NOISE_RATIO` = 2, set by measurement on the synthetic corpus (every
-  size, both tiers: the ratio with the best corner F1 that adds no cusp to
-  smooth truth or to rounds that must stay round). Between two straight sides
-  of the long window (14 px at the pixel-era lengths) that is about 12°.
-- **Two arcs, not one.** One arc fitted through both long sides and the tip
-  misses by more than 1.5 times the worse side's own error plus 0.3 px. A
-  circle's two sides are one arc, so a circle has no corner however tight
-  (radius 3 to 100 px, at every image size); nor has a pixel staircase or a
-  gentle curve. At a shallow turn this test, not the noise, can decide: at the
-  pixel-era lengths one arc through a 20° or 34° vertex's staircase sides can
-  miss by only about 1 px, within 1.5 times their 0.6 px error plus 0.3 px, so
-  such a vertex stays a symmetric node. Without this test, noise in each side's
-  fitted curvature, carried across the tip, gave half-pixel-snapped and
-  rasterised circles corners at every image size.
-- **The cusp.** The long-scale arcs' meeting point is the corner node, and it
-  must lie within `corner_sharpening_allowance` of the sample (‰, default the
-  maximum deviation, independent of it). The long scale is used because its
-  arcs are the steadier estimate and reach furthest past a round.
-- **The sides reach the corner.** A round of radius r turning by T lies
-  r(sec(T/2) − 1) from its sharp point and has its tangent points r tan(T/2)
-  from it, so its tangent points lie within the tip skip exactly when its sharp
-  point lies within `skip tan(T/4)` of it. The cusp's distance from the sample,
-  less the long sides' larger `e`, must be at most that.
-- **The turn is the same at both scales.** The long-scale turn may exceed 1.2
-  times the span-scale turn by at most the long sides' direction noise
-  `u_a + u_b`, and the span-scale turn may not exceed 1.2 times the long-scale
-  turn (`_SCALE_TURN_RATIO`): a curve that tightens into a round (an ellipse's
-  end) turns further the further its sides reach, however well arcs fit each
-  side, and where a line meets an arc a short window reads the arc's chord as a
-  turn a longer one does not.
-
-**Rounded corners.** A round is sharpened into a cusp only when both of its
-bounds hold: its sharp point lies within the allowance of its arc, and its
-tangent points, `r tan(turn / 2)` from the sharp point, lie within the tip skip
-(2.41 allowances). A 90-degree round of radius r lies r(√2 − 1) from its sharp
-point, so at 90 degrees both bounds admit rounds up to (1 + √2), about 2.41,
-allowances in radius. At a shallower turn the tip-skip bound governs: a
-30-degree round of 20 allowances has its sharp point 0.7 allowances from its
-arc, within the allowance, but its tangent points 5.4 allowances out, so it
-stays round. The cusp's distance is read less the sides' error (at least the
-√2/2 px staircase quantisation), so where the allowance is itself about a
-pixel such a round is within the noise of a corner and may sharpen; with a 4 px
-allowance a 30-degree round of radius 80 px stays round and one of 20 px
-sharpens. The side windows start at the tip skip, past a sharpenable round's
-tangent points (0.79 r of arc from its middle at 90 degrees), so the smoothness
-and turn tests never veto a round the bounds would snap. A larger round stays
-round: its sides stay straight, the curve begins at symmetric nodes, and no
-cusp is placed.
-
-Neighbouring candidates of one physical corner are suppressed by arc length:
-two candidates are one corner within half the span of arc, or when their cusps
-lie within half the span (or the allowance) of each other and their samples
-within half the span plus twice the allowance of arc (on sparse samples, such
-as a polygon's vertices or a buffered overlap ring, both samples beside one
-corner propose it). The candidate nearest its cusp wins (the apex, or the
-middle of a round), then the smoother sides, then the stronger turn. A sample
-on a side near a corner, whose long window runs past that corner, sees only
-part of its turn: where two candidates' windows run past each other, the one
-with the smaller long-scale turn waits for the next round, and a candidate whose
-window runs past a corner already confirmed waits too; in the next round that
-corner is a stop that cuts its window.
-
-**Short edges between corners.** Corners are confirmed in rounds. A side
-window stops at a neighbouring confirmed corner, and at a *provisional*
-corner: a sample that turns between two straight runs
-`minimum_straight_length` long by at least `K` times the runs' summed direction
-noise (the shortest-edge form of the test, each run's `L` its extent, ranked by
-straightness). A neighbour closer than `minimum_straight_length` is the same
-corner, not a stop. A window cut short keeps the last
-`minimum_straight_length` before the stop, starting nearer than the tip skip
-when it must, so the short edge up to that stop is the side at both scales;
-it counts when it is at least `minimum_straight_length` long and within
-`side_smoothness`. A candidate whose two sides both stop at provisional
-corners stands only if both of those are candidates too (within half the span
-of arc, or the next sample): a small polygon's corners support each other; a
-tight curve proposes provisional corners all round, but its noise-level passes
-do not. Rounds repeat, re-testing the samples whose windows reach a new stop,
-until no corner is added. So an H-shaped region, a rectangular notch, or a bar
-end with an edge of 4 px (the pixel-era minimum straight length) or more gets
-separate 90° corners instead of a U, and an edge under 4 px still rounds off.
-Two corners closer than that are one corner: a 2 px notch's two mouth corners
-are one.
-
-At the pixel-era lengths squares and triangles to hexagons keep every corner,
-and so do regular polygons of 8 to 18 sides (45° to 20° turns) whose sides are
-28 px or longer.
-
-A closed interface (an island ring) is analysed as a ring: the side windows
-run across its seam, so a corner at the seam is found like any other.
-
-**Limits.** On a pixel-edge ring (the staircase outline of a mask, before
-sub-pixel boundary evidence) a thin tip is blunted by whole pixels, so its
-sharp point may lie beyond a 1 to 2 px allowance and it stays round; and a
-round within about a pixel of the allowance limit may go either way.
-
-### Joins: only corners and junctions are cusps
-
-Terms follow [GLOSSARY.md](../GLOSSARY.md) "Path nodes"; how the written SVG
-labels each node is in [Path node types](#path-node-types).
-
-A node is a **cusp node** only at a confirmed corner, at a junction anchor
-(three or more colours meet), at a chain end (a closed chain's anchor
-included), or where two crossing-repair lines meet (see
-[No path crosses itself](#no-path-crosses-itself)). Every other node is a **symmetric node**
-whatever its local angle: recursive split points, joins between classified
-runs, forced nodes and ring seams. Both sides share one tangent direction;
-handle lengths are fitted independently, so they are not forced equal.
-
-- The chain is split at its corners and junctions into runs fitted with free
-  end tangents. An open chain's two ends are where the chain ends; the chain
-  that continues from there is fitted on its own. Where a chain ends at the
-  image edge (an endpoint anchor), the frame cuts the shape, so that node is a
-  real corner of the cut outline even though no detector confirmed it; where
-  it ends at a corner contact (an endpoint anchor where two regions of one
-  colour touch only at a corner), the outline turns there to pass the contact.
-- A recovery fit constraint (and any other anchor inside a chain) is a
-  **forced symmetric node**: the fit passes through it and both sides share
-  one tangent there. Protected-feature recovery does not need a free tangent
-  at the constraint: the constraint's job is to pin the fit to a sample near
-  the lost feature, which a symmetric node does; on `sourceup`, the only
-  corpus image that needs recovery, the outcome is the same with symmetric
-  and with free-tangent constraints.
-- A closed chain's anchor, where the loop leaves a corner contact or junction
-  and returns to it, is a cusp: those are the chain's two ends. A closed chain
-  with a corner, junction or anchor is fitted from its first one round
-  to it again, so its path starts there. One with none is fitted as a ring from
-  its first forced node (else its canonical first sample), and that seam is a
-  symmetric node like any other.
-- A straight run meeting a curve gives the node its direction: the line stays
-  straight and the curve's handle continues it. Two straight runs never meet
-  at a symmetric node (a node between two lines is always a cusp), so two
-  straight runs meeting anywhere but a corner or junction are refitted as one
-  curve run across the join. A crossing-repair line is never refitted: the
-  run beside it is the curve, and two repair lines meeting stay lines.
-- Between two curves at a forced node or ring seam the tangent is the
-  total-least-squares direction of the samples within half the analysis span
-  on both sides of the node. Nodes inside a curve run are placed at chosen
-  candidate points with their own tangents ([Node placement](#node-placement)).
-
-The fitter first runs the unconstrained line/cubic split to find straight
-pieces at least `minimum_straight_length` long; everything else is fitted as
-curve runs whose nodes are placed as described in [Node placement](#node-placement).
-A straight run whose neighbouring curve would have to turn back to leave or
-reach it along its direction (a sharp turn the detector did not confirm)
-becomes part of the curve run instead. Only a run with two free ends may become
-a line. Every piece meets `min(curve_fit_tolerance, max_deviation)` at its
-samples; constraints add nodes, never looseness. Classified corners remain
-unrounded.
-
-### Node placement
-
-Nodes inside a curve run go where a person drawing the path would put them,
-and as few as the tolerance allows (`_place_nodes_nb` in
-`vinylgen/curve_fit.py`).
-
-**Candidates.** The run's samples are smoothed with Gaussian weights over arc
-length, standard deviation half of `curve_feature_scale` (default 2‰, 4 px on
-a 2000 px image),
-truncated at the scale on each side (the window may reach past the run but
-never past a cusp). On the smoothed curve:
-
-- **Axis extremes**: extrema of the smoothed x and y that rise at least
-  `max(0.5 px, curve_feature_scale / 8)` above the curve on both sides before a
-  more extreme point (persistence prominence). The node's tangent is exactly vertical (an x extreme) or
-  horizontal (a y extreme).
-- **Inflections**: extrema of the smoothed tangent angle whose lobes each turn
-  by at least 10 degrees. The tangent is the total-least-squares direction of
-  the raw samples within the feature scale.
-- **Points of tightest bend** (with `nodes_at_bends`, default on): curvature
-  peaks (curvature measured over half the scale) rising at least
-  `1 / (4 * curve_feature_scale)` per px above the gentlest curvature on either
-  side. The tangent is the smoothed tangent.
-- The run's two ends with their given tangents (free at a cusp).
-
-An inflection or bend is *significant* when it also stands out by
-`max(0.5 px, tolerance / 2)`: each lobe of an inflection bulges that far from
-its chord, and a bend's region (between the gentlest curvature on either side)
-bulges that far and turns by at least 20 degrees. The others are *minor*: the
-ripple of a pixel staircase (a few tenths of a pixel high, 10 to 20 px long)
-still marks where the boundary changes direction, and on long gentle edges
-those positions let a route span the edge in far fewer pieces than fallback
-splits (dropping them cost 3 to 4% more nodes on the corpus). Minor candidates
-rank below significant ones in ties. No candidates are evenly spaced.
-
-**Pieces.** Every candidate has a fixed tangent, so the cubic between any two
-is fitted on its own: handle lengths by least squares at chord-length sample
-parameters, refitted at up to four Newton-improved parameterisations when it
-misses the tolerance by less than 4 times. Handles stay between a tenth of the
-chord and the chord, inside the padded sample box (the samples' box grown by
-`max(tolerance, min(¼ of its extent, ¼ of the analysis scale))`), and **inside their tangent
-triangle**: where both tangents turn the same way (a C-shaped piece) each handle
-is at most as long as its ray to where the two tangent rays meet, and tangents
-turning by 180 degrees or more (parallel rays or an apex behind a node) cannot
-be one piece. So a circle gets four nodes at its axis extremes, not two. The
-triangle rule costs about 0.7% more nodes on the corpus. A piece is acceptable
-when every sample is within the tolerance and it never turns back along its
-chord; a piece between two adjacent samples is always acceptable (it has no
-interior sample to split at): its handles are shortened so it bows at most half
-the tolerance from its chord, and when a node's tangent opposes its chord it
-doubles back by a fraction of a pixel (such a piece counts as a handle defect,
-so routes avoid it). A two-free-end run straight within the tolerance
-is one line. "Straight within the tolerance" is measured to the chord as a
-segment: a sample beyond either end counts its distance to that end, so a run
-that folds back is never taken for a line through its chord.
-
-**Selection.** A shortest path over the acceptable pieces gives the fewest
-segments. Ties go, in order, to fewer handle defects (handles held at one of
-the bounds above, or crossing handle legs), then to preferred node kinds, then
-to the smaller summed error. `node_placement` sets the kinds:
-
-| `node_placement` | UI label | Rule |
-|---|---|---|
-| `prefer_extremes` (default) | Fewest nodes, prefer extremes | Ties prefer axis extremes, then inflections, then bends, then minor candidates, then fallback splits. Extremes are preferred, not required. |
-| `at_extremes` | Always at extremes | As above, and no piece may skip an axis extreme: every extreme is a node, even when that adds nodes. |
-| `fewest` | Fewest nodes only | No kind preference in ties, and the split points of the worst-sample recursion over the whole run are extra candidates. |
-
-For speed, the search tries the pieces ending at a candidate from the nearest
-start backwards, and stops after 6 consecutive starts that miss by more than
-3 times the tolerance (on the corpus this changes 4 of 61 000 nodes against a
-full search); a pair whose samples' smoothed tangent turns by more than 270
-degrees between them is not tried (a chord-monotone piece cannot follow such a
-turn); Newton refits run only for near misses that could still tie or beat the
-best route found.
-
-**Fallback.** Only where no route of candidates spans a stretch: the gap after
-the furthest reachable candidate gets the split points of the worst-sample
-recursion across it (split at the worst-fitting sample, tangent chosen as
-below, until each part is an acceptable piece), and the path is recomputed with
-them. Those pieces always form a route, so accuracy never loosens, and the
-search always keeps them, whatever its speed limits above would skip: on a
-ring narrower than the tolerance (a hairline sliver, a loop a few pixels
-round) the smoothed tangent can turn by more than a full circle between
-samples that one piece fits. Each fallback therefore makes a later sample
-reachable, so the search ends after at most one fallback per sample. A split
-point's tangent starts as the total-least-squares direction within half the
-analysis span; the direction within a quarter span and the chord of the two
-neighbouring samples are also tried, a golden-section search within 20
-degrees of the best refines it, and the tangent kept is the one whose worse
-half has the smaller maximum sample error.
-
-**Ring seams.** A closed chain without corners, junctions or forced nodes is
-fitted once from its canonical first sample, then again from the most natural
-node that fit placed (an axis extreme, else a line join, an inflection, a
-bend, then any node; the earliest such sample) with that node's tangent at the
-seam; the refit is kept unless it has more pieces. So an isolated island's
-seam is not an arbitrary extra node.
-
-**Straight lines** (`straight_line_snap`, `snap_angle`). With `axis` (default,
-"Horizontal & vertical") or `axis_diagonal` ("Also 45°"), a straight line whose
-direction is within `snap_angle` degrees (default 2, 0.5 to 10) of an allowed
-direction becomes exactly horizontal, vertical or diagonal. `off` keeps the
-measured angle. A snap never moves a line further than
-`min(straight_line_max_deviation, max_deviation)`: every sample of the run
-must lie within it of the snapped segment as written, between its end nodes
-where they end up, or the line keeps its angle. Positions stay shared:
-
-- Junctions, chain ends (including image-edge endpoints), recovery fit
-  constraints and other forced nodes never move. A line touching one passes
-  through it; a line between two of them snaps only if they already lie on one
-  exact line.
-- A line with no fixed end passes through the mean of its samples.
-- Confirmed corners may move: a corner between two snapped lines moves to their
-  intersection, and one beside a single snapped line moves onto it (its
-  nearest point). It must stay within the corner sharpening allowance of its
-  sample (as for the detector), and an unsnapped straight neighbour's chord,
-  redrawn to the moved corner, must keep its samples within the capped
-  straight-line deviation; otherwise the snap furthest from its direction is dropped and the
-  rest re-solved. Two parallel snapped lines cannot share a corner.
-- A straight run inside a curve run (between two curve joins) moves its joins
-  onto the snapped line; the neighbouring curves then start there with the
-  line's exact direction, so the joins stay symmetric. A run that ends at the
-  section's end keeps that end fixed.
-
-Each chain is fitted once and both colours use that fit, so a snapped line is
-identical in both. `ChainFit.corners` records where each corner node ended up.
-Only straight runs snap; a short piece that is a line only because its chord is
-within the curve tolerance does not.
-
-Path coordinates are written with 10 significant digits, so a symmetric node's
-two handles stay collinear within the 0.5° that `sodipodi:nodetypes` allows
-after rounding.
-
-Node-count limits are initially soft limits. Accuracy takes precedence over an
-arbitrary node budget; excessive per-path, per-layer, or whole-document counts
-produce warnings rather than additional lossy simplification: one per path
-over `soft_path_nodes` naming its id, one per layer over `soft_layer_nodes`
-naming it, and one for a document over `soft_document_nodes` (see "Audit
-report").
-
-The implemented backend uses the persisted segmentation confidence to construct
-one shared sub-pixel boundary graph, then emits deterministic line and cubic
-Bezier sections. Independent per-colour bitmap tracing is not part of the
-pipeline because it cannot guarantee identical shared interfaces.
-
-### No path crosses itself
-
-No traced path crosses itself. Neither its outline nor its holes cross, touch
-inside a segment, or run along one another, and no path does so with another
-path. Paths meet only at a vertex both carry exactly: consecutive segments,
-chain ends at a junction or endpoint anchor, and touches, where a region meets
-itself or another at a corner contact without crossing there. This holds for
-both SVG variants and the overlap buffer; solid-underlayer
-outlines are the exception described below.
-
-Every path is assembled from fitted pieces: the shared chains, or in the
-overlap buffer each ring fitted on its own. After fitting,
-`vinylgen/path_crossings.py` tests the pieces together on the true curves, with
-no sampling. Each pair of primitives whose control boxes overlap is subdivided
-while the boxes of its parts still overlap (a curve lies in its control hull);
-near a vertex both primitives carry, the parts there are cleared once the
-cones their control points span from the vertex are disjoint. Parts still in
-contact at 1e-7 px are a contact, so a crossing is found however shallow. Each
-cubic's own loop is solved in closed form. Pieces visiting one vertex cross
-there when their tangents interleave around it. The overlap buffer's rings are
-first noded: where a valid polygon's ring touches another inside a segment,
-that vertex is inserted into the segment.
-
-A piece in an illegal contact is repaired locally and refitted, one pass at a
-time, until no contact remains (`_repair_crossings` in `curve_fit.py`). A
-contact is repaired in one of two ways:
-
-- **Pinning.** A contact on a primitive that spans unpinned samples pins the
-  fit (fit constraints) to samples there: round 1 to the sample nearest the
-  contact among those the contacting primitives span, and round `r` to that
-  sample and the `2^(r-2)` samples either side, counted along the chain. A
-  pinned sample is a forced symmetric node like any other: the fit passes
-  through it and both sides share one tangent there. A corner at a pinned
-  sample stays on its sample rather than moving to where its sides meet. A
-  round that pins nothing new widens until it does.
-- **Steps.** A contact on a primitive between two consecutive pinned samples
-  (a step, which pinning cannot change) first makes the step **tight**: the
-  same end tangents, the joins' shared tangents, with both handles
-  `_MIN_HANDLE` (a tenth) of the chord, the shortest handles the fitter
-  allows, so the curve hugs the chord. A tight step still in contact becomes a
-  **repair line**, the dense boundary step itself. A repair line is never
-  refitted as a curve, and the curve beside it takes its direction, as at any
-  line join, so its ends stay symmetric. Of two neighbouring steps only one
-  becomes a line per pass; the other is refitted beside the new line first.
-
-Where two repair lines meet, the node is a cusp: the one exception to the join
-rule ([Joins](#joins-only-corners-and-junctions-are-cusps)). Each pass pins a
-new sample or makes a new step tight or a line. A piece whose every sample is
-pinned and every step a line is its dense samples, and a piece with interior
-samples that ends so is reported as a dense fallback (`trace-fallbacks.png`;
-a warning for an overlap-buffer ring).
-
-The piece keeps its settings; nothing is tightened along the whole chain.
-Pinning refits the runs between the corners or anchors on either side of the
-pinned sample, and a closed ring without corners or anchors is refitted from
-its first pinned sample; every other run, and every piece not in a contact,
-keeps its fit. Both colours use
-the one repaired chain. The dense samples come from the planar boundary graph
-(in the overlap buffer, the noded rings of one valid polygon), so they cannot
-cross and the repair ends; dense samples that did cross would stop the trace
-with an error rather than emit a crossing path. After the first pass only the
-pieces the last pass repaired are checked, since a contact between two
-untouched pieces would already have been found.
-
-Before this repair, 10 to 35% of the corpus paths crossed themselves, mostly as
-small hooks where a fitted run turns back at a moved corner or chain end, and
-as near-collinear lines leaving a junction on either side of a one-pixel
-feature. With it, on the nine subjects, the repair takes at most nine passes
-and no chain falls back dense; 15 to 230 chains per subject are repaired, 3 to
-84 steps become repair lines, and 0 to 53 nodes per subject join two repair
-lines at an angle (the cusps above); every other node of a repaired chain is
-symmetric. On the 5980 x 4208 `sourceup`, where 35% of paths crossed
-themselves, 661 of 2522 chains are repaired, with 234 repair lines, 45 cusps
-where two meet, and no dense fallback. Independent checks of the
-emitted SVGs (the true curves densely sampled, then GEOS validity and noding)
-find no crossing.
-
-The repair also keeps raster detail that crossing fits used to swallow. On the
-synthetic corpus, one-pixel features that a crossing fit dropped are drawn again
-(a 1 px bar's 39 missing regions become 0), and small regions the palette stage
-leaves at noisy edges and anti-aliased junctions now trace as the separate
-pieces the label map holds. The costs: pinned samples at one-pixel spike tips
-and around those regions add nodes, and the cusps where two repair lines meet;
-and on one-pixel outlines the traced
-features the refit moves sit about half a pixel off more often (on a 1 px disc
-outline at 576 px, 40 of its thin regions fall below the coverage pin, against
-17 before, with the traced dark area 1063 px² against 1091 px² of evidence).
-
-Solid-underlayer outlines are not yet covered. `region_components` walks the
-union outline and replays each chain's fit per run; where the outline leaves a
-chain partway, at an a,b,a,c corner contact the chain passes through without
-an anchor, the run falls back to its straight pixel edges, which can cross the
-neighbouring fitted curves.
+- **The drawing is the planar map.** `map.json` read back passes
+  `t3api.planar_map_check` with no violation and paints, by
+  `t3api.paint_planar_map`, exactly t3's painted labels at every pixel centre;
+  a trace that fails either stops ([The trace stage: t3](#the-trace-stage-t3)).
+- **The drawing stays in the tube.** t3's summary in `trace.json` records its
+  own gates (`over_tube`, `checks_count`) and how far its painted labels differ
+  from the input: `diff_px` counts the centres whose painted label is not the
+  input label. The semantic audit reads the painted labels at t3's tube
+  half-width, 1.75 px, and flags lost or moved features
+  ([Audit report](#audit-report)).
+- **Complexity is reported, never traded for accuracy.** `geometry.edge` counts
+  each layer's paths, Inkscape nodes, pieces by kind and node types. The three
+  soft node limits (`soft_path_nodes` 5,000, `soft_layer_nodes` 50,000,
+  `soft_document_nodes` 200,000) only add a warning naming the path, the layer
+  or the document over its limit; nothing lowers the node count by moving the
+  geometry.
 
 ## Performance
 
-The tracer is built to scale to sources of several tens of megapixels while
-keeping its output a deterministic function of the segmentation and settings.
-Every acceleration below reproduces the reference formulation bit for bit;
-`tests/oracles/` holds frozen copies of the reference implementations and the
-fuzz tests compare against them.
+The trace is a deterministic function of the cleaned labels and the installed
+t3 build. Measured on `fox-owl-table-2`'s cleaned labels (6398 × 2133, four
+colours), t3 traced in 119.5 s on two workers (one performance core's two
+hyperthreads), peak memory about 1.5 GB, drawing 8,348 pieces in 790 faces and
+20,296 Inkscape nodes; a trace takes every CPU the service may use. A cold
+kernel cache adds about 28 to 45 s to the first trace of a build, which
+`just deploy` pays once ([The trace stage: t3](#the-trace-stage-t3)).
 
-- Boundary-graph construction collects grid edges and sub-pixel crossings with
-  vectorised numpy, walks each colour pair's edges into chains with a Numba
-  kernel that replicates the lexicographic tie-breaks of the reference walk,
-  and runs the per-colour and included-face GEOS unions on threads, with the
-  coverage union following once every colour geometry exists.
-- Ring nesting queries an STRtree of representative points with each prepared
-  ring, so containment work is proportional to the nesting depth rather than
-  quadratic in the ring count.
-- Chain fits are cached by canonical geometry and settings in one fitter that
-  persists across the recovery passes; overlap-buffer rings share that cache
-  and the same worker pool as the shared chains.
-- Per-layer overlap buffers and solid-underlayer stacking geometry derive from
-  the fixed partition, so they are built once on threads before recovery.
+The stages around the trace are accelerated without changing a result;
+`tests/oracles/` holds frozen copies of their reference implementations and the
+fast tests compare against them:
+
 - Validation uses a lookup-table sRGB decode, a Numba two-sided ridge kernel,
   one candidate distance field per rendered pass shared by every feature
   metric, and a cache of the protected-feature invariants (labelling,
@@ -1048,12 +499,9 @@ fuzz tests compare against them.
 
 The `traced.png` preview targets 768 DPI, but `vinylgen/preview.py` caps its
 longer side at 1920 px: it is an inspection image, so large sources render at
-roughly 1080p instead of gigapixel size. The same policy sizes the Inkscape
-reimport preview. On the development machine a 5980×4208 source traces in
-roughly 47 seconds and corpus subjects (about 1.5 megapixels) in 8 to 12
-seconds; the Inkscape preview render is under a second of that. Inkscape 1.2.2 does not render very large previews
-deterministically, so byte identity of `traced.png` is only asserted at
-capped sizes.
+roughly 1080p instead of gigapixel size. Inkscape 1.2.2 does not render very
+large previews deterministically, so byte identity of `traced.png` is only
+asserted at capped sizes.
 
 ## Configuration
 
@@ -1137,9 +585,7 @@ Automated checks must cover:
 - Expected named palette layers and exact fill colours.
 - Separately selectable disconnected components in stable largest-first order.
 - Preserved holes using compound paths.
-- No open cut paths, self-intersections (checked and repaired at fit time; see
-  [No path crosses itself](#no-path-crosses-itself)), duplicate paths, or
-  unsupported SVG effects.
+- No open cut paths, duplicate paths, or unsupported SVG effects.
 - The planar map's gate: `t3api.planar_map_check` with no violation, and
   `map.json` read back and painted equal to t3's painted labels at every
   centre (a trace stops with an error otherwise). Shared boundaries are stored

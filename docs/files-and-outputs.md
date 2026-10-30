@@ -147,15 +147,15 @@ path per face (its holes as further rings of the same path) with path data
 `M L A C Z` and t3's `sodipodi:nodetypes` (`c` and `s`), numbered largest first
 by drawn area. The omitted colour is traced like any other and gets no layer.
 The rules are in [SVG tracing specification](svg-tracing-spec.md) "The trace
-stage: t3". Older trace revisions also hold `traced-overlap.svg`, the old
-fitter's overlap variant, and may hold `trace-fallbacks.png` and its
-transparent twin `trace-fallbacks-overlay.png`; a trace no longer writes them,
+stage: t3". Some stored trace revisions also hold `traced-overlap.svg`, an
+overlap variant of the SVG, and may hold `trace-fallbacks.png` and its
+transparent twin `trace-fallbacks-overlay.png`; a trace does not write them,
 and a CLI retrace of a subject folder removes them. SVGs traced before node
 types existed have no `sodipodi:nodetypes`, and the Trace canvas's Nodes
 overlay says so instead of guessing.
 
-`traced.png` is the current preview rendered from `traced-edge.svg` (in
-revisions traced before t3, from `traced-overlap.svg`) and must be regenerated
+`traced.png` is the current preview rendered from `traced-edge.svg` (in a
+revision holding `traced-overlap.svg`, from that file) and must be regenerated
 whenever the SVG changes. It targets 768 DPI, but its longer side is capped at
 1920 px; `trace.json` records the effective preview size under `preview`.
 `trace-semantic-warnings.png` is written only when the semantic feature audit
@@ -185,10 +185,10 @@ validation, warnings (the audit's failure, each changed explicit protected
 component, the soft node limits and any gap connector), and
 `determinism` (`input_sha256` and `map_sha256`, the sha256 of `map.json`).
 The full list is in [SVG tracing specification](svg-tracing-spec.md) "Audit
-report". A `trace.json` written before t3 also carries `lengths`, `topology`,
-`layer_order`, `raster_partition_validation` and the overlap variant's
-geometry and validation, and its `settings` hold the old fitter's settings
-(lengths in thousandths of the traced raster's longer side, or in pixels
+report". The `trace.json` of a revision holding `traced-overlap.svg` also
+carries `lengths`, `topology`, `layer_order`, `raster_partition_validation` and
+the overlap variant's geometry and validation, and its `settings` hold the
+retired trace settings (lengths in thousandths of the traced raster's longer side, or in pixels
 before units); they are retired and read with them dropped (see "Retired
 trace settings" in the specification). `cleanup` holds the
 cleanup summary when the trace CLI cleaned inline, and is `null` when the

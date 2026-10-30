@@ -6,9 +6,9 @@ import numpy as np
 from scipy import ndimage
 
 from vinylgen.colour import srgb_to_lab
-from vinylgen.fidelity.raster import render_rgb
-from vinylgen.fidelity.scene import Region, Scene, circle, ellipse, polygon, wedge
 from vinylgen.ridge import two_sided_dark_ridge_response
+
+from rgb_scene import Region, Scene, circle, ellipse, polygon, wedge, render_rgb
 
 
 def _reference_response(lightness: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

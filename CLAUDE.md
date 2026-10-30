@@ -49,7 +49,7 @@ claimed.
   subject's `traced.png` from `traced-edge.svg` in the same task (a trace
   writes it so), using the preview policy in `vinylgen/preview.py` (768 DPI,
   longer side capped at 1920 px). Never leave `traced.png` stale relative to
-  the SVG. Revisions traced before t3 rendered it from `traced-overlap.svg`.
+  the SVG.
 - Put durable generated results in `outputs/<subject>/`.
 - Use lowercase, hyphenated, descriptive subject names.
 - Keep deterministic guarantees separate from generative or visual judgments.
@@ -91,24 +91,14 @@ python3 svg_trace.py outputs
 # Tests that read real images (images/, outputs/, .tmp baselines) are never part
 # of regression testing; run them only when a full image is genuinely needed.
 .venv/bin/python scripts/run_tests.py --full-image
-
-# Measure trace fidelity on the synthetic ground-truth corpus, or propose tuned
-# trace defaults (proposal only; defaults change through a reviewed commit).
-.venv/bin/python scripts/fidelity_sweep.py --fixed --tier both
-.venv/bin/python scripts/fidelity_tune.py --max-evals 60
 ```
 
-The regression suite's inputs are the synthetic ground-truth corpus under
-`tests/synthetic/` (see [Validation and testing](docs/validation-and-testing.md)).
-The default run traces the gate slice listed in `tests/synthetic/gate-slice.json`;
-the full corpus is in the `--full-image` bucket (`test_synthetic_fidelity_corpus`).
-An assertion failing against today's tracer is an expected failure in
-`tests/synthetic/expected-failures.json` naming the worklog tasks that track it
-and recording its failing measurements. A measurement that gets worse beyond a
-coarse margin fails the run, a better one does not, and a pass is an unexpected
-success until its entry is removed. Update the table with
-`scripts/record_expected_failures.py` (all or nothing; `--task` adds an entry,
-`--allow-worse` and `--remove-orphans` accept what it otherwise refuses).
+The regression suite's inputs are small arrays and anti-aliased scenes built by
+the tests themselves (see [Validation and testing](docs/validation-and-testing.md)).
+The trace's geometry is t3's: it is measured against known truth in the tracer
+repository (its case catalogue, label reproduction and pins), and vinylgen's
+suite checks what vinylgen does with it, the planar-map file read back and
+checked, the edge SVG, the audit and the web.
 
 Default palette-stage anti-alias region threshold: **24 pixels**. Sub-threshold
 regions fold into a touching colour unless they are confident, coherent thin
@@ -164,7 +154,7 @@ Read only the references relevant to the current task.
 | [Product brief](docs/product-brief.md) | Working on generation settings, editing, UI, presets, or overall scope |
 | [Palette pipeline](docs/palette-pipeline.md) | Changing inference, colour conversion, merging, cleanup, performance, or thresholds |
 | [Files and output contract](docs/files-and-outputs.md) | Adding artifacts, reorganising folders, changing JSON/report formats, or naming files |
-| [Validation and testing](docs/validation-and-testing.md) | Adding checks, changing connectivity/cleanup, benchmarking, or judging cutter readiness |
+| [Validation and testing](docs/validation-and-testing.md) | Adding checks, changing connectivity/cleanup, or judging cutter readiness |
 | [SVG tracing specification](docs/svg-tracing-spec.md) | Implementing or changing tracing, SVG geometry, cutter cleanup, the live trace view, or trace outputs |
 | [Roadmap and risks](docs/roadmap-and-risks.md) | Planning SVG tracing, physical vinyl handling, generative editing, or the application UI |
 | [Tiled-upscale stage](docs/upscale-stage.md) | Planning or implementing the generative pre-flatten tiled-upscale stage or its ComfyUI integration |
@@ -185,9 +175,10 @@ them.
 Tracing moves to t3 in build cards (the tracer repo's
 `cards/vinylgen-on-t3/card.md`, vinylgen worklog task
 `trace-with-t3-vinylgen-s-trace-stage-calls-t3api-writes-map`): the trace stage
-calls t3 and writes `map.json` and the edge SVG; the audit, the settings and web
-controls, the old fitter's retirement and the deploy follow. The nine corpus
-subjects under `outputs/` were traced by the old shared-boundary fitter. Visual
+calls t3 and writes `map.json` and the edge SVG, the audit reads t3's painted
+labels, and the settings and web controls are t3's; the deploy and its
+end-to-end gate on `fox-owl-table-2` follow. The traces stored for the nine
+corpus subjects under `outputs/` are not t3 traces. Visual
 inspection and physical cutter testing remain necessary before claiming cutter
 readiness.
 

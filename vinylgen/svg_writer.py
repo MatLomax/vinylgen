@@ -4,9 +4,7 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Iterable
 
-from vinylgen.node_types import path_nodetypes
 
 SVG = "http://www.w3.org/2000/svg"
 INKSCAPE = "http://www.inkscape.org/namespaces/inkscape"
@@ -26,46 +24,6 @@ def svg_document(width: int, height: int,
         attrs["width"] = str(width)
         attrs["height"] = str(height)
     return ET.Element(f"{{{SVG}}}svg", attrs)
-
-
-def add_layer(root: ET.Element, row: dict, components: list[dict], transform: str,
-              subject: str, variant: str, stroke_width: float,
-              junctions: Iterable[str]) -> dict:
-    """Append one colour's layer of paths; ``junctions`` are the written positions of
-    the junction and endpoint anchors (every chain end), which are always cusp nodes
-    (``vinylgen.node_types.cusp_anchor_keys``)."""
-    junctions = frozenset(junctions)
-    slug = re.sub(r"[^a-z0-9]+", "-", str(row["name"]).casefold()).strip("-")
-    layer = ET.SubElement(root, f"{{{SVG}}}g", {
-        f"{{{INKSCAPE}}}groupmode": "layer", f"{{{INKSCAPE}}}label": f"{row['name']} ({row['hex']})",
-        "id": f"layer-{slug}", "fill": str(row["hex"]),
-        "stroke": "none",
-        "fill-rule": "evenodd"})
-    stats = []
-    for number, component in enumerate(components, 1):
-        path_id = f"{variant}-{slug}-{number:03d}"
-        ET.SubElement(layer, f"{{{SVG}}}path", {"id": path_id,
-                      f"{{{INKSCAPE}}}label": f"{row['name']} {number:03d}", "d": component["d"],
-                      f"{{{SODIPODI}}}nodetypes": path_nodetypes(component["d"], junctions)})
-        stats.append({"id": path_id, "nodes": component["nodes"],
-                      "holes": component["holes"],
-                      "fit_metrics": component["fit_metrics"]})
-        if "crossing_repair" in component:
-            stats[-1]["crossing_repair"] = component["crossing_repair"]
-    metric_names = ("lines", "cubics", "hard_anchors", "source_samples",
-                    "final_nodes", "node_reduction")
-    fit_metrics = {
-        name: sum(int(component["fit_metrics"][name]) for component in stats)
-        for name in metric_names
-    }
-    fit_metrics["node_reduction_ratio"] = (
-        fit_metrics["node_reduction"] / fit_metrics["source_samples"]
-        if fit_metrics["source_samples"] else 0.0
-    )
-    return {"index": row["index"], "name": row["name"], "hex": row["hex"],
-            "paths": len(stats), "nodes": sum(x["nodes"] for x in stats),
-            "holes": sum(x["holes"] for x in stats), "fit_metrics": fit_metrics,
-            "components": stats}
 
 
 def layer_slug(name: str) -> str:

@@ -9,8 +9,8 @@ worker dies is retried, then run alone and reported as an error if it dies again
 
 The default run discovers ``tests/`` only, so it never touches ``tests/fullimage/``.
 That directory is the opt-in full-image bucket: real-corpus and sourceup checks
-that need the full image corpus or a `.tmp` baseline, and the full synthetic
-fidelity corpus, selected only with ``--full-image`` (or by module name).
+of the palette, cleanup and validation stages that need the full image corpus or
+a `.tmp` baseline, selected only with ``--full-image`` (or by module name).
 
 Usage: run_tests.py [-j N] [-v] [--durations N] [--full-image] [test names ...]
 """

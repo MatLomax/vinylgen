@@ -4,8 +4,6 @@ from unittest.mock import patch
 import numpy as np
 from scipy import ndimage
 
-from vinylgen.fidelity.raster import render_rgb
-from vinylgen.fidelity.scene import Region, Scene, ellipse
 from vinylgen.validation import (
     semantic_warning_mask,
     source_thin_feature_mask,
@@ -13,6 +11,8 @@ from vinylgen.validation import (
     validate_postfit_protected_features,
     validate_semantic_preservation,
 )
+
+from rgb_scene import Region, Scene, ellipse, render_rgb
 
 
 class SemanticValidationTests(unittest.TestCase):

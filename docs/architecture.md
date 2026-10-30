@@ -277,20 +277,12 @@ to about 1.3 s for widen on 1.5-megapixel subjects) are documented in the
   SVG. The removed colour is excluded from cleanup and keeps its pixels.
 - Tracing never cleans labels itself; it consumes the cleanup stage's labels,
   size and removed colour (the CLI runs the same cleanup inline first).
-- Every colour interface has one stable canonical chain identity. Pair-specific
-  palette costs move shared vertices away from the integer grid without
-  allowing adjacent colours to fit their interface independently.
-- Boundary construction never simplifies geometry. Dense samples, ownership,
-  junctions, and protected evidence pass unchanged to the geometry modeller.
-- Curve fitting classifies sustained lines, continuous curves, and supported
-  corners at multiple scales, then runs once per canonical chain. The colour on its opposite side
-  consumes the exact reversed line/Bézier sequence. Only chain endpoints,
-  multi-colour junctions, and sustained geometric corners are hard anchors;
-  semantic protection never turns sampled pixels into corners.
-- Post-fit validation audits protected component survival, topology, deviation,
-  area, and width. Explicit user protections retain their provenance and alone
-  may trigger ordered local recovery; automatic evidence is reported without
-  globally forcing raster-exact contours. Recovery tightens the curve,
-  reclassifies geometry, adds a non-corner constraint, and uses a reported
-  dense fallback only when all modelled forms fail.
+- Tracing is one `t3api.trace` call on the cleaned labels at t3's one setting.
+  Its planar map, `map.json`, stores every boundary edge once with the faces
+  on its two sides, so adjacent colours share their boundary bit for bit; it is
+  checked and read back before anything is built from it, and every later step
+  (the edge SVG, the audit, a re-export) reads that file.
+- Post-trace validation audits protected component survival on t3's painted
+  labels. A changed explicit protection is a warning; nothing re-runs or
+  repairs the trace.
 - SVG writing does not infer geometry. Validation does not repair it.

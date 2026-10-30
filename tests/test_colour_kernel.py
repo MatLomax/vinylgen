@@ -10,9 +10,9 @@ from PIL import ImageFilter
 
 from vinylgen.colour import despeckle, nearest_palette_labels, palette_costs, srgb_to_lab
 from vinylgen.contracts import PaletteSettings
-from vinylgen.fidelity.raster import render_rgb
-from vinylgen.fidelity.scene import Region, Scene, circle, ellipse, polygon, wedge
 from vinylgen.palette import infer_palette
+
+from rgb_scene import Region, Scene, circle, ellipse, polygon, wedge, render_rgb
 
 
 def _synthetic_colour_kernel_scene() -> Scene:

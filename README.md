@@ -65,25 +65,20 @@ Trace one or more palette outputs:
 python3 svg_trace.py outputs/desert-mech outputs/crashed-ring outputs/cosmic-jellyfish
 ```
 
-This creates `traced-overlap.svg`, `traced-edge.svg`, and an auditable
-`trace.json`. Both SVGs contain exact-colour named Inkscape
-layers. A global planar graph extracts and simplifies each interface once, then
-polygonizes both neighbouring colours from that exact shared edge. This removes
-the third-colour hairlines caused by independently fitted cumulative contours.
+This creates `map.json`, `traced-edge.svg` and an auditable `trace.json` in
+each subject directory. t3, the tracing engine (installed as the `t3api` wheel),
+draws the labels as a planar map: every boundary edge between two colours is
+stored once in `map.json`, with the faces on its two sides, and both faces draw
+it, so neighbouring colours meet edge to edge with no hairline between them.
+The edge SVG is exported from `map.json`: one exact-colour named Inkscape layer
+per included colour and one even-odd path per face. Before the trace writes
+anything, `map.json`'s read-back paint must equal the labels t3 painted and
+`planar_map_check` must find no violation.
 
-Use `python3 svg_trace.py --help` for physical dimensions, overlap, optional
-colour omission, order overrides, curve controls, cleanup, and reusable JSON
-configuration.
-
-The boundary graph uses source classification confidence to place shared
-interfaces off the integer pixel grid. The curve pass works in pixels of the
-traced image whatever the physical size (default 1.5 px curve-fit tolerance
-within a 2 px maximum deviation), retains straight segments and sharp corners,
-and emits cubic Beziers for shallow bends. A straight-line deviation of 0
-turns off the straight-line shortcut, but a bend shallower than the curve-fit
-tolerance can still become a line; lower the tolerance to keep it curved. It operates reversibly on shared
-boundaries, so neighbouring colours receive the same curve in opposite
-directions.
+t3 traces at its one fixed setting, so no option changes the fit. Use
+`python3 svg_trace.py --help` for physical dimensions, colour omission, colour
+names, cutter cleanup and reusable JSON configuration; a configuration may also
+set the soft node limits, which only warn in `trace.json`.
 
 ## Web application
 
