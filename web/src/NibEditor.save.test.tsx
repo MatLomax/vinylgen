@@ -10,7 +10,7 @@
 // On the Nodes stage the saved child trace revision ("edited in nib") is selected, as
 // `mapSaved` does, and the editor opens the child's own map.json.
 //
-// `mountChrome` is a stub (the 0.2.0 tarball is not vendored yet) recording its notices and
+// `mountChrome` is a stub recording its notices and
 // offering a Save button that calls `editor.saveDocument()`, as nib's chrome does; the installed
 // package's real `mountEditor` runs on inert canvas stubs (nib's `dom.testkit.ts`).
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'

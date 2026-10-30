@@ -13,10 +13,10 @@
 //   paragraph; every editing control is nib's chrome, so the panel holds none.
 // - The Trace canvas loses the Nodes checkbox and the editor overlay.
 // - Closing the panel widens the editor: the canvas's backing store follows its CSS box (nib
-//   0.2.0), read through a fake resize observer as nib's own `mount.test.ts` does.
+//   0.3.0), read through a fake resize observer as nib's own `mount.test.ts` does.
 // - Key events on the stage reach the window, where nib's editor binds its keys.
 //
-// `@nib/core` 0.2.0 is not installed yet, so its `mountChrome` is a stub here (the real
+// nib's `mountChrome` is a stub here, so the tests pin what vinylgen asks of it (the real
 // `mountEditor` of the installed package runs).
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { Spline } from 'lucide-react'

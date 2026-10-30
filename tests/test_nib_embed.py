@@ -21,13 +21,12 @@ Every route test runs through the live app (the frozen ``test_t3_trace`` helpers
 client, the identity header required as on the deployed service) on the test array traced by the
 web pipeline's trace job.
 
-Card 8 (tracer ``cards/vinylgen-on-t3/build-8a-brief.md``) moves the embed to ``@nib/core`` 0.2.0,
-whose chrome vinylgen mounts. ``VendoredNibCoreTest`` pins the package: the tarball packed from nib
-at tag ``core-v0.2.0`` (commit ``e6465ab2fa124243da15889e38a21147880b9858``) as
-``web/vendor/nib-core-0.2.0.tgz`` with its sha256, the 0.1.0 tarball gone, ``web/vendor/README.md``
+The embed mounts ``@nib/core`` 0.3.0 and its chrome. ``VendoredNibCoreTest`` pins the package: the
+tarball packed from nib at tag ``core-v0.3.0`` (commit ``bdbb4bd212574404ff2b0c9ff0d82d741ed474a0``)
+as ``web/vendor/nib-core-0.3.0.tgz`` with its sha256, no other tarball vendored, ``web/vendor/README.md``
 naming the tag, the commit and the hash, ``web/package.json`` and its lockfile depending on it by
 ``file:`` path, and the package exporting ``mountChrome`` and ``./chrome.css``. The editor version a
-save records is the package's, ``0.2.0``.
+save records is the package's, ``0.3.0``.
 """
 
 from __future__ import annotations
@@ -68,7 +67,7 @@ NIB_CORE_COMMIT = "bdbb4bd212574404ff2b0c9ff0d82d741ed474a0"
 # core at tag core-v0.1.0 (21e34c1), run under Node from packages/core/dist:
 # LabelMapSession.fromText(the fixture's map.json), the view node of face 15 at edge 10's piece
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
-# 0.25), then session.text(). checkLabelMap reported no violation. The 0.2.0 tarball's
+# 0.25), then session.text(). checkLabelMap reported no violation. The vendored tarball's
 # dist/label-map-session.js writes the same bytes from the same steps. Its sha256:
 NIB_MOVE_SHA256 = "b1b1af569263cdbf91ab83821bfaf26eac66e479b26ae28284b6c1a8dc749a36"
 MOVED_EDGE, MOVED_J, MOVE = 10, 1, (0.25, 0.25)
@@ -410,7 +409,7 @@ class VendoredNibCoreTest(unittest.TestCase):
             self.assertIn(name, names)
             return archive.extractfile(name).read()
 
-    def test_the_tarball_is_the_pack_of_core_v0_2_0_and_the_0_1_0_tarball_is_gone(self):
+    def test_the_tarball_is_the_pack_of_core_v0_3_0_and_no_other_tarball_is_vendored(self):
         self.assertEqual(sha256(self.tarball()), NIB_CORE_SHA256)
         self.assertEqual(sorted(path.name for path in VENDOR.glob("*.tgz")), [NIB_CORE_TARBALL])
         self.assertFalse((VENDOR / "nib-core-0.1.0.tgz").exists())

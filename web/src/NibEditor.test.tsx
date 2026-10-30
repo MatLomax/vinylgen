@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Card 8 of vinylgen-on-t3 (tracer `cards/vinylgen-on-t3/build-8a-brief.md`): `NibEditor` is nib's
 // editor with nib's full chrome. It owns a canvas and mounts nib's `Editor` on it with
-// `mountEditor` (`@nib/core` 0.2.0, from `web/vendor/nib-core-0.2.0.tgz`) through a server host:
+// `mountEditor` (`@nib/core` 0.3.0, from `web/vendor/nib-core-0.3.0.tgz`) through a server host:
 // `open` is a GET of the revision's `map.json` artefact, `save` a POST of the exact text nib wrote
 // to `/api/revisions/{revision_id}/map` (`application/json`). Over the canvas it mounts nib's
 // chrome with `mountChrome(container, editor, { actions: ['save'] })` and imports its stylesheet
@@ -9,7 +9,7 @@
 // save is the chrome's `notice(text)`, never an element of the component's. With no `mapUrl` it
 // renders nothing.
 //
-// The 0.2.0 tarball is not vendored yet, so `mountChrome` is a stub that records its mount and
+// `mountChrome` is a stub that records its mount and
 // its notices and offers a Save button calling `editor.saveDocument()`, as nib's chrome does. The
 // installed package's real `mountEditor` runs. nib's `Editor` needs a 2D context, `Path2D`,
 // `ResizeObserver` and animation frames: inert stubs, as in nib's `dom.testkit.ts`.
