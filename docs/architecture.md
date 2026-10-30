@@ -38,7 +38,8 @@ concern a source upscale marks stale. Revisions derived from the flatten
 (palette and pencil edits, cleanup, trace) inherit the overlay with the rest of
 the flatten, since they carry its explicit protection unchanged.
 
-The web workflow is Flatten, Palette, Cleanup, Edit, Trace. Cleanup
+The web workflow is Flatten, Palette, Cleanup, Edit, Trace, Nodes (nib's editor on
+the trace's planar map, below). Cleanup
 (`vinylgen/web/cleanup.py`) owns the physical output size, the removed colour
 and the cutter cleanup. A `cleanup` revision records them under
 `settings.cleanup`. A cleanup always starts from the raster before any
@@ -219,12 +220,15 @@ in its own `trace.json` (`t3.reused_from` names the revision whose map it reused
 A map edited in nib is never reused this way: a trace from an edited revision
 traces afresh.
 
-The Trace canvas's Nodes overlay is nib's editor (`web/src/NibEditor.tsx`). It
+The Nodes stage's canvas area is nib's editor (`web/src/NibEditor.tsx`). It
 mounts `@nib/core`'s `Editor` through `mountEditor` on its own canvas, with a
 server host: `open` is a GET of the revision's `map.json` artifact, and `save`
-is `POST /api/revisions/{revision_id}/map` with the exact text nib wrote. The
-package is the vendored tarball `web/vendor/nib-core-0.1.0.tgz`, installed by
-`file:` path. The route (`web/app.py`) hands the body to
+is `POST /api/revisions/{revision_id}/map` with the exact text nib wrote. Over
+the canvas, in the component's positioned container, it mounts nib's chrome with
+`mountChrome(container, editor, { actions: ['save'] })`, styled by
+`@nib/core/chrome.css`; the chrome's Save calls the host's `save`, and every
+outcome is a line on the chrome's notice. The package is the vendored tarball
+`web/vendor/nib-core-0.2.0.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
 `PipelineRunner.save_map` (`web/pipeline.py`). That function refuses a document
 with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`, of
 another size or palette than the parent's, or unchanged). Otherwise it makes a

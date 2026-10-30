@@ -5,7 +5,6 @@ import type { OverlayFrame } from './regionSelection'
 import { LiveTraceLayer, type LiveFaces } from './LiveTrace'
 import type { PaletteColour } from './api'
 import { CLEANUP_CHANGES_OVERLAY_KIND, useCleanupPreview, useShowChangesSwitch, type CleanupPreviewOptions } from './CleanupPreview'
-import { NibEditor, type NibEditorProps } from './NibEditor'
 
 // `sizeFrom` names the raster whose pixel grid a vector layer is drawn on: an SVG
 // sized in physical units reports an intrinsic size in CSS pixels, not the pixel
@@ -34,12 +33,6 @@ export type CanvasCompareLineage = Partial<UpscaleLineage> & { id: string; upsca
 export type CanvasMarkerKind = 'protect' | 'preserve' | 'pair'
 export type CanvasMarker = { id: string; kind: CanvasMarkerKind; label: string; points: [number, number][]; pending?: boolean }
 const inspectionKey = (layer: WorkspaceLayer) => layer.kind ?? layer.id
-// The switch of the Trace canvas's Nodes overlay, kept with the inspection toggles.
-const NODES_KEY = 'path-nodes'
-// The canvas can show nib's editor (`nodes`) on a trace revision's planar map: `revisionId`
-// owns the map at `mapUrl`, absent for a revision with none (traced before t3), and
-// `onSaved` receives the revision a save makes.
-export type CanvasNodes = NibEditorProps
 // Screen-space sizes of the marker shapes and the pick-mode crosshair arms, in CSS px.
 const MARKER_RADIUS = 7
 const AIM_GAP = 3
@@ -66,7 +59,7 @@ function storeCompareMode(mode: CompareMode) {
   try { localStorage.setItem(CANVAS_COMPARE_STORAGE_KEY, mode) } catch { /* storage unavailable */ }
 }
 
-export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint: selectPointRequested, paintMode: paintRequested = false, onPaint: paintHandler, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim: aimRequested = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, liveTrace, cleanupPreview, livePreviewPaused = false, livePreviewStatus, compareBefore = [], compareLineage, compareStatus, compareRemembered = true, compareKey, compareLocksEditing = false, onComparingChange, nodes, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; liveTrace?: CanvasLiveTrace; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; compareBefore?: readonly string[]; compareLineage?: CanvasCompareLineage; compareStatus?: CanvasCompareStatus; compareRemembered?: boolean; compareKey?: string; compareLocksEditing?: boolean; onComparingChange?: (comparing: boolean) => void; nodes?: CanvasNodes; onClose?: () => void }) {
+export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSelectPoint: selectPointRequested, paintMode: paintRequested = false, onPaint: paintHandler, overlay, editorMode = false, canvasLabel = 'Palette canvas', inspectionKinds = [], pickAim: aimRequested = false, markers = [], markerGridFrom, highlightedMarker = null, loading = false, liveTrace, cleanupPreview, livePreviewPaused = false, livePreviewStatus, compareBefore = [], compareLineage, compareStatus, compareRemembered = true, compareKey, compareLocksEditing = false, onComparingChange, onClose }: { layers: WorkspaceLayer[]; preferredLayerId?: string; selectionLabel?: string; onSelectPoint?: (point: [number, number]) => void; paintMode?: boolean; onPaint?: (x: number, y: number) => void; overlay?: OverlayFrame; editorMode?: boolean; canvasLabel?: string; inspectionKinds?: readonly string[]; pickAim?: boolean; markers?: CanvasMarker[]; markerGridFrom?: string; highlightedMarker?: string | null; loading?: boolean; liveTrace?: CanvasLiveTrace; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; livePreviewStatus?: string; compareBefore?: readonly string[]; compareLineage?: CanvasCompareLineage; compareStatus?: CanvasCompareStatus; compareRemembered?: boolean; compareKey?: string; compareLocksEditing?: boolean; onComparingChange?: (comparing: boolean) => void; onClose?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null)
   const overlayCanvas = useRef<HTMLCanvasElement>(null)
   const overlayPatch = useRef<{ canvas: HTMLCanvasElement; bounds: OverlayFrame['bounds'] } | null>(null)
@@ -208,8 +201,6 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const compatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && gridsRegister(beforeSize, dimensions[layer.id]))
   const incompatibleInspections = inspections.filter(layer => inspectionOn(layer) && beforeSize && dimensions[layer.id] && !gridsRegister(beforeSize, dimensions[layer.id]))
   const drawnInspections = comparing ? [] : compatibleInspections
-  // The Nodes switch; the editor it turns on is settled with the live preview below.
-  const nodesSwitched = Boolean(nodes) && Boolean(enabledInspections[NODES_KEY])
 
   useEffect(() => {
     const ids = visible.map(layer => layer.id)
@@ -586,11 +577,6 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   const cleanupLivePreview = useCleanupPreview(cleanupOptions, transform, previewViewport, size,
     { on: showChanges, set: setShowChanges, available: Boolean(appliedChanges), drawn: Boolean(appliedChanges && drawnInspections.includes(appliedChanges)) },
     previewHeld, livePreviewStatus)
-  // The Nodes overlay is offered for a revision with a planar map: nib's editor on it, over
-  // the canvas. Like every overlay it is hidden while comparing.
-  const nodesAvailable = Boolean(nodes?.mapUrl)
-  const nodesOn = nodesAvailable && nodesSwitched
-  const nodesShown = nodesOn && !comparing
   const splitPosition = splitPositionInImage(viewport.current?.clientWidth ?? 0, split, size.width, transform)
   // Markers are placed on the shown image's grid, scaled from their own grid when the two
   // register (the source grid over a larger flattened raster); otherwise none is drawn.
@@ -680,7 +666,7 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
   // one's extent, or to report (with a Retry) that its images could not be loaded. As in
   // the inspector, split draws the After (the shown image) left of the divider and the
   // Before right of it; blink alternates the two.
-  const hiddenWhileComparing = inspections.some(inspectionOn) || nodesOn || Boolean(overlay) || Boolean(liveTrace || cleanupLivePreview.stageLayer)
+  const hiddenWhileComparing = inspections.some(inspectionOn) || Boolean(overlay) || Boolean(liveTrace || cleanupLivePreview.stageLayer)
   // In a canvas narrower than NARROW_CANVAS_WIDTH the control is one toolbar button
   // opening it as a popover positioned from the canvas (outside the toolbar row, which
   // clips), so the toolbar stays one row; wider, it sits inline in the toolbar.
@@ -747,7 +733,6 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
         {!previewHeld && cleanupLivePreview.stageLayer}
       </div>
       {overlay && !comparing && <canvas ref={overlayCanvas} className="editor-overlay" aria-hidden="true" />}
-      {nodesShown && nodes && <NibEditor revisionId={nodes.revisionId} mapUrl={nodes.mapUrl} onSaved={nodes.onSaved} />}
       {activeMode === 'split' && compareLayer && <div
         className="split-divider"
         role="slider"
@@ -768,18 +753,17 @@ export function ImageWorkspace({ layers, preferredLayerId, selectionLabel, onSel
       {annotations}
       {aim && hoverPixel && <div ref={readout} className="pick-readout" aria-hidden="true" style={readoutPlacement}>x {hoverPixel[0]}, y {hoverPixel[1]}</div>}
       {paintMode && !spacePan && hoverPixel && <div className="pencil-hover" style={{ left: transform.x + hoverPixel[0] * transform.scale, top: transform.y + hoverPixel[1] * transform.scale, width: transform.scale, height: transform.scale }} aria-hidden="true" />}
-      {editorMode && (toggledInspections.length > 0 || nodesAvailable) && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
+      {editorMode && toggledInspections.length > 0 && <div className="canvas-inspections" role="group" aria-label="Inspection layers" onPointerDown={event => event.stopPropagation()}>
         {toggledInspections.map(layer => <label key={layer.id}><input type="checkbox" checked={Boolean(enabledInspections[inspectionKey(layer)])} onChange={event => setEnabledInspections(value => ({ ...value, [inspectionKey(layer)]: event.target.checked }))} />{layer.name}</label>)}
-        {nodesAvailable && <label><input type="checkbox" checked={nodesOn} onChange={event => setEnabledInspections(value => ({ ...value, [NODES_KEY]: event.target.checked }))} />Nodes</label>}
         {incompatibleInspections.length > 0 && <p className="layer-warning" role="status">Hidden because its pixel dimensions differ: {incompatibleInspections.map(layer => layer.name).join(', ')}</p>}
       </div>}
       {busy && <div className="canvas-busy" aria-hidden="true"><LoaderCircle /><span>Loading image…</span></div>}
       {cleanupLivePreview.controls}
-      {!nodesShown && <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
+      <div className="canvas-tools" onPointerDown={event => event.stopPropagation()}>
         <button type="button" className="canvas-tool" aria-label="Zoom in" title="Zoom in" onClick={() => zoomCentre(1.25)}><ZoomIn aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Zoom out" title="Zoom out" onClick={() => zoomCentre(.8)}><ZoomOut aria-hidden="true" /></button>
         <button type="button" className="canvas-tool" aria-label="Fit image" title="Fit image" onClick={() => fit()}><Maximize aria-hidden="true" /></button>
-      </div>}
+      </div>
     </div>
     <div className="layer-probes" inert={sheetOpen} aria-hidden="true">{layers.map(layer => <img key={layer.id} src={layer.url} alt="" onLoad={event => imageLoaded(layer.id, event)} />)}</div>
     {!editorMode && <div className="desktop-view-controls" inert={sheetOpen}>{controls}</div>}

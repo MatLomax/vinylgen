@@ -574,14 +574,16 @@ button.secondary:hover:not(:disabled), .view-actions button:hover:not(:disabled)
 @media (prefers-reduced-motion: reduce) {
   .trace-preview-badge svg { animation: none; }
 }
-/* The Nodes overlay: nib's editor on the revision's planar map, covering the canvas. Its own
-   canvas draws its own view (opaque), so the canvas's zoom controls stand aside while it shows. */
-.nib-editor { position: absolute; inset: 0; z-index: 5; display: grid; grid-template-rows: minmax(0, 1fr); background: var(--surface-root); }
-.nib-editor-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-.nib-editor-bar { position: absolute; inset-block-start: 14px; inset-inline-start: 14px; display: grid; justify-items: start; gap: 6px; max-width: min(420px, calc(100% - 28px)); padding: 8px 10px; border-radius: var(--radius-sm); background: rgba(12, 14, 13, .92); box-shadow: var(--shadow-float); color: var(--text-label); font-size: 13px; }
-.nib-editor-note { margin: 0; overflow-wrap: anywhere; }
-.nib-editor-note.error { color: var(--error); }
-.nib-editor-note ul { margin: 4px 0 0; padding-inline-start: 18px; }
+/* The Nodes stage's canvas area: nib's editor on the revision's planar map. `.nib-editor` fills
+   the canvas column and is the positioned container nib's chrome (`@nib/core/chrome.css`) lays
+   out in; the canvas is 100 percent of it, so its box, and nib's backing store with it, follows
+   the column as the stage panel opens and closes. The canvas keeps its own compositing layer,
+   which Android's compositor needs (nib's page does the same). */
+.nib-editor { position: absolute; inset: 0; overflow: hidden; background: var(--surface-root); }
+.nib-editor-canvas { display: block; width: 100%; height: 100%; touch-action: none; transform: translateZ(0); }
+.artwork-surface > .nodes-unavailable { display: grid; height: 100%; place-content: center; padding: 40px; text-align: center; background: var(--surface-canvas); }
+.artwork-surface > .nodes-unavailable h2 { margin: 0 0 8px; color: var(--text-heading); }
+.artwork-surface > .nodes-unavailable p { max-width: 42ch; margin: 0; color: var(--text-muted); line-height: 1.55; }
 
 /* App shell. The page frame (header, stage rail, canvas column and stage settings panel) is
    laid out here and only here. The app picks the rail and panel modes from the window

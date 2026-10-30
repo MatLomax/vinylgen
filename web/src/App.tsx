@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Download, Eraser, Layers3, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
+import { Download, Eraser, Layers3, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Spline, Trash2, Upload, WandSparkles } from 'lucide-react'
 import { api, followJob, type TracerInfo, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
@@ -9,6 +9,7 @@ import { RegionEditor } from './RegionEditor'
 import { PencilEditor } from './PencilEditor'
 import { UpscalePanel } from './UpscalePanel'
 import { ConfirmDialog } from './ConfirmDialog'
+import { NibEditor, SAVED } from './NibEditor'
 import { StagePanel } from './StagePanel'
 import { ICON_RAIL_QUERY, OVERLAY_PANEL_QUERY, PHONE_QUERY, SETTINGS_PANEL_STORAGE_KEY, STAGE_RAIL_STORAGE_KEY, panelModeFor, storeChoice, storedChoice, useMediaQuery } from './shellLayout'
 import { palettePointsForRevision } from './sourceGrid'
@@ -39,7 +40,7 @@ const OPAQUE_AUDIT_KINDS = new Set(['trace-fallbacks', 'trace-semantic-warnings'
 const CLEANED_IMAGE_KIND = 'cleaned-flattened'
 
 type Dimensions = [number, number]
-type WorkflowStage = 'create' | 'upload' | 'flatten' | 'palette' | 'cleanup' | 'edit' | 'trace' | 'export'
+type WorkflowStage = 'create' | 'upload' | 'flatten' | 'palette' | 'cleanup' | 'edit' | 'trace' | 'nodes' | 'export'
 type ArtworkView = 'source' | 'flattened' | 'edited' | 'cleaned' | 'traced'
 
 const WORKFLOW_STAGES: { id: WorkflowStage; label: string; description: string; icon: typeof Sparkles }[] = [
@@ -50,6 +51,7 @@ const WORKFLOW_STAGES: { id: WorkflowStage; label: string; description: string; 
   { id: 'cleanup', label: 'Cleanup', description: 'Size and cutter cleanup', icon: Eraser },
   { id: 'edit', label: 'Edit', description: 'Touch up areas and pixels', icon: Pencil },
   { id: 'trace', label: 'Trace', description: 'Build vinyl layers', icon: Layers3 },
+  { id: 'nodes', label: 'Nodes', description: 'Edit the traced nodes', icon: Spline },
   { id: 'export', label: 'Export', description: 'Download or hand off', icon: Download },
 ]
 
@@ -514,6 +516,10 @@ export default function App() {
   // The view a just-finished flatten or trace should open on, held until the revision
   // it produced has loaded far enough to offer that view.
   const [pendingView, setPendingView] = useState<{ view: ArtworkView; revision: string } | null>(null)
+  // The trace revision a save from nib's editor made: its editor opens with the saved notice,
+  // until another revision is selected.
+  const [savedByNib, setSavedByNib] = useState<string | null>(null)
+  useEffect(() => { if (savedByNib && revision !== savedByNib) setSavedByNib(null) }, [revision, savedByNib])
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
   // The flattened original behind the shown artwork's edits made before cleanup (a
@@ -661,8 +667,8 @@ export default function App() {
   // The settings that produced the shown image, recorded on its nearest ancestor.
   const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
   const tracedSvg = artifacts.find(row => row.kind === 'traced-edge')
-  // The planar map the shown trace was drawn from, which nib's editor opens; none for a
-  // revision traced before t3.
+  // The planar map the shown trace was drawn from, which the Nodes stage's editor opens; none
+  // for a revision traced before t3.
   const tracedMap = artifacts.find(row => row.kind === 'traced-map')
   const cleanupLookup = useMemo(() => nearestCleanup(revisions, current?.id || null), [revisions, current?.id])
   const activeCleanup = cleanupLookup.stale ? null : cleanupLookup.revision
@@ -699,6 +705,10 @@ export default function App() {
   // The stage headings hold steady through a load (they describe the shown artwork) and
   // only change once the selected revision's own state is known or has failed.
   const readiness = selectedFailed ? 'Unavailable' : artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'
+  const nodesReadiness = selectedFailed ? 'Unavailable' : tracedMap ? 'Ready' : 'Trace first'
+  // The map the Nodes stage edits: the selected revision's own effective map.json, never the
+  // last revision's while the selected one's artefacts load.
+  const editedMap = artifactsCurrent ? tracedMap : undefined
   // Why a stage's controls are locked: announced to assistive tech through the buttons'
   // aria-describedby, and shown (below the controls, so nothing shifts during a normal
   // load) only once the revision has failed, with a way to retry.
@@ -1326,11 +1336,12 @@ export default function App() {
     if (step === 'palette') delete draft.palette_revision
     localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
   }
-  // A save from nib's editor made a new trace revision: it is shown as a finished trace's
-  // result is, on its Traced view, unless the user has since left its project.
+  // A save from nib's editor made a new trace revision: it is selected, and shown on its
+  // Traced view as a finished trace's result is, unless the user has since left its project.
   function mapSaved(next: Revision) {
     if (!stillSelected(next.project_id)) return
     setRevision(next.id)
+    setSavedByNib(next.id)
     setPendingView({ view: 'traced', revision: next.id })
   }
   async function reimportSvg(event: FormEvent<HTMLFormElement>) {
@@ -1567,7 +1578,7 @@ export default function App() {
 
   // A phone shows the canvas (with the settings as a drawer beneath it) on the canvas
   // stages, and while artwork loads or a job runs.
-  const canvasShown = ['flatten', 'cleanup', 'trace', 'palette', 'edit'].includes(stage) || Boolean(selectionMode) || busy || projectLoading || uploading
+  const canvasShown = ['flatten', 'cleanup', 'trace', 'nodes', 'palette', 'edit'].includes(stage) || Boolean(selectionMode) || busy || projectLoading || uploading
   const panelMode = panelModeFor(phone, overlayPanel, canvasShown)
   const panelOpen = panelMode === 'push' ? pushPanelOpen : panelMode === 'overlay' ? overlayPanelOpen : panelMode === 'drawer' ? drawerOpen : true
   function setPanelOpen(open: boolean) {
@@ -1592,7 +1603,7 @@ export default function App() {
   const peekAction = stage === 'flatten' || stage === 'cleanup' || stage === 'trace' ? runActions[stage] : undefined
 
   return <main className={phone ? 'rail-strip' : railExpanded ? 'rail-expanded' : 'rail-collapsed'}>
-    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{stage !== 'upload' && viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => openProject(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
+    <header><div className="mobile-brand"><span className="mark" aria-hidden="true">V</span><h1>Vinylgen</h1></div>{stage !== 'upload' && stage !== 'nodes' && viewToggle()}<select className="active-project" aria-label="Active project" title={selectedProjectName ?? 'No project selected'} value={selected ?? ''} onChange={event => openProject(event.target.value || null)}><option value="">No project selected</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select>{selected && <button type="button" className="delete-project" aria-label="Delete project" title="Delete project" onClick={() => setConfirmDelete({ id: selected, name: selectedProjectName ?? 'this project' })}><Trash2 aria-hidden="true" /></button>}</header>
     <div className="workflow-sidebar">
       <div className="sidebar-brand"><span className="mark" aria-hidden="true">V</span><div><h1>Vinylgen</h1></div></div>
       <nav id="workflow-nav" className="workflow-nav" aria-label="Artwork workflow" role="tablist" aria-orientation={phone ? 'horizontal' : 'vertical'}>
@@ -1607,13 +1618,16 @@ export default function App() {
     {job && !busy && !projectLoading && !uploading && <p className={job.status === 'failed' ? 'error job-result' : 'success job-result'} role={job.status === 'failed' ? 'alert' : 'status'} aria-live={job.status === 'failed' ? 'assertive' : 'polite'} aria-atomic="true">{jobMessage}</p>}
     <section className={`workspace workflow-${stage} panel-${panelMode} ${panelOpen ? 'panel-open' : 'panel-closed'}`}>
       <div className={`workflow-surface artwork-surface ${projectLoading || busy || uploading ? 'is-loading' : ''} ${canvasShown ? 'mobile-stage-active' : ''}`} data-stage="artwork">
-        {stage === 'upload' || stage === 'flatten' || stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
+        {stage === 'nodes'
+          // The Nodes stage's canvas area is nib's editor, with nib's chrome, on the selected
+          // revision's map, saved for the trace revision that owns the map.
+          ? editedMap
+            ? <NibEditor revisionId={editedMap.revision_id} mapUrl={editedMap.download_url} onSaved={mapSaved} notice={savedByNib && savedByNib === revision ? SAVED : null} />
+            : <section className="mobile-stage-state nodes-unavailable"><h2>Edit nodes</h2><p>{!revision ? 'Choose an active project in the header first.' : selectedUnavailable ?? 'This revision has no planar map: trace it first, on the Trace stage.'}</p></section>
+          : stage === 'upload' || stage === 'flatten' || stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
           canvasLabel={stage === 'upload' ? 'Upload canvas' : stage === 'flatten' ? 'Flatten canvas' : stage === 'trace' && !selectionMode ? 'Trace canvas' : stage === 'cleanup' && !selectionMode ? 'Cleanup canvas' : 'Palette canvas'}
           inspectionKinds={canvasOverlayKinds(stage, Boolean(selectionMode))}
-          // The Trace canvas's Nodes overlay is nib's editor on the shown revision's planar map,
-          // saved for the trace revision that owns the map; a save lands on its new revision.
-          nodes={stage === 'trace' && !selectionMode ? { revisionId: tracedMap?.revision_id ?? revision ?? '', mapUrl: tracedMap?.download_url ?? null, onSaved: mapSaved } : undefined}
           // Preservation points are source pixels; the canvas scales them onto a larger
           // flattened raster. They are mapped onto the selected revision's source, so they
           // wait until the shown artifacts are that revision's own.
@@ -1711,6 +1725,12 @@ export default function App() {
           {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', true)}>Re-run Cleanup with its last settings</button></div>}
           <div className="job"><button disabled={runActions.trace.disabled} aria-describedby={runActions.trace.describedBy} onClick={runActions.trace.run}>{runActions.trace.label}</button>{lockReason('trace-lock-reason')}</div>
           <PipelineControls stage="trace" tracer={tracer} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
+        </section>
+        <section id="workflow-panel-nodes" role="tabpanel" aria-labelledby="workflow-tab-nodes" className={`side-section nodes-section workflow-surface ${stage === 'nodes' ? 'mobile-stage-active' : ''}`} data-stage="nodes">
+          <div className="section-heading"><h2>Edit nodes</h2><span>{nodesReadiness}</span></div>
+          <p className="section-intro">Move, retype and delete the nodes of the traced planar map in nib's editor, with the tools over the canvas.</p>
+          <p className="stage-guidance">{tracedMap ? 'Save makes a new trace revision, edited in nib, and selects it; the revision you started from is kept.' : 'Trace this revision first: only a revision traced with t3 has a planar map whose nodes can be edited. Save then makes a new trace revision.'}</p>
+          {lockReason('nodes-lock-reason')}
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {/* The revision history is offered whenever the project has revisions, so Undo to

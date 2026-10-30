@@ -141,7 +141,7 @@ copied, its colour names are rewritten to the new palette's, and the SVG, the
 checks and the audit are built from it again. Its `trace.json` then names the
 revision it reused under `t3.reused_from` and `validation.edge.read_back.reused_from`,
 and repeats that trace's `t3` timings.
-A save from nib's editor (the Trace canvas's Nodes overlay) makes a child trace
+A save from nib's editor (the Nodes stage) makes a child trace
 revision whose `map.json` is the document nib wrote, byte for byte. The
 revision's message is "edited in nib", and every other trace artifact is rebuilt
 from that map by the same re-export path. Its `trace.json` records
@@ -159,7 +159,7 @@ overlap variant of the SVG, and may hold `trace-fallbacks.png` and its
 transparent twin `trace-fallbacks-overlay.png`; a trace does not write them,
 and a CLI retrace of a subject folder removes them. SVGs traced before node
 types existed have no `sodipodi:nodetypes`. A revision traced before t3 has no
-`map.json`, so the Trace canvas offers no Nodes overlay for it.
+`map.json`, so the Nodes stage has nothing to edit on it ("Trace first").
 
 `traced.png` is the current preview rendered from `traced-edge.svg` (in a
 revision holding `traced-overlap.svg`, from that file) and must be regenerated

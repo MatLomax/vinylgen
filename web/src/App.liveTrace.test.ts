@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, FaceEvent, Job, PaletteColour, Project, Revision } from './api'
-import type { CanvasLiveTrace, CanvasNodes } from './ImageWorkspace'
+import type { CanvasLiveTrace } from './ImageWorkspace'
 import { paintOrder } from './LiveTrace'
 
 const mocks = vi.hoisted(() => ({
@@ -14,7 +14,7 @@ vi.mock('./api', async importOriginal => {
   const original = await importOriginal<typeof import('./api')>()
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
-type Captured = { canvasLabel?: string; liveTrace?: CanvasLiveTrace; nodes?: CanvasNodes }
+type Captured = { canvasLabel?: string; liveTrace?: CanvasLiveTrace }
 const workspaceProps = vi.hoisted(() => ({ current: null as Captured | null }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: Captured) => { workspaceProps.current = props; return null } }))
 
@@ -89,44 +89,5 @@ describe('Trace canvas live trace wiring', () => {
     // The finished job's faces are dropped: its edge SVG shows the result.
     act(() => onJob(job('failed')))
     await vi.waitFor(() => expect(workspaceProps.current?.liveTrace).toBeUndefined())
-  })
-})
-
-describe('Trace canvas Nodes overlay wiring', () => {
-  it('gives the Trace canvas the planar map of the trace it shows, for the revision that owns it, and no other canvas', async () => {
-    const edge: Artifact = { ...artifact('traced-edge'), filename: 'traced-edge.svg', media_type: 'image/svg+xml', download_url: '/artifacts/traced-edge.svg' }
-    const map: Artifact = { ...artifact('traced-map'), revision_id: 'trace-owner', filename: 'map.json', media_type: 'application/json', download_url: '/artifacts/map.json' }
-    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), edge, map])
-    render(createElement((await import('./App')).default))
-    await chooseProject()
-    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
-    await vi.waitFor(() => expect(workspaceProps.current?.nodes).toMatchObject({ revisionId: 'trace-owner', mapUrl: '/artifacts/map.json' }))
-    fireEvent.click(screen.getByRole('tab', { name: 'Flatten' }))
-    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Flatten canvas'))
-    expect(workspaceProps.current?.nodes).toBeUndefined()
-  })
-
-  it('shows the revision a save from nib made, as a finished trace\'s result', async () => {
-    const map: Artifact = { ...artifact('traced-map'), filename: 'map.json', media_type: 'application/json', download_url: '/artifacts/map.json' }
-    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), map])
-    render(createElement((await import('./App')).default))
-    await chooseProject()
-    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
-    await vi.waitFor(() => expect(workspaceProps.current?.nodes?.mapUrl).toBe('/artifacts/map.json'))
-    const edited: Revision = { ...flattenRevision, id: 'edited-1', parent_revision_id: flattenRevision.id, kind: 'trace', message: 'edited in nib', settings: { trace: {} }, created_at: '2026-01-02' }
-    mocks.project.mockResolvedValue({ ...project, revisions: [edited, flattenRevision] })
-    act(() => workspaceProps.current?.nodes?.onSaved?.(edited))
-    await vi.waitFor(() => expect(mocks.effectiveArtifacts.mock.calls.some(([id]) => id === 'edited-1')).toBe(true))
-    await vi.waitFor(() => expect(window.location.hash).toContain('revision=edited-1'))
-  })
-
-  it('gives no planar map for a revision traced before t3', async () => {
-    const edge: Artifact = { ...artifact('traced-edge'), filename: 'traced-edge.svg', media_type: 'image/svg+xml', download_url: '/artifacts/traced-edge.svg' }
-    mocks.effectiveArtifacts.mockResolvedValue([artifact('source'), artifact('flattened'), edge])
-    render(createElement((await import('./App')).default))
-    await chooseProject()
-    fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
-    await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Trace canvas'))
-    expect(workspaceProps.current?.nodes?.mapUrl).toBeNull()
   })
 })

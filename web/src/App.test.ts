@@ -1446,7 +1446,7 @@ describe('cleanup stage', () => {
   it('sits between Palette and Edit with the Lucide eraser icon', async () => {
     render(createElement((await import('./App')).default))
     const tabs = screen.getAllByRole('tab').map(tab => tab.getAttribute('aria-label'))
-    expect(tabs).toEqual(['Create', 'Upload', 'Flatten', 'Palette', 'Cleanup', 'Edit', 'Trace', 'Export'])
+    expect(tabs).toEqual(['Create', 'Upload', 'Flatten', 'Palette', 'Cleanup', 'Edit', 'Trace', 'Nodes', 'Export'])
     expect(screen.getByRole('tab', { name: 'Cleanup' }).querySelector('svg.lucide-eraser')).toBeTruthy()
   })
 

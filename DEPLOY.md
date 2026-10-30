@@ -27,11 +27,12 @@ where it can write). Neither the unit nor `vinylgen.env` sets
 different caches. `just deploy` does not reinstall the units; after a change to a template in
 `deploy/`, run `just install-services`.
 
-The web client's `@nib/core` (nib's editor core, the Trace canvas's Nodes
-overlay) is not fetched from a registry: it is the committed tarball
-`web/vendor/nib-core-0.1.0.tgz`, packed from nib at tag `core-v0.1.0`.
+The web client's `@nib/core` (nib's editor core and chrome, the Nodes stage)
+is not fetched from a registry: it is the committed tarball
+`web/vendor/nib-core-0.2.0.tgz`, packed from nib at tag `core-v0.2.0`.
 `web/package.json` names it by `file:` path, `web/package-lock.json` records
-its integrity, and `npm --prefix web ci` installs it like any other package.
+its integrity, and `npm --prefix web ci` installs it like any other package,
+with its one dependency, `lucide`, from the registry.
 `web/vendor/README.md` holds its sha256 and the steps to replace it.
 
 Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop

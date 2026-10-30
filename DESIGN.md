@@ -217,11 +217,15 @@ Switching stage and choosing a project in the header each add a browser history 
 
 ### Artwork Inspector
 
-The stage canvases (Upload, Flatten, Palette, Cleanup, Edit and Trace) are interactive: they own pan, zoom, their stage's overlays and editing tools, and the split/blink comparison described below. Only the passive previews on the remaining stages (Create, Export) open the full-screen inspector, through a 44px circular Search-icon trigger floating 14px from the artwork’s top-right corner. The inspector owns pan, zoom, single/split/blink comparison with free Before/After pickers, overlays, and responsive bottom-sheet controls; it restores focus when dismissed.
+The stage canvases (Upload, Flatten, Palette, Cleanup, Edit and Trace) are interactive: they own pan, zoom, their stage's overlays and editing tools, and the split/blink comparison described below. The Nodes stage's canvas area is nib's editor, with nib's own view and chrome (Nodes Stage, above). Only the passive previews on the remaining stages (Create, Export) open the full-screen inspector, through a 44px circular Search-icon trigger floating 14px from the artwork’s top-right corner. The inspector owns pan, zoom, single/split/blink comparison with free Before/After pickers, overlays, and responsive bottom-sheet controls; it restores focus when dismissed.
 
-### Trace Nodes Overlay
+### Nodes Stage
 
-The Trace canvas offers a "Nodes" switch beside its other inspection overlays whenever the shown revision has a planar map (`map.json`); a revision traced before t3 has none and gets no switch. On, nib's editor covers the canvas, drawing the planar map in its own view with its own pan, zoom and node tool, so an edit to a shared boundary moves both faces it separates. The canvas's zoom controls stand aside while it shows. A floating bar at its top left holds "Save as new revision", enabled once the map has loaded, and the save's outcome. A successful save says "Saved as a new trace revision." and the canvas moves to that revision's Traced view, as after a finished trace. Saving with nothing edited is a notice ("Nothing was edited: the map is unchanged."), not an error. Any other refusal is an error that lists the server's problems. Like every overlay the editor is hidden while comparing, with the switch kept on.
+Nodes ("Edit the traced nodes", Lucide's Spline icon) sits between Trace and Export. Its canvas area is nib's editor on the selected revision's planar map (`map.json`), with nib's own chrome laid over it: the top bar with nib's status, Save, Smart Simplify and the More menu (perf overlay, fit to view, help), the notice line, the undo/redo and node type/delete clusters, the Smart Simplify sheet and the layers panel. The editor draws the map in its own view with its own pan, zoom and node tool, so an edit to a shared boundary moves both faces it separates. Its keys are nib's (T cycles a selected node's type, for one), and a key typed into a field is never taken as one. The editor fills the canvas column and follows it as the stage panel opens and closes. The header's view switch is not offered: the editor shows the map, not one of the artwork's views.
+
+The stage panel holds the heading with its readiness ("Ready", or "Trace first" for a revision with no planar map: one not traced, or traced before t3, whose canvas area then says so), a short guidance and, while the selected revision's artefacts load, the lock reason; no editor is shown on the previous revision's map meanwhile. Every editing control is nib's chrome, none is the panel's.
+
+nib's Save posts the map to the trace revision that owns it. A successful save says "Saved as a new trace revision." on nib's notice line, selects that revision and opens its own map, whose editor carries the same notice. Saving with nothing edited shows the server's notice ("Nothing was edited: the map is unchanged."). Any other refusal shows the server's detail followed by its problems, one sentence each. The Trace canvas has no Nodes switch: the traced image and its inspection layers are all it shows.
 
 ### Live Trace View
 
@@ -248,7 +252,7 @@ As in the inspector, split draws the After left of the divider and the Before ri
 While comparing, the canvas draws nothing over the pair except the preservation markers, and nothing edits:
 
 - The preservation markers stay drawn: they are the user's own points and register on both images.
-- Inspection overlays (Cleanup's Show changes and Trace's Nodes included) and the Palette recolour preview are hidden.
+- Inspection overlays (Cleanup's Show changes included) and the Palette recolour preview are hidden.
 - The Cleanup live preview is paused as when its grid is unknown: no requests, the one in flight aborted, no badge or live legend line. The live trace view is not drawn.
 - Area selection, the pencil and preservation picking are off on the canvas.
 - Every edit-committing control in the Palette and Edit side panels (swatches, Apply, merge, rename, Undo) is locked. It stays focusable, is marked `aria-disabled`, does nothing when activated, and is described (`aria-describedby`) by the status "Turn Compare off to edit".

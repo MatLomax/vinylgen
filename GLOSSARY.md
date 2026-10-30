@@ -92,7 +92,7 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **t3** | The turbo tube tiler, the tracing engine, installed as the `t3api` wheel; it draws lines, circular and elliptical arcs and cubics within a tube of half-width 1.75 px around the label boundaries, at its one setting. | turbo tube tiler, `t3api` | fitter, vectoriser |
 | **planar-map file** | `map.json`: t3's drawing as a label map, every boundary edge stored once with the faces on its two sides and every face as rings of signed edge references, in paint order, every number exact. The trace's artefact and the one source of its geometry. | planar map, `map.json`, traced map | face map file (`faces.json`, which stores every shared boundary twice) |
 | **label map** | A planar-map file opened as a document in nib's editor: its faces are fills derived from the edges' rings, so editing a node moves the boundary of both faces it separates and a shared boundary never tears. | nib's label-map document | an SVG path document (nib's other document kind), a raster label image (the segmentation's labels) |
-| **nib** | The vector node editor whose core (`@nib/core`, vendored as `web/vendor/nib-core-0.1.0.tgz`) the Trace canvas's Nodes overlay embeds on a revision's planar-map file. Saving from it makes a new trace revision ("edited in nib"). | nib's editor, the Nodes overlay | Inkscape handoff (an SVG round trip that makes an `inkscape-edit` revision) |
+| **nib** | The vector node editor whose core (`@nib/core`, vendored as `web/vendor/nib-core-0.2.0.tgz`) the Nodes stage embeds, with nib's chrome, on a revision's planar-map file. Saving from it makes a new trace revision ("edited in nib"). | nib's editor, the Nodes stage | Inkscape handoff (an SVG round trip that makes an `inkscape-edit` revision) |
 | **canonical boundary** | One boundary edge between two faces, stored once in the planar-map file and drawn by the two faces' rings in opposite directions. | shared boundary, canonical interface | two matching paths, independently traced edge |
 | **colour layer** | The named SVG layer containing the cut geometry owned by one final palette colour. | palette layer, vinyl layer when material use is intended | region, component |
 | **omitted colour** | A palette colour intentionally excluded from traced cut layers. | excluded colour, omitted layer colour | removed colour, deleted colour, background colour |
@@ -118,7 +118,7 @@ automatically interchangeable when an entry calls out a narrower meaning.
 A **node** is an endpoint shared by two consecutive path segments; each cubic
 segment gives the node a **handle** (control point) on that side. Node types are
 defined by the node's two handles. The shape is the marker Vinylgen's documents
-use for that type; the Trace canvas's Nodes overlay is nib's editor, which draws
+use for that type; the Nodes stage is nib's editor, which draws
 its own markers. A traced node is a cusp or a symmetric node,
 from t3 (`sodipodi:nodetypes` `c` or `s`): t3's smooth joins are tangent joins,
 not equal-handle ones, so it writes no smooth node, and an elliptical or
