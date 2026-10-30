@@ -54,15 +54,15 @@ from vinylgen.svg_writer import add_face_layer, svg_document, write_svg
 
 IDENTITY = {"X-Gandalf-User": "nib-embed@example.test"}
 
-# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.2.0; the pack
+# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.3.0; the pack
 # is reproducible.
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "web" / "vendor"
-NIB_CORE_VERSION = "0.2.0"
+NIB_CORE_VERSION = "0.3.0"
 NIB_CORE_TARBALL = f"nib-core-{NIB_CORE_VERSION}.tgz"
-NIB_CORE_SHA256 = "9639e05c8f0e8d1a403e9eb0a363bf5035ac3df801d78e207b8622105f34bb89"
-NIB_CORE_TAG = "core-v0.2.0"
-NIB_CORE_COMMIT = "e6465ab2fa124243da15889e38a21147880b9858"
+NIB_CORE_SHA256 = "aaa2abc4167f531ab8d1b453c0815aa5ff30e769dc6e3f5852c4a15565511dc8"
+NIB_CORE_TAG = "core-v0.3.0"
+NIB_CORE_COMMIT = "bdbb4bd212574404ff2b0c9ff0d82d741ed474a0"
 
 # The edited document: one node moved by (0.25, 0.25) with nib's node tool. Produced by nib's
 # core at tag core-v0.1.0 (21e34c1), run under Node from packages/core/dist:
@@ -396,7 +396,7 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
 
 
 class VendoredNibCoreTest(unittest.TestCase):
-    """``@nib/core`` 0.2.0 is the vendored tarball the web client installs, and it carries the
+    """``@nib/core`` 0.3.0 is the vendored tarball the web client installs, and it carries the
     chrome vinylgen mounts."""
 
     def tarball(self) -> bytes:
