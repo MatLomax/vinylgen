@@ -8,8 +8,9 @@ checks. The backend rejects every mutation that lacks Gandalf's trusted
 identity header; direct localhost health checks remain read-only.
 
 `just deploy` finishes by checking `$VINYLGEN_PUBLIC_URL/api/health`. Set
-`VINYLGEN_PUBLIC_URL` to the deployment's real public origin in the untracked
-`.vinylgen-data/vinylgen.env`; the template value is a placeholder.
+`VINYLGEN_PUBLIC_URL` to the deployment's real public origin, and
+`VINYLGEN_TUNNEL_HOST` to the edge host's SSH destination, in the untracked
+`.vinylgen-data/vinylgen.env`; the template values are placeholders.
 
 `just deploy` runs the test suite and the frontend build, then (unless a job is
 active) installs `requirements-web.txt` into `.venv` (the `t3api` wheel under
@@ -23,7 +24,8 @@ and the unit lists `%h/.cache/t3api` in `ReadWritePaths` so the service can read
 and write that cache under `ProtectSystem=strict` (numba keeps a kernel only
 where it can write). Neither the unit nor `vinylgen.env` sets
 `T3API_CACHE_DIR`; setting it in one would leave the warm and the service on
-different caches.
+different caches. `just deploy` does not reinstall the units; after a change to a template in
+`deploy/`, run `just install-services`.
 
 Persistent state lives in `.vinylgen-data/` on the workstation. Explicit desktop
 handoff saves go to `.vinylgen-data/inkscape/`. The upload limit is
@@ -54,12 +56,22 @@ owned process tree and discard its `.tmp/codex-image-*` directory.
 .venv/bin/python scripts/warm_t3_cache.py   # creates and warms ~/.cache/t3api
 npm --prefix web ci
 npm --prefix web run build
-install -Dm600 deploy/vinylgen.env .vinylgen-data/vinylgen.env
-install -Dm644 deploy/vinylgen-user.service ~/.config/systemd/user/vinylgen.service
-install -Dm644 deploy/vinylgen-tunnel-user.service ~/.config/systemd/user/vinylgen-tunnel.service
-systemctl --user daemon-reload
-systemctl --user enable --now vinylgen.service vinylgen-tunnel.service
+just install-services
 ```
+
+`just install-services` creates `.vinylgen-data/vinylgen.env` from
+`deploy/vinylgen.env` only when it is absent (an existing one is never
+overwritten), creates `~/.cache/t3api`, installs both units, reloads systemd, and
+enables and restarts both services. The units are rendered at install, not copied:
+`scripts/render_units.py` reads the templates in `deploy/`, writes the
+checkout's own absolute path (the justfile's directory) for every `%h/vinylgen`
+path in `vinylgen-user.service` (`WorkingDirectory`, `EnvironmentFile`,
+`ExecStart`, `ReadWritePaths`, `NUMBA_CACHE_DIR`; `%h/.cache/t3api` is kept), and
+writes `VINYLGEN_TUNNEL_HOST` from `.vinylgen-data/vinylgen.env` as the SSH
+destination of `vinylgen-tunnel-user.service`. It refuses, installing nothing,
+when `VINYLGEN_TUNNEL_HOST` is unset or the checkout path holds a character a
+unit cannot carry (whitespace, `%`, quotes, backslash). The templates themselves
+are never edited for a deployment, so a checkout anywhere installs correctly.
 
 Before the first generation, verify the same user/session used by systemd:
 

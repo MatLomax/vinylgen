@@ -111,7 +111,9 @@ deploy force="false": test build
     just health
     just health-public
 
-# Explicit administrative operation, not part of normal deployment. The unit's
+# Explicit administrative operation, not part of normal deployment. The units are
+# rendered from deploy/'s templates for this checkout's path and for the tunnel's SSH
+# destination, VINYLGEN_TUNNEL_HOST in .vinylgen-data/vinylgen.env. The unit's
 # ReadWritePaths names the t3 kernel cache, ~/.cache/t3api, which must exist.
 install-services:
     if [[ ! -e .vinylgen-data/vinylgen.env ]]; then \
@@ -120,10 +122,8 @@ install-services:
         echo "Preserving existing .vinylgen-data/vinylgen.env"; \
     fi
     mkdir -p ~/.cache/t3api
-    install -Dm644 deploy/vinylgen-user.service \
-        ~/.config/systemd/user/vinylgen.service
-    install -Dm644 deploy/vinylgen-tunnel-user.service \
-        ~/.config/systemd/user/vinylgen-tunnel.service
+    .venv/bin/python scripts/render_units.py --checkout "{{justfile_directory()}}" \
+        --env-file .vinylgen-data/vinylgen.env --unit-dir ~/.config/systemd/user
     systemctl --user daemon-reload
     systemctl --user enable vinylgen.service vinylgen-tunnel.service
     systemctl --user restart vinylgen.service vinylgen-tunnel.service
