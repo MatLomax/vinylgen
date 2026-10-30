@@ -14,9 +14,7 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from vinylgen.contracts import (
-    TRACE_LENGTH_FIELDS, CleanupSettings, PaletteSettings, SegmentationBundle, TraceSettings)
-from vinylgen.web.models import TraceJobSettings
+from vinylgen.contracts import CleanupSettings, PaletteSettings, SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
@@ -121,7 +119,7 @@ class WebPipelineTest(PipelineApiHarness):
         self.assertEqual(settings_by_kind["trace"]["stale_concerns"], ["validation", "export"])
         self.assertEqual(settings_by_kind["export"]["stale_concerns"], [])
         self.assertIn("initial_colours", settings_by_kind["trace"]["palette"])
-        self.assertIn("curve_fit_tolerance", settings_by_kind["trace"]["trace"])
+        self.assertEqual(settings_by_kind["trace"]["trace"], asdict(TraceSettings()))
 
     def test_transparent_audit_overlays_are_trace_outputs(self) -> None:
         # A trace commits every TRACE_FILES entry it wrote; the trace concern's stale
@@ -227,64 +225,6 @@ class WebPipelineTest(PipelineApiHarness):
             "palette", project["id"], project["revisions"][0]["id"],
             palette={"initial_colours": 2, "min_colour_share": 0})
         return project, palette["result_revision_id"]
-
-    async def test_a_pixel_era_trace_is_served_in_thousandths_and_retraces_identically(self) -> None:
-        # A trace revision recorded before trace lengths were thousandths of the
-        # image's longer side stores pixels and no length_unit. The API serves it
-        # converted on the raster that run traced (40 px here), and a run posting the
-        # served settings draws the same geometry.
-        project, palette_revision = await self.flattened_project("Pixel Era")
-        recorded = {"curve_fit_tolerance": 1.2, "straight_line_max_deviation": 1.3,
-                    "minimum_straight_length": 3.0, "corner_analysis_span": 6.0,
-                    "curve_feature_scale": 0.6, "max_deviation": None}
-        units = {key: value * 1000 / 40 if key in TRACE_LENGTH_FIELDS and value is not None
-                 else value for key, value in recorded.items()}
-        units = {**units, "max_deviation": 2.0 * 1000 / 40, "length_unit": "per_mille"}
-        # A client still sending the retired corner threshold is accepted, without it.
-        first = (await self.run_job("trace", project["id"], palette_revision,
-                                    trace={**units, "corner_threshold": 50.0}))
-        self.assertNotIn("corner_threshold", self.app.state.store.get_revision(
-            first["result_revision_id"])["settings"]["trace"])
-        first = (await self.run_job("trace", project["id"], palette_revision,
-                                    trace=units))["result_revision_id"]
-        first_artifacts = await self.effective_kinds(first)
-        first_svg = (await self.client.get(first_artifacts["traced-edge"]["download_url"])).content
-        # The pixel-era record of that same run, as a trace revision with its SVG.
-        # It names side smoothness by its former name, corner_straightness, has no
-        # corner sharpening allowance (that followed the maximum deviation) and
-        # carries the retired corner threshold.
-        legacy_trace = {("corner_straightness" if key == "side_smoothness" else key): value
-                        for key, value in asdict(TraceSettings(length_unit="px", **recorded)).items()
-                        if key not in ("length_unit", "corner_sharpening_allowance")}
-        legacy_trace["corner_threshold"] = 50.0
-        legacy = self.app.state.store.create_revision(
-            project["id"], parent_revision_id=palette_revision, kind="trace",
-            message="Recorded in pixels", settings={
-                "pipeline_stage": "trace", "palette": None, "stale_concerns": ["export"],
-                "trace": legacy_trace})
-        uploaded = await self.client.post(
-            f"/api/revisions/{legacy['id']}/artifacts", data={"kind": "traced-overlap"},
-            files={"file": ("traced-overlap.svg", first_svg, "image/svg+xml")})
-        self.assertEqual(uploaded.status_code, 201, uploaded.text)
-        served = next(row for row in (await self.client.get(
-            f"/api/projects/{project['id']}/revisions")).json() if row["id"] == legacy["id"])
-        trace = served["settings"]["trace"]
-        self.assertEqual(trace["length_unit"], "per_mille")
-        self.assertNotIn("corner_straightness", trace)
-        self.assertNotIn("corner_threshold", trace)
-        followed = {"side_smoothness": "straight_line_max_deviation",
-                    "corner_sharpening_allowance": "max_deviation"}
-        for name in TRACE_LENGTH_FIELDS:
-            self.assertAlmostEqual(trace[name], units[followed.get(name, name)], msg=name)
-        # The stored record is untouched.
-        self.assertEqual(self.app.state.store.get_revision(legacy["id"])["settings"]["trace"],
-                         legacy_trace)
-        again = (await self.run_job("trace", project["id"], palette_revision, trace={
-            key: value for key, value in trace.items()
-            if key in TraceJobSettings.model_fields}))["result_revision_id"]
-        again_svg = (await self.client.get(
-            (await self.effective_kinds(again))["traced-edge"]["download_url"])).content
-        self.assertEqual(again_svg, first_svg)
 
     async def effective_kinds(self, revision_id: str) -> dict[str, dict]:
         rows = (await self.client.get(f"/api/revisions/{revision_id}/effective-artifacts")).json()
@@ -755,7 +695,7 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(audit["colours"]["omitted"]["name"], other["name"])
         # The trace's palette.json now gives the removed colour's name to the other
         # colour; a trace from it (no renames of its own) still omits the removed one,
-        # and the editor state and automatic order name the same colour.
+        # and the editor state names the same colour.
         renamed = json.loads(await self.download((await self.artifacts(traced))["palette"]))
         self.assertEqual(next(row["name"] for row in renamed["palette"]
                               if row["hex"] == other["hex"]), background["name"])
@@ -763,9 +703,6 @@ class WebCleanupStageTest(PipelineApiHarness):
         self.assertEqual(await self.omitted_hex(retraced), background["hex"])
         state = (await self.client.get(f"/api/revisions/{traced}/editor")).json()
         self.assertEqual(state["palette"][state["removed_colour_index"]]["hex"], background["hex"])
-        order = (await self.client.get(
-            f"/api/revisions/{traced}/automatic-layer-order")).json()["automatic_layer_order"]
-        self.assertEqual(order, [other["hex"]])
 
     async def test_a_cleanup_recorded_without_the_index_resolves_its_own_palette(self) -> None:
         # A cleanup recorded before the removed colour's index was: its name is resolved
@@ -1795,8 +1732,7 @@ class WebCleanupStageTest(PipelineApiHarness):
         project, palette_revision = await self.flattened()
         legacy_settings = {
             "pipeline_stage": "trace", "palette": None, "stale_concerns": ["export"],
-            "trace": {**{key: value for key, value in asdict(TraceSettings(length_unit="px")).items()
-                         if key != "length_unit"}, **asdict(CleanupSettings(
+            "trace": {**asdict(TraceSettings()), **asdict(CleanupSettings(
                 width_mm=400, cleanup=True, min_region_area=2))}}
         legacy = self.app.state.store.create_revision(
             project["id"], parent_revision_id=palette_revision, kind="trace",
@@ -1828,59 +1764,6 @@ class WebCleanupStageTest(PipelineApiHarness):
         job = await self.wait_for_job(response.json()["id"])
         self.assertEqual(job["status"], "failed")
         self.assertIn("does not uniquely match the palette", job["error"])
-
-
-class AutomaticLayerOrderTest(PipelineApiHarness):
-    """The automatic layer order the controls show is the inferred stacking, not palette
-    order, and leaves a removed colour out. The trace stacks no layers, so it records none."""
-
-    def three_colour_png(self) -> bytes:
-        # Navy fills the border; a large orange block sits inside, and a small cream block
-        # touches the right edge. The palette lists colours by share (orange before cream),
-        # but edge contact stacks cream below orange, so the orders differ.
-        pixels = np.full((32, 40, 3), (15, 35, 60), dtype=np.uint8)
-        pixels[4:28, 4:24] = (225, 95, 45)
-        pixels[8:14, 34:40] = (240, 230, 200)
-        buffer = io.BytesIO()
-        Image.fromarray(pixels, "RGB").save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    async def automatic(self, revision_id: str) -> list[str] | None:
-        response = await self.client.get(f"/api/revisions/{revision_id}/automatic-layer-order")
-        self.assertEqual(response.status_code, 200, response.text)
-        return response.json()["automatic_layer_order"]
-
-    async def test_matches_the_tracer_with_and_without_a_removed_colour(self) -> None:
-        imported = await self.client.post(
-            "/api/projects/import", data={"name": "Order Fixture"},
-            files={"source": ("fixture.png", self.three_colour_png(), "image/png")})
-        self.assertEqual(imported.status_code, 201, imported.text)
-        project = imported.json()
-        flattened = (await self.run_job(
-            "palette", project["id"], project["revisions"][0]["id"],
-            palette={"initial_colours": 3, "min_colour_share": 0, "min_region_pixels": 0,
-                     "dither_radius": 0}))["result_revision_id"]
-        state = (await self.client.get(f"/api/revisions/{flattened}/editor")).json()
-        self.assertEqual(len(state["palette"]), 3)
-        # The editor state no longer carries (or computes) the order.
-        self.assertNotIn("automatic_layer_order", state)
-        palette_order = [row["hex"] for row in state["palette"]]
-        automatic = await self.automatic(flattened)
-        # Not palette order: returning it instead would fail here.
-        self.assertNotEqual(automatic, palette_order)
-        self.assertEqual(sorted(automatic), sorted(palette_order))
-
-        # A cleanup removing a colour (named as the tracer resolves it): the order leaves it
-        # out, and still differs from the remaining colours' palette order.
-        navy = next(row for row in state["palette"] if row["rgb"][2] > row["rgb"][0])
-        cleaned = (await self.run_job("cleanup", project["id"], flattened, cleanup={
-            "width_mm": 40, "remove_colour": navy["hex"][1:].lower()}))["result_revision_id"]
-        cleaned_state = (await self.client.get(f"/api/revisions/{cleaned}/editor")).json()
-        cleaned_automatic = await self.automatic(cleaned)
-        self.assertEqual(len(cleaned_automatic), 2)
-        self.assertNotIn(navy["hex"], cleaned_automatic)
-        self.assertNotEqual(cleaned_automatic,
-                            [row["hex"] for row in cleaned_state["palette"] if row["hex"] != navy["hex"]])
 
 
 class PipelineWorkerTest(unittest.TestCase):

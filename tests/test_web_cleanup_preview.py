@@ -17,7 +17,7 @@ from PIL import Image
 
 from vinylgen import cleanup_window
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION, measure_colour_regions
-from vinylgen.trace_window import PreviewCancelled
+from vinylgen.cleanup_window import PreviewCancelled
 from vinylgen.web import trace_preview
 from vinylgen.web.app import create_app
 from vinylgen.web.config import WebConfig
@@ -462,10 +462,10 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(await self.regions_state(palette_revision),
                          {"measured": True, "measuring": False})
-        # A trace preview evicts the raster and its measurements.
-        traced = await self.client.post(f"/api/revisions/{palette_revision}/trace-preview",
-                                        json={"window": WINDOW})
-        self.assertEqual(traced.status_code, 200, traced.text)
+        # Going idle releases the raster and its measurements.
+        self.service._clock = lambda: (self.service._last_used
+                                       + trace_preview.SEGMENTATION_IDLE_SECONDS)
+        self.assertTrue(self.service.release_if_idle())
         self.assertEqual(await self.regions_state(palette_revision),
                          {"measured": False, "measuring": False})
 
@@ -579,24 +579,12 @@ class CleanupPreviewApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 500, response.text)
         self.assertIn("preview failed", response.json()["detail"])
 
-    async def test_one_raster_is_resident_and_it_is_released_when_idle(self) -> None:
+    async def test_the_raster_is_released_when_idle(self) -> None:
         _, _, palette_revision = await self.flattened_project()
         now = [1000.0]
         self.service._clock = lambda: now[0]
         cleaned = await self.preview(palette_revision, WINDOW, {"cleanup": True})
         self.assertEqual(cleaned.status_code, 200, cleaned.text)
-        self.assertIsNotNone(self.service._cleanup_source)
-        # A trace preview releases the uncleaned raster before loading its own.
-        traced = await self.client.post(f"/api/revisions/{palette_revision}/trace-preview",
-                                        json={"window": WINDOW})
-        self.assertEqual(traced.status_code, 200, traced.text)
-        self.assertIsNone(self.service._cleanup_source)
-        self.assertIsNotNone(self.service._segmentation)
-        # And the other way round.
-        again = await self.preview(palette_revision, WINDOW, {"cleanup": True})
-        self.assertEqual(again.status_code, 200, again.text)
-        self.assertIsNone(self.service._segmentation)
-        self.assertEqual(self.service._boundaries.keys(), [])
         self.assertIsNotNone(self.service._cleanup_source)
         now[0] += trace_preview.SEGMENTATION_IDLE_SECONDS - 1
         self.assertFalse(self.service.release_if_idle())

@@ -89,15 +89,15 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | Canonical term | Definition | Accepted aliases | Avoid or qualify |
 |---|---|---|---|
 | **tracing** | Deterministically converting the segmentation contract's labels into the planar-map file with one call to t3 (`t3api.trace`), and from it the edge variant and the audits. | trace stage, SVG tracing | vectorisation, if shared-boundary guarantees matter |
-| **t3** | The turbo tube tiler, the tracing engine, installed as the `t3api` wheel; it draws lines, circular and elliptical arcs and cubics within a tube of half-width 1.75 px around the label boundaries, at its one setting. | turbo tube tiler, `t3api` | the old fitter (`curve_fit.py`, which only the live window preview still runs) |
+| **t3** | The turbo tube tiler, the tracing engine, installed as the `t3api` wheel; it draws lines, circular and elliptical arcs and cubics within a tube of half-width 1.75 px around the label boundaries, at its one setting. | turbo tube tiler, `t3api` | the old fitter (`curve_fit.py`, which no longer runs) |
 | **planar-map file** | `map.json`: t3's drawing as a label map, every boundary edge stored once with the faces on its two sides and every face as rings of signed edge references, in paint order, every number exact. The trace's artefact and the one source of its geometry. | planar map, `map.json`, traced map | face map file (`faces.json`, which stores every shared boundary twice) |
 | **canonical boundary** | The single shared interface fitted once and consumed in reverse by the neighbouring colour. | shared boundary, canonical interface | two matching paths, independently traced edge |
 | **colour layer** | The named SVG layer containing the cut geometry owned by one final palette colour. | palette layer, vinyl layer when material use is intended | region, component |
-| **layer order** | The bottom-to-top stacking order used to construct overlap and edge variants. | stacking order, z-order | palette order, area order |
 | **omitted colour** | A palette colour intentionally excluded from traced cut layers. | excluded colour, omitted layer colour | removed colour, deleted colour, background colour |
-| **overlap distance** | The configured distance by which lower colour layers extend beneath upper layers. | overlap, underlap allowance | stroke, bleed unless explicitly defined |
-| **overlap variant** | `traced-overlap.svg`, in which lower layers may extend beneath upper layers; written by trace revisions made before t3, and by the live window preview. | overlap SVG | layered SVG, without naming the variant |
+| **overlap variant** | `traced-overlap.svg`, in which lower layers may extend beneath upper layers; written only by trace revisions made before t3. | overlap SVG | layered SVG, without naming the variant |
 | **edge variant** | `traced-edge.svg`, the gap-free edge-to-edge partition, exported one way from the planar-map file: one layer per included colour, one even-odd path per face. | edge-to-edge SVG, edge SVG | tiled SVG, independently traced SVG |
+| **live trace view** | The Trace canvas's drawing of a running trace: t3's faces as they are emitted, painted in the edge variant's order (palette order, each colour's faces in face order) so it grows into exactly what the finished edge variant paints; cleared when the trace ends. | live trace | live preview, trace preview (the windowed trace preview no longer exists) |
+| **soft node limit** | A trace setting (`soft_path_nodes`, `soft_layer_nodes`, `soft_document_nodes`) naming a node count above which `trace.json` warns about the path, the layer or the document; it never changes the geometry. | complexity warning limit | node cap, hard limit |
 | **cutter cleanup** | Optional trace-stage cleanup of a trace-local copy of the labelled partition, before boundary fitting, using physical or pixel width/area thresholds. It does not alter `flattened.png`. | trace cleanup, cut-detail cleanup | small-region cleanup, post-fit SVG editing, vector cleanup when it implies path mutation; physical-detail cleanup outside physical mode |
 | **remove** | Replacing grouped undersized labelled regions with a stable touching colour. | remove undersized regions, fill into neighbour | delete, erase, gap fill |
 | **widen** | Expanding a narrow labelled region into neighbouring labelled regions until the threshold is met, unless neighbour constraints make it unsafe. | thicken, widen feature | dilate, gap widen as a separate algorithm |
@@ -108,9 +108,7 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **minimum region area** | The area threshold used by cutter cleanup to classify undersized regions. | removal area threshold | minimum region pixels |
 | **remove-below width** | In remove-then-widen mode, the separate width below which regions are removed before surviving geometry is widened. | removal width threshold | minimum detail width |
 | **physical mode** | Trace configuration with output dimensions, making width and area settings use millimetres and square millimetres. | physical units mode | cutter-ready mode |
-| **trace length unit** | A thousandth (‰) of the traced image's longer side: the unit of the eight trace lengths (curve-fit tolerance, straight-line deviation, minimum straight length, maximum deviation, side smoothness, corner sharpening allowance, analysis scale, curve feature scale), resolved to pixels on the whole traced image before fitting. `length_unit: per_mille`. | thousandths, ‰ of the image | px, when a pixel-era record (`length_unit: px`, or none) is meant |
 | **analysis scale** | The trace length (`corner_analysis_span`) the corner detector's side windows derive from: the span and 1.75× it, and the join tangent windows at ¼ and ½. | corner analysis span | span, without saying which |
-| **pixel-era record** | Trace settings recorded before trace lengths were thousandths: lengths in pixels, marked `length_unit: px` or carrying no `length_unit`. Converted on the image it traced, never recognised by magnitude. | pixel record | legacy settings, without saying which legacy |
 | **pixel mode** | Trace configuration without physical dimensions, making width and area settings use pixels and square pixels. | raster units mode | physical mode |
 | **trace fallback** | A recorded local recovery used when ordinary fitted geometry cannot satisfy protected-feature validation. | local fallback, dense fallback when that final step is meant | global raster trace |
 
@@ -172,8 +170,7 @@ circular arc counts as the cubics Inkscape converts it to.
 - **Small-region cleanup** operates on raster pixels during palette processing;
   **cutter cleanup** operates during tracing with width/area thresholds.
 - **Initial colour candidates** are not the **final colour count**.
-- **Overlap distance** changes layer construction; **trace fidelity** changes
-  geometric approximation; **cut detail** changes feature cleanup.
+- **Trace fidelity** changes geometric approximation; **cut detail** changes feature cleanup.
 - A **narrow gap** is a **narrow area** on another colour layer in the complete
   labelled partition. Widening is one symmetric operation, not two algorithms.
 - **Structural validation** is a subset of **mechanical validation**; neither

@@ -5,7 +5,7 @@ import type { CleanupSettings } from './api'
 import { CLEANUP_CHANGES_OVERLAY_KIND, CLEANUP_CHANGES_STORAGE_KEY, CLEANUP_PREVIEW_STORAGE_KEY, MEASURING_BADGE_TEXT, type CleanupPreviewOptions } from './CleanupPreview'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
-import { BUSY_NOTE_POLL_MS, LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
+import { BUSY_NOTE_POLL_MS, PREVIEW_DEBOUNCE_MS } from './LivePreview'
 
 const layers: WorkspaceLayer[] = [
   { id: 'flat', name: 'Flattened', url: '/flat.png', mediaType: 'image/png', role: 'image' },
@@ -202,8 +202,7 @@ describe('Cleanup canvas live preview', () => {
     expect(screen.getByRole('status').textContent).toBe("Preview failed: unknown colour 'Nonexistent'")
   })
 
-  it('remembers its switch under its own key, apart from the trace switch', () => {
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
+  it('remembers its switch under its own key', () => {
     prepare(options())
     const toggle = screen.getByRole('switch', { name: 'Live preview' }) as HTMLInputElement
     expect(toggle.checked).toBe(false)
@@ -214,7 +213,6 @@ describe('Cleanup canvas live preview', () => {
     expect((screen.getByRole('switch', { name: 'Live preview' }) as HTMLInputElement).checked).toBe(true)
     fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
     expect(localStorage.getItem(CLEANUP_PREVIEW_STORAGE_KEY)).toBe('off')
-    expect(localStorage.getItem(LIVE_PREVIEW_STORAGE_KEY)).toBe('on')
   })
 
   it('Show changes draws the cleanup run\'s changes over the whole image, with Live preview off, and is remembered', () => {

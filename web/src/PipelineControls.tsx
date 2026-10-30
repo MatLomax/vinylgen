@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CleanupSettings, PaletteColour, PaletteSettings, TraceSettings } from './api'
+import type { CleanupSettings, PaletteColour, PaletteSettings, TraceSettings, TracerInfo } from './api'
 import type { CanvasMarker } from './ImageWorkspace'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
@@ -12,74 +12,13 @@ export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
   width_mm: null, height_mm: null, remove_colour: null,
   cleanup: false, cleanup_action: 'remove', min_detail_width: 0, min_region_area: 0, remove_below_width: 0,
 }
-// Trace lengths are thousandths of the traced image's longer side (vinylgen.contracts);
-// these mirror its default tables.
-export const TRACE_LENGTH_FIELDS = ['curve_fit_tolerance', 'straight_line_max_deviation', 'minimum_straight_length', 'max_deviation', 'side_smoothness', 'corner_sharpening_allowance', 'corner_analysis_span', 'curve_feature_scale'] as const
-export type TraceLengthField = typeof TRACE_LENGTH_FIELDS[number]
-const PER_MILLE_DEFAULTS = { curve_fit_tolerance: .75, straight_line_max_deviation: .8, minimum_straight_length: 2, corner_analysis_span: 4, curve_feature_scale: 2 }
-// The pixel defaults every setting recorded before units was traced with.
-const PX_DEFAULTS: Record<string, number> = { curve_fit_tolerance: 1.5, straight_line_max_deviation: 1.6, minimum_straight_length: 4, corner_analysis_span: 8, curve_feature_scale: 4 }
-// Lengths defaulting to another length's value, and automatic lengths (null) with their
-// default in thousandths and in pixels.
-const FOLLOWING_LENGTHS: Record<string, TraceLengthField> = { side_smoothness: 'straight_line_max_deviation', corner_sharpening_allowance: 'max_deviation' }
-const AUTOMATIC_LENGTHS: Record<string, [number, number]> = { max_deviation: [1, 2] }
-export const CURVE_FEATURE_SCALE_RANGE: [number, number] = [.25, 16]
-export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
-  overlap: 0, solid_underlayers: false, layer_order: null, length_unit: 'per_mille',
-  ...PER_MILLE_DEFAULTS, max_deviation: null, side_smoothness: PER_MILLE_DEFAULTS.straight_line_max_deviation, corner_sharpening_allowance: null,
-  straight_line_snap: 'axis', snap_angle: 2, node_placement: 'prefer_extremes', nodes_at_bends: true,
-  soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
-}
-// Whether a stored trace record holds pixel lengths: it says 'px', or predates units (no
-// marker) and sets a length. One setting no length (a draft holding only a layer order)
-// has nothing to convert. The server serves every recorded run in thousandths.
-export function isPixelRecord(stored: Record<string, unknown>): boolean {
-  if (stored.length_unit !== undefined) return stored.length_unit === 'px'
-  return TRACE_LENGTH_FIELDS.some(name => typeof stored[name] === 'number')
-}
-// A stored pixel-era trace record with its lengths in thousandths of an image whose longer
-// side is `longSide` px (vinylgen.trace_lengths.pixel_record_in_units): absent lengths take
-// the pixel-era defaults, following lengths the recorded value they follow, automatic ones
-// their pixel default, so the record traces as it did. Other keys are kept as they are.
-export function pixelRecordInUnits<T extends Record<string, unknown>>(stored: T, longSide: number): T {
-  if (!isPixelRecord(stored)) return stored
-  const lengths: Record<string, number> = {}
-  for (const name of TRACE_LENGTH_FIELDS) {
-    const value = stored[name]
-    if (typeof value === 'number') lengths[name] = value
-    else if (name in PX_DEFAULTS) lengths[name] = PX_DEFAULTS[name]
-  }
-  for (const [name, [, px]] of Object.entries(AUTOMATIC_LENGTHS)) if (lengths[name] === undefined) lengths[name] = px
-  for (const [name, source] of Object.entries(FOLLOWING_LENGTHS)) if (lengths[name] === undefined) lengths[name] = lengths[source]
-  return { ...stored, ...Object.fromEntries(Object.entries(lengths).map(([name, value]) => [name, value * 1000 / longSide])), length_unit: 'per_mille' }
-}
-// What a length in thousandths comes to in pixels on an image whose longer side is `longSide`.
-export function lengthInPixels(value: number, longSide: number): number {
-  return value * longSide / 1000
-}
-// The help-text hint of a trace length: its pixels on the current image (the automatic
-// default for an automatic length left empty, or an explicit `automaticUnits` for a
-// length whose automatic value follows another field's, such as the corner sharpening
-// allowance following the maximum deviation), or nothing before the image is measured.
-// Lengths the trace never resolves below MIN_ACCURACY_PX (vinylgen.trace_lengths): below a
-// pixel they would chase the boundary's sub-pixel noise on a small image.
-export const FLOORED_LENGTHS: readonly TraceLengthField[] = ['curve_fit_tolerance', 'max_deviation', 'corner_sharpening_allowance']
-export const MIN_ACCURACY_PX = 1
-// The minimum straight length always resolves above one pixel step
-// (MIN_STRAIGHT_RUN_PX in vinylgen.trace_lengths), so a single step of a pixel
-// staircase is never a straight run.
-export const STRAIGHT_RUN_FLOORED: TraceLengthField = 'minimum_straight_length'
-export function pixelHint(name: TraceLengthField, value: number | null, longSide: number | null, automaticUnits = AUTOMATIC_LENGTHS[name]?.[0]): string {
-  if (!longSide) return ''
-  const units = value ?? automaticUnits
-  if (units === undefined) return ''
-  const px = lengthInPixels(units, longSide)
-  const automatic = value === null ? ' (Automatic)' : ''
-  if (FLOORED_LENGTHS.includes(name) && px < MIN_ACCURACY_PX) return ` = ${MIN_ACCURACY_PX} px on this image${automatic}, held at the ${MIN_ACCURACY_PX} px minimum.`
-  if (name === STRAIGHT_RUN_FLOORED && px <= MIN_ACCURACY_PX) return ` = just over ${MIN_ACCURACY_PX} px on this image${automatic}, held above one pixel step.`
-  const shown = px >= 10 ? px.toFixed(0) : px >= 1 ? String(Number(px.toFixed(1))) : String(Number(px.toFixed(2)))
-  return ` = ${shown} px on this image${automatic}.`
-}
+// The trace's settings are its three soft node limits (vinylgen.contracts.TraceSettings):
+// each only warns. t3 traces at its one fixed setting, so nothing the form holds changes
+// the traced shapes.
+export const DEFAULT_TRACE_SETTINGS: TraceSettings = { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000 }
+const TRACE_KEYS = Object.keys(DEFAULT_TRACE_SETTINGS) as (keyof TraceSettings)[]
+// t3api's one fixed setting (t3api.SETTING), shown when the server does not report it.
+export const T3_SETTING: TracerInfo['setting'] = { w: 3.5, A1: 22.5, A2: 45, L: 4 }
 const CLEANUP_KEYS = Object.keys(DEFAULT_CLEANUP_SETTINGS) as (keyof CleanupSettings)[]
 // Trace settings recorded before the cleanup stage existed embed the physical size, the
 // removed colour and the cutter cleanup. Those values belong to the Cleanup form; this
@@ -88,27 +27,15 @@ export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<
   const picked = Object.fromEntries(CLEANUP_KEYS.filter(key => key in stored).map(key => [key, stored[key]]))
   return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
-// Bring stored trace settings up to the current fields. A record still keyed
-// `corner_straightness` (its name before it became `side_smoothness`) loads under the
-// new key, and the old key is dropped so it is never sent. Settings recorded without
-// either key detected corners with their straight-line deviation, so they load with
-// that value (absent both, the default applies when merged over the defaults). A
-// `curve_optimization: false` flag loads as a straight-line deviation of 0 (straighten
-// only exactly straight runs); the flag itself is dropped. A retired `corner_threshold`
-// (cusps are now decided by whether the two sides reach the corner, not a fixed turn
-// angle) is dropped outright. Embedded cleanup-stage fields (see legacyCleanupSettings)
-// are dropped from the trace form.
-export function normalizeTraceSettings<T extends Partial<TraceSettings>>(stored: T & { curve_optimization?: unknown; corner_straightness?: number; corner_threshold?: unknown }): T {
-  const { curve_optimization: legacy, corner_straightness: legacySmoothness, corner_threshold: _retired, ...rest } = stored
-  const next: Partial<TraceSettings> = { ...rest }
-  for (const key of CLEANUP_KEYS) delete (next as Record<string, unknown>)[key]
-  if (next.side_smoothness == null) {
-    delete next.side_smoothness
-    if (typeof legacySmoothness === 'number') next.side_smoothness = legacySmoothness
-    else if (typeof next.straight_line_max_deviation === 'number') next.side_smoothness = next.straight_line_max_deviation
-  }
-  if (legacy === false) next.straight_line_max_deviation = 0
-  return next as T
+// A stored trace record or browser draft as the trace form loads it: the soft node limits
+// it holds and nothing else. Every other field an older record carries (the old fitter's
+// lengths and their unit, its corner, node and snap controls, overlap, solid underlayers,
+// layer order, the renamed `corner_straightness`, `corner_threshold`, the pixel-era
+// `curve_optimization` and the cleanup fields a trace once embedded, which
+// legacyCleanupSettings hands to the Cleanup form) is dropped, so it is never sent.
+export function normalizeTraceSettings(stored: Record<string, unknown> | Partial<TraceSettings>): Partial<TraceSettings> {
+  const record = stored as Record<string, unknown>
+  return Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number').map(key => [key, record[key]])) as Partial<TraceSettings>
 }
 // The physical size a trace uses, from its cleanup: both sides in mm, with a one-sided
 // size completed from the raster's proportions once those are known.
@@ -196,7 +123,7 @@ function PointList({ title, kind, points, onRemove, onHighlight }: { title: stri
   return points.length ? <div className="selection-list"><strong>{title}</strong>{points.map((point, index) => <PointRow key={`${point}-${index}`} id={preservationMarkerId(kind, index)} number={index + 1} onHighlight={onHighlight} onRemove={() => onRemove(index)}>{point.join(', ')}</PointRow>)}</div> : null
 }
 
-// The palette colour a layer-order entry (or a removed colour) names, resolved as the
+// The palette colour a removed colour names, resolved as the
 // tracer's resolve_colour does: the name, the hex or the hex without '#', ignoring case,
 // naming exactly one colour. Anything else names none.
 // Python's str.casefold, closely enough for colour names: upper- then lower-casing also
@@ -223,101 +150,22 @@ export function removedColourChoice(value: string | null, palette: PaletteColour
   return matches.length === 1 ? { status: 'match', colour: matches[0] } : { status: matches.length ? 'ambiguous' : 'missing' }
 }
 
-// Whether layer stacking order can change the traced geometry (layer_order_matters in
-// vinylgen/tracing.py): only solid underlayers or a positive overlap extend lower layers
-// under upper ones. Otherwise colours meet edge to edge, the tracer infers no order, and
-// the automatic order is neither fetched nor offered for reordering.
-export function layerOrderMatters(trace: Pick<TraceSettings, 'solid_underlayers' | 'overlap'>): boolean {
-  return trace.solid_underlayers || trace.overlap > 0
-}
-
-// Arrange the palette colours in the bottom-to-top order a trace stacks them: the stored
-// order's colours first (matched exactly as the trace request is, resolvePaletteColour),
-// then the rest as the tracer's automatic order (`automatic`, hex bottom-to-top) places
-// them, as apply_order_override does; palette order only when that is unknown.
-function orderColours(colours: PaletteColour[], order: string[] | null, palette: PaletteColour[] = colours, automatic: string[] | null = null): PaletteColour[] {
-  const named = (entries: string[] | null, colour: PaletteColour) => {
-    const at = (entries ?? []).findIndex(entry => resolvePaletteColour(entry, palette)?.index === colour.index)
-    return at === -1 ? Infinity : at
-  }
-  return colours.map((colour, position) => ({ colour, key: [named(order, colour), named(automatic, colour), position] }))
-    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2])
-    .map(entry => entry.colour)
-}
-
-// A drag-and-drop reorderable list of the palette colours, bottom to top. Each drag or
-// button move rewrites the whole order as hex values, so any stale or partial stored order
-// is normalised to the full palette on first interaction. Up/down buttons cover touch and
-// keyboard, since native HTML5 drag does not fire on touch screens.
-// `locked` (a reason) keeps the list shown but not reorderable: the colours listed are not
-// the selected revision's own yet, so an order written from them would name stale colours.
-// `removedIndex` (the palette index of the colour the active cleanup removes) gets no layer,
-// so it is neither listed nor written.
-// `onRetry`, when given, offers to re-read what `locked` says failed to load.
-function LayerOrderList({ colours: palette, order, onChange, dirty, locked, removedIndex, automaticOrder, onRetry }: {
-  colours: PaletteColour[]; order: string[] | null; onChange: (value: string[] | null) => void; dirty?: boolean; locked?: string | null; removedIndex?: number | null; automaticOrder?: string[] | null; onRetry?: (() => void) | null
-}) {
-  const [dragging, setDragging] = useState<number | null>(null)
-  const removed = palette.find(colour => colour.index === removedIndex)
-  const colours = palette.filter(colour => colour.index !== removedIndex)
-  // Display top-down (top of the list is the top layer); the stored order is bottom-to-top,
-  // so serialise the reversed display back to hex on every move.
-  const display = orderColours(colours, order, palette, automaticOrder ?? null).reverse()
-  const move = (from: number, to: number) => {
-    if (locked || to < 0 || to >= display.length || from === to) return
-    const next = [...display]
-    const [item] = next.splice(from, 1)
-    next.splice(to, 0, item)
-    onChange([...next].reverse().map(colour => colour.hex))
-  }
-  if (!colours.length) return <Field label="Layer order" help="Stacking order of the layers, bottom to top. Available once the image is flattened." dirty={dirty}><p className="stage-guidance">{locked ?? 'Flatten this revision to choose a layer order.'}</p></Field>
-  return <div className="setting-field layer-order-field">
-    <span>Layer order (top layer first)<DirtyDot dirty={dirty} /></span>
-    <ul className="layer-order-list" role="list">
-      {display.map((colour, index) => <li key={colour.index}
-        draggable={!locked}
-        onDragStart={() => setDragging(index)}
-        onDragEnd={() => setDragging(null)}
-        onDragOver={event => event.preventDefault()}
-        onDrop={event => { event.preventDefault(); if (dragging !== null) move(dragging, index); setDragging(null) }}
-        className={dragging === index ? 'is-dragging' : undefined}>
-        <span className="drag-handle" aria-hidden="true">⣿</span>
-        <span className="swatch" style={{ background: colour.hex }} />
-        <span className="layer-order-name">{colour.name || colour.hex}</span>
-        <span className="layer-order-buttons">
-          <button type="button" className="secondary" disabled={Boolean(locked) || index === 0} aria-describedby={locked ? 'layer-order-lock' : undefined} aria-label={`Move ${colour.name || colour.hex} up a layer`} onClick={() => move(index, index - 1)}>↑</button>
-          <button type="button" className="secondary" disabled={Boolean(locked) || index === display.length - 1} aria-describedby={locked ? 'layer-order-lock' : undefined} aria-label={`Move ${colour.name || colour.hex} down a layer`} onClick={() => move(index, index + 1)}>↓</button>
-        </span>
-      </li>)}
-    </ul>
-    {removed && <small className="layer-order-removed">{removed.name || removed.hex} is removed in Cleanup and gets no layer.</small>}
-    {locked ? <small id="layer-order-lock">{locked}{onRetry && <> <button type="button" className="link-button" onClick={onRetry}>Retry</button></>}</small>
-      : <small>Stacking order of the layers: the top of the list is cut as the top layer. Drag or use the arrows to reorder. {order ? <button type="button" className="link-button" onClick={() => onChange(null)}>Reset to automatic</button> : 'Automatic order until you reorder.'}</small>}
-  </div>
-}
-
-export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, layerOrderLocked = null, removedIndex = null, removalPaletteCurrent = true, removalBlocked = null, automaticOrder = null, onRetryLayerOrder = null, onHighlightPoint = () => undefined }: {
+export function PipelineControls({ stage, palette, setPalette, basePalette, trace, setTrace, baseTrace, cleanup = DEFAULT_CLEANUP_SETTINGS, setCleanup = () => undefined, baseCleanup = DEFAULT_CLEANUP_SETTINGS, paletteColours, selectionMode, setSelectionMode, onReset, iterationCount, iterationIndex, onStep, stepDisabled = false, onCommitDraft, tracedSize = null, traceSize = null, tracer = null, removalPaletteCurrent = true, removalBlocked = null, onHighlightPoint = () => undefined }: {
   stage: 'flatten' | 'cleanup' | 'trace'; palette: PaletteSettings; setPalette: (value: PaletteSettings) => void; basePalette: PaletteSettings; trace: TraceSettings; setTrace: (value: TraceSettings) => void; baseTrace: TraceSettings
   cleanup?: CleanupSettings; setCleanup?: (value: CleanupSettings) => void; baseCleanup?: CleanupSettings
   paletteColours: PaletteColour[]; selectionMode: SelectionMode; setSelectionMode: (value: SelectionMode) => void; onReset: () => void; iterationCount: number; iterationIndex: number; onStep: (delta: number) => void; stepDisabled?: boolean; onCommitDraft: () => void
   tracedSize?: { width: number; height: number } | null
   // The physical size the trace uses, set by the nearest cleanup; null traces in px.
   traceSize?: PhysicalSize | null
-  // Why the layer order cannot be rewritten now: its colours are not the selected revision's,
-  // or the automatic order unnamed colours follow is still loading or failed to load.
-  layerOrderLocked?: string | null
-  // The palette index of the colour the active cleanup removes; it gets no layer.
-  removedIndex?: number | null
+  // The tracer the server traces with (its health report); the read-only tracer line
+  // names t3api and its one setting without it, and its build with it.
+  tracer?: TracerInfo | null
   // Whether `paletteColours` is the shown revision's own (not the last one's, still
   // listed while it loads); the Cleanup form judges its removed colour only then.
   removalPaletteCurrent?: boolean
   // Why Cleanup is blocked: the form still holds the last cleanup's removed colour, which
   // is not exactly one colour of this palette (EditorState.inherited_remove_colour).
   removalBlocked?: string | null
-  // The tracer's automatic bottom-to-top order (hex), which unnamed colours follow.
-  automaticOrder?: string[] | null
-  // Re-reads the automatic order after a failed read (shown with `layerOrderLocked`).
-  onRetryLayerOrder?: (() => void) | null
   // The canvas marker id of the preservation row hovered or focused, or null.
   onHighlightPoint?: (id: string | null) => void
 }) {
@@ -336,16 +184,9 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       : null
   const removalNote = removal.colour && !removalBlocked ? <small id="remove-colour-status" className="remove-colour-match"><span className="swatch" style={{ background: removal.colour.hex }} /> Removes {removal.colour.name || removal.colour.hex} ({removal.colour.hex})</small>
     : removalProblem ? <small id="remove-colour-status" className="remove-colour-missing" role="alert">{removalProblem}</small> : null
-  // Trace lengths are thousandths of the traced image's longer side, each hinted in its
-  // pixels on this image; physical settings follow the output size: the Cleanup form's
-  // own, and for Trace the size its cleanup set.
-  const longSide = tracedSize ? Math.max(tracedSize.width, tracedSize.height) : null
-  // The corner sharpening allowance's own automatic value is not fixed: left empty it
-  // follows the maximum deviation, whether that is itself a set value or automatic.
-  const hint = (name: TraceLengthField) => name === 'corner_sharpening_allowance'
-    ? pixelHint(name, trace.corner_sharpening_allowance, longSide, trace.max_deviation ?? AUTOMATIC_LENGTHS.max_deviation[0])
-    : pixelHint(name, trace[name], longSide)
-  const physical = stage === 'cleanup' ? cleanup.width_mm !== null || cleanup.height_mm !== null : traceSize !== null
+  // Cleanup's lengths and areas follow its own physical size: mm with one, else px.
+  const physical = cleanup.width_mm !== null || cleanup.height_mm !== null
+  const setting = tracer?.setting ?? T3_SETTING
   const length = physical ? 'mm' : 'px'
   const area = physical ? 'mm²' : 'px²'
   const preservationDirty = pd('protected_component_points') || pd('preserved_colour_points') || pd('distinct_colour_point_pairs')
@@ -410,8 +251,8 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       {palette.distinct_colour_point_pairs.length > 0 && <div className="selection-list"><strong>Separate pairs</strong>{palette.distinct_colour_point_pairs.map((pair, index) => <PointRow key={index} id={preservationMarkerId('pair', index)} number={index + 1} onHighlight={onHighlightPoint} onRemove={() => p('distinct_colour_point_pairs', palette.distinct_colour_point_pairs.filter((_, row) => row !== index))}>{pair[0].join(', ')} ↔ {pair[1].join(', ')}</PointRow>)}</div>}</section>
     </> : stage === 'cleanup' ? <>
       <section className="settings-group"><h3>Physical output</h3><p>Set the vinyl size and the colour left uncut. Trace uses both; changing them means running Cleanup again.</p><div className="settings-grid">
-        <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches overlap and cleanup to mm; it never changes the curves." value={cleanup.width_mm} optional dirty={cd('width_mm')} onChange={value => c('width_mm', value)} />
-        <NumberField label="Height (mm)" help="Cut height of the whole design in mm, as an alternative to width. Blank both to keep overlap and cleanup in px." value={cleanup.height_mm} optional dirty={cd('height_mm')} onChange={value => c('height_mm', value)} />
+        <NumberField label="Width (mm)" help="Cut width of the whole design in mm; height follows the image proportions. Setting a size switches cleanup to mm; it never changes the curves." value={cleanup.width_mm} optional dirty={cd('width_mm')} onChange={value => c('width_mm', value)} />
+        <NumberField label="Height (mm)" help="Cut height of the whole design in mm, as an alternative to width. Blank both to keep cleanup in px." value={cleanup.height_mm} optional dirty={cd('height_mm')} onChange={value => c('height_mm', value)} />
         <div className="remove-colour-field"><Field label="Remove colour" help="Leave one colour out of the cut, by name or hex, usually the colour of the backing material. Blank cuts every colour." dirty={cd('remove_colour')}><input value={cleanup.remove_colour ?? ''} placeholder="None" aria-invalid={removalProblem ? true : undefined} aria-describedby={removalNote ? 'remove-colour-status' : undefined} onChange={event => c('remove_colour', event.target.value || null)} /></Field>
           {removalNote}</div>
       </div></section>
@@ -422,23 +263,8 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       </div></section>
     </> : <>
       {tracedSize && <p className="settings-save-note traced-size">Traced image: {tracedSize.width} × {tracedSize.height} px</p>}
-      <section className="settings-group"><h3>Layers &amp; overlap</h3><p>Stack the colour layers for cutting. The physical size and removed colour are set in Cleanup.</p>
-        <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
-        <div className="settings-grid">
-        <NumberField label={`Layer overlap (${length})`} help={`How far each lower layer extends under the layers above it, in ${length}. 0: colours meet edge to edge. Higher: more forgiving of misaligned layers, uses more vinyl.`} value={trace.overlap} dirty={td('overlap')} onChange={value => t('overlap', value!)} />
-        <label className="check-field"><input type="checkbox" checked={trace.solid_underlayers} onChange={event => t('solid_underlayers', event.target.checked)} /><span><strong>Solid underlayers<DirtyDot dirty={td('solid_underlayers')} /></strong><small>On: each lower layer is cut as a solid shape under everything above it, so no edges are shared and alignment is easiest; uses the most vinyl. Replaces the overlap distance.</small></span></label>
-        {layerOrderMatters(trace) && <LayerOrderList colours={paletteColours} order={trace.layer_order} onChange={value => t('layer_order', value)} dirty={td('layer_order')} locked={layerOrderLocked} removedIndex={removedIndex} automaticOrder={automaticOrder} onRetry={onRetryLayerOrder} />}
-      </div></section>
-      <section className="settings-group"><h3>Path fidelity</h3><p>Balance smooth editable curves against close raster adherence. Lengths here are thousandths (‰) of the traced image's longer side, so a setting traces alike at any image size; each says what it comes to in pixels on this image.</p><div className="settings-grid">
-        <NumberField label="Analysis scale (‰)" help={`Length of edge, in ‰ of the image's longer side, checked on each side of a possible corner. Lower: corners on short edges are found. Higher: small wiggles and pixel steps are ignored.${hint('corner_analysis_span')}`} value={trace.corner_analysis_span} dirty={td('corner_analysis_span')} onChange={value => t('corner_analysis_span', value!)} /><NumberField label="Side smoothness (‰)" help={`How far, in ‰ of the image's longer side, the edge on each side of a possible corner may stray from a smooth arc (a straight line or a steady curve) and still confirm the corner. Lower: only clean sides make sharp corners. Higher: rougher sides still get sharp corners.${hint('side_smoothness')}`} value={trace.side_smoothness} dirty={td('side_smoothness')} onChange={value => t('side_smoothness', value!)} /><NumberField label="Corner sharpening allowance (‰)" help={`How far, in ‰ of the image's longer side, a sharpened corner may lie from the drawn edge (Automatic: the maximum deviation). A rounding snaps sharp only when both its sharp point is within this distance and its curve begins within about 2.4 times it of the corner, so shallow, wide bends stay round. Lower: only near-sharp corners sharpen. Higher: softer roundings become sharp corners.${hint('corner_sharpening_allowance')}`} value={trace.corner_sharpening_allowance} optional min={.0001} dirty={td('corner_sharpening_allowance')} onChange={value => t('corner_sharpening_allowance', value)} /><NumberField label="Curve-fit tolerance (‰)" help={`How far, in ‰ of the image's longer side, a curve may stray from the pixel edge. Curves use as few nodes as stay within it, so this sets the node count directly. Lower: follows the pixels more closely, more nodes. Higher: fewer nodes, smoother curves.${hint('curve_fit_tolerance')}`} value={trace.curve_fit_tolerance} min={.0001} dirty={td('curve_fit_tolerance')} onChange={value => t('curve_fit_tolerance', value!)} /><NumberField label="Straight-line deviation (‰)" help={`How far, in ‰ of the image's longer side, the edge may stray from the straight line drawn for it, capped at the maximum deviation. Higher: straightens more, fewer nodes. 0: turns this off, though bends shallower than the curve-fit tolerance can still become lines; lower that tolerance to keep them curved.${hint('straight_line_max_deviation')}`} value={trace.straight_line_max_deviation} dirty={td('straight_line_max_deviation')} onChange={value => t('straight_line_max_deviation', value!)} /><NumberField label="Minimum straight length (‰)" help={`Shortest edge, in ‰ of the image's longer side, that can become a straight line. Lower: short edges straighten too. Higher: only long edges straighten; short ones stay curved.${hint('minimum_straight_length')}`} value={trace.minimum_straight_length} dirty={td('minimum_straight_length')} onChange={value => t('minimum_straight_length', value!)} /><NumberField label="Maximum deviation (‰)" help={`In ‰ of the image's longer side (Automatic: 1): caps the curve-fit tolerance and the straight-line deviation, and sets how much drift the check after tracing allows; the corner sharpening allowance follows it unless set. Lower than either: that fit is tighter, with more nodes, and the check stricter; higher: only relaxes the check.${hint('max_deviation')}`} value={trace.max_deviation} optional min={.0001} dirty={td('max_deviation')} onChange={value => t('max_deviation', value)} />
-      </div></section>
-      <section className="settings-group"><h3>Nodes &amp; straight lines</h3><p>Where curve nodes go and how straight edges are drawn, for paths that look drawn by hand.</p><div className="settings-grid">
-        <Field label="Node placement" help="Fewest nodes, prefer extremes: as few nodes as the curve-fit tolerance allows, at the leftmost, rightmost, top and bottom points of curves when that costs no extra node. Always at extremes: a node at every such point, even when that adds nodes. Fewest nodes only: as few nodes as possible, wherever they fit best." dirty={td('node_placement')}><select value={trace.node_placement} onChange={event => t('node_placement', event.target.value as TraceSettings['node_placement'])}><option value="prefer_extremes">Fewest nodes, prefer extremes</option><option value="at_extremes">Always at extremes</option><option value="fewest">Fewest nodes only</option></select></Field>
-        <label className="check-field"><input type="checkbox" checked={trace.nodes_at_bends} onChange={event => t('nodes_at_bends', event.target.checked)} /><span><strong>Nodes at tightest bends<DirtyDot dirty={td('nodes_at_bends')} /></strong><small>On: the tightest point of a bend can take a node, like a hand-drawn path. Off: nodes go at extremes, inflections and wherever the tolerance needs one.</small></span></label>
-        <NumberField label="Curve feature scale (‰)" help={`Length of edge, in ‰ of the image's longer side, smoothed over before looking for extremes, inflections and bends. Lower: small bumps get nodes of their own. Higher: pixel steps and small wiggles are ignored.${hint('curve_feature_scale')}`} value={trace.curve_feature_scale} min={CURVE_FEATURE_SCALE_RANGE[0]} max={CURVE_FEATURE_SCALE_RANGE[1]} dirty={td('curve_feature_scale')} onChange={value => t('curve_feature_scale', value!)} />
-        <Field label="Snap straight lines" help="Make straight edges exactly horizontal or vertical (and, with Also 45°, diagonal) when they are within the snap angle, never moving an edge further than the straight-line deviation (or the maximum deviation, if lower). Off: straight edges keep their measured angle." dirty={td('straight_line_snap')}><select value={trace.straight_line_snap} onChange={event => t('straight_line_snap', event.target.value as TraceSettings['straight_line_snap'])}><option value="off">Off</option><option value="axis">Horizontal &amp; vertical</option><option value="axis_diagonal">Also 45°</option></select></Field>
-        <NumberField label="Snap angle (°)" help="How far, in degrees, a straight edge may be off horizontal, vertical or 45° and still snap. Lower: only nearly exact edges snap. Higher: more edges snap." value={trace.snap_angle} min={.5} max={10} disabled={trace.straight_line_snap === 'off'} dirty={td('snap_angle')} onChange={value => t('snap_angle', value!)} />
-      </div></section>
+      <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
+      <p className="settings-save-note tracer-line">Tracer: t3api{tracer?.build ? ` ${tracer.build}` : ''}, at its one fixed setting w = {setting.w}, A1 = {setting.A1}, A2 = {setting.A2}, L = {setting.L} (no trace setting changes the traced shapes)</p>
       <section className="settings-group"><h3>Complexity warnings</h3><p>These limits warn; they never silently simplify geometry.</p><div className="settings-grid"><NumberField label="Nodes per path" help="Warn when one shape has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_path_nodes} min={1} step={1} dirty={td('soft_path_nodes')} onChange={value => t('soft_path_nodes', value!)} /><NumberField label="Nodes per layer" help="Warn when one colour layer has more nodes than this in total. Lower: warns sooner. Never changes the geometry." value={trace.soft_layer_nodes} min={1} step={1} dirty={td('soft_layer_nodes')} onChange={value => t('soft_layer_nodes', value!)} /><NumberField label="Nodes per document" help="Warn when the whole design has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_document_nodes} min={1} step={1} dirty={td('soft_document_nodes')} onChange={value => t('soft_document_nodes', value!)} /></div></section>
     </>}
   </div>

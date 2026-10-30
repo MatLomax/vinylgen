@@ -15,8 +15,6 @@ source raster
                        map.json (the planar-map file), its gate, the audit
   -> svg_writer.py     the edge SVG from map.json (add_face_layer), serialization
   -> validation.py     SVG structural validation, the semantic audit
-     trace_window.py   the old shared-boundary fitter on one window, for the live
-                       preview (boundary_graph.py, curve_fit.py)
      cleanup_window.py cutter cleanup of one window, for the live cleanup preview
 ```
 
@@ -193,66 +191,36 @@ the parent is untouched.
 The hosted service never claims that a phone or remote browser can launch a
 desktop Inkscape process.
 
-The Trace canvas has a live preview (`vinylgen/trace_window.py`, served by
-`vinylgen/web/trace_preview.py` at `POST /api/revisions/{id}/trace-preview`).
-With its "Live preview" switch on, the canvas traces whatever is zoomed into,
-with the trace form's current, unsaved settings, and draws the shapes over the
-image at that window, badged "Live preview" ("Updating live preview…" while a
-request is in flight). The badge sits in the canvas controls' polite status
-region (`role="status"`), with "Zoom in to preview" and errors, so assistive
-technology announces it. The window is the visible part of
-the image in traced-image px (the flattened grid, including any flatten
-upscale); it is previewed only while it covers at most 600 × 600 px, otherwise
-the canvas reads "Zoom in to preview". A pan, a zoom or any setting change
-re-previews once it has been still for 150 ms, and a newer change aborts the
-request in flight. The preview draws with the old shared-boundary fitter, which
-a trace no longer runs (a trace is drawn by t3, see
-[SVG tracing specification](svg-tracing-spec.md#the-trace-stage-t3)), so it
-shows that fitter's geometry, not the trace's. The server resolves the input
-"Trace and validate" from that revision would trace: the effective (cleaned) segmentation, the active
-cleanup's removed colour and physical size (a stale cleanup blocks the preview
-as it blocks the trace), and the layer order a trace would use (inferred from the
-whole image when solid underlayers or an overlap make order matter, otherwise
-palette order). It
-traces the window plus a hidden margin (at least 64 px, growing with the
-resolved fit windows) through the real vector stage:
-`shared_boundary_polygons` on the crop in image coordinates (its `origin`), so
-every boundary the crop does not cut is the full trace's chain bit for bit and
-fits identically, the canonical chain fitter with the
-trace settings resolved to pixels on the whole image's longer side, the same overlap-buffer or solid-underlayer
-construction (`underlayer_geometry`, `overlap_layer_components`) and the SVG
-layer writer, returning the variant the form's settings select (overlap with
-solid underlayers or a positive overlap, otherwise edge to edge). Its paths are
-in image px and its SVG's `viewBox` is the window, so the margin is clipped from
-view. Previews run one
-at a time on a dedicated background thread, never on the event loop. A
-request whose client disconnected stops at its next checkpoint: one before the
-segmentation's cost field is decompressed, inside the boundary build (between
-phases and every few hundred chains), before each chain fit and before each
-layer; a request superseded while queued exits before doing any work. Memory is
-bounded: the thread holds at most one loaded segmentation (costs kept float16;
-the 11264 x 7920 phoenix subject's cost field alone is about 1.8 GB, with a load
-peak of about 2.3 GB), releases it before loading another revision's, and drops
-it with every derived cache after 10 minutes without a preview, so the web
-process gives the memory back. It also keeps the boundary graphs of the last 16
-windows, each with fit caches for its 4 most recent combinations of fitting
-settings, so a pan re-traces only the new window and a settings-only change
-re-fits cached boundaries. The Live preview switch is remembered in the browser
-across stage changes and reloads. The app's startup submits a warm-up trace to
-the preview thread, which compiles the Numba kernels without delaying startup or
-health. A preview
-differs from a full run in three documented ways: boundaries crossing the crop
-edge are split there, so their fit can differ along the run between their cusps,
-into the window too (the margin moves most of it out of view, never all of it;
-[measurement](svg-tracing-spec.md#preview-margin-measurement)), and underlayer
-adjacency and overlap buffers see only the crop; validation and protected-feature
-recovery are skipped; and nothing is saved. "Trace and validate" still creates the revision. When the window's
-margin reaches every image edge, the preview is the old fitter's full trace path for path.
+The Trace canvas draws a running trace live. t3 emits one `face` event per drawn
+face as it finishes it (`face`, `label`, `rings` as path data, `nodes` as
+`sodipodi:nodetypes`); the trace job's worker (`web/pipeline_worker.py`) relays
+each as a JSON line `{"type": "face", ...}`, and the job's SSE stream
+(`GET /api/jobs/{id}/events`) carries it as an `event: face` message, before the
+job's final status. Events stream in t3's emission order and are never held back
+or sorted. The canvas keeps every face received and redraws them on each arrival
+in the finished edge SVG's paint order (`web/src/LiveTrace.tsx`): one layer per
+palette colour in palette order, the omitted colour drawing none, each layer's
+faces in face order. The finished SVG orders a layer's faces by area instead,
+but the faces of one layer share one fill and never overlap, so that order
+changes no pixel and the composite equals the finished edge SVG. The faces are
+dropped when the job ends; the new revision's edge SVG then shows the result. A
+client that subscribes late sees only the faces emitted after it subscribed.
+There is no windowed trace preview: no trace setting changes t3's fit, and a
+window trace would not equal the full trace near its edges (t3's chains run past
+any window).
+
+A trace whose parent trace's `map.json` was traced from the same labels (the
+same sha256 of the effective `segmentation.npz` labels) by the same
+`t3api.BUILD_ID` copies that file, rewriting it only when the new palette names
+its colours differently, and calls `t3api.trace` not at all
+(`PipelineRunner.reusable_map`): only the edge SVG, the checks and the audit are
+rebuilt, with the revision's own palette, omitted colour and limits, and recorded
+in its own `trace.json` (`t3.reused_from` names the revision whose map it reused).
 
 The Cleanup canvas has a live preview too (`vinylgen/cleanup_window.py`, served
-on the same preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its
-"Live preview" switch is remembered separately from the Trace canvas's; with it
-on, the canvas cleans whatever is zoomed into with the Cleanup form's current,
+on a dedicated preview thread at `POST /api/revisions/{id}/cleanup-preview`). Its
+"Live preview" switch is remembered in the browser across stage changes and
+reloads; with it on, the canvas cleans whatever is zoomed into with the Cleanup form's current,
 unsaved values, physical size included (the thresholds are in mm), and draws the
 cleaned pixels over the image at that window. On top, on the same raster grid,
 it draws what a Cleanup run with those values would change on the raster the
@@ -266,22 +234,26 @@ from the `cleanup-changes-overlay` artifact each Cleanup run that changed pixels
 records; it is disabled, with "Re-run Cleanup to record its changes", for a
 cleanup recorded before runs wrote it. A legend in the canvas controls names the
 colours of each overlay on view. The
-window, the 600 × 600 px limit with "Zoom in to preview", the 150 ms settle, the
-aborting of the request in flight, the checkpoints and the error conventions
-(404, 409 for an unflattened or stale revision or a superseded request, 422 for
-the window or settings, 503 when shutting down) are the trace preview's. The
-server cleans the window plus a hidden 256 px margin (wider than the trace
-preview's 64 px floor, since widening depends on neighbours well beyond the window) of
+window is the visible part of the image in the raster's px; it is previewed only
+while it covers at most 600 × 600 px, otherwise the canvas reads "Zoom in to
+preview". A pan, a zoom or any setting change re-previews once it has been still
+for 150 ms, and a newer change aborts the request in flight; the badge and its
+errors sit in the canvas controls' polite status region. Previews run one at a
+time on the preview thread, never on the event loop, and a request whose client
+disconnected, or that a newer one superseded, stops at its next checkpoint. The
+errors are 404, 409 for an unflattened or stale revision or a superseded request,
+422 for the window or settings, and 503 when shutting down. The
+server cleans the window plus a hidden 256 px margin (widening depends on
+neighbours well beyond the window) of
 the raster a Cleanup run of that revision starts from (before any earlier
 cleanup), measuring every region of the whole raster once per revision so a
 region the window cuts is judged by its whole area and width. It then replays
 on the cleaned window the touch-ups a run would replay
 (`touch_ups.replay_in_window`), judging an area recolour by its part inside the
 cleaned crop, and never marks a replayed pixel as a change. The thread
-holds either that raster (with its measurements) or a traced segmentation, never
-both, and releases it after the same idle period, so alternating between the
-Cleanup and Trace canvases reloads each time and re-measures on each return to
-Cleanup (about 6.4 s on `sourceup`). While the server is measuring, the badge
+holds the raster of one revision (with its measurements) and releases it after
+10 minutes without a preview, so the web process gives the memory back; a
+preview of another revision reloads and re-measures (about 6.4 s on `sourceup`). While the server is measuring, the badge
 reads "Measuring regions of the whole image…"; the canvas learns
 it from `GET /api/revisions/{id}/cleanup-preview/regions`, polled while the
 request is in flight (see the [tracing specification](svg-tracing-spec.md)).

@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Project, Revision } from './api'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
-import type { CanvasCleanupPreview, CanvasLivePreview } from './ImageWorkspace'
+import type { CanvasCleanupPreview } from './ImageWorkspace'
 
 const mocks = vi.hoisted(() => ({
   projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock('./api', async importOriginal => {
   return { ...original, api: { ...original.api, ...mocks }, followJob: mocks.followJob }
 })
 // The canvas gets the options at once, with a null grid (paused) until it is measured.
-type Captured = { canvasLabel?: string; livePreview?: CanvasLivePreview; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; inspectionKinds?: readonly string[]; layers?: { kind?: string; role: string; name: string }[] }
+type Captured = { canvasLabel?: string; cleanupPreview?: CanvasCleanupPreview; livePreviewPaused?: boolean; inspectionKinds?: readonly string[]; layers?: { kind?: string; role: string; name: string }[] }
 const workspaceProps = vi.hoisted(() => ({ current: null as Captured | null, history: [] as Captured[] }))
 vi.mock('./ImageWorkspace', () => ({ ImageWorkspace: (props: Captured) => { workspaceProps.current = props; workspaceProps.history.push(props); return null } }))
 
@@ -58,7 +58,6 @@ describe('Cleanup canvas live preview wiring', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Cleanup' }))
     await vi.waitFor(() => expect(workspaceProps.current?.livePreviewPaused).toBe(false))
     expect(workspaceProps.current?.canvasLabel).toBe('Cleanup canvas')
-    expect(workspaceProps.current?.livePreview).toBeUndefined()
     expect(workspaceProps.current?.cleanupPreview).toEqual({ revisionId: flattenRevision.id, settings: DEFAULT_CLEANUP_SETTINGS, tracedSize: { width: 1200, height: 900 }, changesUnavailable: 'No Cleanup changes to show' })
     const cleanupProps = workspaceProps.history.filter(props => props.cleanupPreview)
     // Never running without its grid.
@@ -79,7 +78,6 @@ describe('Cleanup canvas live preview wiring', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Trace' }))
     await vi.waitFor(() => expect(workspaceProps.current?.canvasLabel).toBe('Trace canvas'))
     expect(workspaceProps.current?.cleanupPreview).toBeUndefined()
-    expect(workspaceProps.current?.livePreview).toBeTruthy()
   })
 })
 

@@ -133,6 +133,14 @@ boundary edge stored once with the faces on its two sides and every face as
 rings of signed edge references, in paint order, every number exact. It is the
 trace's artefact (web artifact kind `traced-map`) and the one source of its
 geometry: every later step reads it back with `t3api.read_planar_map`.
+A web trace re-exports instead of tracing when its parent's effective
+`map.json` was written by a trace of labels with the same sha256 (each
+revision's effective `segmentation.npz`), by the installed t3api build (the
+map header's `build`), and that trace's `trace.json` is present: the map is
+copied, its colour names are rewritten to the new palette's, and the SVG, the
+checks and the audit are built from it again. Its `trace.json` then names the
+revision it reused under `t3.reused_from` and `validation.edge.read_back.reused_from`,
+and repeats that trace's `t3` timings.
 `traced-edge.svg` is a one-way export from it for the cutter and the web
 viewer: one Inkscape layer per included colour in palette order, one even-odd
 path per face (its holes as further rings of the same path) with path data
@@ -163,7 +171,8 @@ exactly over the traced SVG. The web app offers only the twin, as the Trace
 canvas toggle "Missed source details (red)".
 
 `trace.json` is the audit: the sources (`map.json` among them), the size and
-mode, the trace settings as given (`settings`; t3 has one setting, so none steers the trace) and the
+mode, the trace settings as given (`settings`: the three soft node limits, which
+only raise warnings; t3 has one setting, so none steers the trace) and the
 cleanup settings with the physical size resolved (`cleanup_settings`), the
 tracer (`backend`: `tracer` `"t3api"`, `build`, `version`, `setting` and the
 `numpy`, `scipy` and `numba` versions), t3's record (`t3`: its result
@@ -178,10 +187,10 @@ component, the soft node limits and any gap connector), and
 The full list is in [SVG tracing specification](svg-tracing-spec.md) "Audit
 report". A `trace.json` written before t3 also carries `lengths`, `topology`,
 `layer_order`, `raster_partition_validation` and the overlap variant's
-geometry and validation; its `settings` lengths are thousandths of the traced
-raster's longer side (`length_unit: "per_mille"`), or pixels when it has no
-`length_unit` (see "Trace length units" in the specification), and a
-`corner_straightness` in it is read as `side_smoothness`. `cleanup` holds the
+geometry and validation, and its `settings` hold the old fitter's settings
+(lengths in thousandths of the traced raster's longer side, or in pixels
+before units); they are retired and read with them dropped (see "Retired
+trace settings" in the specification). `cleanup` holds the
 cleanup summary when the trace CLI cleaned inline, and is `null` when the
 labels came from the cleanup stage, whose `cleanup.json` holds that summary.
 
@@ -372,9 +381,8 @@ and removed colour they used come from their nearest cleanup ancestor. The
 removed colour is identified by that cleanup's `removed_colour_index`, never by
 resolving its recorded `remove_colour` name against a later palette: a trace's
 colour names rename colours in the `palette.json` it writes, so a rename (for
-example two colours swapping names) would otherwise make a trace, its preview,
-the automatic layer order or the layer-order list omit a different colour than
-the cleanup removed. The editor state (`GET /api/revisions/{id}/editor`)
+example two colours swapping names) would otherwise make a trace or its live view on the canvas omit a different
+colour than the cleanup removed. The editor state (`GET /api/revisions/{id}/editor`)
 reports it as `removed_colour_index`. A cleanup recorded before the index was
 has its `remove_colour` resolved against the palette it ran with: its own
 `palette.json`, else the palette it started from.
@@ -412,8 +420,8 @@ grids.
 
 An `inkscape-edit` revision preserves an arbitrary reimport as the neutral
 `inkscape-svg` artifact and adds its freshly rendered `inkscape-preview` plus
-`inkscape-audit`. It does not relabel one SVG payload as both the semantically
-distinct edge and overlap trace variants. Trace, validation, and export are
+`inkscape-audit`. It does not relabel that SVG payload as the trace's
+`traced-edge.svg`. Trace, validation, and export are
 therefore stale until the deterministic trace stage is run again, and the
 retrace hides the edit's `inkscape-*` artifacts along with the older run's
 trace outputs; anything that marks trace stale (a flatten, label edit, cleanup

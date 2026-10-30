@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
 import queue
-import re
 import shutil
 import signal
 import subprocess
@@ -16,9 +16,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings, upgrade_trace_record
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
-from vinylgen.trace_lengths import is_pixel_record, length_reference, pixel_record_in_units
 from vinylgen.tracing import ensure_palette_names, resolve_colour
 from vinylgen.validation import validate_svg
 
@@ -51,8 +52,10 @@ def _terminate(process: subprocess.Popen) -> None:
             pass
 
 
-def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled) -> None:
-    """Run one compute step in a killable subprocess, relaying its progress.
+def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled,
+               on_event: Callable[[dict], None] | None = None) -> None:
+    """Run one compute step in a killable subprocess, relaying its progress, and each
+    face a trace prints (``tracing.face_event``) to ``on_event`` in the order printed.
 
     Cancellation is checked on every poll rather than only when the worker emits a
     line, so a job wedged inside a long numpy call is killed within one poll interval
@@ -100,6 +103,9 @@ def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled) -> No
                 continue
             if event.get("type") == "progress":
                 on_progress(float(event["value"]), str(event["message"]))
+            elif event.get("type") == "face":
+                if on_event is not None:
+                    on_event(event)
             elif event.get("type") == "error":
                 error = event.get("message") or "pipeline worker failed"
         process.wait()
@@ -269,55 +275,21 @@ def with_removed_colour_hex(store: Store, revisions: list[dict]) -> list[dict]:
     return revisions
 
 
-_VIEW_BOX = re.compile(rb'viewBox="0 0 (\d+) (\d+)"')
-
-
-def traced_length_reference(store: Store, revision: dict) -> int | None:
-    """The longer side (px) of the raster the trace run behind ``revision`` traced:
-    its own trace revision, else the nearest trace ancestor (a validation or export
-    copies that run's settings). Read from the ``viewBox`` its traced SVG opens with,
-    which is that raster's pixel grid. ``None`` when no traced SVG says."""
-    seen: set[str] = set()
-    current: dict | None = revision
-    while current is not None and current["id"] not in seen:
-        seen.add(current["id"])
-        if current["kind"] == "trace":
-            for row in store.list_artifacts(current["id"]):
-                if row["kind"] in ("traced-overlap", "traced-edge"):
-                    with store.artifact_path(row["id"]).open("rb") as handle:
-                        found = _VIEW_BOX.search(handle.read(4096))
-                    if found:
-                        return length_reference(int(found[1]), int(found[2]))
-            return None
-        parent = current["parent_revision_id"]
-        current = store.get_revision(parent) if parent else None
-    return None
-
-
-def with_trace_length_units(store: Store, revisions: list[dict]) -> list[dict]:
-    """``revisions`` as the API reports them: trace settings recorded in pixels (every
-    run before trace lengths were thousandths of the image's longer side, which
-    carries no ``length_unit``) are converted to thousandths of the raster that run
-    traced, so the form resolves them back to the pixels it traced with. A record
-    whose raster size cannot be read is left in pixels, marked ``length_unit: px``.
-    Renamed fields (``corner_straightness``) are served under their current names."""
+def with_current_trace_records(revisions: list[dict]) -> list[dict]:
+    """``revisions`` as the API reports them: each trace settings record with the retired
+    fields (``contracts.RETIRED_TRACE_FIELDS``) dropped, so the form loads the soft node
+    limits and nothing it no longer has."""
     for revision in revisions:
         settings = revision["settings"]
         trace = settings.get("trace")
-        if not isinstance(trace, dict):
-            continue
-        trace = settings["trace"] = upgrade_trace_record(trace)
-        if not is_pixel_record(trace):
-            continue
-        reference = traced_length_reference(store, revision)
-        settings["trace"] = (pixel_record_in_units(trace, reference) if reference is not None
-                             else {**trace, "length_unit": "px"})
+        if isinstance(trace, dict):
+            settings["trace"] = upgrade_trace_record(trace)
     return revisions
 
 
 def served_revisions(store: Store, revisions: list[dict]) -> list[dict]:
     """``revisions`` with every legacy record brought up to date for the client."""
-    return with_trace_length_units(store, with_removed_colour_hex(store, revisions))
+    return with_current_trace_records(with_removed_colour_hex(store, revisions))
 
 
 def _cleanup_palette(store: Store, cleanup_revision: dict) -> list[dict]:
@@ -479,7 +451,8 @@ class PipelineRunner:
     def run(self, job_id: str, kind: str, project_id: str, revision_id: str,
             *, palette: dict | None, trace: dict | None, colour_names: dict[str, str],
             progress: Progress, cancelled: Cancelled = lambda: False,
-            cleanup: dict | None = None) -> str:
+            cleanup: dict | None = None,
+            on_event: Callable[[dict], None] | None = None) -> str:
         work = self.scratch_root / job_id
         work.mkdir(parents=True, exist_ok=False)
         try:
@@ -490,7 +463,7 @@ class PipelineRunner:
                                      progress, cancelled)
             if kind == "trace":
                 return self._trace(project_id, revision_id, work, trace or {}, colour_names,
-                                   progress, cancelled)
+                                   progress, cancelled, on_event)
             if kind == "validate":
                 return self._validate(project_id, revision_id, work, progress)
             if kind == "export":
@@ -601,8 +574,49 @@ class PipelineRunner:
                                             "partly_superseded", "message")}
         return self._commit(project_id, parent_id, "cleanup", files, settings)
 
+    def _labels_sha256(self, artifact: dict) -> str:
+        """The sha256 of a segmentation artifact's labels as t3 traces them (``int16``,
+        C order)."""
+        with np.load(self.store.artifact_path(artifact["id"]), allow_pickle=False) as data:
+            labels = np.ascontiguousarray(data["labels"].astype(np.int16))
+        return hashlib.sha256(labels.tobytes()).hexdigest()
+
+    def reusable_map(self, parent_id: str) -> dict | None:
+        """The planar map a trace from ``parent_id`` re-exports instead of tracing, or
+        ``None``. It is the parent's effective ``traced-map`` when the trace revision that
+        wrote it traced labels with the same sha256 as the labels this trace would trace
+        (each revision's effective segmentation), its header names the installed
+        ``t3api.BUILD_ID``, and that revision's ``trace.json`` is there to give the
+        trace's ``t3`` record. Returns the map's artifact and ``{"revision", "t3"}`` for
+        ``tracing.trace_subject``'s ``reuse``."""
+        import t3api
+
+        artifacts = self.store.effective_artifacts(parent_id)
+        mapped, segmentation = artifacts.get("traced-map"), artifacts.get("segmentation")
+        if mapped is None or segmentation is None:
+            return None
+        owner = mapped["revision_id"]
+        own = {row["kind"]: row for row in self.store.list_artifacts(owner)}
+        traced = self.store.effective_artifacts(owner).get("segmentation")
+        if traced is None or "trace-audit" not in own:
+            return None
+        if (traced["id"] != segmentation["id"]
+                and self._labels_sha256(traced) != self._labels_sha256(segmentation)):
+            return None
+        try:
+            header = json.loads(self.store.artifact_path(mapped["id"]).read_text())
+            audit = json.loads(self.store.artifact_path(own["trace-audit"]["id"]).read_text())
+            t3_record = {key: audit["t3"][key] for key in ("summary", "seconds", "warm_s",
+                                                           "workers")}
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if header.get("build") != t3api.BUILD_ID:
+            return None
+        return {"artifact": mapped, "reuse": {"revision": owner, "t3": t3_record}}
+
     def _trace(self, project_id: str, parent_id: str, work: Path, values: dict,
-               colour_names: dict[str, str], progress: Progress, cancelled: Cancelled) -> str:
+               colour_names: dict[str, str], progress: Progress, cancelled: Cancelled,
+               on_event: Callable[[dict], None] | None = None) -> str:
         _require_fresh(self.store, parent_id, {"palette"})
         cleanup_revision, cleanup_stale = nearest_cleanup(self.store, parent_id)
         if cleanup_stale:
@@ -616,13 +630,22 @@ class PipelineRunner:
         # this trace writes, so its names may no longer identify that colour.
         removed_index = (cleanup_removed_index(self.store, cleanup_revision)
                          if cleanup_revision is not None else None)
-        progress(0.1, "Tracing shared boundaries")
+        spec = {"op": "trace", "subject": str(subject),
+                "settings": asdict(trace_settings), "colour_names": colour_names,
+                "cleanup": cleanup_settings, "removed_index": removed_index}
+        # Re-export without a trace: the same labels traced by the same t3 build give the
+        # same planar map, so only what is built from it is redone.
+        reusable = self.reusable_map(parent_id)
+        if reusable is not None:
+            shutil.copyfile(self.store.artifact_path(reusable["artifact"]["id"]),
+                            subject / TRACE_FILES["traced-map"])
+            spec["reuse"] = reusable["reuse"]
+        progress(0.1, "Tracing shared boundaries" if reusable is None
+                 else "Re-exporting the planar map of the same labels")
         run_worker(
-            {"op": "trace", "subject": str(subject),
-             "settings": asdict(trace_settings), "colour_names": colour_names,
-             "cleanup": cleanup_settings, "removed_index": removed_index},
+            spec,
             on_progress=lambda fraction, message: progress(0.1 + fraction * 0.8, message),
-            cancelled=cancelled)
+            cancelled=cancelled, on_event=on_event)
         effective = asdict(trace_settings)
         progress(0.9, "Storing traced and validated artifacts")
         files = {kind: subject / filename for kind, filename in TRACE_FILES.items()}

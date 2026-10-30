@@ -5,13 +5,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from vinylgen.contracts import (
-    CURVE_FEATURE_SCALE_RANGE,
-    LENGTH_UNIT_PER_MILLE,
-    PER_MILLE_DEFAULTS,
-    TRACE_LENGTH_FIELDS,
-    upgrade_trace_record,
-)
+from vinylgen.contracts import upgrade_trace_record
 
 
 class ApiModel(BaseModel):
@@ -142,32 +136,8 @@ class TraceJobSettings(BaseModel):
     # without them.
     model_config = ConfigDict(extra="forbid")
 
-    overlap: float = Field(default=0.0, ge=0)
-    solid_underlayers: bool = False
-    layer_order: list[str] | None = None
-    # The eight lengths below are in thousandths of the traced image's longer side
-    # (docs/svg-tracing-spec.md "Trace length units"). A request setting any of them
-    # must say so: a client still sending pixel values carries no marker and is
-    # rejected, never read as thousandths.
-    length_unit: Literal["per_mille"] = LENGTH_UNIT_PER_MILLE
-    curve_fit_tolerance: float = Field(default=PER_MILLE_DEFAULTS["curve_fit_tolerance"], gt=0)
-    straight_line_max_deviation: float = Field(
-        default=PER_MILLE_DEFAULTS["straight_line_max_deviation"], ge=0)
-    minimum_straight_length: float = Field(
-        default=PER_MILLE_DEFAULTS["minimum_straight_length"], ge=0)
-    max_deviation: float | None = Field(default=None, gt=0)
-    corner_analysis_span: float = Field(default=PER_MILLE_DEFAULTS["corner_analysis_span"], gt=0)
-    # None: the straight-line deviation (FOLLOWING_LENGTHS).
-    side_smoothness: float | None = Field(default=None, ge=0)
-    # None: the maximum deviation, automatic included (FOLLOWING_LENGTHS).
-    corner_sharpening_allowance: float | None = Field(default=None, ge=0)
-    straight_line_snap: Literal["off", "axis", "axis_diagonal"] = "axis"
-    snap_angle: float = Field(default=2.0, ge=0.5, le=10)
-    node_placement: Literal["prefer_extremes", "at_extremes", "fewest"] = "prefer_extremes"
-    nodes_at_bends: bool = True
-    curve_feature_scale: float = Field(default=PER_MILLE_DEFAULTS["curve_feature_scale"],
-                                       ge=CURVE_FEATURE_SCALE_RANGE[0],
-                                       le=CURVE_FEATURE_SCALE_RANGE[1])
+    # The soft node limits (contracts.TraceSettings): each only warns. t3 traces at its
+    # one fixed setting, so nothing here steers the trace.
     soft_path_nodes: int = Field(default=5_000, ge=1)
     soft_layer_nodes: int = Field(default=50_000, ge=1)
     soft_document_nodes: int = Field(default=200_000, ge=1)
@@ -175,19 +145,11 @@ class TraceJobSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def upgraded_record(cls, values):
-        """A request from a client that still sends a renamed field
-        (``corner_straightness``) is read under the current name, and one that
-        still sends a retired field (``corner_threshold``) is read without it."""
+        """A request from an older client, still sending retired fields
+        (``contracts.RETIRED_TRACE_FIELDS``: the old fitter's lengths, their unit,
+        corner, node and snap controls, overlap, solid underlayers, layer order), is read
+        without them."""
         return upgrade_trace_record(values) if isinstance(values, dict) else values
-
-    @model_validator(mode="after")
-    def lengths_name_their_unit(self) -> "TraceJobSettings":
-        given = sorted(set(TRACE_LENGTH_FIELDS) & self.model_fields_set)
-        if given and "length_unit" not in self.model_fields_set:
-            raise ValueError(
-                f"{', '.join(given)} given without length_unit: trace lengths are in "
-                "thousandths of the image's longer side, so send length_unit: per_mille")
-        return self
 
 
 class StartJob(BaseModel):
@@ -317,12 +279,16 @@ class EditorState(BaseModel):
     inherited_remove_colour: InheritedRemoveColour | None = None
 
 
-class AutomaticLayerOrder(BaseModel):
-    # Bottom-to-top hex order a trace infers before any override (None: not traceable).
-    automatic_layer_order: list[str] | None = None
+class TracerInfo(BaseModel):
+    """The tracer a trace run uses: t3api, its build and its one fixed setting."""
+
+    name: str
+    build: str
+    setting: dict[str, float]
 
 
 class Health(BaseModel):
     status: Literal["ok"] = "ok"
     max_upload_bytes: int = 100 * 1024 * 1024
     active_jobs: int = 0
+    tracer: TracerInfo | None = None

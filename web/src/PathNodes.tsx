@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { gridsRegister, type ImageSize, type ViewTransform } from './workspace'
 
 // The Trace canvas's "Nodes" overlay: every path node of a traced SVG, marked with its
@@ -16,11 +16,14 @@ export const NODE_MARKER_RADIUS = 4.5
 
 // Deduplicated nodes in the SVG's user units; `types` holds indexes into NODE_TYPES.
 // `untyped` counts the nodes of paths without (or with a short) `sodipodi:nodetypes`;
-// they are not drawn, since their type is unknown.
+// they are not drawn, since their type is unknown. `arcNodes` counts the nodes of paths
+// holding an `A`, as Inkscape counts them (their `sodipodi:nodetypes` letters less one per
+// closed subpath); no position of theirs is drawn, since Inkscape gives an `A` one node or
+// more, so taking each arc's end point as one node would put letters and positions out of step.
 export type ParsedNodes = {
   viewBox: { x: number; y: number; width: number; height: number }
   xs: Float64Array; ys: Float64Array; types: Uint8Array
-  counts: Record<NodeType, number>; untyped: number
+  counts: Record<NodeType, number>; untyped: number; arcNodes: number
 }
 
 type Affine = [number, number, number, number, number, number]
@@ -127,12 +130,19 @@ export function parseTracedNodes(svgText: string): ParsedNodes {
   const seen = new Map<string, number>()
   const xs: number[] = [], ys: number[] = [], types: number[] = []
   let untyped = 0
+  let arcNodes = 0
   for (const path of document.getElementsByTagNameNS('http://www.w3.org/2000/svg', 'path')) {
+    const d = path.getAttribute('d') ?? ''
+    if (/[Aa]/.test(d)) {
+      const letters = path.getAttributeNS('http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd', 'nodetypes') ?? ''
+      arcNodes += Math.max(0, letters.length - (d.match(/[Zz]/g) ?? []).length)
+      continue
+    }
     let matrix = IDENTITY
     for (let node: Element | null = path; node && node !== root; node = node.parentElement) matrix = multiply(parseTransform(node.getAttribute('transform')), matrix)
     const codes = path.getAttributeNS('http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd', 'nodetypes') ?? ''
     let cursor = 0
-    for (const { points, closed } of subpathNodes(path.getAttribute('d') ?? '')) {
+    for (const { points, closed } of subpathNodes(d)) {
       // A closed subpath's type string repeats its start node's type at the end, and
       // that repeated character is the one Inkscape reads for the start node.
       const chars = codes.slice(cursor, cursor + points.length + (closed ? 1 : 0))
@@ -153,7 +163,7 @@ export function parseTracedNodes(svgText: string): ParsedNodes {
   }
   const counts = { cusp: 0, symmetric: 0, smooth: 0 }
   for (const code of types) counts[NODE_TYPES[code]] += 1
-  return { viewBox, xs: Float64Array.from(xs), ys: Float64Array.from(ys), types: Uint8Array.from(types), counts, untyped }
+  return { viewBox, xs: Float64Array.from(xs), ys: Float64Array.from(ys), types: Uint8Array.from(types), counts, untyped, arcNodes }
 }
 
 // A uniform grid over the nodes' bounding box, so a redraw visits only the cells in view.
@@ -327,17 +337,6 @@ export function useTracedNodes(url: string | null): NodeSource {
     }
   }, [url])
   return url && state?.url === url ? state.source : url ? { status: 'loading' } : { status: 'idle' }
-}
-
-/**
- * Parses an SVG document already in hand (the live preview's): its nodes, or `failed`
- * when it could not be read. Both empty without a document.
- */
-export function useParsedNodes(svgText: string | null): { index: NodeIndex | null; failed: boolean } {
-  return useMemo(() => {
-    if (!svgText) return { index: null, failed: false }
-    try { return { index: indexNodes(parseTracedNodes(svgText)), failed: false } } catch { return { index: null, failed: true } }
-  }, [svgText])
 }
 
 // The committed trace's nodes on a stage of `stage` px: the SVG's viewBox is its pixel

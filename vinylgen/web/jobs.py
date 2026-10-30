@@ -165,6 +165,12 @@ class JobManager:
             asyncio.run_coroutine_threadsafe(
                 self._update(job_id, progress=value, message=message), loop).result()
 
+        def on_event(event: dict[str, Any]) -> None:
+            # A trace's face event, relayed to the job's subscribers in the order the
+            # worker printed it: the loop runs thread-safe callbacks first in, first out,
+            # and every one of them runs before the job's final status is published.
+            loop.call_soon_threadsafe(self._publish, job_id, event)
+
         try:
             await self._update(job_id, status="running", started_at=_now(), message="Starting")
             result_revision_id = await loop.run_in_executor(
@@ -172,7 +178,7 @@ class JobManager:
                 lambda: self.pipeline.run(
                     job_id, kind, project_id, revision_id, palette=palette,
                     trace=trace, colour_names=colour_names, progress=progress,
-                    cancelled=cancellation.is_set, cleanup=cleanup))
+                    cancelled=cancellation.is_set, cleanup=cleanup, on_event=on_event))
             if cancellation.is_set():
                 raise asyncio.CancelledError
             await self._update(job_id, status="succeeded", progress=1, message=self.pipeline.completion_message(kind, result_revision_id),
@@ -239,9 +245,14 @@ class JobManager:
         return self.store.get_job(job_id)
 
     async def _update(self, job_id: str, **changes: Any) -> None:
-        job = self.store.update_job(job_id, **changes)
+        self._publish(job_id, self.store.update_job(job_id, **changes))
+
+    def _publish(self, job_id: str, event: dict[str, Any]) -> None:
+        """Hand ``event`` (the job's new state, or a trace's face event) to every current
+        subscriber of the job. A face event is never stored: a subscriber that joins later
+        sees the faces from then on, and the finished trace's SVG holds them all."""
         for queue in tuple(self._subscribers.get(job_id, ())):
-            queue.put_nowait(job)
+            queue.put_nowait(event)
 
     async def subscribe(self, job_id: str) -> AsyncIterator[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -251,6 +262,8 @@ class JobManager:
             yield initial
             if initial["status"] in {"succeeded", "failed", "cancelled"}:
                 return
+            # The queue holds the job's states and, during a trace, its face events, which
+            # carry ``type`` and no ``status``.
             while True:
                 try:
                     job = await asyncio.wait_for(queue.get(), timeout=15)
@@ -258,7 +271,7 @@ class JobManager:
                     yield {"keepalive": True}
                     continue
                 yield job
-                if job["status"] in {"succeeded", "failed", "cancelled"}:
+                if job.get("status") in {"succeeded", "failed", "cancelled"}:
                     return
         finally:
             subs = self._subscribers.get(job_id)

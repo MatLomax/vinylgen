@@ -4,10 +4,10 @@ import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Job, Project, Revision } from './api'
 import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { activeCleanupRevision, ancestorCleanupIterations, cleanedBeforeTouchUps, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain, traceRunIsPhysical, tracedSvgKind, tracedSvgName } from './App'
+import { activeCleanupRevision, ancestorCleanupIterations, cleanedBeforeTouchUps, ancestorPaletteIterations, artifactToWorkspaceLayer, canvasOverlayKinds, customRatioDimensions, inheritedPipelineSettings, stageFromHash, traceRunChain } from './App'
 
 const mocks = vi.hoisted(() => ({
-  projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(), automaticLayerOrder: vi.fn(),
+  projects: vi.fn(), project: vi.fn(), effectiveArtifacts: vi.fn(), artifacts: vi.fn(), editor: vi.fn(),
   generate: vi.fn(), startPipeline: vi.fn(), inkscapeHandoff: vi.fn(), saveForInkscape: vi.fn(),
   importProject: vi.fn(), health: vi.fn(), deleteProject: vi.fn(),
   followJob: vi.fn(),
@@ -57,7 +57,6 @@ beforeEach(() => {
   mocks.effectiveArtifacts.mockResolvedValue([])
   mocks.artifacts.mockResolvedValue([])
   mocks.editor.mockResolvedValue({ width: 0, height: 0, protected_pixels: 0, palette: [] })
-  mocks.automaticLayerOrder.mockResolvedValue({ automatic_layer_order: null })
   mocks.inkscapeHandoff.mockResolvedValue({ exports: [], shared_folder_enabled: false, guidance: '' })
   mocks.startPipeline.mockResolvedValue(queuedJob)
   mocks.importProject.mockResolvedValue({ ...project, revisions: [revision] })
@@ -152,34 +151,6 @@ describe('trace run chain', () => {
   })
 })
 
-describe('traced SVG variant', () => {
-  it('shows the overlap file only when the run asked for overlap or solid underlayers', () => {
-    expect(tracedSvgKind(undefined)).toBe('traced-edge')
-    expect(tracedSvgKind({ overlap: 0, solid_underlayers: false })).toBe('traced-edge')
-    expect(tracedSvgKind({ overlap: 1.5, solid_underlayers: false })).toBe('traced-overlap')
-    expect(tracedSvgKind({ overlap: 0, solid_underlayers: true })).toBe('traced-overlap')
-  })
-
-  it('names the variant with the overlap in the units the run used', () => {
-    expect(tracedSvgName({ overlap: 0, solid_underlayers: false })).toBe('Traced SVG · edge to edge')
-    expect(tracedSvgName({ overlap: 0, solid_underlayers: true })).toBe('Traced SVG · solid underlayers')
-    expect(tracedSvgName({ overlap: 2, solid_underlayers: false }, true)).toBe('Traced SVG · 2 mm overlap')
-    expect(tracedSvgName({ overlap: 2, solid_underlayers: false }, false)).toBe('Traced SVG · 2 px overlap')
-  })
-
-  it('takes a run\'s units from its cleanup, or from its own settings when recorded before the cleanup stage', () => {
-    const palette: Revision = { ...revision, id: 'palette', kind: 'palette', settings: { stale_concerns: ['cleanup', 'trace', 'validation', 'export'] } }
-    const cleaned: Revision = { ...revision, id: 'cleanup', parent_revision_id: 'palette', kind: 'cleanup', settings: { cleanup: { width_mm: 300, height_mm: null } } }
-    const run: Revision = { ...revision, id: 'run', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: { overlap: 2 } } }
-    const pixelRun: Revision = { ...run, id: 'pixel-run', parent_revision_id: 'palette' }
-    const legacyRun: Revision = { ...run, id: 'legacy-run', parent_revision_id: 'palette', settings: { trace: { overlap: 2, width_mm: null, height_mm: 90 } } }
-    const revisions = [run, pixelRun, legacyRun, cleaned, palette]
-    expect(traceRunIsPhysical(revisions, 'run')).toBe(true)
-    expect(traceRunIsPhysical(revisions, 'pixel-run')).toBe(false)
-    expect(traceRunIsPhysical(revisions, 'legacy-run')).toBe(true)
-  })
-})
-
 describe('generation frame dimensions', () => {
   it('uses the largest exact dimensions available for a custom ratio', () => {
     expect(customRatioDimensions(16, 9)).toEqual([1536, 864])
@@ -259,9 +230,9 @@ describe('pipeline setting provenance', () => {
   it('restores palette and trace settings independently through revision ancestry', () => {
     const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: { initial_colours: 9 } } }
     const edit = { ...revision, id: 'edit', parent_revision_id: 'palette', kind: 'label-edit', settings: {} }
-    const trace = { ...revision, id: 'trace', parent_revision_id: 'edit', kind: 'trace', settings: { trace: { curve_fit_tolerance: .4 } } }
+    const trace = { ...revision, id: 'trace', parent_revision_id: 'edit', kind: 'trace', settings: { trace: { soft_path_nodes: 400 } } }
     expect(inheritedPipelineSettings([trace, edit, palette], 'trace')).toEqual({
-      palette: { initial_colours: 9 }, trace: { curve_fit_tolerance: .4 },
+      palette: { initial_colours: 9 }, trace: { soft_path_nodes: 400 },
     })
   })
 
@@ -269,16 +240,17 @@ describe('pipeline setting provenance', () => {
     const palette = { ...revision, id: 'palette', kind: 'palette', settings: { palette: { initial_colours: 9 } } }
     const legacy = { ...revision, id: 'legacy', parent_revision_id: 'palette', kind: 'trace', settings: { trace: { overlap: 1, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 } } }
     const cleaned = { ...revision, id: 'cleanup', parent_revision_id: 'legacy', kind: 'cleanup', settings: { cleanup: { width_mm: 250, cleanup: false } } }
-    const traced = { ...revision, id: 'trace', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: { overlap: 3 } } }
+    const traced = { ...revision, id: 'trace', parent_revision_id: 'cleanup', kind: 'trace', settings: { trace: { overlap: 3, soft_layer_nodes: 300 } } }
     const revisions = [traced, cleaned, legacy, palette]
-    // The legacy run's embedded values fill the Cleanup form, never the Trace form.
+    // The legacy run's embedded values fill the Cleanup form, never the Trace form; its
+    // retired overlap fills nothing.
     expect(inheritedPipelineSettings(revisions, 'legacy')).toEqual({
-      palette: { initial_colours: 9 }, trace: { overlap: 1 },
+      palette: { initial_colours: 9 }, trace: {},
       cleanup: { width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 },
       recordedRemoveColour: 'Sand',
     })
     expect(inheritedPipelineSettings(revisions, 'trace')).toEqual({
-      palette: { initial_colours: 9 }, trace: { overlap: 3 }, cleanup: { width_mm: 250, cleanup: false },
+      palette: { initial_colours: 9 }, trace: { soft_layer_nodes: 300 }, cleanup: { width_mm: 250, cleanup: false },
     })
     // Only the real cleanup run is a step of the Cleanup form; the legacy trace run's
     // embedded values are its baseline (asserted above), never a countable iteration.
@@ -1214,8 +1186,7 @@ describe('landing on the newly produced artwork', () => {
     await finish({ ...queuedJob, kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' })
 
     await vi.waitFor(() => expect(pressedView('Traced')).toBe('true'))
-    // The Traced view renders the variant the run produced (edge to edge with no overlap
-    // or solid underlayers), not the PNG preview.
+    // The Traced view renders the run's edge SVG, not the PNG preview.
     expect(workspaceProps.current?.preferredLayerId).toBe(svg.id)
     expect(workspaceProps.current?.layers?.find(layer => layer.id === svg.id)?.name).toBe('Traced SVG · edge to edge')
     // Traced SVGs register on the flattened pixel grid; rasters keep their own size.
@@ -1247,7 +1218,7 @@ describe('landing on the newly produced artwork', () => {
     expect(workspaceProps.current?.preferredLayerId).toBe('flattened-id')
   })
 
-  it('shows the overlap SVG for a run with solid underlayers', async () => {
+  it('shows the edge SVG of a run recorded with solid underlayers, whose overlap SVG stays stored', async () => {
     const solidRevision: Revision = { ...traceRevision, settings: { trace: { overlap: 0, solid_underlayers: true } } }
     const edge = artifact('traced-edge', 'image/svg+xml'), overlap = artifact('traced-overlap', 'image/svg+xml')
     mocks.projects.mockResolvedValue([project])
@@ -1257,8 +1228,8 @@ describe('landing on the newly produced artwork', () => {
     render(createElement((await import('./App')).default))
     await screen.findAllByRole('group', { name: 'Artwork view' })
     fireEvent.click(within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).getByRole('button', { name: 'Traced' }))
-    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe(overlap.id))
-    expect(workspaceProps.current?.layers?.find(layer => layer.id === overlap.id)?.name).toBe('Traced SVG · solid underlayers')
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe(edge.id))
+    expect(workspaceProps.current?.layers?.find(layer => layer.id === edge.id)?.name).toBe('Traced SVG · edge to edge')
   })
 
   it('shows the edited image, still the Flattened view without a cleanup, once a palette edit commits', async () => {
@@ -1300,7 +1271,7 @@ describe('project deletion', () => {
 
 describe('stepping through trace runs', () => {
   const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
-  const run1: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02', settings: { trace: { overlap: 0, solid_underlayers: true } } }
+  const run1: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02', settings: { trace: { overlap: 0, solid_underlayers: true, soft_path_nodes: 900 } } }
   const run2: Revision = { ...revision, id: 'trace-2', parent_revision_id: 'trace-1', kind: 'trace', created_at: '2026-01-03', settings: { trace: { overlap: 0, solid_underlayers: false } } }
   const svgs = (run: string) => [
     { ...artifact('traced-edge', 'image/svg+xml'), id: `${run}-edge` },
@@ -1312,29 +1283,29 @@ describe('stepping through trace runs', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
     mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
       [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { snap_angle: 45 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { soft_layer_nodes: 45000 } }))
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
     await within(panel).findByText('Iteration 2 of 2')
-    const solid = within(panel).getByRole('checkbox', { name: /Solid underlayers/ }) as HTMLInputElement
-    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
-    await vi.waitFor(() => expect(angle.value).toBe('45'))
+    const pathLimit = within(panel).getByLabelText(/Nodes per path/) as HTMLInputElement
+    const layerLimit = within(panel).getByLabelText(/Nodes per layer/) as HTMLInputElement
+    await vi.waitFor(() => expect(layerLimit.value).toBe('45000'))
 
     fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
     await within(panel).findByText('Iteration 1 of 2')
     expect(window.location.hash).toContain('revision=trace-1')
-    // The older run's own traced SVG, its own variant, and exactly its own settings.
-    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-overlap'))
-    expect(solid.checked).toBe(true)
-    expect(angle.value).toBe('2')
+    // The older run's own edge SVG and exactly its own settings.
+    await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-edge'))
+    expect(pathLimit.value).toBe('900')
+    expect(layerLimit.value).toBe('50000')
 
     fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
     await within(panel).findByText('Iteration 2 of 2')
     expect(window.location.hash).toContain('revision=trace-2')
     await vi.waitFor(() => expect(workspaceProps.current?.preferredLayerId).toBe('trace-2-edge'))
-    expect(solid.checked).toBe(false)
-    expect(angle.value).toBe('45')
+    expect(pathLimit.value).toBe('5000')
+    expect(layerLimit.value).toBe('45000')
     expect((within(panel).getByLabelText('Show the next trace run') as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -1343,32 +1314,32 @@ describe('stepping through trace runs', () => {
     mocks.project.mockResolvedValue({ ...project, revisions: [run2, run1, paletteRevision, revision] })
     mocks.effectiveArtifacts.mockImplementation(async (id: string) =>
       [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream'), ...svgs(id)])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { snap_angle: 45 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { soft_layer_nodes: 45000 } }))
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-2`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
     await within(panel).findByText('Iteration 2 of 2')
-    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
-    await vi.waitFor(() => expect(angle.value).toBe('45'))
-    return { panel, angle }
+    const layerLimit = within(panel).getByLabelText(/Nodes per layer/) as HTMLInputElement
+    await vi.waitFor(() => expect(layerLimit.value).toBe('45000'))
+    return { panel, layerLimit }
   }
   const storedDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
 
   it('never turns an older run\'s settings into the newest run\'s draft when focus leaves the form', async () => {
-    const { panel, angle } = await openAtNewestRun()
+    const { panel, layerLimit } = await openAtNewestRun()
     const back = within(panel).getByLabelText('Show the previous trace run')
     fireEvent.click(back)
     await within(panel).findByText('Iteration 1 of 2')
-    await vi.waitFor(() => expect(angle.value).toBe('2'))
+    await vi.waitFor(() => expect(layerLimit.value).toBe('50000'))
     // Focus leaving the stepper or an edited field at the older run commits no draft.
     fireEvent.focusOut(back)
-    fireEvent.change(angle, { target: { value: '7' } })
-    fireEvent.focusOut(angle)
-    expect(storedDraft()).toEqual({ snap_angle: 45 })
+    fireEvent.change(layerLimit, { target: { value: '7000' } })
+    fireEvent.focusOut(layerLimit)
+    expect(storedDraft()).toEqual({ soft_layer_nodes: 45000 })
 
     fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
     await within(panel).findByText('Iteration 2 of 2')
-    await vi.waitFor(() => expect(angle.value).toBe('45'))
+    await vi.waitFor(() => expect(layerLimit.value).toBe('45000'))
   })
 
   it('keeps the newest run\'s draft when a trace branches from an older run', async () => {
@@ -1383,7 +1354,7 @@ describe('stepping through trace runs', () => {
     fireEvent.click(run)
     await vi.waitFor(() => expect(update).toBeDefined())
     await act(async () => update?.({ ...queuedJob, id: 'job-branch', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-1' }))
-    expect(storedDraft()).toEqual({ snap_angle: 45 })
+    expect(storedDraft()).toEqual({ soft_layer_nodes: 45000 })
   })
 
   it('spends the draft when the newest run is traced again', async () => {
@@ -1394,7 +1365,7 @@ describe('stepping through trace runs', () => {
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
-    expect(mocks.startPipeline).toHaveBeenCalledWith('trace', project.id, 'trace-2', { trace: expect.objectContaining({ snap_angle: 45 }) })
+    expect(mocks.startPipeline).toHaveBeenCalledWith('trace', project.id, 'trace-2', { trace: expect.objectContaining({ soft_layer_nodes: 45000 }) })
     await vi.waitFor(() => expect(update).toBeDefined())
     await act(async () => update?.({ ...queuedJob, id: 'job-tip', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-2' }))
     expect(storedDraft()).toBeUndefined()
@@ -1413,7 +1384,7 @@ describe('stepping through trace runs', () => {
     expect(workspaceProps.current?.layers?.some(layer => layer.id === 'trace-2-edge')).toBe(true)
     await act(async () => pending['trace-1']([artifact('source'), artifact('flattened'), ...svgs('trace-1')]))
     await vi.waitFor(() => expect(workspaceProps.current?.loading).toBe(false))
-    expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-overlap')
+    expect(workspaceProps.current?.preferredLayerId).toBe('trace-1-edge')
   })
 
   it('offers the transparent audit overlays as labelled toggles and never the opaque audit images', async () => {
@@ -1726,7 +1697,6 @@ describe('cleanup stage', () => {
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
     expect(await within(panel).findByText('Size: 300 × 200 mm (set in Cleanup)')).toBeTruthy()
-    expect(within(panel).getByText('Layer overlap (mm)')).toBeTruthy()
     expect(within(panel).queryByLabelText(/Width \(mm\)/)).toBeNull()
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
@@ -2039,7 +2009,7 @@ describe('cleanup stage', () => {
 
   it('moves a pre-cleanup-stage trace draft\'s size and cleanup into the Cleanup draft', async () => {
     serve([paletteRevision, revision])
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { ...DEFAULT_TRACE_SETTINGS, snap_angle: 45, width_mm: 250, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7, min_region_area: 0, remove_below_width: 0 } }))
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { ...DEFAULT_TRACE_SETTINGS, soft_layer_nodes: 45000, width_mm: 250, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7, min_region_area: 0, remove_below_width: 0 } }))
     window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=palette-1`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Cleanup' })
@@ -2049,12 +2019,12 @@ describe('cleanup stage', () => {
     expect(width.closest('label')?.querySelector('.field-dirty')).toBeTruthy()
     const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}')
     expect(stored.cleanup).toMatchObject({ width_mm: 250, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .7 })
-    expect(stored.trace).toEqual({ ...DEFAULT_TRACE_SETTINGS, snap_angle: 45 })
+    expect(stored.trace).toEqual({ ...DEFAULT_TRACE_SETTINGS, soft_layer_nodes: 45000 })
   })
 
   it('loads a pre-cleanup-stage trace run\'s size and cleanup into the Cleanup form, not the Trace form', async () => {
     const legacyRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02',
-      settings: { trace: { overlap: 2, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 } } }
+      settings: { trace: { overlap: 2, soft_path_nodes: 900, width_mm: 400, height_mm: null, remove_colour: 'Sand', cleanup: true, cleanup_action: 'widen', min_detail_width: .5, min_region_area: 0, remove_below_width: 0 } } }
     serve([legacyRun, paletteRevision, revision])
     window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=trace-1`)
     render(createElement((await import('./App')).default))
@@ -2069,14 +2039,15 @@ describe('cleanup stage', () => {
     // The legacy trace run only supplies the form's baseline; it is not a Cleanup
     // iteration, and no cleanup has ever actually run.
     expect(within(cleanupPanel).getByText('No past runs')).toBeTruthy()
-    // The run's own overlap stays on Trace, and a new trace sends none of the moved fields.
+    // The run's own soft limit stays on Trace, and a new trace sends none of the moved
+    // fields, nor the retired overlap.
     const tracePanel = screen.getByRole('tabpanel', { name: 'Trace' })
-    expect((within(tracePanel).getByLabelText(/Layer overlap/) as HTMLInputElement).value).toBe('2')
+    expect((within(tracePanel).getByLabelText(/Nodes per path/) as HTMLInputElement).value).toBe('900')
     const run = within(tracePanel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
     const sent = mocks.startPipeline.mock.calls[0][3].trace
-    expect(sent.overlap).toBe(2)
+    expect(sent).toEqual({ ...DEFAULT_TRACE_SETTINGS, soft_path_nodes: 900 })
     expect(sent).not.toHaveProperty('width_mm')
     expect(sent).not.toHaveProperty('cleanup')
   })
@@ -2099,15 +2070,14 @@ describe('cleanup stage', () => {
   })
 })
 
-describe('legacy curve optimisation settings', () => {
+describe('retired trace settings', () => {
   const paletteRevision: Revision = { ...revision, id: 'palette-1', kind: 'palette', settings: { palette: {} } }
-  const legacyRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02',
-    settings: { trace: { length_unit: 'per_mille', curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 0 } } }
-  const currentRun: Revision = { ...legacyRun, settings: { trace: { length_unit: 'per_mille', curve_optimization: true, straight_line_max_deviation: 1.2 } } }
+  // A run recorded by the old fitter: its fitting fields, overlap and layer order are retired.
+  const oldRun: Revision = { ...revision, id: 'trace-1', parent_revision_id: 'palette-1', kind: 'trace', created_at: '2026-01-02',
+    settings: { trace: { length_unit: 'per_mille', curve_optimization: false, straight_line_max_deviation: 1.6, overlap: 2, solid_underlayers: true, layer_order: ['#ff0000'], soft_path_nodes: 900 } } }
 
-  it('maps a recorded curve_optimization false to a straight-line deviation of 0 and drops the flag', () => {
-    expect(inheritedPipelineSettings([legacyRun, paletteRevision], 'trace-1').trace).toEqual({ length_unit: 'per_mille', straight_line_max_deviation: 0, side_smoothness: 1.6, overlap: 0 })
-    expect(inheritedPipelineSettings([currentRun, paletteRevision], 'trace-1').trace).toEqual({ length_unit: 'per_mille', straight_line_max_deviation: 1.2, side_smoothness: 1.2 })
+  it('reads only the three soft limits from a recorded run', () => {
+    expect(inheritedPipelineSettings([oldRun, paletteRevision], 'trace-1').trace).toEqual({ soft_path_nodes: 900 })
   })
 
   async function openTrace(runs: Revision[]) {
@@ -2120,108 +2090,25 @@ describe('legacy curve optimisation settings', () => {
     return screen.getByRole('tabpanel', { name: 'Trace' })
   }
 
-  it('loads a legacy revision as deviation 0, not pending, and never sends the flag', async () => {
-    const panel = await openTrace([legacyRun])
-    const deviation = within(panel).getByLabelText(/Straight-line deviation/) as HTMLInputElement
-    await vi.waitFor(() => expect(deviation.value).toBe('0'))
-    expect(deviation.closest('label')?.querySelector('.field-dirty')).toBeNull()
-    // Corners are still detected with the deviation the run recorded.
-    const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
-    expect(smoothness.value).toBe('1.6')
-    expect(smoothness.closest('label')?.querySelector('.field-dirty')).toBeNull()
-    expect(within(panel).queryByRole('checkbox', { name: /Optimize curves/ })).toBeNull()
+  it('drops a stored draft\'s retired fields on load and sends only the three soft limits', async () => {
+    const oldDraft = { curve_fit_tolerance: 2.172, straight_line_max_deviation: 1.6, corner_threshold: 45, overlap: 3, layer_order: ['#00ff00'], soft_document_nodes: 1234 }
+    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: oldDraft }))
+    const panel = await openTrace([oldRun])
+    const documentLimit = within(panel).getByLabelText(/Nodes per document/) as HTMLInputElement
+    const pathLimit = within(panel).getByLabelText(/Nodes per path/) as HTMLInputElement
+    await vi.waitFor(() => expect([documentLimit.value, pathLimit.value]).toEqual(['1234', '900']))
+    fireEvent.blur(documentLimit)
+    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
+    expect(stored).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234 })
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
-    const sent = mocks.startPipeline.mock.calls[0][3].trace
-    expect(sent.straight_line_max_deviation).toBe(0)
-    expect(sent.side_smoothness).toBe(1.6)
-    expect(sent).not.toHaveProperty('curve_optimization')
-    expect(sent).not.toHaveProperty('corner_straightness')
-  })
-
-  it('maps a legacy localStorage draft and rewrites it without the flag', async () => {
-    // persistDraft stores the whole form, so an older draft carries every field it
-    // knew: the curve_optimization flag and no side_smoothness.
-    const { side_smoothness: _absent, ...fields } = DEFAULT_TRACE_SETTINGS
-    const legacyDraft = { ...fields, curve_optimization: false, straight_line_max_deviation: 1, snap_angle: 45 }
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: legacyDraft }))
-    const panel = await openTrace([currentRun])
-    const deviation = within(panel).getByLabelText(/Straight-line deviation/) as HTMLInputElement
-    const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
-    const angle = within(panel).getByLabelText(/Snap angle/) as HTMLInputElement
-    // Corners keep the deviation the draft recorded; the deviation itself becomes 0.
-    await vi.waitFor(() => expect(smoothness.value).toBe('1'))
-    expect(deviation.value).toBe('0')
-    expect(angle.value).toBe('45')
-    fireEvent.blur(deviation)
-    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored).not.toHaveProperty('curve_optimization')
-    expect(stored).toEqual({ ...DEFAULT_TRACE_SETTINGS, straight_line_max_deviation: 0, side_smoothness: 1, snap_angle: 45 })
-  })
-
-  it('maps a draft still keyed corner_straightness onto side_smoothness and never sends the old key', async () => {
-    const { side_smoothness: _absent, ...fields } = DEFAULT_TRACE_SETTINGS
-    const legacyKeyDraft = { ...fields, corner_straightness: 1.9 }
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: legacyKeyDraft }))
-    const panel = await openTrace([currentRun])
-    const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
-    await vi.waitFor(() => expect(smoothness.value).toBe('1.9'))
-    fireEvent.blur(smoothness)
-    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored).not.toHaveProperty('corner_straightness')
-    expect(stored.side_smoothness).toBe(1.9)
-  })
-
-  it('drops a stored draft\'s retired corner_threshold on load and never sends it', async () => {
-    const retiredFieldDraft = { ...DEFAULT_TRACE_SETTINGS, corner_threshold: 45 }
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: retiredFieldDraft }))
-    const panel = await openTrace([currentRun])
-    const smoothness = within(panel).getByLabelText(/Side smoothness/) as HTMLInputElement
-    await vi.waitFor(() => expect(smoothness.value).toBeTruthy())
-    // Retired field never rendered, and no field carries a dirty dot for it.
-    expect(within(panel).queryByLabelText(/Corner threshold/)).toBeNull()
-    fireEvent.blur(smoothness)
-    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored).not.toHaveProperty('corner_threshold')
-    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-    await vi.waitFor(() => expect(run.disabled).toBe(false))
-    fireEvent.click(run)
-    const sent = mocks.startPipeline.mock.calls[0][3].trace
-    expect(sent).not.toHaveProperty('corner_threshold')
+    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234 } })
   })
 
   it('states the traced image size from the editor state', async () => {
-    const panel = await openTrace([currentRun])
+    const panel = await openTrace([oldRun])
     expect(await within(panel).findByText('Traced image: 4344 × 1448 px')).toBeTruthy()
-  })
-
-  it('converts a draft saved in pixels on the traced image, stores it back and sends thousandths', async () => {
-    // A draft saved before trace lengths were thousandths: pixels, no length_unit, and
-    // without fields added since (they take the pixel-era defaults).
-    const { length_unit: _unit, curve_feature_scale: _scale, ...fields } = DEFAULT_TRACE_SETTINGS
-    const pixelDraft = { ...fields, curve_fit_tolerance: 2.172, straight_line_max_deviation: 1.6, side_smoothness: 1.6, minimum_straight_length: 4, max_deviation: null, corner_analysis_span: 8, snap_angle: 45 }
-    localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: pixelDraft }))
-    const panel = await openTrace([currentRun])
-    const tolerance = within(panel).getByLabelText(/Curve-fit tolerance/) as HTMLInputElement
-    // 2.172 px on the 4344 px longer side is 0.5 thousandths.
-    await vi.waitFor(() => expect(tolerance.value).toBe('0.5'))
-    const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored.length_unit).toBe('per_mille')
-    expect(stored.curve_fit_tolerance).toBeCloseTo(.5, 12)
-    expect(stored.curve_feature_scale).toBeCloseTo(4000 / 4344, 12)
-    expect(stored.max_deviation).toBeCloseTo(2000 / 4344, 12)
-    // The allowance was absent (automatic) in the pixel-era draft, so it follows the
-    // (also absent) maximum deviation's automatic pixel value.
-    expect(stored.corner_sharpening_allowance).toBeCloseTo(2000 / 4344, 12)
-    expect(stored.snap_angle).toBe(45)
-    expect(tolerance.closest('label')?.querySelector('small')?.textContent).toMatch(/= 2\.2 px on this image\.$/)
-    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-    await vi.waitFor(() => expect(run.disabled).toBe(false))
-    fireEvent.click(run)
-    const sent = mocks.startPipeline.mock.calls[0][3].trace
-    expect(sent.length_unit).toBe('per_mille')
-    expect(sent.corner_analysis_span).toBeCloseTo(8000 / 4344, 12)
   })
 })
 
@@ -2328,12 +2215,12 @@ describe('shown artwork stays consistent across cleanups', () => {
   const sizes: Record<string, [number, number]> = {
     'cleanup-1': [600, 400], 'trace-1': [600, 400], 'cleanup-2': [610, 410], 'palette-2': [640, 430], 'edit-1': [630, 430], 'cleanup-3': [620, 420],
   }
-  const tracedSizeOf = () => (captured as { livePreview?: { tracedSize?: unknown } } | null)?.livePreview?.tracedSize
-  const livePreview = () => (captured as { livePreview?: unknown } | null)?.livePreview
+  const tracedSizeOf = () => (captured as { cleanupPreview?: { tracedSize?: unknown } } | null)?.cleanupPreview?.tracedSize
+  const cleanupPreview = () => (captured as { cleanupPreview?: unknown } | null)?.cleanupPreview
   const previewPaused = () => (captured as { livePreviewPaused?: boolean } | null)?.livePreviewPaused
   const pressed = (name: string) => within(screen.getAllByRole('group', { name: 'Artwork view' })[0]).queryByRole('button', { name })?.getAttribute('aria-pressed') ?? null
   let history: { preferred?: string; layers: string[] }[], captured: CapturedWorkspace | null
-  // Every live-preview state the canvas is handed: which revision, which grid, paused.
+  // Every cleanup-preview state the canvas is handed: which revision, which grid, paused.
   let previews: { revisionId: string; tracedSize: { width: number; height: number } | null; paused?: boolean }[] = []
   const previewStatus = () => (captured as { livePreviewStatus?: string } | null)?.livePreviewStatus
   const shown = () => captured as CapturedWorkspace | null
@@ -2343,7 +2230,7 @@ describe('shown artwork stays consistent across cleanups', () => {
     Object.defineProperty(workspaceProps, 'current', { configurable: true, get: () => captured, set: value => {
       captured = value
       if (value) history.push({ preferred: value.preferredLayerId, layers: (value.layers ?? []).map((layer: { id: string }) => layer.id) })
-      if (value?.livePreview) previews.push({ revisionId: value.livePreview.revisionId, tracedSize: value.livePreview.tracedSize, paused: value.livePreviewPaused })
+      if (value?.cleanupPreview) previews.push({ revisionId: value.cleanupPreview.revisionId, tracedSize: value.cleanupPreview.tracedSize ?? null, paused: value.livePreviewPaused })
     } })
     mocks.projects.mockResolvedValue([project])
     mocks.project.mockResolvedValue({ ...project, revisions: [cleanup3, edit1, cleanup2, palette2, trace1, cleanup1, paletteRevision, revision] })
@@ -2356,8 +2243,8 @@ describe('shown artwork stays consistent across cleanups', () => {
   })
   afterEach(() => { Object.defineProperty(workspaceProps, 'current', { configurable: true, writable: true, value: null }) })
 
-  async function openAt(revisionId: string, view?: string) {
-    window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=${revisionId}`)
+  async function openAt(revisionId: string, view?: string, stage = 'trace') {
+    window.history.replaceState(null, '', `/#stage=${stage}&project=${project.id}&revision=${revisionId}`)
     render(createElement((await import('./App')).default))
     await screen.findAllByRole('group', { name: 'Artwork view' })
     if (view) {
@@ -2371,7 +2258,7 @@ describe('shown artwork stays consistent across cleanups', () => {
   }
 
   it('keeps the previous artwork, view and no editable raster until a jump to another cleanup has loaded', async () => {
-    await openAt('cleanup-1', 'Cleaned')
+    await openAt('cleanup-1', 'Cleaned', 'cleanup')
     await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-1'))
     await vi.waitFor(() => expect(mocks.editor).toHaveBeenCalledWith('cleanup-1', expect.anything()))
     await screen.findByText('Traced image: 600 × 400 px')
@@ -2385,9 +2272,9 @@ describe('shown artwork stays consistent across cleanups', () => {
     expect(history.every(entry => entry.preferred === 'clean-1' && entry.layers.includes('flat-P'))).toBe(true)
     expect(mocks.editor).not.toHaveBeenCalledWith('cleanup-2', expect.anything())
     // The new traced grid is unknown until the jump's artifacts load: the size line and
-    // the Live preview switch stay put, and the preview pauses.
+    // the Cleanup preview switch stay put, and the preview pauses.
     expect(screen.getByText('Traced image: 600 × 400 px')).toBeTruthy()
-    expect(livePreview()).toBeDefined()
+    expect(cleanupPreview()).toBeDefined()
     expect(previewPaused()).toBe(true)
     await act(async () => release['main:cleanup-2']())
     await vi.waitFor(() => expect(shown()?.preferredLayerId).toBe('clean-2'))
@@ -2425,9 +2312,8 @@ describe('shown artwork stays consistent across cleanups', () => {
     // The Flattened view has nothing true to show, so it is not offered; nothing is editable.
     expect(pressed('Flattened')).toBeNull()
     expect(pressed('Cleaned')).toBe('true')
-    // The traced grid is the cleaned raster's, so the live preview keeps working.
+    // The traced grid is the cleaned raster's, so its size is still known.
     await screen.findByText('Traced image: 600 × 400 px')
-    expect(livePreview()).toBeDefined()
     // The next revision change below the same cleanup looks it up again; its success
     // clears the error it had reported.
     navigate('trace-1')
@@ -2566,7 +2452,7 @@ describe('shown artwork stays consistent across cleanups', () => {
   })
 
   it('never runs the preview on another revision\'s traced grid across a jump', async () => {
-    await openAt('cleanup-1', 'Cleaned')
+    await openAt('cleanup-1', 'Cleaned', 'cleanup')
     await vi.waitFor(() => expect(previewPaused()).toBe(false))
     hold.add('main:cleanup-2')
     navigate('cleanup-2')
@@ -2619,9 +2505,9 @@ describe('shown artwork stays consistent across cleanups', () => {
   it('keeps the Live preview switch, paused, on a revision with no flattened image and through the flatten that leaves it', async () => {
     main['revision-1'] = [artifact('source')]
     try {
-      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
+      window.history.replaceState(null, '', `/#stage=cleanup&project=${project.id}&revision=revision-1`)
       render(createElement((await import('./App')).default))
-      await vi.waitFor(() => expect(livePreview()).toBeDefined())
+      await vi.waitFor(() => expect(cleanupPreview()).toBeDefined())
       expect(tracedSizeOf()).toBeNull()
       expect(previewPaused()).toBe(true)
       hold.add('main:palette-2')
@@ -3290,7 +3176,7 @@ describe('stepping trace runs while their artifacts load', () => {
     return panel
   }
 
-  it('never titles the canvas with the previous run while the stepped-to run loads', async () => {
+  it('titles the canvas Loading… while the stepped-to run loads, then names its edge SVG', async () => {
     const panel = await openNewestRun('Traced')
     await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-9-edge'))
     expect(titles.at(-1)).toBe('Traced SVG · edge to edge')
@@ -3298,10 +3184,11 @@ describe('stepping trace runs while their artifacts load', () => {
     fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
     await vi.waitFor(() => expect(release).toBeDefined())
     await act(async () => release!())
-    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-overlap'))
-    await vi.waitFor(() => expect(titles.at(-1)).toBe('Traced SVG · solid underlayers'))
-    expect(titles).not.toContain('Traced SVG · edge to edge')
-    expect(new Set(titles)).toEqual(new Set(['Loading…', 'Traced SVG · solid underlayers']))
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-edge'))
+    await vi.waitFor(() => expect(titles.at(-1)).toBe('Traced SVG · edge to edge'))
+    // Every run shows its edge SVG under one name, so the step reads Loading… first.
+    expect(titles[0]).toBe('Loading…')
+    expect(new Set(titles)).toEqual(new Set(['Loading…', 'Traced SVG · edge to edge']))
   })
 
   it('stays on the Source view until the stepped-to run has loaded, never showing the previous run', async () => {
@@ -3312,9 +3199,8 @@ describe('stepping trace runs while their artifacts load', () => {
     await vi.waitFor(() => expect(release).toBeDefined())
     expect(preferred.every(id => id === 'source-id')).toBe(true)
     await act(async () => release!())
-    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-overlap'))
+    await vi.waitFor(() => expect(captured?.preferredLayerId).toBe('trace-8-edge'))
     expect(preferred).not.toContain('trace-9-edge')
-    expect(preferred).not.toContain('trace-9-overlap')
   })
 
   it('keeps the Trace panel still across a step: same heading, same controls, no inserted reason', async () => {
@@ -3370,472 +3256,22 @@ describe('stepping trace runs while their artifacts load', () => {
     expect(mocks.inkscapeHandoff).not.toHaveBeenCalledWith('palette-1', expect.anything())
   })
 
-  it('keeps the solid-underlayer layer order listed through a step, never claiming no flatten', async () => {
-    const solidNewest: Revision = { ...edge, settings: { trace: { overlap: 0, solid_underlayers: true } } }
-    mocks.project.mockResolvedValue({ ...project, revisions: [solidNewest, solid, paletteRevision, revision] })
-    mocks.editor.mockImplementation(async (id: string) => ({ width: 40, height: 30, protected_pixels: 0, palette: [
-      { index: 0, name: `Navy ${id}`, hex: '#0F233C', rgb: [15, 35, 60], share_percent: 60 },
-      { index: 1, name: `Orange ${id}`, hex: '#E15F2D', rgb: [225, 95, 45], share_percent: 40 },
-    ] }))
+  it('starts one job per button however often it is clicked while the start is pending', async () => {
+    let answer: ((job: Job) => void) | undefined
+    mocks.startPipeline.mockImplementation(() => new Promise<Job>(resolve => { answer = resolve }))
     const panel = await openNewestRun('Traced')
-    await within(panel).findByText('Navy trace-9')
-    fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-    await vi.waitFor(() => expect(release).toBeDefined())
-    // Mid-load: the shown run's layer order stays listed; no false empty state.
-    expect(within(panel).getByText('Navy trace-9')).toBeTruthy()
-    expect(panel.textContent).not.toContain('Flatten this revision')
-    await act(async () => release!())
-    // The new run's palette replaces it once it arrives.
-    await within(panel).findByText('Navy trace-8')
-    expect(panel.textContent).not.toContain('Flatten this revision')
-  })
-
-  describe('layer order against each run\'s own palette', () => {
-    // The two runs' palettes share no hex value.
-    const palettes: Record<string, { index: number; name: string; hex: string; rgb: [number, number, number]; share_percent: number }[]> = {
-      'trace-9': [
-        { index: 0, name: 'Navy', hex: '#0F233C', rgb: [15, 35, 60], share_percent: 60 },
-        { index: 1, name: 'Orange', hex: '#E15F2D', rgb: [225, 95, 45], share_percent: 40 },
-      ],
-      'trace-8': [
-        { index: 0, name: 'Teal', hex: '#1A7F7A', rgb: [26, 127, 122], share_percent: 55 },
-        { index: 1, name: 'Sand', hex: '#D8C8A0', rgb: [216, 200, 160], share_percent: 45 },
-      ],
-    }
-    let failEditor: Set<string>, holdEditor: Set<string>, releaseEditor: (() => void)[]
-    // The palette index of the colour each run's active cleanup removes (EditorState.removed_colour_index).
-    const removedIndex: Record<string, number> = {}
-    beforeEach(() => {
-      failEditor = new Set(); holdEditor = new Set(); releaseEditor = []
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true } } }, solid, paletteRevision, revision] })
-      // Held reads settle together on release, or reject once their signal aborts.
-      mocks.editor.mockImplementation(async (id: string, signal?: AbortSignal) => {
-        if (holdEditor.has(id)) await new Promise<void>((resolve, reject) => {
-          releaseEditor.push(resolve)
-          signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
-        })
-        if (failEditor.has(id)) throw new Error('editor unavailable')
-        return { width: 40, height: 30, protected_pixels: 0, palette: palettes[id] ?? [], removed_colour_index: removedIndex[id] ?? null }
-      })
-      // A traceable run's automatic order is palette order unless a test sets one.
-      mocks.automaticLayerOrder.mockImplementation(async (id: string) => ({ automatic_layer_order: automatic[id] ?? palettes[id]?.map(row => row.hex) ?? null }))
-    })
-    // The tracer's automatic bottom-to-top order per run, when a test sets one.
-    const automatic: Record<string, string[]> = {}
-    afterEach(() => { for (const key of Object.keys(automatic)) delete automatic[key] })
-    const listed = (panel: HTMLElement) => [...panel.querySelectorAll('.layer-order-name')].map(node => node.textContent)
-    const previewOrder = () => (captured as { livePreview?: { settings: { layer_order: string[] | null } } } | null)?.livePreview?.settings.layer_order
-    // The top listed colour's move-down button (its move-up is always disabled).
-    const moveDown = (panel: HTMLElement, name: string) => within(panel).getByRole('button', { name: `Move ${name} down a layer` }) as HTMLButtonElement
-
-    it('cannot reorder the listed colours while they belong to the previous run', async () => {
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(moveDown(panel, 'Orange').disabled).toBe(false))
-      fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-      await vi.waitFor(() => expect(release).toBeDefined())
-      // Still listed (no jump), but locked with the reason.
-      const up = moveDown(panel, 'Orange')
-      expect(up.disabled).toBe(true)
-      expect(document.getElementById(up.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Loading the selected revision…')
-      await act(async () => release!())
-      await vi.waitFor(() => expect(moveDown(panel, 'Sand').disabled).toBe(false))
-      expect(within(panel).queryByText('Orange')).toBeNull()
-    })
-
-    it('narrows a stale stored order to the run\'s palette before previewing or tracing', async () => {
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#1A7F7A', '#e15f2d', '#0F233C', 'Orange'] } }))
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      // Stored bottom-to-top Orange, Navy: Navy is listed on top.
-      await vi.waitFor(() => expect(moveDown(panel, 'Navy').disabled).toBe(false))
-      // The other run's Teal is dropped; Orange (by hex and by name) is kept once, in order.
-      const narrowed = ['#E15F2D', '#0F233C']
-      await vi.waitFor(() => expect((captured as { livePreview?: { settings: { layer_order: string[] | null } } } | null)?.livePreview?.settings.layer_order).toEqual(narrowed))
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(narrowed)
-    })
-
-    it('locks the order when the run\'s palette cannot be read, and reads it afresh before tracing', async () => {
-      failEditor.add('trace-9')
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#1A7F7A', '#E15F2D'] } }))
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(within(panel).getByText('Palette unavailable: Error: editor unavailable')).toBeTruthy())
-      // Without the run's palette the preview is never handed the unchecked order.
-      expect(previewOrder()).toBeNull()
-      // Reading it again for the job still fails: no job starts with an unchecked order.
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      expect((await screen.findByRole('alert')).textContent).toContain('editor unavailable')
-      expect(mocks.startPipeline).not.toHaveBeenCalled()
-      // Once readable, the job reads the palette itself and narrows the order.
-      failEditor.clear()
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(['#E15F2D'])
-    })
-
-    it('shows the real empty state on a revision with no flatten', async () => {
-      mocks.effectiveArtifacts.mockImplementation(async (id: string) => id === 'revision-1' ? [artifact('source')] : run(id))
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true } }))
-      window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
-      render(createElement((await import('./App')).default))
-      const panel = screen.getByRole('tabpanel', { name: 'Trace' })
-      await vi.waitFor(() => expect(panel.textContent).toContain('Flatten this revision to choose a layer order.'))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      expect(panel.textContent).toContain('Flatten this revision to choose a layer order.')
-      expect(panel.textContent).not.toContain('Loading the selected revision')
-    })
-
-    it('shows exactly the order it sends, whatever the case or \'#\' of the stored entries', async () => {
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['e15f2d', 'navy'] } }))
-      const panel = await openNewestRun('Traced')
-      // Bottom-to-top Orange, Navy: listed top first as Navy, Orange (automatic would be Orange, Navy).
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      await vi.waitFor(() => expect(previewOrder()).toEqual(['#E15F2D', '#0F233C']))
-    })
-
-    it('leaves the colour Cleanup removes out of the list, the preview and the job', async () => {
-      palettes['trace-9'].push({ index: 2, name: 'Teal', hex: '#1A7F7A', rgb: [26, 127, 122], share_percent: 10 })
-      // The run's palette says which colour the cleanup removed by index, not by the name
-      // it recorded: a trace's colour names gave that name ('navy') to another colour since.
-      removedIndex['trace-9'] = 1
-      try {
-        const cleanupRun: Revision = { ...revision, id: 'cleanup-1', parent_revision_id: 'palette-1', kind: 'cleanup', created_at: '2026-01-02', settings: { cleanup: { remove_colour: 'navy' }, removed_colour_index: 1, stale_concerns: ['trace', 'validation', 'export'] } }
-        const newest: Revision = { ...edge, parent_revision_id: 'cleanup-1', settings: { trace: { overlap: 0, solid_underlayers: true } } }
-        mocks.project.mockResolvedValue({ ...project, revisions: [newest, cleanupRun, paletteRevision, revision] })
-        // A stored order still naming the removed colour.
-        localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#E15F2D', '#0F233C', '#1A7F7A'] } }))
-        mocks.startPipeline.mockResolvedValue({ ...queuedJob, kind: 'trace' })
-        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-9`)
-        render(createElement((await import('./App')).default))
-        const panel = screen.getByRole('tabpanel', { name: 'Trace' })
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Teal', 'Navy']))
-        expect(panel.textContent).toContain('Orange is removed in Cleanup and gets no layer.')
-        await vi.waitFor(() => expect(previewOrder()).toEqual(['#0F233C', '#1A7F7A']))
-        // A reorder writes only colours that get a layer.
-        fireEvent.click(within(panel).getByRole('button', { name: 'Move Teal down a layer' }))
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Teal']))
-        await vi.waitFor(() => expect(previewOrder()).toEqual(['#1A7F7A', '#0F233C']))
-        const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-        await vi.waitFor(() => expect(run.disabled).toBe(false))
-        fireEvent.click(run)
-        await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-        expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(['#1A7F7A', '#0F233C'])
-      } finally { palettes['trace-9'].pop(); delete removedIndex['trace-9'] }
-    })
-
-    it('starts one job from a double click while it reads the palette, and none if the revision changes meanwhile', async () => {
-      holdEditor.add('trace-9')
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#E15F2D'] } }))
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      fireEvent.click(run)
-      expect(run.disabled).toBe(true)
-      await act(async () => { releaseEditor.splice(0).forEach(resolve => resolve()) })
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalledTimes(1))
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(['#E15F2D'])
-    })
-
-    it('starts nothing when the revision changes while the job reads its palette', async () => {
-      holdEditor.add('trace-9')
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#E15F2D'] } }))
-      const panel = await openNewestRun('Traced')
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-      await vi.waitFor(() => expect(release).toBeDefined())
-      await act(async () => { releaseEditor.splice(0).forEach(resolve => resolve()); release!() })
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      expect(mocks.startPipeline).not.toHaveBeenCalled()
-      expect(screen.queryByRole('alert')).toBeNull()
-    })
-
-    it('reads no automatic order and lists none while colours meet edge to edge, then reads it once order matters', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: false } } }, solid, paletteRevision, revision] })
-      automatic['trace-9'] = ['#E15F2D', '#0F233C']
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(mocks.editor.mock.calls.some(call => call[0] === 'trace-9')).toBe(true))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      expect(mocks.automaticLayerOrder).not.toHaveBeenCalled()
-      expect(panel.querySelector('.layer-order-list')).toBeNull()
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      await vi.waitFor(() => expect(mocks.automaticLayerOrder).toHaveBeenCalledWith('trace-9', expect.anything()))
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      // Read once per revision: switching it off and on again does not re-read it.
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      expect(panel.querySelector('.layer-order-list')).toBeNull()
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      expect(mocks.automaticLayerOrder).toHaveBeenCalledTimes(1)
-    })
-
-    it('keeps the list locked until the automatic order arrives once order starts to matter', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: false } } }, solid, paletteRevision, revision] })
-      let deliver: ((value: { automatic_layer_order: string[] | null }) => void) | undefined
-      mocks.automaticLayerOrder.mockImplementation(() => new Promise(resolve => { deliver = resolve }))
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(mocks.editor.mock.calls.some(call => call[0] === 'trace-9')).toBe(true))
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      await vi.waitFor(() => expect(deliver).toBeDefined())
-      // Palette order is listed meanwhile, but it is not the automatic order: no reordering.
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Orange', 'Navy']))
-      const down = moveDown(panel, 'Orange')
-      expect(down.disabled).toBe(true)
-      expect(document.getElementById(down.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Loading automatic order…')
-      expect(panel.textContent).not.toContain('Automatic order until you reorder')
-      await act(async () => deliver!({ automatic_layer_order: ['#E15F2D', '#0F233C'] }))
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      expect(moveDown(panel, 'Navy').disabled).toBe(false)
-    })
-
-    it('shows a failed automatic-order read as the list\'s lock, with a Retry that reads it again', async () => {
-      automatic['trace-9'] = ['#E15F2D', '#0F233C']
-      mocks.automaticLayerOrder.mockRejectedValueOnce(new Error('order unavailable'))
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(panel.textContent).toContain('Automatic order unavailable: Error: order unavailable'))
-      expect(moveDown(panel, 'Orange').disabled).toBe(true)
-      expect(screen.queryByRole('alert')).toBeNull()
-      fireEvent.click(within(panel).getByRole('button', { name: 'Retry' }))
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      expect(moveDown(panel, 'Navy').disabled).toBe(false)
-      expect(mocks.automaticLayerOrder).toHaveBeenCalledTimes(2)
-    })
-
-    it('reads each revision\'s automatic order once, stepping away and back', async () => {
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(mocks.automaticLayerOrder).toHaveBeenCalledWith('trace-9', expect.anything()))
-      fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-      await vi.waitFor(() => expect(release).toBeDefined())
-      await act(async () => release!())
-      await vi.waitFor(() => expect(mocks.automaticLayerOrder).toHaveBeenCalledWith('trace-8', expect.anything()))
-      fireEvent.click(within(panel).getByLabelText('Show the next trace run'))
-      await within(panel).findByText('Iteration 2 of 2')
-      await vi.waitFor(() => expect(moveDown(panel, 'Orange').disabled).toBe(false))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
-      expect(mocks.automaticLayerOrder.mock.calls.map(call => call[0])).toEqual(['trace-9', 'trace-8'])
-    })
-
-    it('sends no layer order while order cannot matter, and keeps the stored one for when it does', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: false } } }, solid, paletteRevision, revision] })
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { layer_order: ['#E15F2D'] } }))
-      let update: ((job: Job) => void) | undefined
-      mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-edge', kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect((captured as { livePreview?: unknown } | null)?.livePreview).toBeDefined())
-      expect(previewOrder()).toBeNull()
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toBeNull()
-      await vi.waitFor(() => expect(update).toBeDefined())
-      await act(async () => update?.({ ...queuedJob, id: 'job-edge', kind: 'trace', status: 'succeeded', progress: 1, result_revision_id: 'trace-9' }))
-      // The run spent the draft but not the override it left out.
-      expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) ?? '{}').trace).toEqual({ layer_order: ['#E15F2D'] })
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      await vi.waitFor(() => expect(previewOrder()).toEqual(['#E15F2D']))
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-    })
-
-    it('keeps an older run\'s recorded layer order for the next form when a run from it leaves the order out', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true } } }, { ...solid, settings: { trace: { overlap: 0, solid_underlayers: true, layer_order: ['#1A7F7A'] } } }, paletteRevision, revision] })
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-older', kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-      await vi.waitFor(() => expect(release).toBeDefined())
-      await act(async () => release!())
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Sand', 'Teal']))
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-      expect(mocks.startPipeline.mock.calls[0][2]).toBe('trace-8')
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toBeNull()
-      expect(JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) ?? '{}').trace).toEqual({ layer_order: ['#1A7F7A'] })
-    })
-
-    it('keeps a withheld recorded layer order through a reload while the run is still going', async () => {
-      palettes['trace-10'] = palettes['trace-9']
-      try {
-        // The newest run recorded an override; its form turns order off and runs.
-        mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true, layer_order: ['#E15F2D'] } } }, solid, paletteRevision, revision] })
-        mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-reload', kind: 'trace' })
-        const panel = await openNewestRun('Traced')
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-        fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-        const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-        await vi.waitFor(() => expect(run.disabled).toBe(false))
-        fireEvent.click(run)
-        await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-        expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toBeNull()
-        // Reload mid-run; the run then succeeds, recording no layer order.
-        cleanup()
-        const traced: Revision = { ...edge, id: 'trace-10', parent_revision_id: 'trace-9', created_at: '2026-01-04', settings: { trace: { overlap: 0, solid_underlayers: false, layer_order: null } } }
-        mocks.project.mockResolvedValue({ ...project, revisions: [traced, { ...edge, settings: { trace: { overlap: 0, solid_underlayers: true, layer_order: ['#E15F2D'] } } }, solid, paletteRevision, revision] })
-        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-10`)
-        render(createElement((await import('./App')).default))
-        const reloaded = screen.getByRole('tabpanel', { name: 'Trace' })
-        await within(reloaded).findByText('Iteration 3 of 3')
-        fireEvent.click(within(reloaded).getByRole('checkbox', { name: /Solid underlayers/ }))
-        await vi.waitFor(() => expect(listed(reloaded)).toEqual(['Navy', 'Orange']))
-        await vi.waitFor(() => expect(previewOrder()).toEqual(['#E15F2D']))
-      } finally { delete palettes['trace-10'] }
-    })
-
-    const storedTraceDraft = () => JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) ?? '{}').trace
-    const recordedOrder = (order: string[]) => ({ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true, layer_order: order } } })
-    async function runWithOrderOff(panel: HTMLElement, jobId: string) {
-      let update: ((job: Job) => void) | undefined
-      mocks.followJob.mockImplementation((_id: string, onJob: (job: Job) => void) => { update = onJob; return () => undefined })
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: jobId, kind: 'trace' })
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(update).toBeDefined())
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toBeNull()
-      return (job: Partial<Job>) => act(async () => update!({ ...queuedJob, id: jobId, kind: 'trace', ...job }))
-    }
-
-    it('leaves the newest run\'s pending draft order alone when a run from an older run withholds its own', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 0, solid_underlayers: true } } }, { ...solid, settings: { trace: { overlap: 0, solid_underlayers: true, layer_order: ['#1A7F7A'] } } }, paletteRevision, revision] })
-      localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { layer_order: ['#E15F2D'] } }))
-      const panel = await openNewestRun('Traced')
-      fireEvent.click(within(panel).getByLabelText('Show the previous trace run'))
-      await vi.waitFor(() => expect(release).toBeDefined())
-      await act(async () => release!())
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Sand', 'Teal']))
-      await runWithOrderOff(panel, 'job-older')
-      expect(mocks.startPipeline.mock.calls[0][2]).toBe('trace-8')
-      expect(storedTraceDraft()).toEqual({ layer_order: ['#E15F2D'] })
-    })
-
-    it('keeps an order the user saved during the run instead of restoring the withheld one', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [recordedOrder(['#E15F2D']), solid, paletteRevision, revision] })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      const finish = await runWithOrderOff(panel, 'job-edited')
-      expect(storedTraceDraft()).toEqual({ layer_order: ['#E15F2D'] })
-      // Mid-run: order back on, reset to automatic, and saved to the draft.
-      fireEvent.click(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      const reset = await within(panel).findByRole('button', { name: 'Reset to automatic' })
-      fireEvent.click(reset)
-      fireEvent.focusOut(within(panel).getByRole('checkbox', { name: /Solid underlayers/ }))
-      await vi.waitFor(() => expect(storedTraceDraft()?.layer_order).toBeNull())
-      await finish({ status: 'succeeded', progress: 1, result_revision_id: 'trace-9' })
-      expect(storedTraceDraft()).toEqual({ layer_order: null })
-    })
-
-    it('leaves the trace draft untouched by a run where order matters', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [recordedOrder(['#E15F2D']), solid, paletteRevision, revision] })
-      mocks.startPipeline.mockResolvedValue({ ...queuedJob, id: 'job-solid', kind: 'trace' })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      await vi.waitFor(() => expect(mocks.startPipeline).toHaveBeenCalled())
-      expect(mocks.startPipeline.mock.calls[0][3].trace.layer_order).toEqual(['#E15F2D'])
-      expect(localStorage.getItem(`vinylgen.project-settings.${project.id}`)).toBeNull()
-    })
-
-    it('keeps the draft written before the start when the trace job fails', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [recordedOrder(['#E15F2D']), solid, paletteRevision, revision] })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      const finish = await runWithOrderOff(panel, 'job-failed')
-      await finish({ status: 'failed', progress: 1, error: 'trace failed' })
-      expect(storedTraceDraft()).toEqual({ layer_order: ['#E15F2D'] })
-    })
-
-    it('keeps the list locked when the revision has no automatic order (it cannot be traced as it stands)', async () => {
-      mocks.automaticLayerOrder.mockResolvedValueOnce({ automatic_layer_order: null })
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(panel.textContent).toContain('Automatic order unavailable: this revision cannot be traced as it stands.'))
-      expect(moveDown(panel, 'Orange').disabled).toBe(true)
-      expect(panel.textContent).not.toContain('Automatic order until you reorder')
-    })
-
-    it('lists the layer order, in the automatic order, with an overlap and no solid underlayers', async () => {
-      mocks.project.mockResolvedValue({ ...project, revisions: [{ ...edge, settings: { trace: { overlap: 1, solid_underlayers: false } } }, solid, paletteRevision, revision] })
-      automatic['trace-9'] = ['#E15F2D', '#0F233C']
-      const panel = await openNewestRun('Traced')
-      await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange']))
-      expect(mocks.automaticLayerOrder).toHaveBeenCalledWith('trace-9', expect.anything())
-    })
-
-    it('lists unnamed colours where the tracer stacks them: after the named ones, in its automatic order', async () => {
-      palettes['trace-9'].push({ index: 2, name: 'Teal', hex: '#1A7F7A', rgb: [26, 127, 122], share_percent: 10 })
-      automatic['trace-9'] = ['#1A7F7A', '#E15F2D', '#0F233C']
-      try {
-        const panel = await openNewestRun('Traced')
-        // Automatic: Teal at the bottom, Navy on top (not palette order).
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Navy', 'Orange', 'Teal']))
-        // Naming only Navy puts it at the bottom; Teal then Orange follow as inferred.
-        fireEvent.click(within(panel).getByRole('button', { name: 'Move Navy down a layer' }))
-        fireEvent.click(within(panel).getByRole('button', { name: 'Move Navy down a layer' }))
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Orange', 'Teal', 'Navy']))
-        cleanup()
-        localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true, layer_order: ['#0F233C'] } }))
-        const reopened = await openNewestRun('Traced')
-        await vi.waitFor(() => expect(listed(reopened)).toEqual(['Orange', 'Teal', 'Navy']))
-      } finally { palettes['trace-9'].pop() }
-    })
-
-    it('says it is loading, never that there is no flatten, while a flattened revision loads', async () => {
-      mocks.effectiveArtifacts.mockImplementation(async (id: string) => {
-        if (id === 'revision-1') return [artifact('source')]
-        if (id === 'palette-1') {
-          await new Promise<void>(resolve => { release = resolve })
-          return [artifact('source'), artifact('flattened'), artifact('segmentation', 'application/octet-stream')]
-        }
-        return run(id)
-      })
-      palettes['palette-1'] = palettes['trace-9']
-      try {
-        localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: { solid_underlayers: true } }))
-        window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=revision-1`)
-        render(createElement((await import('./App')).default))
-        const panel = screen.getByRole('tabpanel', { name: 'Trace' })
-        await vi.waitFor(() => expect(panel.textContent).toContain('Flatten this revision to choose a layer order.'))
-        await landFlatten('palette-1')
-        await vi.waitFor(() => expect(release).toBeDefined())
-        expect(panel.textContent).not.toContain('Flatten this revision')
-        expect(panel.textContent).toContain('Loading the selected revision…')
-        await act(async () => release!())
-        await vi.waitFor(() => expect(listed(panel)).toEqual(['Orange', 'Navy']))
-        expect(panel.textContent).not.toContain('Flatten this revision')
-      } finally { delete palettes['palette-1'] }
-    })
-
-    it('starts one job per button however often it is clicked while the start is pending', async () => {
-      let answer: ((job: Job) => void) | undefined
-      mocks.startPipeline.mockImplementation(() => new Promise<Job>(resolve => { answer = resolve }))
-      const panel = await openNewestRun('Traced')
-      const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
-      await vi.waitFor(() => expect(run.disabled).toBe(false))
-      fireEvent.click(run)
-      fireEvent.click(run)
-      const flatten = within(screen.getByRole('tabpanel', { name: 'Flatten' })).getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
-      fireEvent.click(flatten)
-      const cleanupButton = within(screen.getByRole('tabpanel', { name: 'Cleanup' })).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
-      fireEvent.click(cleanupButton)
-      expect(mocks.startPipeline).toHaveBeenCalledTimes(1)
-      expect([run.disabled, flatten.disabled, cleanupButton.disabled]).toEqual([true, true, true])
-      await act(async () => answer!({ ...queuedJob, kind: 'trace' }))
-      expect(mocks.startPipeline).toHaveBeenCalledTimes(1)
-    })
+    const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
+    await vi.waitFor(() => expect(run.disabled).toBe(false))
+    fireEvent.click(run)
+    fireEvent.click(run)
+    const flatten = within(screen.getByRole('tabpanel', { name: 'Flatten' })).getByRole('button', { name: 'Flatten image' }) as HTMLButtonElement
+    fireEvent.click(flatten)
+    const cleanupButton = within(screen.getByRole('tabpanel', { name: 'Cleanup' })).getByRole('button', { name: 'Run cleanup' }) as HTMLButtonElement
+    fireEvent.click(cleanupButton)
+    expect(mocks.startPipeline).toHaveBeenCalledTimes(1)
+    expect([run.disabled, flatten.disabled, cleanupButton.disabled]).toEqual([true, true, true])
+    await act(async () => answer!({ ...queuedJob, kind: 'trace' }))
+    expect(mocks.startPipeline).toHaveBeenCalledTimes(1)
   })
 })
 

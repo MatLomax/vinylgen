@@ -4,9 +4,6 @@ export type Artifact = { id: string; revision_id: string; kind: string; filename
 export type Job = { id: string; project_id: string | null; revision_id: string | null; result_revision_id: string | null; kind: string; status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'; progress: number; message: string | null; error: string | null }
 export type PaletteColour = { index: number; name: string; hex: string; rgb: [number, number, number]; share_percent: number }
 export type EditorState = { width: number; height: number; palette: PaletteColour[]; requested_colour_count: number | null; protected_pixels: number; removed_colour_index?: number | null; inherited_remove_colour?: { value: string | null; unresolved: boolean; hex?: string | null; problem?: 'missing' | 'ambiguous' | null } | null }
-// The bottom-to-top hex order a trace infers before any override (null: not traceable).
-// Read on its own, and only when layer order can matter (layerOrderMatters).
-export type AutomaticLayerOrder = { automatic_layer_order: string[] | null }
 export type EditOperation = { tool: 'merge_colour' | 'rename_colour' | 'recolour_colour' | 'reassign_region' | 'paint_pixels'; label?: number; source_label?: number; target_label?: number; name?: string; rgb?: [number, number, number]; point?: [number, number]; pixels?: [number, number][] }
 export type PaletteSettings = {
   initial_colours: number; final_colours: number | null; histogram_bits: number; analysis_max_dimension: number; dither_radius: number
@@ -25,19 +22,14 @@ export type CleanupSettings = {
   cleanup: boolean; cleanup_action: 'remove' | 'widen' | 'remove_then_widen'
   min_detail_width: number; min_region_area: number; remove_below_width: number
 }
-export type TraceSettings = {
-  overlap: number; solid_underlayers: boolean; layer_order: string[] | null
-  // The unit of the eight trace lengths: thousandths of the traced image's longer side.
-  // Records from before units carry none, or 'px' (see pixelRecordInUnits).
-  length_unit: 'per_mille'; curve_fit_tolerance: number
-  straight_line_max_deviation: number; minimum_straight_length: number
-  max_deviation: number | null; corner_analysis_span: number; side_smoothness: number
-  // Null (automatic) follows max_deviation, itself automatic (1‰) when that is null too.
-  corner_sharpening_allowance: number | null
-  straight_line_snap: 'off' | 'axis' | 'axis_diagonal'; snap_angle: number
-  node_placement: 'prefer_extremes' | 'at_extremes' | 'fewest'; nodes_at_bends: boolean; curve_feature_scale: number
-  soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
-}
+// The trace's settings: the soft node limits, which only warn (vinylgen.contracts.TraceSettings).
+export type TraceSettings = { soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number }
+// The tracer the server traces with: t3api, its build and its one fixed setting.
+export type TracerInfo = { name: string; build: string; setting: { w: number; A1: number; A2: number; L: number } }
+// One face of a running trace as t3 emitted it (vinylgen.tracing.face_event): its planar-map
+// face id, its colour's palette index, its rings as one path-data string (the `d` of its
+// path in traced-edge.svg) and their sodipodi:nodetypes.
+export type FaceEvent = { type: 'face'; face: number; label: number; rings: string; nodes: string }
 export type GenerationSettings = { width: number; height: number; desired_colours: number; required_motifs: string[]; rejected_motifs: string[] }
 export type GenerationStarted = { project: Project; job: Job; expanded_prompt: string }
 export type SelectOption = { value: string; label: string }
@@ -52,7 +44,7 @@ export type UpscaleOptions =
   | { available: true; upscalers: SelectOption[]; checkpoints: SelectOption[]; controlnets: SelectOption[]; defaults: UpscaleSettings; sample_size_max: number }
   | { available: false }
 export type UpscaleStarted = { project: Project; job: Job }
-export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number }
+export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number; tracer?: TracerInfo | null }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 
 type ValidationIssue = { loc?: unknown[]; msg?: unknown }
@@ -105,7 +97,6 @@ export const api = {
   effectiveArtifacts: (revisionId: string, signal?: AbortSignal, options?: { beforeCleanup?: boolean }) =>
     fetch(`/api/revisions/${revisionId}/effective-artifacts${options?.beforeCleanup ? '?before_cleanup=true' : ''}`, { signal }).then(result<Artifact[]>),
   editor: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/editor`, { signal }).then(result<EditorState>),
-  automaticLayerOrder: (revisionId: string, signal?: AbortSignal) => fetch(`/api/revisions/${revisionId}/automatic-layer-order`, { signal }).then(result<AutomaticLayerOrder>),
   applyEdits: (projectId: string, revisionId: string, operations: EditOperation[]) => fetch(`/api/projects/${projectId}/revisions/${revisionId}/edits`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations }),
   }).then(result<Revision>),
@@ -158,8 +149,11 @@ export const api = {
   }).then(result<UpscaleStarted>),
 }
 
-export function followJob(jobId: string, onJob: (job: Job) => void, onError: (error: Event) => void) {
+// Follows a job's event stream: each state of the job, and during a trace each face as t3
+// emits it (`onFace`, in t3's emission order).
+export function followJob(jobId: string, onJob: (job: Job) => void, onError: (error: Event) => void, onFace?: (face: FaceEvent) => void) {
   const events = new EventSource(`/api/jobs/${jobId}/events`)
+  if (onFace) events.addEventListener('face', event => onFace(JSON.parse((event as MessageEvent).data) as FaceEvent))
   events.addEventListener('job', event => {
     const job = JSON.parse((event as MessageEvent).data) as Job
     onJob(job)

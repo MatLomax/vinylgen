@@ -3,8 +3,6 @@ import { Profiler, type ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
-import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
 import { NODE_MARKER_COLOURS, NODE_MARKER_RADIUS, useTracedNodes, committedLayer, drawNodeMarkers, forEachNodeIn, indexNodes, parseTracedNodes, subpathNodes, type NodeLayer } from './PathNodes'
 
 const SODIPODI = 'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd'
@@ -397,129 +395,6 @@ describe('Trace canvas Nodes overlay', () => {
     expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
     expect(markers()).toBe(4)
     expect(counts()).toEqual([2, 1, 1])
-  })
-
-  it('marks the live preview\'s own nodes inside its window instead of the committed trace\'s', async () => {
-    vi.useFakeTimers()
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
-    prepare({ livePreview: { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } } })
-    fireEvent.click(nodesSwitch())
-    await serveCommitted()
-    // Two 1.25x zooms about the centre: scale 1.2, origin (-200, -120), window 166,100 668x500.
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
-    const request = pending.find(entry => entry.url.endsWith('/trace-preview'))!
-    // Until the preview arrives, the committed trace's nodes in view are counted.
-    expect(counts()).toEqual([2, 1, 0])
-    const window = { x: 166, y: 100, width: 668, height: 500 }
-    // Crop-relative geometry under the crop's translation, as trace_window writes it.
-    // The last path lies in the preview's margin, left of its window, at traced (120..130, 300..310).
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="translate(150 90)"><path d="M250 310 L300 310 L250 360 Z" sodipodi:nodetypes="cccc"/><path d="M-30 210 L-20 210 L-30 220 Z" sodipodi:nodetypes="ssss"/></g></svg>`
-    await act(async () => { request.resolve({ ok: true, json: async () => ({ window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg, elapsed_ms: 1 }), text: async () => '' }) })
-    expect(screen.getByAltText('Live trace preview')).toBeTruthy()
-    // The committed trace's counts are not shown for the new drawing before it is drawn.
-    expect(screen.getByRole('list', { name: 'Node types' }).querySelector('.node-count')).toBeNull()
-    // Fake timers also hold animation frames: run the redraw.
-    act(() => { vi.advanceTimersByTime(20) })
-    const tips = markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args)
-    const k = NODE_MARKER_RADIUS * 1.25
-    // The preview's three cusps, at traced (400,400), (450,400), (400,450) on screen;
-    // the committed (300,100), (500,100) (on the window's edge) and (300,300) fall in its
-    // window, and (100,100) out of view.
-    expect(tips).toEqual([[280, 360 - k], [340, 360 - k], [280, 420 - k]])
-    // The legend counts those three: the committed nodes in the window are the preview's.
-    expect(counts()).toEqual([3, 0, 0])
-    // Dragged 150px right (before a new preview is asked for), the view is stage x 41.7 to
-    // 708: the committed smooth node at (100,100) comes into view outside the window and
-    // counts; the preview's margin nodes, now in view but outside its window, do not.
-    dragRight(150)
-    act(() => { vi.advanceTimersByTime(20) })
-    expect(screen.getByAltText('Live trace preview')).toBeTruthy()
-    expect(counts()).toEqual([3, 0, 1])
-    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(0)
-  })
-
-  it('with no current trace, offers Nodes while the live preview is on and marks the preview\'s nodes in its window', async () => {
-    vi.useFakeTimers()
-    const livePreview = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } }
-    const { container } = prepare({ pathNodes: {}, livePreview })
-    // Live preview off: no nodes to mark, so no switch.
-    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
-    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
-    fireEvent.click(nodesSwitch())
-    // Nothing is drawn yet (the whole image is too large to preview), and the legend says so.
-    expect(screen.getByText('Zoom in to preview')).toBeTruthy()
-    expect(screen.getByText('No current trace: nodes appear once the live preview draws.')).toBeTruthy()
-    expect(container.querySelector('.node-count')).toBeNull()
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
-    // Only the preview is requested; there is no committed trace to fetch.
-    expect(pending.map(entry => entry.url).filter(url => !url.endsWith('/trace-preview'))).toEqual([])
-    const request = pending.find(entry => entry.url.endsWith('/trace-preview'))!
-    const window = { x: 166, y: 100, width: 668, height: 500 }
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="translate(150 90)"><path d="M250 310 L300 310 C320 330 320 340 300 360 L250 360 Z" sodipodi:nodetypes="ccscc"/><path d="M200 200 C210 200 220 210 220 220 C220 230 210 240 200 240 C190 240 180 230 180 220 C180 210 190 200 200 200 Z" sodipodi:nodetypes="zzzzz"/></g></svg>`
-    await act(async () => { request.resolve({ ok: true, json: async () => ({ window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg, elapsed_ms: 1 }), text: async () => '' }) })
-    act(() => { vi.advanceTimersByTime(20) })
-    expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
-    // Three cusp rhombi, one symmetric square and four smooth circles, all the preview's.
-    expect(markerPass(drawn).filter(call => call.name === 'closePath')).toHaveLength(3)
-    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(1)
-    expect(markerPass(drawn).filter(call => call.name === 'arc')).toHaveLength(4)
-    // The preview's cusp at traced (400,400) sits at scale 1.2 from (-200,-120).
-    const k = NODE_MARKER_RADIUS * 1.25
-    expect(markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args)).toContainEqual([280, 360 - k])
-    // The legend counts the preview's nodes, and says where they are marked.
-    const legend = screen.getByRole('list', { name: 'Node types' })
-    expect([...legend.querySelectorAll('li')].map(item => item.textContent)).toEqual(['Cusp node3', 'Symmetric node1', 'Smooth node4'])
-    expect(screen.getByText('No current trace: nodes are marked in the live preview.')).toBeTruthy()
-    // Turning the live preview off takes the switch away with nothing left to mark;
-    // turning it back on offers the switch again, still on.
-    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
-    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
-    expect(container.querySelector('canvas.node-overlay')).toBeNull()
-    fireEvent.click(screen.getByRole('switch', { name: 'Live preview' }))
-    expect(nodesSwitch().checked).toBe(true)
-    expect(container.querySelector('canvas.node-overlay')).toBeTruthy()
-  })
-
-  it('with no current trace, does not offer Nodes while the live preview is paused', () => {
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
-    const settings = DEFAULT_TRACE_SETTINGS
-    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: { width: 1000, height: 700 } }, livePreviewPaused: true })
-    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
-    cleanup()
-    // The traced grid not yet known pauses it the same way.
-    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: null } })
-    expect(screen.queryByRole('group', { name: 'Inspection layers' })).toBeNull()
-    cleanup()
-    prepare({ pathNodes: {}, livePreview: { revisionId: 'rev-1', settings, tracedSize: { width: 1000, height: 700 } } })
-    expect(nodesSwitch().checked).toBe(false)
-  })
-
-  it('falls back to the committed nodes in the preview window, saying so, when the preview\'s nodes cannot be read', async () => {
-    vi.useFakeTimers()
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
-    prepare({ livePreview: { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } } })
-    fireEvent.click(nodesSwitch())
-    await serveCommitted()
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    fireEvent.click(screen.getByLabelText('Zoom in'))
-    act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 2) })
-    const request = pending.find(entry => entry.url.endsWith('/trace-preview'))!
-    const window = { x: 166, y: 100, width: 668, height: 500 }
-    // A transform the node parser does not read.
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="${SODIPODI}" viewBox="166 100 668 500"><g transform="rotate(30)"><path d="M250 310 L300 310 L250 360 Z" sodipodi:nodetypes="cccc"/></g></svg>`
-    await act(async () => { request.resolve({ ok: true, json: async () => ({ window, crop: window, image: { width: 1000, height: 700 }, variant: 'traced-edge', svg, elapsed_ms: 1 }), text: async () => '' }) })
-    act(() => { vi.advanceTimersByTime(20) })
-    expect(screen.getByAltText('Live trace preview')).toBeTruthy()
-    expect(screen.getByText("Couldn't read the preview's nodes")).toBeTruthy()
-    // The committed nodes inside the window stay drawn: the cusps at (300,300) and
-    // (500,100) and the symmetric node at (300,100), at scale 1.2 from (-200,-120).
-    const k = NODE_MARKER_RADIUS * 1.25
-    expect(markerPass(drawn).filter(call => call.name === 'moveTo').map(call => call.args).sort()).toEqual([[160, 240 - k], [400, 0 - k]].sort())
-    expect(markerPass(drawn).filter(call => call.name === 'rect')).toHaveLength(1)
   })
 })
 

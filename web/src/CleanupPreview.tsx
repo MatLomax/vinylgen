@@ -1,6 +1,6 @@
 import { type ReactNode, useId, useState } from 'react'
 import { errorMessage, type CleanupSettings } from './api'
-import { stagePlacement, storeSwitch, storedSwitch, useLivePreview, type PreviewSource, type PreviewWindow } from './TracePreview'
+import { stagePlacement, storeSwitch, storedSwitch, useLivePreview, type PreviewSource, type PreviewWindow } from './LivePreview'
 import type { ImageSize, ViewTransform } from './workspace'
 
 // The live cleanup preview: the Cleanup canvas cleans whatever is zoomed into, with

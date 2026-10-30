@@ -2,8 +2,8 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ImageWorkspace, type CanvasMarker, type WorkspaceLayer } from './ImageWorkspace'
-import { DEFAULT_TRACE_SETTINGS } from './PipelineControls'
-import { LIVE_PREVIEW_STORAGE_KEY, PREVIEW_DEBOUNCE_MS } from './TracePreview'
+import { NO_FACES, withFace } from './LiveTrace'
+import type { FaceEvent, PaletteColour } from './api'
 
 const TRACE_KINDS = ['trace-missed-details-overlay', 'trace-fallbacks-overlay']
 const layers: WorkspaceLayer[] = [
@@ -510,27 +510,23 @@ describe('canvas loading states and wheel zoom', () => {
     expect(screen.getByAltText('Traced SVG · solid underlayers')).toBeTruthy()
   })
 
-  it('keeps the Live preview switch through a load, requesting and drawing nothing until unpaused', async () => {
-    vi.useFakeTimers()
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
-    const fetch = vi.fn(() => new Promise(() => undefined))
-    vi.stubGlobal('fetch', fetch)
-    try {
-      const live = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: { width: 1000, height: 700 } }
-      const view = (paused: boolean) => <ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" livePreview={live} livePreviewPaused={paused} />
-      const { container, rerender } = render(view(true))
-      fitted(container)
-      fireEvent.click(screen.getByLabelText('Zoom in'))
-      fireEvent.click(screen.getByLabelText('Zoom in'))
-      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
-      expect(screen.getByRole('switch', { name: 'Live preview' })).toBeTruthy()
-      expect(fetch).not.toHaveBeenCalled()
-      expect(screen.queryByText('Zoom in to preview')).toBeNull()
-      rerender(view(false))
-      fireEvent.click(screen.getByLabelText('Zoom in'))
-      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
-      expect(fetch).toHaveBeenCalledTimes(1)
-    } finally { localStorage.clear(); vi.useRealTimers() }
+  it('draws a running trace\'s faces over the stage in paint order, whatever order they landed in', () => {
+    const palette: PaletteColour[] = [
+      { index: 0, name: 'Red', hex: '#ff0000', rgb: [255, 0, 0], share_percent: 50 },
+      { index: 1, name: 'Blue', hex: '#0000ff', rgb: [0, 0, 255], share_percent: 30 },
+      { index: 2, name: 'White', hex: '#ffffff', rgb: [255, 255, 255], share_percent: 20 },
+    ]
+    const face = (id: number, label: number): FaceEvent => ({ type: 'face', face: id, label, rings: `M${id} 0L${id + 1} 0L${id} 1Z`, nodes: 'cccc' })
+    let faces = NO_FACES
+    for (const event of [face(9, 1), face(4, 0), face(6, 2), face(2, 1)]) faces = withFace(faces, event)
+    const { container } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas"
+      liveTrace={{ faces, palette, omitted: 2, traced: { width: 500, height: 350 } }} />)
+    fitted(container)
+    const svg = container.querySelector('.image-stage svg.live-trace')!
+    expect(svg.getAttribute('viewBox')).toBe('0 0 500 350')
+    // Bottom to top: Red's layer, then Blue's with its faces in face order; the omitted White has none.
+    expect([...svg.querySelectorAll('g')].map(group => [group.getAttribute('fill'), [...group.querySelectorAll('path')].map(path => path.getAttribute('d'))]))
+      .toEqual([['#ff0000', ['M4 0L5 0L4 1Z']], ['#0000ff', ['M2 0L3 0L2 1Z', 'M9 0L10 0L9 1Z']]])
   })
 
   it('renders pixels as crisp blocks only once zoomed to 1:1 or closer, smoothing below', () => {
@@ -567,7 +563,7 @@ describe('canvas loading states and wheel zoom', () => {
     // (solid underlayers): the revision changes (loading, old layers), the fetch runs,
     // the new layers commit, then loading ends.
     // Named and identified as App builds them: each run lists both SVG variants; the
-    // run's own variant carries the settings name (tracedSvgKind picks it).
+    // run's own variant carries the run's name.
     const run = (id: string, shown: 'edge' | 'overlap', name: string): WorkspaceLayer[] => [
       { id: 'source-id', name: 'source · source.png', url: '/source.png', mediaType: 'image/png', role: 'image' },
       { id: `${id}-edge`, name: shown === 'edge' ? name : 'traced-edge · traced-edge.svg', url: `/${id}-edge.svg`, mediaType: 'image/svg+xml', role: 'image' },
@@ -604,26 +600,6 @@ describe('canvas loading states and wheel zoom', () => {
     unmount()
     expect(wheelOn(removed).map(call => call[1])).toEqual([listener])
     added.mockRestore(); removed.mockRestore()
-  })
-
-  it('keeps the switch with no traced grid yet, requesting nothing and saying why when told', () => {
-    vi.useFakeTimers()
-    localStorage.setItem(LIVE_PREVIEW_STORAGE_KEY, 'on')
-    const fetch = vi.fn(() => new Promise(() => undefined))
-    vi.stubGlobal('fetch', fetch)
-    try {
-      const live = { revisionId: 'rev-1', settings: DEFAULT_TRACE_SETTINGS, tracedSize: null }
-      const { container } = render(<ImageWorkspace layers={single} preferredLayerId="svg" editorMode canvasLabel="Trace canvas" livePreview={live} livePreviewStatus="Preview unavailable: no traced grid" />)
-      fitted(container)
-      fireEvent.click(screen.getByLabelText('Zoom in'))
-      fireEvent.click(screen.getByLabelText('Zoom in'))
-      act(() => { vi.advanceTimersByTime(PREVIEW_DEBOUNCE_MS * 4) })
-      expect(screen.getByRole('switch', { name: 'Live preview' })).toBeTruthy()
-      expect(fetch).not.toHaveBeenCalled()
-      const status = container.querySelector('.trace-preview-paused')
-      expect(status?.getAttribute('aria-live')).toBe('polite')
-      expect(status?.textContent).toBe('Preview unavailable: no traced grid')
-    } finally { localStorage.clear(); vi.useRealTimers() }
   })
 })
 

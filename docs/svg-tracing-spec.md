@@ -96,18 +96,40 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
 | 0.95 | Rendering preview |
 | 1.00 | Complete |
 
+- **Re-export without a trace.** A web trace whose parent's effective
+  `map.json` came from a trace of labels with the same sha256 (each revision's
+  effective `segmentation.npz`) and the installed t3api build (the map header's
+  `build`), with that trace's `trace.json` present, makes no `t3api.trace`
+  call: the map is copied byte for byte, rewritten only when the new palette
+  names its colours differently, passes `planar_map_check`, and the edge SVG,
+  the audit and `trace.json` are built from it with this revision's own
+  settings. `t3.reused_from` and `validation.edge.read_back.reused_from` name
+  the revision whose trace drew it, and `t3` repeats that trace's timings.
+- **The live trace view.** While a web trace runs, each of t3's `face` events
+  (the face's id, colour label, rings as SVG path data and node types) is
+  written by the worker as a JSON line and sent on the job's event stream as
+  `event: face`, in t3's emission order. The Trace canvas keeps the faces it
+  has received and draws them as one SVG over the raster, layers in palette
+  order (the omitted colour skipped) and each layer's faces in face order: a
+  layer's faces share one fill and never overlap, so this paints exactly what
+  the finished edge SVG paints. The view clears when the job ends; a client
+  that subscribes late gets no earlier faces.
+
 The overlap variant (`traced-overlap.svg`), solid underlayers, layer order,
 the Inkscape validation render and the recovery passes are not part of a
 trace: older trace revisions keep their files. The old shared-boundary fitter
-described in the sections below (the geometry model, layer order, trace
-lengths, corner detection, joins, node placement, crossing repair) is reached
-only by the live window preview (`vinylgen/trace_window.py`).
+described in the sections below (the geometry model, corner detection, joins,
+node placement, crossing repair) draws no trace and no preview, and no
+longer runs: `vinylgen/curve_fit.py` reads the retired trace settings and fails
+to import, and with it `vinylgen/fidelity/`, `tests/test_synthetic_fidelity.py`,
+the full-image corpus tests that use it (`tests/fullimage/`) and
+`scripts/tracer_contact_sheet.py`. `boundary_graph`, `path_crossings` and
+`node_types` still import, but a trace calls none of them.
 
 ## Geometry model
 
 This section and the fitter sections after it describe the old shared-boundary
-fitter, which only the [live window preview](#live-window-preview) still runs;
-a trace is drawn by t3 ([The trace stage: t3](#the-trace-stage-t3)).
+fitter, which draws no trace or preview; a trace is drawn by t3 ([The trace stage: t3](#the-trace-stage-t3)).
 
 Each final palette colour becomes a named Inkscape layer. Disconnected regions
 remain separately selectable paths, numbered largest-first with stable names.
@@ -133,7 +155,7 @@ colour touch only at a corner (degree four). The chains are the same whichever
 edge the walk seeds a chain at, so an interface is never split at an arbitrary
 degree-two vertex. Every chain end carries an anchor: a **junction anchor**
 where three or more colours meet, else an **endpoint anchor** (the image edge,
-a corner contact, and in the live preview a crop edge). A loop that leaves a
+a corner contact). A loop that leaves a
 vertex of degree four and returns to it is closed but carries one anchor
 there, its two ends; a ring of degree-two vertices carries none.
 
@@ -162,8 +184,7 @@ Every traced path carries `sodipodi:nodetypes` (namespace
 Inkscape's node tool shows the same node types Vinylgen reports. Terms follow
 [GLOSSARY.md](../GLOSSARY.md) "Path nodes". `vinylgen/node_types.py` classifies
 each node from the path data exactly as written (absolute `M`, `L`, `C`, `Z`);
-the SVG writer (`svg_writer.add_layer`) applies it to both variants and to the
-live preview's SVG.
+the SVG writer (`svg_writer.add_layer`) applies it to both variants.
 
 | Character | Vinylgen term | Inkscape name | Rule |
 |---|---|---|---|
@@ -184,51 +205,6 @@ the start, the implicit closing line is that last segment. A closed subpath
 then repeats its start node's character at the end, and the start node is
 classified from its closing join. A subpath with no segments has no characters.
 Rendering ignores the attribute.
-
-## Layer order
-
-Layer order matters only when lower layers extend beneath upper ones: with
-solid underlayers or a positive overlap (`layer_order_matters` in
-`vinylgen/tracing.py`). Then the tracer infers a deterministic best-guess
-stacking order (`infer_order`): colours touching more of the canvas edge, then
-larger colours, sit lower. Ambiguity does not stop the run: the chosen order
-and a warning are written to `trace.json`. Layer ordering is independent of the
-palette's descending area order.
-
-Without solid underlayers and with zero overlap, every colour meets its
-neighbours edge to edge and each layer is exactly its own partition region, so
-no stacking changes any cut geometry. The tracer then does not run
-`infer_order` and emits none of its warnings; the layers stack in palette
-order. `trace.json` records `inferred_bottom_to_top: null` and the reason under
-`layer_order.not_inferred`. Across the nine-image corpus, tracing in palette
-order instead of the inferred order gave identical path data for every
-colour in both SVG variants. The only order-dependent outputs are rendered
-rasters: the renderer anti-aliases a shared edge differently depending on which
-colour is painted last, so `traced.png` and the semantic-validation render
-(and the audit counts derived from it) differ along boundaries by a few
-channel levels. Both describe the SVG as written, so they stay consistent with
-the delivered file. Because protected-feature recovery reads that render, a
-subject with explicit protections could in principle take a different recovery
-path in a different stacking; no corpus subject did.
-
-Users can override the complete or partial order in either case; an override is
-always honoured, and colours it leaves unnamed follow the automatic order
-(inferred, or palette order when order cannot matter). The web Trace form lists
-the layer order only when it can matter, and reads the inferred order
-(`GET /api/revisions/{id}/automatic-layer-order`, once per revision) only then;
-the list stays locked until that order has arrived, a failed read is shown on
-the list with a Retry, and a revision with no automatic order (it cannot be
-traced as it stands, e.g. its cleanup is stale) keeps the list locked with that
-reason. While order cannot matter the web app sends no `layer_order` with a
-trace run or live preview, so a hidden override never changes the stacking. The
-override stays in the form, and before such a run starts it is written into the
-project's persisted trace draft, so it survives a reload and a run from an older
-trace, and applies again once solid underlayers or an overlap are set. The user's
-own pending draft wins: when the draft already names a layer order, the run does
-not overwrite it. When the run succeeds and spends the draft, the order is kept
-only if the draft still holds it; an order the user saved while the run was going
-is left as the user saved it. A failed or cancelled run leaves the draft as
-written. A run where order matters does not touch the draft.
 
 ## Palette names and optional colour removal
 
@@ -266,209 +242,38 @@ outputs/<subject>/cropped.png
 Aspect-ratio and crop settings belong to the palette-stage configuration, not
 the tracing command.
 
-Trace settings follow one rule: fitting relative to the image, cutting in
-millimetres. The physical size is set by the cleanup stage and applies to both
-the cleanup thresholds and the traced SVG; in the web workflow the trace shows
-it read-only and changing it means running cleanup again.
+The trace's settings are the three soft node limits of `TraceSettings`
+(`vinylgen/contracts.py`): `soft_path_nodes` (5,000), `soft_layer_nodes`
+(50,000) and `soft_document_nodes` (200,000), node counts that only add a
+warning to `trace.json` naming the path, the layer or the document over its
+limit. None of them changes the geometry: t3 traces the pixel grid at its one
+setting. The physical size is set by the cleanup stage and applies to both the
+cleanup thresholds and the traced SVG; in the web workflow the trace shows it
+read-only and changing it means running cleanup again. Setting a physical size
+never changes the trace; the SVG `viewBox` is the traced pixel grid (the
+flattened or edited raster, with any palette-stage `flatten_upscale` already
+applied).
 
-- The eight trace lengths are in thousandths (‰) of the traced image's longer
-  side ([Trace length units](#trace-length-units)): `curve_fit_tolerance`,
-  `straight_line_max_deviation`, `minimum_straight_length`,
-  `corner_analysis_span` (the analysis scale), `side_smoothness`,
-  `corner_sharpening_allowance`, `curve_feature_scale` and `max_deviation`. The traced image is the flattened
-  (or edited) raster, with any palette-stage `flatten_upscale` already applied;
-  the SVG `viewBox` is the same pixel grid. Setting a physical size never
-  changes how curves are fitted. The one angle, `snap_angle`, is in degrees.
-- Physical settings are `overlap`, `min_detail_width`, `remove_below_width`
-  (lengths) and `min_region_area` (an area). When a width or height is
-  supplied they are millimetres and square millimetres, converted to pixels
-  through the physical scale; without physical dimensions they are pixels and
-  square pixels.
+The cleanup's physical settings are `min_detail_width`, `remove_below_width`
+(lengths) and `min_region_area` (an area). When a width or height is supplied
+they are millimetres and square millimetres, converted to pixels through the
+physical scale; without physical dimensions they are pixels and square pixels.
 
-### Trace length units
-
-A trace length is stored and edited in thousandths of the longer side of the
-traced raster, so the same artwork traced at 600 px and at 6000 px gets the same
-corners, node layout and relative accuracy. Pixel windows would read small
-variations of a large diffusion-upscaled image (3000 to 11000 px) as corners and
-bends. `TraceSettings.length_unit` names the unit: `per_mille` for thousandths,
-`px` for pixels.
-
-**One resolver.** `vinylgen/trace_lengths.py` `resolve_trace_lengths` converts
-the lengths to pixels (`value × longer side / 1000`, rounded to 9 decimal
-places) before anything is fitted. The trace run, the CLI and the live preview
-all resolve with the WHOLE traced image's longer side; the preview never uses
-its window's size. The fitter works in pixels only and refuses settings still in
-thousandths (`_require_pixels`). An automatic `max_deviation` (unset) resolves
-to 1‰; `side_smoothness`, unset, follows `straight_line_max_deviation`, and
-`corner_sharpening_allowance`, unset, follows `max_deviation` (automatic
-included).
-The default rules are tables in `vinylgen/contracts.py` (fixed defaults,
-following lengths, automatic lengths), so a new length is one table entry.
-
-**Defaults** (chosen by the user after the calibration comparison,
-`.tmp/units-calibration/compare_sets.json`). They reproduce the pixel-era
-defaults on a 2000 px image:
-
-| Setting | ‰ | px at 1495 (corpus) | px at 2000 | px at 2990 (2× corpus) | px at 11264 |
-|---|---|---|---|---|---|
-| Curve-fit tolerance | 0.75 | 1.12 | 1.5 | 2.24 | 8.4 |
-| Straight-line deviation | 0.8 | 1.2 | 1.6 | 2.39 | 9.0 |
-| Minimum straight length | 2 | 3.0 | 4 | 5.98 | 22.5 |
-| Maximum deviation (automatic) | 1 | 1.5 | 2 | 2.99 | 11.3 |
-| Analysis scale (`corner_analysis_span`) | 4 | 6.0 | 8 | 11.96 | 45.1 |
-| Curve feature scale | 2 | 3.0 | 4 | 5.98 | 22.5 |
-
-The curve feature scale accepts 0.25 to 16‰ as input (the web form and API, the
-CLI flag); a converted pixel-era record outside that range still traces as
-recorded.
-
-**One-pixel floor.** `curve_fit_tolerance`, `max_deviation` and
-`corner_sharpening_allowance` never resolve below 1 px (`FLOORED_LENGTHS`,
-`MIN_ACCURACY_PX`), explicit values and pixel settings included, so the trace
-and the live preview resolve the same settings to the same pixels. Without it a
-600 px image would resolve the default tolerance to 0.45 px, below the sub-pixel
-noise of the boundary samples, and the fit would follow that noise with extra
-nodes (a synthetic badge: 49 pieces at 600 px against 14 at 2000 and 6000 px).
-The floor only matters below about 1333 px at the defaults. The web form's pixel
-hint says when a value is held at the minimum. A pixel-era record keeps its
-other lengths exactly.
-
-**Straight-run floor.** `minimum_straight_length` always resolves above one
-pixel step, to at least `MIN_STRAIGHT_RUN_PX` (1 px plus the 1e-9 px resolution
-of a resolved length), explicit values and pixel settings included. A straight
-run is accepted when its chord is at least this long, so at 1 px or less every
-unit step of a pixel staircase is a straight run and the provisional-corner test
-puts a cusp between each pair: the default 2‰ would do that on every image of
-500 px or less. The synthetic fidelity corpus measured it (fixed set and pinned
-fuzz cases below 500 px, default settings; a kink then counted as a cusp farther
-than max(2 px, 2 per mille) from every true corner): with no floor the
-hard-edged tier had 10358 kinks and a corner F1 of 0.10, and the anti-aliased
-tier 1813 kinks and 0.17. A floor of exactly 1 px left the hard-edged tier unchanged. The floor
-just above one step gave 136 kinks and 0.34, and 50 kinks and 0.42. Floors of
-1.25 to 2 px lost more real corners than they removed kinks. The web form's
-pixel hint says when the length is held above one step.
-
-**Derived windows** keep their ratios to the resolved lengths: corner windows at
-1× and 1.75× the analysis scale past a tip skip of 2.41 corner sharpening
-allowances, join tangent windows at ¼ and ½, smoothing at half the curve feature scale truncated
-at 1×, and the short-edge minimum from the minimum straight length.
-
-**Absolute pixel constants**, each decided:
-
-| Constant | Where | Decision |
-|---|---|---|
-| Control-point padding cap, 2 px | `_cubic_solve_nb`, `_constrained_cubic_nb`, `_fixed_pair_nb` | Scales: a quarter of the analysis scale (`_pad_cap`), which is 2 px at the pixel-era 8 px span. Controls stay within `max(tolerance, min(¼ extent, cap))` of the sample box. |
-| Axis-extreme prominence, 0.5 px | `_unit_candidates_nb` | Scales: `max(0.5 px, curve feature scale / 8)`, 0.5 px at the pixel-era 4 px scale; never below the half pixel of raster noise. |
-| Noise floor 0.5 px in `max(0.5 px, tolerance / 2)` | inflection and bend significance | Stays: raster noise is a pixel quantity; the tolerance term already scales. |
-| Recovery floor, 0.05 px | `_tightened` | Stays: a floor on a tightened tolerance against raster noise, far below every resolved tolerance. |
-| Semantic-audit feature span, 6 px | `validate_semantic_preservation` via `tracing.feature_span` | Scales: `max(6 px, 3 × maximum deviation)`, 6 px at the pixel-era 2 px deviation; a feature shorter than three deviations may legitimately be smoothed away. The 6 px floor and the thin-feature detector's 4 px support radius are raster measurements and stay. |
-| Partition absolute tolerance, 1e-6 px² | `partition_watertight_fault` | Stays: floating-point noise; its relative term already scales with the canvas area. |
-| Preview margin, 64 px | `trace_lengths.preview_margin` | Computed: `max(64 px, 8 × the longest reach)`, the reach being the largest of the analysis scale plus the corner tip skip, twice the curve feature scale and the minimum straight length (103 px at the pixel-era defaults: 8 × (8 + 4.83)). The multiple is measured, not derived ([Preview margin measurement](#preview-margin-measurement)): no multiple makes the preview match the full trace inside its window, and each smaller one tried leaves more difference in view than 8. |
-| Preview area limits (px²) | `PREVIEW_MAX_AREA_PX`, cleanup preview | Stay: they bound the preview's compute cost, which is in pixels. |
-| Corner-candidate suppression gap (formerly `index_gap`, a sample count) | `_geometric_corners` | Arc length: two candidates are one corner within half the analysis scale of arc, or when their cusps lie within half the analysis scale (or the sharpening allowance) of each other and their samples within half the scale plus twice the allowance of arc. Correct on sparse rings (buffered overlap rings, a polygon's vertices) and dense chains alike. |
-| One-arc noise floor, 0.3 px | `_ONE_ARC_FLOOR` in `_corner_candidates` | Stays: raster noise is a pixel quantity. A corner's one-arc miss must exceed 1.5 × its sides' own error plus 0.3 px ([Corner detection](#corner-detection)). |
-| Arc minimum, 5 samples | `_ARC_MIN_SAMPLES` in `_fit_side_nb` | Stays: a count, not a length. An arc has three parameters; through fewer than five samples it follows their noise. |
-
-**Pixel-era records.** Every setting recorded before units is pixels. It is
-recognised by its marker, never by magnitude: `length_unit: "px"`, or no
-`length_unit` in a record from before units existed (a web revision's trace
-settings, a whole `trace.json`, a config carrying `curve_optimization`, or a
-web draft that sets a length). A pixel record is converted to thousandths on
-the image it traced, so resolving it on that image gives back its pixels
-exactly and a re-trace reproduces its geometry:
-
-- absent lengths take the pixel-era defaults (1.5, 1.6, 4, 8 and 4 px), an
-  absent `side_smoothness` the recorded straight-line deviation, an automatic
-  `max_deviation` the explicit 2 px it resolved to, and an absent
-  `corner_sharpening_allowance` that maximum deviation (the pixel era's corner
-  move limit);
-- a stored `corner_straightness`, the former name of `side_smoothness`, is
-  read as `side_smoothness` everywhere a record is read: web drafts, served
-  revision settings, web requests, CLI configs and `trace.json`
-  (`contracts.upgrade_trace_record`), and `--corner-straightness` is an alias
-  of `--side-smoothness`. The lengths are kept exactly, but the corner detector
-  changed: a re-trace of an old record finds curve-to-curve cusps, sharpens
-  rounds within the allowance, and drops corners that were a smooth curve's
-  noise, so its geometry is not the one recorded;
-- the web API serves every revision's pixel trace record converted on the raster
-  that run traced (read from its traced SVG's `viewBox`), leaving the stored
-  record untouched; a record whose raster cannot be read is served marked `px`
-  and the form converts it on the current traced grid;
-- a web draft saved in pixels converts on the revision's traced grid once it is
-  measured and is stored back in thousandths;
-- the CLI converts a pixel config on each image it traces (in `trace_subject`).
-  A config that sets a length without `length_unit` is rejected, as is a length
-  flag (thousandths) over a pixel config;
-- the web API requires `length_unit: "per_mille"` in any trace request that sets
-  a length, so a client still sending pixels is refused, never misread.
-
-### Preview margin measurement
-
-The live trace preview's margin (`trace_lengths.preview_margin`) was measured
-against the whole-image trace (2026-09-25; scripts and results in
-`.tmp/preview-margin/`). The inputs were the nine corpus subjects, `sourceup`,
-`fox-table` (4096 × 1360), the `fox-owl-table-2` cleanup (6398 × 2133) and
-`phoenix-4x-regen-2` (11264 × 7920). Each image had 28 windows: 10 random (8 at
-600 × 600, 2 at 300 × 300) and 18 boundary-dense (8 at 600 × 600, 2 at 600 × 300,
-4 at 300 × 300, 4 at 150 × 150). Three settings were tried: the defaults, analysis
-scale 10‰, and analysis scale 8‰ with curve feature scale 8‰. The reference is
-the whole image traced through the preview path, which is the trace run's SVG
-path for path.
-
-**Criterion.** A window agrees when every written segment whose control points'
-bounding box meets the window, and every node inside it with its node type,
-matches the reference within 1e-5 px. The difference the margin controls is
-counted per boundary chain: a chain the crop cuts (it has a sample within 1 px of
-a crop edge that is not an image edge) is compared, inside the window, against
-the same whole chain fitted from the same coordinates, so the count is what the
-split alone changes.
-
-**Result.** At the defaults, with windows showing a margin-caused difference
-out of 28 and the median cold preview (boundaries plus fit) of the 600 × 600
-dense windows:
-
-| Image | 2 reaches | 4 reaches | 6 reaches | 8 reaches |
-|---|---|---|---|---|
-| `fox-table` | 64 px: 26, 1.60 s | 106 px: 23, 1.81 s | 158 px: 19, 2.30 s | 211 px: 11, 2.64 s |
-| `fox-owl-table-2` | 83 px: 28, 0.51 s | 165 px: 27, 0.73 s | 247 px: 22, 0.89 s | 329 px: 20, 1.12 s |
-| `sourceup` | 77 px: 26, 0.33 s | 154 px: 23, 0.43 s | 231 px: 16, 0.53 s | 307 px: 8, 0.63 s |
-| `phoenix-4x-regen-2` | 145 px: 27, 0.24 s | 289 px: 22, 0.37 s | 434 px: 14, 0.55 s | 578 px: 7, 0.71 s |
-
-On the corpus the 64 px floor governs up to 6 reaches, and 8 reaches (77 px)
-takes the count from 222 to 205 of 252 windows. Over all images and settings, 4
-reaches left a margin-caused difference in 777 of 1092 windows and 8 reaches in
-453. Differences reach up to about 250 px inside the window, at every multiple.
-A cut boundary's fit changes along the whole run between its cusps, and those
-runs are long in pixels whatever the fit windows are, so no multiple of the reach
-(and no formula over its parts) makes the preview agree. Every smaller multiple
-shows more difference in view than 8, so the margin stays at 8 reaches.
-Shrinking it trades agreement for speed: 4 reaches is 30 to 50% faster on the
-large images and makes no difference on the corpus.
-
-**Uncut chains are exact.** The chain fitter is not translation-invariant: a
-chain whose samples are translated, or differ by about 1e-13 px, can fit
-differently where near-ties resolve the other way (for example, which end of an
-exactly flat run takes an axis-extreme node). So the preview builds its crop in
-image coordinates (`shared_boundary_polygons` with `origin` at the crop's
-corner): each sample is formed as the whole image forms it, integer grid position
-in image px plus the same sub-pixel offset, and a chain's identity is its image
-grid path. A chain the crop does not cut, meaning none of its samples lies on
-or within 1 px of a crop edge that is not an image edge (a chain ending at a
-junction on that edge counts as cut: the junction's other colours fall outside
-the crop, so it becomes an endpoint), is then the full trace's chain bit for
-bit (samples, anchors, colours, identity), and since a chain's fit depends only
-on its own samples, anchors and settings, it fits exactly as in the full trace
-before protected-feature recovery; chains the full trace re-fits in a trace
-fallback are not matched, since the preview skips recovery.
-Measured at the current margin over the same images, windows and three settings
-(`.tmp/preview-coords/measure3.py`, 2026-09-26): no uncut chain differs
-from the full trace (fits compared for float equality; 339,154 checks, one per
-uncut chain in view per window and setting), and every window that
-still differs has a cut chain that differs. Windows agreeing in full at the
-defaults (of 28): corpus 51 of 252, `sourceup` 20, `fox-table` 17,
-`fox-owl-table-2` 8, `phoenix-4x-regen-2` 21; over all three settings, 386 of
-756 corpus windows.
+**Retired trace settings.** The old fitter's settings are retired
+(`RETIRED_TRACE_FIELDS`): its eight lengths (`curve_fit_tolerance`,
+`straight_line_max_deviation`, `minimum_straight_length`, `max_deviation`,
+`corner_analysis_span`, `side_smoothness`, `corner_sharpening_allowance`,
+`curve_feature_scale`), their unit `length_unit`, the corner, node and snap
+controls (`straight_line_snap`, `snap_angle`, `node_placement`,
+`nodes_at_bends`, `corner_threshold`, `corner_straightness`), and `overlap`,
+`solid_underlayers` and `layer_order`, which a trace whose colours meet edge to
+edge has no use for. A stored record, a web draft, a trace request and a
+`cli_trace --config` file are read with them dropped (`upgrade_trace_record`;
+the web client's `normalizeTraceSettings` keeps only the three limits), so an
+old revision's settings fill the form with its soft limits and nothing else.
+A trace revision recorded before the cleanup stage keeps its size, removed
+colour and cleanup settings in `settings.trace`, read as the cleanup settings
+it used.
 
 ## Cutter cleanup (raster labels)
 
@@ -480,8 +285,7 @@ on the cleaned raster. A cleanup always starts from the raster before any
 earlier cleanup, so cleanups never stack. After a flatten or edit that follows
 a cleanup, tracing waits until Cleanup is run again. The trace CLI applies the
 same cleanup function to an in-memory copy of the labels before tracing and
-leaves the subject's files unchanged. Web and CLI both infer layer order
-(when it can matter), validate, and draw fallback and warning images against the cleaned labels and
+leaves the subject's files unchanged. Web and CLI both validate and draw the warning images against the cleaned labels and
 the raster derived from them, which is what was traced. The removed colour is
 excluded from the cleanup regions and its pixels are never changed.
 
@@ -562,7 +366,7 @@ those measurements. The result differs from a full run only as follows:
   crop edge, and a widening decided differently there changes what every later
   widening sees, so a difference can propagate inward. After a removal the
   regions differ from the measured ones, so the widen half judges regions by their
-  part inside the crop. The 256 px margin (the trace preview keeps at least 64 px) is what
+  part inside the crop. The 256 px margin is what
   keeps most of this out of view; it is still a crop, so a match is what testing
   showed, not a guarantee (figures below).
 - The automatic-protection audit numbers a run records (details and pixels
@@ -659,11 +463,11 @@ of 0.55 to 1.18 s per subject, up to 1.33 s (`sky-whale-city`), and
 `remove_then_widen` a median of 0.58 to 0.87 s, up to 0.98 s. Widen therefore
 exceeds the 0.9 s target on the 1.5-megapixel subjects. A smaller zoom limit
 barely helps, because the 256 px margin dominates the crop: at 400 × 400,
-`widen` still took up to 0.98 s on `sky-whale-city`. The preview keeps the trace
-preview's 600 × 600 limit.
+`widen` still took up to 0.98 s on `sky-whale-city`. The preview's window is at most
+600 × 600 px (`CLEANUP_PREVIEW_MAX_AREA_PX`).
 
 The preview thread holds one raster at a time: the uncleaned raster with its
-measurements, or the traced segmentation of the Trace preview. While the revision
+measurements. While the revision
 shows a cleaned raster its labels are held beside the uncleaned one, 2 more bytes
 per pixel (about 50 MB on `sourceup`, 180 MB on 11264 × 7920), loaded before the
 windowed clean and dropped as soon as a previewed revision shows the uncleaned
@@ -677,8 +481,8 @@ So that the wait is explained, the server reports the measuring at
 whether the preview thread holds the measurements of the raster a cleanup
 preview of that revision cleans, and whether it is building them now. The read
 is answered on the event loop from the thread's state, never queued behind the
-preview it reports on, so it adds nothing to the preview's time. A trace preview
-that evicts the raster turns `measured` false again, and a measurement stopped
+preview it reports on, so it adds nothing to the preview's time. A preview of
+another revision evicts the raster and turns `measured` false again; a measurement stopped
 by a superseded request stops reporting `measuring`. While a cleanup preview is
 in flight the canvas reads this state as the request starts and every 250 ms
 until it settles; while the server reports `measuring` for the revision, the
@@ -690,6 +494,11 @@ the shown cleanup's own settings, nothing is measured and the badge keeps
 "Updating live preview…".
 
 ## Trace accuracy and complexity
+
+This section and its subsections describe the old shared-boundary fitter
+([Geometry model](#geometry-model)), which draws no trace; its settings are
+retired from the trace ([Retired trace settings](#size-units-and-cropping))
+and are the fitter's own parameters only.
 
 Maximum contour deviation (`max_deviation`) is configurable in thousandths of
 the traced image's longer side. Its automatic value is 1‰ (2 px on a 2000 px
@@ -967,7 +776,7 @@ reach it along its direction (a sharp turn the detector did not confirm)
 becomes part of the curve run instead. Only a run with two free ends may become
 a line. Every piece meets `min(curve_fit_tolerance, max_deviation)` at its
 samples; constraints add nodes, never looseness. Classified corners remain
-unrounded. The live trace preview uses the same fitter.
+unrounded.
 
 ### Node placement
 
@@ -1121,7 +930,7 @@ inside a segment, or run along one another, and no path does so with another
 path. Paths meet only at a vertex both carry exactly: consecutive segments,
 chain ends at a junction or endpoint anchor, and touches, where a region meets
 itself or another at a corner contact without crossing there. This holds for
-both SVG variants, the live preview, and the overlap buffer; solid-underlayer
+both SVG variants and the overlap buffer; solid-underlayer
 outlines are the exception described below.
 
 Every path is assembled from fitted pieces: the shared chains, or in the
@@ -1246,53 +1055,15 @@ seconds; the Inkscape preview render is under a second of that. Inkscape 1.2.2 d
 deterministically, so byte identity of `traced.png` is only asserted at
 capped sizes.
 
-## Live window preview
-
-`vinylgen/trace_window.py` traces one window of the segmentation for the web
-Trace canvas's live preview (see [architecture](architecture.md)). It crops the
-labels, palette costs and protected evidence to the window plus a hidden
-margin and runs the unmodified vector stage on the crop: the shared-boundary
-graph, the canonical chain fit, the overlap/solid-underlayer layer construction
-and the SVG layer writer. Its settings resolve to pixels exactly as a trace
-run's do, on the whole image's longer side, never the window's. The margin is
-`max(64 px, 8 × the longest fit reach)` ([Trace length units](#trace-length-units)). Layer order, when it can matter, is
-inferred once from the whole image; otherwise the layers stack in palette order
-as in a full trace. The result is only a preview:
-
-- Boundaries crossing the crop edge end there, so their fit near that edge can
-  differ from a full run's; the margin keeps most of that outside the visible
-  window. Underlayer adjacency, the overlap buffer and crossing repair
-  likewise see only the crop.
-- Validation and protected-feature recovery are skipped, so explicitly protected
-  details are not tightened as a full run would, and no audit is written.
-- Nothing is saved; a trace run still creates the revision and its artifacts.
-- The preview SVG carries `sodipodi:nodetypes` like a full trace (junction
-  anchors from the crop's own boundary graph), so the canvas's Nodes overlay
-  marks the preview's nodes inside its window.
-
-With the crop covering the whole image the preview reproduces the full trace
-exactly. On the development machine a warm 600 × 600 window of the densest area
-of the 5980 × 4208 `sourceup` subject or of an 11264 × 7920 source traces in
-about 0.25 s (boundaries about 0.2 s, fit and SVG about 0.05 s; solid underlayers
-add about 0.25 s), and a settings-only change re-fits cached boundaries in about
-0.05 s. Loading a segmentation the first time costs about 0.8 s and 3.2 s
-respectively.
-
 ## Configuration
 
 The tracing command supports both individual CLI flags and a reusable JSON
 configuration file. CLI arguments override values from the configuration file.
-Settings and effective defaults are recorded in `trace.json`. Length flags are
-thousandths of each traced image's longer side (`--help` says so); a
-configuration names the unit of its lengths (see [Trace length
-units](#trace-length-units)).
-
-The node-placement settings are `--node-placement`
-(`prefer_extremes`/`at_extremes`/`fewest`), `--nodes-at-bends` /
-`--no-nodes-at-bends`, `--curve-feature-scale` (‰, 0.25 to 16),
-`--straight-line-snap` (`off`/`axis`/`axis_diagonal`) and `--snap-angle`
-(degrees, 0.5 to 10); out-of-range values are rejected. Configurations
-recorded before these settings existed load with the defaults.
+Settings and effective defaults are recorded in `trace.json`. The flags are
+the cleanup's (size, removed colour, cutter cleanup) and `--colour-name`; the
+three soft node limits are set in a configuration file only. A configuration's
+retired trace settings are dropped on load
+([Retired trace settings](#size-units-and-cropping)).
 
 Naming of exact flags and JSON keys is an implementation detail, but public
 names should make geometric behavior explicit and must include units where
@@ -1306,7 +1077,8 @@ symmetric detail controls.
 - `subject`, `sources` (source, flattened, palette and segmentation paths, and
   `map`, the planar-map file `map.json`),
   `raster_dimensions`, `mode` and `physical_dimensions_mm`.
-- `settings`, the trace settings as given (none steers t3), and
+- `settings`, the trace settings as given (the three soft node limits; none
+  steers t3), and
   `cleanup_settings` (size, removed colour, cleanup).
 - `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
   (`t3api.VERSION`), `setting` (`t3api.SETTING`, the one setting traced at)

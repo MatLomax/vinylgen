@@ -45,18 +45,67 @@ from vinylgen.cutter_cleanup import (
     remove_then_widen_stages,
     resolve_physical_size,
 )
-from vinylgen.trace_window import Window, margin_window
 
 # Hidden context cleaned around the visible window, in raster px: a removed group
 # or a widening that reaches the crop edge is judged on the crop alone, and this
-# keeps most of that outside the part the user sees. Widening needs far more
-# context than the trace preview's boundaries (a region's widening colour and the
-# order of widenings depend on neighbours well beyond the window).
+# keeps most of that outside the part the user sees. Widening needs wide context:
+# a region's widening colour and the order of widenings depend on neighbours well
+# beyond the window.
 CLEANUP_PREVIEW_MARGIN_PX = 256
 # The largest visible window (raster px) a cleanup preview is drawn for.
 CLEANUP_PREVIEW_MAX_AREA_PX = 600 * 600
 
 Checkpoint = Callable[[], None]
+
+
+class PreviewCancelled(Exception):
+    """A newer request superseded this preview before it finished."""
+
+
+@dataclass(frozen=True)
+class Window:
+    """An axis-aligned pixel rectangle of the raster."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def right(self) -> int:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.height
+
+    def as_dict(self) -> dict[str, int]:
+        return {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
+
+
+def clamp_window(x: int, y: int, width: int, height: int,
+                 image_width: int, image_height: int) -> Window:
+    """The part of a requested window that lies on the image.
+
+    Raises ``ValueError`` when the window and the image do not overlap.
+    """
+    left = min(max(int(x), 0), image_width)
+    top = min(max(int(y), 0), image_height)
+    right = min(max(int(x) + int(width), 0), image_width)
+    bottom = min(max(int(y) + int(height), 0), image_height)
+    if right <= left or bottom <= top:
+        raise ValueError("the preview window lies outside the image")
+    return Window(left, top, right - left, bottom - top)
+
+
+def margin_window(window: Window, image_width: int, image_height: int,
+                  margin: int) -> Window:
+    """``window`` grown by ``margin`` px on every side, clipped to the image."""
+    left = max(0, window.x - margin)
+    top = max(0, window.y - margin)
+    right = min(image_width, window.right + margin)
+    bottom = min(image_height, window.bottom + margin)
+    return Window(left, top, right - left, bottom - top)
 
 
 @dataclass

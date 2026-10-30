@@ -8,7 +8,8 @@ clean exit, so a kill can never leave a half-written revision.
 
 Protocol: the parent writes one JSON spec object to stdin. The worker prints newline
 delimited JSON events to stdout — ``{"type": "progress", "value": f, "message": s}``
-during the run, then ``{"type": "done"}`` on success or ``{"type": "error",
+during the run (a trace also prints each of t3's faces as it lands, ``{"type": "face",
+"face", "label", "rings", "nodes"}``, ``tracing.face_event``), then ``{"type": "done"}`` on success or ``{"type": "error",
 "message": s}`` on failure — and exits non-zero when it fails.
 """
 
@@ -24,14 +25,18 @@ from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings
 
 # The Flatten canvas's "Protected areas" overlay: a semi-transparent green over each
 # pixel a protected_component_points pick protected, clear elsewhere. Green stays
-# distinct from the red missed-details and cyan tightened-boundary trace overlays.
+# distinct from the red missed-details trace overlay.
 PROTECTED_AREAS_RGBA = (40, 220, 120, 150)
 PROTECTED_AREAS_OVERLAY = "protected-areas-overlay.png"
 
 
-def _emit(value: float, message: str) -> None:
-    sys.stdout.write(json.dumps({"type": "progress", "value": value, "message": message}) + "\n")
+def _print(event: dict) -> None:
+    sys.stdout.write(json.dumps(event) + "\n")
     sys.stdout.flush()
+
+
+def _emit(value: float, message: str) -> None:
+    _print({"type": "progress", "value": value, "message": message})
 
 
 def write_protected_areas_overlay(subject_dir: Path) -> bool:
@@ -80,7 +85,8 @@ def _run(spec: dict) -> None:
         trace_subject(Path(spec["subject"]), TraceSettings(**spec["settings"]),
                       spec["colour_names"], progress=_emit,
                       cleanup=CleanupSettings(**cleanup) if cleanup is not None else None,
-                      removed_index=spec.get("removed_index"))
+                      removed_index=spec.get("removed_index"), on_face=_print,
+                      reuse=spec.get("reuse"))
     else:
         raise ValueError(f"unknown pipeline worker op: {op}")
 

@@ -9,24 +9,20 @@ import json
 import re
 import subprocess
 import base64
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import numba
 import numpy as np
 import scipy
-from numba import njit, prange
-from PIL import Image, ImageDraw
+from PIL import Image
 from scipy import ndimage
-from shapely.ops import unary_union
 
 from vinylgen.colour import colour_names
 from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import apply_cleanup, resolve_physical_size
-from vinylgen.curve_fit import SharedChainFitter, geometry_components, region_components
 from vinylgen.palette import Progress, _noop
-from vinylgen.parallel_guard import KERNEL_LOCK as _KERNEL_LOCK
 from vinylgen.preview import preview_plan
 from vinylgen.svg_writer import add_face_layer, face_areas, face_elements, svg_document, write_svg
 from vinylgen.validation import (
@@ -34,11 +30,6 @@ from vinylgen.validation import (
     validate_semantic_preservation,
     validate_svg,
 )
-
-# Two exact partition polygons neighbour each other when they share a boundary of
-# positive length. A corner-only touch is a zero-length point intersection and is
-# not adjacency under the authoritative four-connectivity model.
-_UNDERLAYER_ADJACENCY_EPS = 1e-9
 
 # The semantic audit checks source thin features at least this long: three
 # times the maximum deviation (a feature shorter than that may legitimately be
@@ -52,54 +43,6 @@ MINIMUM_FEATURE_SPAN_PX = 6.0
 def feature_span(maximum_deviation: float) -> float:
     """The shortest source feature (px) the semantic audit checks."""
     return max(MINIMUM_FEATURE_SPAN_PX, FEATURE_SPAN_DEVIATIONS * float(maximum_deviation))
-
-
-def _partition_polygons(geometry) -> list:
-    if geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
-        return []
-    return [geometry] if geometry.geom_type == "Polygon" else list(geometry.geoms)
-
-
-# The partition gap and overlap areas are GEOS unary-union area arithmetic summed
-# over thousands of faces, so they carry floating-point rounding that grows with
-# the canvas size and face count. A genuine partition defect — a region left
-# uncovered by every layer, or claimed by two — is at least a whole pixel of
-# area, orders of magnitude above that noise. The watertightness gate therefore
-# tolerates noise scaled to the canvas area rather than a fixed absolute epsilon,
-# which a large source trips even when every face tiles the plane perfectly.
-_PARTITION_RELATIVE_TOLERANCE = 1e-9
-_PARTITION_ABSOLUTE_TOLERANCE = 1e-6
-
-
-def partition_watertight_fault(topology: dict, canvas_area: float) -> str | None:
-    """Describe why the shared-boundary partition is not watertight, or ``None``.
-
-    ``None`` means the uncovered (gap) and doubly-covered (overlap) areas are
-    both within floating-point noise for a canvas of this size. Otherwise the
-    returned message names each failing quantity in absolute px² and as a
-    fraction of the canvas, without embedding the per-chain inventory that makes
-    the raw topology dict unreadable when it surfaces to a user.
-    """
-    tolerance = max(_PARTITION_ABSOLUTE_TOLERANCE,
-                    canvas_area * _PARTITION_RELATIVE_TOLERANCE)
-    gap = float(topology["partition_gap_area"])
-    overlap = float(topology["overlap_area"])
-    faults: list[str] = []
-    if gap > tolerance:
-        faults.append(
-            f"{gap:.4g} px² of the traced region is covered by no colour layer "
-            f"({gap / canvas_area:.3%} of the canvas)")
-    if overlap > tolerance:
-        faults.append(
-            f"{overlap:.4g} px² is claimed by more than one colour layer "
-            f"({overlap / canvas_area:.3%} of the canvas)")
-    if not faults:
-        return None
-    return ("shared-boundary partition is not watertight: " + "; and ".join(faults)
-            + f". This exceeds the {tolerance:.4g} px² rounding tolerance for this "
-            f"{int(round(canvas_area))} px² canvas of "
-            f"{int(topology['polygonized_faces'])} faces.")
-
 
 
 def resolve_subjects(inputs: list[Path]) -> list[Path]:
@@ -164,142 +107,6 @@ def label_raster(image: np.ndarray, palette: list[dict]) -> np.ndarray:
     return result
 
 
-@njit(parallel=True, cache=True)
-def _label_counts(labels, size):
-    """Pixels of each label ``0..size-1`` in a 2-D label array (other values are not
-    counted), tallied in parallel row bands."""
-    height, width = labels.shape
-    bands = 64
-    partial = np.zeros((bands, size + 1), np.int64)
-    step = (height + bands - 1) // bands
-    for band in prange(bands):
-        for y in range(band * step, min(height, (band + 1) * step)):
-            for x in range(width):
-                value = labels[y, x]
-                partial[band, value if 0 <= value < size else size] += 1
-    return partial.sum(axis=0)[:size]
-
-
-def infer_order(labels: np.ndarray, included: list[int], palette: list[dict]) -> tuple[list[int], list[str]]:
-    # Large, canvas-touching colours make the most plausible lower layers. The evidence
-    # per colour is its pixel count and its count along the four edges (the first and
-    # last row and column, so a corner pixel counts on both of its edges), tallied for
-    # every colour at once rather than with one full-image mask per colour.
-    h, w = labels.shape
-    size = max(len(palette), max(included, default=-1) + 1)
-    with _KERNEL_LOCK:
-        areas = _label_counts(labels, size)
-        edges = (_label_counts(labels[:1], size) + _label_counts(labels[-1:], size)
-                 + _label_counts(labels[:, :1], size) + _label_counts(labels[:, -1:], size))
-    rows = []
-    for index in included:
-        rows.append((-int(edges[index]), -int(areas[index]), str(palette[index]["hex"]), index))
-    ordered = sorted(rows)
-    order = [row[-1] for row in ordered]
-    warnings = []
-    if any(ordered[i][:2] == ordered[i + 1][:2] for i in range(len(ordered) - 1)):
-        warnings.append(
-            "Layer-order evidence tied adjacent colours; hexadecimal order broke the tie.")
-    return order, warnings
-
-
-def layer_order_matters(settings: TraceSettings) -> bool:
-    """Whether bottom-to-top layer order can change any traced geometry.
-
-    Only solid underlayers or a positive overlap extend a lower layer beneath the
-    layers above it. Without either, every colour meets its neighbours edge to edge
-    and each layer is its own partition region, whatever the stacking.
-    """
-    return bool(settings.solid_underlayers or settings.overlap > 0)
-
-
-# Why the automatic order is not inferred when stacking cannot change geometry.
-ORDER_NOT_INFERRED = ("no solid underlayers and no overlap: layers meet edge to edge, "
-                      "so stacking order changes no geometry; palette order is used")
-
-
-def automatic_order(labels: np.ndarray, included: list[int], palette: list[dict],
-                    settings: TraceSettings) -> tuple[list[int], list[str], bool]:
-    """The bottom-to-top order colours an override leaves unnamed follow, its warnings,
-    and whether it was inferred. ``infer_order`` runs only when order can matter;
-    otherwise the included colours stack in palette order."""
-    if layer_order_matters(settings):
-        order, warnings = infer_order(labels, included, palette)
-        return order, warnings, True
-    return list(included), [], False
-
-
-def apply_order_override(inferred: list[int], requested: list[str] | None,
-                         palette: list[dict]) -> tuple[list[int], list[int]]:
-    if not requested:
-        return inferred, []
-    specified = [resolve_colour(value, palette) for value in requested]
-    if len(specified) != len(set(specified)):
-        raise ValueError("layer order contains a duplicate colour")
-    missing = [index for index in inferred if index not in specified]
-    return [*specified, *missing], specified
-
-
-def underlayer_geometry(partition: dict[int, object], order: list[int], *,
-                        solid_underlayers: bool, overlap_px: float,
-                        canvas) -> dict[int, tuple[object, bool]]:
-    """The overlap-variant geometry of each layer, derived from the fixed partition.
-
-    A solid underlayer backs only the higher shapes this colour actually touches:
-    extending it beneath non-adjacent colours would stack identical shapes with no
-    physical purpose, so each higher partition contributes only the components
-    sharing a boundary of positive length with this colour's region. Without solid
-    underlayers, every layer but the top one grows by the overlap buffer, clipped to
-    ``canvas``. Each value is ``(geometry, stacked)``; the mapping is empty when the
-    overlap variant equals the edge variant. These are independent GEOS operations
-    that release the GIL, so they run on threads.
-    """
-    def _solid_geometry(position: int) -> tuple[object, bool]:
-        base = partition[order[position]]
-        stacked = [base]
-        for higher in range(position + 1, len(order)):
-            for shape in _partition_polygons(partition[order[higher]]):
-                if base.boundary.intersection(shape.boundary).length > _UNDERLAYER_ADJACENCY_EPS:
-                    stacked.append(shape)
-        solid = len(stacked) > 1
-        return (unary_union(stacked) if solid else base), solid
-
-    def _buffered_geometry(position: int) -> tuple[object, bool]:
-        return partition[order[position]].buffer(overlap_px, join_style=1).intersection(canvas), True
-
-    if not (solid_underlayers or overlap_px > 0):
-        return {}
-    builder = _solid_geometry if solid_underlayers else _buffered_geometry
-    positions = [position for position in range(len(order))
-                 if solid_underlayers or position < len(order) - 1]
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {order[position]: executor.submit(builder, position)
-                   for position in positions}
-        return {index: future.result() for index, future in futures.items()}
-
-
-def overlap_layer_components(position: int, order: list[int], edge_components: list[dict],
-                             layer_geometry: dict[int, tuple[object, bool]], boundary_track,
-                             chain_fits: dict, settings: TraceSettings, overlap_px: float,
-                             fitter: SharedChainFitter) -> tuple[list[dict], str]:
-    """The overlap-variant components of the layer at ``position`` and how they were built."""
-    index = order[position]
-    if settings.solid_underlayers:
-        overlap_geometry, solid = layer_geometry[index]
-        # Reassemble the solid outline from the same once-fitted chains, dissolving
-        # only the interfaces it swallows. Re-fitting the union instead (as an
-        # independent curve pass) is what opened gaps between adjacent underlayers.
-        if solid:
-            return (region_components(boundary_track, chain_fits, overlap_geometry),
-                    "solid stacked underlayer")
-        return edge_components, "canonical shared-chain fit"
-    if overlap_px > 0 and position < len(order) - 1:
-        overlap_geometry, _ = layer_geometry[index]
-        return (geometry_components(overlap_geometry, settings, fitter=fitter),
-                "shared partition plus lower-layer overlap buffer")
-    return edge_components, "canonical shared-chain fit"
-
-
 def write_trace_html(subject_dir: Path, width: int, height: int) -> None:
     """Write a self-contained overlay viewer with inline PNG and SVG data."""
     svg = (subject_dir / "traced-edge.svg").read_text()
@@ -341,11 +148,9 @@ document.querySelector('#opacity').addEventListener('input', event => {{
     (subject_dir / "trace.html").write_text(document)
 
 
-# Transparent inspection overlays share the traced pixel grid and carry only their
+# The missed-detail overlay shares the traced pixel grid and carries only its
 # marks, so a viewer can stack them over the SVG without hiding it.
 MISSED_DETAIL_RGBA = (220, 35, 35, 255)
-TIGHTENED_BOUNDARY_RGBA = (0, 200, 255, 255)
-TIGHTENED_BOUNDARY_HALO_RGBA = (12, 14, 13, 190)
 
 
 def missed_detail_overlay(missing: np.ndarray) -> Image.Image:
@@ -353,23 +158,6 @@ def missed_detail_overlay(missing: np.ndarray) -> Image.Image:
     overlay = np.zeros((*missing.shape, 4), dtype=np.uint8)
     overlay[missing] = MISSED_DETAIL_RGBA
     return Image.fromarray(overlay, "RGBA")
-
-
-def tightened_boundary_overlay(chains: list[list[tuple[float, float]]], width: int,
-                               height: int) -> Image.Image:
-    """An RGBA ``width`` x ``height`` image marking each tightened boundary chain.
-
-    Every chain is a cyan stroke over a dark halo, so it reads against any vinyl
-    colour beneath it; pixels off the marks stay fully transparent.
-    """
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    for points in chains:
-        draw.line(points, fill=TIGHTENED_BOUNDARY_HALO_RGBA, width=4, joint="curve")
-    for points in chains:
-        draw.line(points, fill=TIGHTENED_BOUNDARY_RGBA, width=2, joint="curve")
-    return overlay
-
 
 
 def source_component_count(mask: np.ndarray) -> int:
@@ -418,6 +206,48 @@ class TraceTicks:
         can round above 0.80, the next tick's fraction."""
         fraction = self.BAND_START + (self.BAND_END - self.BAND_START) * done / max(1, total)
         return min(self.BAND_END, fraction)
+
+
+def tracer_info() -> dict:
+    """The tracer a trace run uses, as the web client's read-only tracer line names it:
+    ``t3api``, its build and its one fixed setting (w, A1, A2, L)."""
+    import t3api
+
+    return {"name": "t3api", "build": t3api.BUILD_ID,
+            "setting": {key: float(value) for key, value in t3api.SETTING.items()}}
+
+
+def face_event(payload: dict) -> dict:
+    """t3's ``face`` event as the live trace view receives it: ``{"type": "face", "face",
+    "label", "rings", "nodes"}``, with the face's rings joined into one path-data string
+    (the ``d`` of its path in the edge SVG) and its ``nodes`` the path's nodetypes."""
+    return {"type": "face", "face": int(payload["face"]), "label": int(payload["label"]),
+            "rings": "".join(payload["rings"]), "nodes": str(payload["nodes"])}
+
+
+class TraceEvents:
+    """t3api's ``on_event`` for a trace run: progress through ``TraceTicks``, and each ``face``
+    event handed to ``on_face`` (``face_event``) the moment t3 emits it, in t3's order."""
+
+    def __init__(self, tick: Progress, on_face: Callable[[dict], None] | None = None) -> None:
+        self.ticks = TraceTicks(tick)
+        self.on_face = on_face
+
+    def __call__(self, kind: str, payload: dict) -> None:
+        self.ticks(kind, payload)
+        if kind == "face" and self.on_face is not None:
+            self.on_face(face_event(payload))
+
+
+def map_with_palette(pm: dict, palette: list[dict]) -> dict:
+    """``pm`` with its header's ``palette`` and ``names`` set to ``palette``'s colours and
+    names, as ``t3api.planar_map`` writes them; the faces, edges and nodes are untouched, so
+    the map paints the same labels. ``pm`` itself when they already agree."""
+    rgb = [list(row["rgb"]) for row in palette]
+    names = [row["name"] for row in palette]
+    if pm["palette"] == rgb and pm["names"] == names:
+        return pm
+    return {**pm, "palette": rgb, "names": names}
 
 
 # The paper behind the cut vinyl: the colour the semantic audit sees at a centre no drawn
@@ -498,7 +328,9 @@ def node_limit_warnings(edge_stats: list[dict], settings: TraceSettings) -> list
 
 def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: dict[str, str],
                   progress: Progress | None = None, *, cleanup: CleanupSettings | None = None,
-                  clean_inline: bool = False, removed_index: int | None = None) -> dict:
+                  clean_inline: bool = False, removed_index: int | None = None,
+                  on_face: Callable[[dict], None] | None = None,
+                  reuse: dict | None = None) -> dict:
     """Trace a subject's segmentation with t3 into ``map.json`` and the edge SVG.
 
     One ``t3api.trace`` call on the cleaned labels (``int16`` palette indices, every colour,
@@ -519,8 +351,20 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     segmentation is traced as it is stored, which in the web pipeline is the cleanup
     stage's cleaned labels. With ``clean_inline`` (the trace CLI) the cutter cleanup in
     ``cleanup`` is first applied to the labels in memory, through the same function the
-    cleanup stage uses. ``settings`` is recorded; t3 has one setting, so none of its fit
-    fields steers the trace.
+    cleanup stage uses. ``settings`` (the soft node limits) is recorded and warns; t3 has
+    one setting, so nothing in it steers the trace.
+
+    ``on_face`` receives each of t3's ``face`` events (``face_event``) as t3 emits it, for the
+    live trace view.
+
+    ``reuse`` re-exports without a trace: the web pipeline found that an earlier trace
+    revision traced these same labels with this same t3 build, and copied its ``map.json``
+    into ``subject_dir``. ``reuse`` names that revision (``revision``) and carries its audit's
+    ``t3`` block (``t3``). The map is used byte for byte (its header's palette and names are
+    rewritten only where this trace's palette.json differs, which leaves every face as it
+    is), checked with ``planar_map_check``, and everything after the trace (the edge SVG,
+    the checks, the audit and the preview) is rebuilt from it with these settings. No
+    ``t3api.trace`` call is made.
     """
     import t3api
 
@@ -587,19 +431,45 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
     warnings: list[str] = []
 
-    # The trace: one call, at t3's one setting, on every CPU the process may use.
-    result = t3api.trace(labels, on_event=TraceTicks(tick))
-    tick(0.8, "Writing the planar map and the edge SVG")
-    # A trace.json left by an earlier trace of this folder describes the map.json about to be
-    # replaced: it goes before the new map is written, so a failed gate leaves no record
-    # vouching for a map other than the one on disk.
+    # A trace.json left by an earlier trace of this folder describes another map.json: it
+    # goes before the map is written or checked, so a failed gate leaves no record vouching
+    # for a map other than the one on disk.
     audit_path = subject_dir / "trace.json"
     audit_path.unlink(missing_ok=True)
     map_path = subject_dir / "map.json"
-    map_path.write_text(t3api.planar_map_json(t3api.planar_map(result, palette)))
-    pm = t3api.read_planar_map(map_path.read_text())
-    painted = np.asarray(result.painted)
-    check, read_back = planar_map_gate(pm, painted)
+    if reuse is None:
+        # The trace: one call, at t3's one setting, on every CPU the process may use.
+        result = t3api.trace(labels, on_event=TraceEvents(tick, on_face))
+        tick(0.8, "Writing the planar map and the edge SVG")
+        map_path.write_text(t3api.planar_map_json(t3api.planar_map(result, palette)))
+        pm = t3api.read_planar_map(map_path.read_text())
+        painted = np.asarray(result.painted)
+        check, read_back = planar_map_gate(pm, painted)
+        t3_record = {"summary": result.summary, "seconds": result.seconds,
+                     "warm_s": result.warm_s, "workers": result.workers}
+    else:
+        tick(0.8, "Reusing the planar map of the same labels and t3 build")
+        pm = t3api.read_planar_map(map_path.read_text())
+        if pm["build"] != t3api.BUILD_ID:
+            raise RuntimeError(f"the reused map.json was written by t3api {pm['build']}, "
+                               f"not {t3api.BUILD_ID}")
+        if (pm["W"], pm["H"]) != (width, height):
+            raise RuntimeError("the reused map.json is not the size of the traced labels")
+        named = map_with_palette(pm, palette)
+        if named is not pm:
+            map_path.write_text(t3api.planar_map_json(named))
+            pm = t3api.read_planar_map(map_path.read_text())
+        check = t3api.planar_map_check(pm)
+        if check["violations"]:
+            raise RuntimeError(f"map.json fails planar_map_check with {check['violations']} "
+                               f"violation(s): {check['problems']}")
+        # The map's paint is the one its own trace's gate found equal to t3's painted labels:
+        # the faces are the same bytes, and the header holds no geometry.
+        painted = np.asarray(t3api.paint_planar_map(pm))
+        read_back = {"differ": 0, "reused_from": reuse["revision"]}
+        t3_record = {**{key: reuse["t3"][key] for key in ("summary", "seconds", "warm_s",
+                                                           "workers")},
+                     "reused_from": reuse["revision"]}
 
     paths = t3api.planar_map_paths(pm)
     areas = face_areas(pm)
@@ -694,9 +564,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION,
                          "setting": t3api.SETTING, "numpy": np.__version__,
                          "scipy": scipy.__version__, "numba": numba.__version__},
-             "t3": {"summary": result.summary, "seconds": result.seconds,
-                    "warm_s": result.warm_s, "workers": result.workers,
-                    "gaps": gap_stats["gaps"], "gap_max": gap_stats["gap_max"]},
+             "t3": {**t3_record, "gaps": gap_stats["gaps"], "gap_max": gap_stats["gap_max"]},
              "colours": {"included": [palette[i] for i in included],
                          "omitted": palette[omitted] if omitted is not None else None},
              "cleanup": cleanup_summary, "geometry": {"edge": edge_stats},

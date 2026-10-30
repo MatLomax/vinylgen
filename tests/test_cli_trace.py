@@ -21,86 +21,68 @@ from vinylgen.web.cleanup import clean_subject
 
 
 class LegacyConfigTests(unittest.TestCase):
-    def settings(self, config: dict, *flags: str) -> TraceSettings:
+    """An older config loads with the retired trace fields dropped
+    (``contracts.RETIRED_TRACE_FIELDS``) and the pixel-era ``curve_optimization`` flag
+    dropped; the soft node limits it sets are kept."""
+
+    def settings(self, config: dict, *flags: str) -> tuple[TraceSettings, CleanupSettings]:
         with tempfile.TemporaryDirectory(dir=Path(__file__).parents[1] / ".tmp") as name:
             path = Path(name) / "config.json"
             path.write_text(json.dumps(config))
             args = parser().parse_args(["outputs", "--config", str(path), *flags])
-            settings, _, _ = settings_from_args(args)
-        return settings
+            settings, cleanup, _ = settings_from_args(args)
+        return settings, cleanup
 
     def legacy_block(self, **changes) -> dict:
-        # The settings block of an older trace.json: every field it recorded (the
-        # cleanup, size and removed-colour fields included), in pixels without a
-        # length_unit, with the curve_optimization flag and without side smoothness
-        # (then called corner straightness) or a corner sharpening allowance.
-        block = {**asdict(TraceSettings(length_unit="px")), **asdict(CleanupSettings())}
-        del block["side_smoothness"], block["corner_sharpening_allowance"], block["length_unit"]
-        block["curve_optimization"] = True
+        # The settings block of an older trace.json: the old fitter's fields in pixels with
+        # the curve_optimization flag, the cleanup fields, and set soft node limits.
+        block = {"overlap": 0.0, "solid_underlayers": False, "layer_order": None,
+                 "corner_threshold": 80.0, "curve_optimization": False,
+                 "curve_fit_tolerance": 1.6, "straight_line_max_deviation": 1.2,
+                 "minimum_straight_length": 4.0, "max_deviation": None,
+                 "corner_analysis_span": 10.0, "corner_straightness": 1.2,
+                 **asdict(CleanupSettings()),
+                 "soft_path_nodes": 7, "soft_layer_nodes": 70, "soft_document_nodes": 700}
         block.update(changes)
         return block
 
-    def test_false_flag_keeps_recorded_corners_and_zeroes_the_deviation(self):
-        settings = self.settings(self.legacy_block(curve_optimization=False, straight_line_max_deviation=1.2))
-        self.assertEqual(settings.straight_line_max_deviation, 0.0)
-        self.assertEqual(settings.side_smoothness, 1.2)
+    def test_retired_fields_and_the_flag_are_dropped_and_the_limits_kept(self):
+        for flag in (True, False):
+            settings, cleanup = self.settings(self.legacy_block(curve_optimization=flag))
+            self.assertEqual(settings, TraceSettings(soft_path_nodes=7, soft_layer_nodes=70,
+                                                     soft_document_nodes=700))
+            self.assertEqual(cleanup, CleanupSettings())
 
-    def test_false_flag_without_a_recorded_deviation_uses_the_default(self):
-        settings = self.settings({"curve_optimization": False})
-        self.assertEqual(settings.straight_line_max_deviation, 0.0)
-        self.assertEqual(settings.side_smoothness, 1.6)
-
-    def test_false_flag_keeps_an_explicit_side_smoothness(self):
-        settings = self.settings({"curve_optimization": False, "straight_line_max_deviation": 1.2,
-                                  "side_smoothness": .5})
-        self.assertEqual((settings.straight_line_max_deviation, settings.side_smoothness), (0.0, .5))
-
-    def test_corner_straightness_is_read_as_side_smoothness(self):
-        # Its former name, in a config and as a flag.
-        settings = self.settings(self.legacy_block(corner_straightness=.7))
-        self.assertEqual(settings.side_smoothness, .7)
-        self.assertFalse(hasattr(settings, "corner_straightness"))
-        settings = self.settings({"length_unit": "per_mille"}, "--corner-straightness", ".3")
-        self.assertEqual(settings.side_smoothness, .3)
-        settings = self.settings({"length_unit": "per_mille"}, "--corner-sharpening-allowance", "1.5")
-        self.assertEqual(settings.corner_sharpening_allowance, 1.5)
-
-    def test_true_flag_is_dropped_and_changes_nothing(self):
-        settings = self.settings(self.legacy_block(straight_line_max_deviation=1.2))
-        self.assertEqual((settings.straight_line_max_deviation, settings.side_smoothness), (1.2, 1.2))
-        self.assertFalse(hasattr(settings, "curve_optimization"))
+    def test_a_per_mille_record_loads_as_the_limits(self):
+        record = {"length_unit": "per_mille", "curve_fit_tolerance": .75, "side_smoothness": .8,
+                  "straight_line_snap": "axis", "snap_angle": 2.0, "node_placement": "fewest",
+                  "nodes_at_bends": True, "curve_feature_scale": 2.0,
+                  "corner_sharpening_allowance": None}
+        self.assertEqual(self.settings(record)[0], TraceSettings())
 
     def test_cli_flags_still_override_the_upgraded_config(self):
-        settings = self.settings(self.legacy_block(curve_optimization=False),
-                                 "--snap-angle", "4")
-        self.assertEqual((settings.snap_angle, settings.straight_line_max_deviation,
-                          settings.side_smoothness, settings.length_unit), (4, 0.0, 1.6, "px"))
+        _, cleanup = self.settings(self.legacy_block(), "--width-mm", "60", "--cleanup")
+        self.assertEqual((cleanup.width_mm, cleanup.cleanup), (60, True))
 
-    def test_a_retired_setting_in_a_config_is_dropped(self):
-        settings = self.settings(self.legacy_block(corner_threshold=45.0))
-        self.assertFalse(hasattr(settings, "corner_threshold"))
-        self.assertEqual(settings, self.settings(self.legacy_block()))
+    def test_the_retired_flags_are_gone(self):
+        for flag in ("--overlap", "--layer-order", "--corner-threshold", "--snap-angle",
+                     "--curve-fit-tolerance", "--corner-straightness"):
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                parser().parse_args(["outputs", flag, "1"])
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            parser().parse_args(["outputs", "--corner-threshold", "45"])
-
-    def test_a_length_flag_over_a_pixel_config_is_rejected(self):
-        # The flag is thousandths of the image, the config's lengths pixels: one
-        # settings record cannot hold both, so the CLI says so instead of mixing them.
-        with self.assertRaisesRegex(ValueError, "thousandths.*config's lengths are pixels"):
-            self.settings(self.legacy_block(curve_optimization=False),
-                          "--straight-line-max-deviation", ".3")
+            parser().parse_args(["outputs", "--solid-underlayers"])
 
     def test_other_unknown_keys_are_still_rejected(self):
         with self.assertRaisesRegex(ValueError, "unknown config setting"):
             self.settings({"not_a_setting": 1})
 
 
-
 class CliCleanupParityTests(unittest.TestCase):
     """The CLI keeps its cleanup, size and removed-colour flags and cleans inline with
     the cleanup stage's implementation, leaving the subject's files untouched."""
 
-    FLAGS = ["--width-mm", "60", "--overlap", ".5", "--cleanup",
+    FLAGS = ["--width-mm", "60", "--cleanup",
              "--cleanup-action", "remove_then_widen", "--min-detail-width", "6",
              "--min-region-area", "6", "--remove-below-width", "3"]
 
@@ -127,7 +109,7 @@ class CliCleanupParityTests(unittest.TestCase):
     def test_flags_split_into_trace_and_cleanup_settings(self):
         settings, cleanup, _ = settings_from_args(parser().parse_args(
             ["outputs", *self.FLAGS, "--remove-colour", "Navy"]))
-        self.assertEqual(settings.overlap, .5)
+        self.assertEqual(settings, TraceSettings())
         self.assertEqual(cleanup, CleanupSettings(
             width_mm=60, remove_colour="Navy", cleanup=True, cleanup_action="remove_then_widen",
             min_detail_width=6, min_region_area=6, remove_below_width=3))

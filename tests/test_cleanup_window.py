@@ -12,14 +12,12 @@ from PIL import Image
 from scipy import ndimage
 
 from vinylgen import cleanup_window, cutter_cleanup
-from vinylgen.cleanup_window import (CLEANUP_PREVIEW_MARGIN_PX, CleanupSource, clean_window,
-                                     will_change)
+from vinylgen.cleanup_window import (CLEANUP_PREVIEW_MARGIN_PX, CleanupSource, PreviewCancelled,
+                                     Window, clean_window, will_change)
 from vinylgen.contracts import CleanupSettings
 from vinylgen.cutter_cleanup import (apply_cleanup, cleanup_labels, measure_colour_regions,
                                      remove_then_widen_stages)
 from vinylgen.web.cleanup import write_changes_overlay
-from vinylgen.trace_lengths import PREVIEW_MARGIN_MIN_PX
-from vinylgen.trace_window import PreviewCancelled, Window
 
 PALETTE = [
     {"index": 0, "name": "Night", "hex": "#0F233C", "rgb": [15, 35, 60]},
@@ -153,9 +151,8 @@ class CleanWindowTest(unittest.TestCase):
         self.assertTrue(preview.removed[250 - WINDOW.y, 240 - WINDOW.x])
         self.assertTrue(preview.widened[181 - WINDOW.y, 250 - WINDOW.x])
 
-    def test_the_hidden_margin_is_256_px_apart_from_the_trace_preview(self) -> None:
+    def test_the_hidden_margin_is_256_px(self) -> None:
         self.assertEqual(CLEANUP_PREVIEW_MARGIN_PX, 256)
-        self.assertEqual(PREVIEW_MARGIN_MIN_PX, 64)
         labels, _, explicit = raster()
         interior = Window(400, 300, 100, 100)
         preview = clean_window(source_of(labels, explicit), interior, PALETTE,

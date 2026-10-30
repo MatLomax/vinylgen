@@ -51,7 +51,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('Trace canvas title across a step', () => {
-  it('shows only "Loading…" and then the new run\'s name, never the previous run\'s', async () => {
+  it('shows only "Loading…" between the previous run\'s name and the new run\'s', async () => {
     window.history.replaceState(null, '', `/#stage=trace&project=${project.id}&revision=trace-9`)
     render(createElement((await import('./App')).default))
     const panel = screen.getByRole('tabpanel', { name: 'Trace' })
@@ -75,13 +75,14 @@ describe('Trace canvas title across a step', () => {
     await vi.waitFor(() => expect(release).toBeDefined())
     expect(title()?.textContent).toBe('Loading…')
     await act(async () => release!())
-    await vi.waitFor(() => expect(title()?.textContent).toBe('Traced SVG · solid underlayers'))
+    await vi.waitFor(() => expect(title()?.textContent).toBe('Traced SVG · edge to edge'))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
     observer.disconnect()
     const sequence = [...seen, title()!.textContent]
-    // The previous run's name only as the value the step replaced, then never again.
+    // Every run's edge SVG has one name: the step replaces it with Loading… and then
+    // names the stepped-to run's SVG, with nothing else in between.
     expect(sequence[0]).toBe('Traced SVG · edge to edge')
-    expect(sequence.slice(1)).not.toContain('Traced SVG · edge to edge')
-    expect(new Set(sequence.slice(1))).toEqual(new Set(['Loading…', 'Traced SVG · solid underlayers']))
+    expect(sequence[1]).toBe('Loading…')
+    expect(new Set(sequence.slice(1))).toEqual(new Set(['Loading…', 'Traced SVG · edge to edge']))
   })
 })

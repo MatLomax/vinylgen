@@ -13,13 +13,15 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from vinylgen.tracing import tracer_info
+
 from .config import WebConfig
 from .comfy_client import COMFY_NOT_RUNNING, ComfyClient, ComfyUIError, ComfyUnavailable
 from .jobs import JobManager
 from .inkscape import InkscapeHandoff
 from .generation import CodexImageProvider, ImageProvider, expand_prompt
-from .editor import apply_edits, automatic_layer_order, editor_state
-from .models import (ApplyLabelEdits, Artifact, AutomaticLayerOrder, CleanupJobSettings,
+from .editor import apply_edits, editor_state
+from .models import (ApplyLabelEdits, Artifact, CleanupJobSettings,
                      CreateProject, CreateRevision, EditorState, GenerationStarted, Health, Job,
                      Project, ProjectDetail, Revision,
                      StartGeneration, StartJob, StartUpscale, UpscaleOptions,
@@ -86,8 +88,8 @@ def create_app(config: WebConfig | None = None,
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        # Compile the tracer's kernels on the preview thread so the first live
-        # preview is warm; startup and health do not wait for it.
+        # Compile the cleanup preview's kernels on the preview thread so the first
+        # live preview is warm; startup and health do not wait for it.
         trace_previews.warm_up()
         yield
         trace_previews.shutdown()
@@ -132,7 +134,7 @@ def create_app(config: WebConfig | None = None,
     @app.get("/api/health", response_model=Health)
     async def health() -> Health:
         return Health(max_upload_bytes=config.max_upload_bytes,
-                      active_jobs=store.active_job_count())
+                      active_jobs=store.active_job_count(), tracer=tracer_info())
 
     @app.get("/api/projects", response_model=list[Project])
     async def list_projects() -> list[dict]:
@@ -361,15 +363,6 @@ def create_app(config: WebConfig | None = None,
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
-    @app.get("/api/revisions/{revision_id}/automatic-layer-order",
-             response_model=AutomaticLayerOrder)
-    async def get_automatic_layer_order(revision_id: str) -> dict:
-        try:
-            return {"automatic_layer_order": await asyncio.to_thread(
-                automatic_layer_order, store, revision_id)}
-        except KeyError as exc:
-            raise missing(exc) from exc
-
     @app.post("/api/projects/{project_id}/revisions/{revision_id}/edits",
               response_model=Revision, status_code=201)
     async def edit_labels(project_id: str, revision_id: str, payload: ApplyLabelEdits) -> dict:
@@ -460,6 +453,9 @@ def create_app(config: WebConfig | None = None,
                     break
                 if event.get("keepalive"):
                     yield ": keepalive\n\n"
+                elif event.get("type") == "face":
+                    # One face of a running trace, as t3 emitted it (tracing.face_event).
+                    yield f"event: face\ndata: {json.dumps(event)}\n\n"
                 else:
                     yield f"event: job\ndata: {json.dumps(event)}\n\n"
 

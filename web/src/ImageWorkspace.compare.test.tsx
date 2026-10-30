@@ -5,7 +5,7 @@ import { CANVAS_COMPARE_STORAGE_KEY, ImageWorkspace, NARROW_CANVAS_WIDTH, type W
 import { splitPositionInImage } from './workspace'
 import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
 import { DEFAULT_CLEANUP_SETTINGS } from './PipelineControls'
-import { PREVIEW_DEBOUNCE_MS } from './TracePreview'
+import { PREVIEW_DEBOUNCE_MS } from './LivePreview'
 
 const layers: WorkspaceLayer[] = [
   { id: 'source', name: 'Source', url: '/source.png', mediaType: 'image/png', role: 'image' },

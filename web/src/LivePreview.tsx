@@ -1,15 +1,13 @@
 import { type ReactNode, useEffect, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
-import { errorMessage, type TraceSettings } from './api'
 import type { ImageSize, ViewTransform } from './workspace'
 
-// The live trace preview: the Trace canvas traces whatever is zoomed into, with the
-// current (unsaved) trace form, and draws the shapes over the image at that spot.
-// `useLivePreview` is the driver it shares with the Cleanup canvas's preview.
+// The shared driver of a canvas's live preview, and the pieces the Cleanup canvas's
+// preview is built from: the switch saved per canvas, the request debounce and abort,
+// the busy badge and its server note, and where a preview's window sits on the stage.
 
 // The largest visible area (traced-image px) the server previews; kept equal to
-// PREVIEW_MAX_AREA_PX in vinylgen/trace_window.py and CLEANUP_PREVIEW_MAX_AREA_PX in
-// vinylgen/cleanup_window.py.
+// CLEANUP_PREVIEW_MAX_AREA_PX in vinylgen/cleanup_window.py.
 export const PREVIEW_MAX_AREA = 600 * 600
 // A view or setting change re-previews once it has been still this long.
 export const PREVIEW_DEBOUNCE_MS = 150
@@ -18,13 +16,6 @@ export const BUSY_NOTE_POLL_MS = 250
 export const BUSY_BADGE_TEXT = 'Updating live preview…'
 
 export type PreviewWindow = { x: number; y: number; width: number; height: number }
-export type TracePreviewResponse = {
-  window: PreviewWindow; crop: PreviewWindow; image: ImageSize
-  variant: 'traced-overlap' | 'traced-edge'; svg: string; elapsed_ms: number
-}
-// What the Trace canvas needs to preview: the revision a trace run would start from,
-// the form's current settings, and the pixel grid the trace fits curves on.
-export type LivePreviewOptions = PreviewSource<TraceSettings>
 
 /**
  * The traced-image window the viewport currently shows, clamped to the image.
@@ -44,29 +35,7 @@ export function visibleTraceWindow(transform: ViewTransform, viewport: ImageSize
   return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
-export async function fetchTracePreview(revisionId: string, window: PreviewWindow, trace: TraceSettings, signal: AbortSignal): Promise<TracePreviewResponse> {
-  const response = await fetch(`/api/revisions/${revisionId}/trace-preview`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-    body: JSON.stringify({ window, trace }),
-  })
-  if (!response.ok) {
-    const text = await response.text()
-    let invalidSettings = false
-    try { invalidSettings = Array.isArray((JSON.parse(text) as { detail?: unknown }).detail) } catch { /* not JSON */ }
-    // A proxy may replace the body with its own HTML page; errorMessage never shows it.
-    throw new Error(invalidSettings ? 'The trace settings are not valid for a preview'
-      : errorMessage(response.status, response.statusText, text))
-  }
-  return response.json() as Promise<TracePreviewResponse>
-}
-
-function svgUrl(svg: string): string {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
-}
-
-// The switch is a canvas preference: it survives stage changes and reloads.
-export const LIVE_PREVIEW_STORAGE_KEY = 'vinylgen.livePreview'
-
+// A canvas's switches are preferences, saved per key: they survive stage changes and reloads.
 export function storedSwitch(key: string, fallback = false): boolean {
   try {
     const value = localStorage.getItem(key)
@@ -206,33 +175,4 @@ export function useLivePreview<Settings, Result>(
 // Where a preview of `window` (traced px) sits on the stage.
 export function stagePlacement(window: PreviewWindow, kx: number, ky: number) {
   return { left: window.x * kx, top: window.y * ky, width: window.width * kx, height: window.height * ky }
-}
-
-async function requestTracePreview(revisionId: string, window: PreviewWindow, trace: TraceSettings, signal: AbortSignal) {
-  const body = await fetchTracePreview(revisionId, window, trace, signal)
-  return { window: body.window, result: { url: svgUrl(body.svg), svg: body.svg } }
-}
-
-/**
- * Drives the Trace canvas's live preview. Returns the shapes to place inside the
- * transformed image stage (so they track pan and zoom exactly), the on-canvas
- * controls (the switch, the "Live preview" badge, busy and error states), and the
- * shown preview's SVG text and window with the stage px per traced px, and whether
- * its switch is on. Without `options` (any canvas but Trace) it renders nothing and
- * requests nothing.
- */
-export function useTracePreview(options: LivePreviewOptions | undefined, transform: ViewTransform, viewport: ImageSize, stage: ImageSize): { stageLayer: ReactNode; controls: ReactNode; shown: { window: PreviewWindow; svg: string } | null; kx: number; ky: number; enabled: boolean } {
-  const preview = useLivePreview(options, transform, viewport, stage,
-    { storageKey: LIVE_PREVIEW_STORAGE_KEY, label: 'Live trace preview', request: requestTracePreview })
-  const { shown } = preview
-  const stageLayer = shown ? <img
-    className="trace-preview-shapes vector"
-    src={shown.result.url}
-    alt="Live trace preview"
-    draggable={false}
-    data-window={`${shown.window.x} ${shown.window.y} ${shown.window.width} ${shown.window.height}`}
-    style={stagePlacement(shown.window, preview.kx, preview.ky)}
-  /> : null
-  // The shown preview's SVG and window, for overlays drawn from its geometry.
-  return { stageLayer, controls: preview.controls(), shown: shown ? { window: shown.window, svg: shown.result.svg } : null, kx: preview.kx, ky: preview.ky, enabled: preview.enabled }
 }

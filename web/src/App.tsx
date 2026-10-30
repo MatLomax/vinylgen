@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Download, Eraser, Layers3, Palette, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2, Upload, WandSparkles } from 'lucide-react'
-import { api, followJob, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
+import { api, followJob, type TracerInfo, type Artifact, type CleanupSettings, type EditorState, type InkscapeHandoff, type Job, type PaletteColour, type PaletteSettings, type Project, type Revision, type TraceSettings } from './api'
 import { ImageWorkspace, type WorkspaceLayer } from './ImageWorkspace'
 import { CLEANUP_CHANGES_OVERLAY_KIND } from './CleanupPreview'
 import { ArtworkPreview } from './ArtworkPreview'
@@ -13,7 +13,8 @@ import { StagePanel } from './StagePanel'
 import { ICON_RAIL_QUERY, OVERLAY_PANEL_QUERY, PHONE_QUERY, SETTINGS_PANEL_STORAGE_KEY, STAGE_RAIL_STORAGE_KEY, panelModeFor, storeChoice, storedChoice, useMediaQuery } from './shellLayout'
 import { palettePointsForRevision } from './sourceGrid'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
-import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, isPixelRecord, layerOrderMatters, legacyCleanupSettings, normalizeTraceSettings, pixelRecordInUnits, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
+import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
+import { NO_FACES, withFace, type LiveFaces } from './LiveTrace'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -269,16 +270,6 @@ export function touchUpReplayMessage(revisions: Revision[], revisionId: string |
   return `${pending} touch-up${one ? '' : 's'} made on the Cleaned image ${one ? 'is' : 'are'} not shown while Cleanup is out of date; re-running Cleanup replays ${one ? 'it where it still applies' : 'them where they still apply'}.`
 }
 
-// Whether a trace run's overlap was in mm: a run recorded before the cleanup stage says
-// so in its own settings; any other run used the size of the cleanup behind it.
-export function traceRunIsPhysical(revisions: Revision[], runId: string | undefined): boolean {
-  const run = revisions.find(row => row.id === runId)
-  const legacy = legacyCleanupSettings((run?.settings.trace ?? {}) as Record<string, unknown>)
-  if (legacy && ('width_mm' in legacy || 'height_mm' in legacy)) return Boolean(legacy.width_mm || legacy.height_mm)
-  const cleanup = activeCleanupRevision(revisions, runId ?? null)?.settings.cleanup as Partial<CleanupSettings> | undefined
-  return physicalSize(cleanup, null) !== null
-}
-
 // Every complete stage setting recorded along the shown revision's ancestry, newest
 // to oldest, so the form can step back through past attempts without changing the
 // shown image. Each entry is merged over defaults so older revisions that predate a
@@ -368,33 +359,6 @@ export function editAncestry(revisions: Revision[], revisionId: string | null): 
   }
   return { hasFlatten: flatten, hasEdit: edit, paletteAncestorId: paletteId }
 }
-// The trace settings with `layer_order` narrowed to the colours of `palette` that get a
-// layer (never the palette index `removedIndex`, which the active cleanup removes), matched as the tracer
-// does (resolvePaletteColour), each once and in the stored order. Colours the order no
-// longer names fall to the automatic order; an order naming none becomes null.
-export function withPaletteLayerOrder(trace: TraceSettings, palette: PaletteColour[], removedIndex: number | null = null): TraceSettings {
-  if (!trace.layer_order) return trace
-  const matched: number[] = []
-  for (const entry of trace.layer_order) {
-    const colour = resolvePaletteColour(entry, palette)
-    if (colour && colour.index !== removedIndex && !matched.includes(colour.index)) matched.push(colour.index)
-  }
-  const kept = matched.map(index => palette.find(row => row.index === index)!.hex)
-  if (kept.length === trace.layer_order.length && kept.every((hex, at) => hex === trace.layer_order![at])) return trace
-  return { ...trace, layer_order: kept.length ? kept : null }
-}
-// The trace settings a run or preview sends: without solid underlayers or overlap the
-// stacking changes no geometry, so a stored layer order is left out (kept in the form) and
-// the layers stack as the tracer's default.
-export function withoutMootLayerOrder(trace: TraceSettings): TraceSettings {
-  return trace.layer_order && !layerOrderMatters(trace) ? { ...trace, layer_order: null } : trace
-}
-// Whether two stored layer orders name the same colours in the same order.
-function sameOrder(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
-  return a === b || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((entry, at) => entry === b[at]))
-}
-// The number of revisions whose automatic layer order is kept once read.
-const AUTOMATIC_ORDER_CACHE = 16
 // The trace runs made on the shown artwork, newest first, and the shown run's index.
 // A run is a `trace` revision; validate/export records only copy a run's settings, so
 // they are passed through without counting. Forward, the chain follows the newest
@@ -434,16 +398,9 @@ export function traceRunChain(revisions: Revision[], revisionId: string | null):
   return { runs, index: runs.findIndex(row => row.id === shown!.id) }
 }
 
-// Every trace writes both SVG variants; the overlap file only differs from the
-// edge-to-edge one when that run asked for solid underlayers or a positive overlap.
-export function tracedSvgKind(trace: Partial<TraceSettings> | undefined): 'traced-overlap' | 'traced-edge' {
-  return trace?.solid_underlayers || (trace?.overlap ?? 0) > 0 ? 'traced-overlap' : 'traced-edge'
-}
-
-export function tracedSvgName(trace: Partial<TraceSettings> | undefined, physical = false): string {
-  return trace?.solid_underlayers ? 'Traced SVG · solid underlayers'
-    : (trace?.overlap ?? 0) > 0 ? `Traced SVG · ${trace!.overlap} ${physical ? 'mm' : 'px'} overlap` : 'Traced SVG · edge to edge'
-}
+// Every trace run is shown by its edge SVG, the variant t3 writes: a run recorded with an
+// overlap or solid underlayers kept its other files, but the viewer shows its edge SVG.
+export const TRACED_SVG_NAME = 'Traced SVG · edge to edge'
 
 // Touch browsers offer no drag handle for a textarea, so it grows to fit its
 // text instead; it never shrinks, which keeps a manual resize.
@@ -544,6 +501,10 @@ export default function App() {
     else if (previous) setError(shown => shown === previous ? '' : shown)
   }
   const [maxUploadBytes, setMaxUploadBytes] = useState(100 * 1024 * 1024)
+  // The tracer the server runs (its name, build and one fixed setting), from /api/health.
+  const [tracer, setTracer] = useState<TracerInfo | null>(null)
+  // The faces the running trace job has emitted so far, for the Trace canvas's live trace.
+  const [liveFaces, setLiveFaces] = useState<{ jobId: string; faces: LiveFaces } | null>(null)
   const [handoff, setHandoff] = useState<InkscapeHandoff | null>(null)
   const [handoffMessage, setHandoffMessage] = useState('')
   const [frame, setFrame] = useState('landscape')
@@ -599,9 +560,6 @@ export default function App() {
   const [cleanupStep, setCleanupStep] = useState(0)
   const cleanupLive = useRef<CleanupSettings | null>(null)
   const traceDraftSpent = useRef<string | null>(null)
-  // Pixel-era trace settings (a recorded run the server could not convert, a draft saved
-  // before units) waiting for the traced grid of `revision` to convert on.
-  const pixelTrace = useRef<{ project: string; revision: string; stored?: Partial<TraceSettings>; draft?: Partial<TraceSettings> } | null>(null)
   // A Create form mounted while another stage was showing measured nothing, so
   // fit the subject again whenever Create becomes visible.
   const subjectField = useRef<HTMLTextAreaElement | null>(null)
@@ -631,28 +589,14 @@ export default function App() {
   // cleanup removed a colour, or it is not read yet.
   const [inheritedRemove, setInheritedRemove] = useState<InheritedRemove | null>(null)
   // The revision `editorPalette` was read from. A load keeps the last palette listed, but
-  // only the selected revision's own may be used to write a layer order.
+  // only the selected revision's own colours may paint its live trace.
   const [paletteRevision, setPaletteRevision] = useState<string | null>(null)
-  // Each revision's automatic bottom-to-top order (the tracer's own inference), which
-  // colours an override leaves unnamed follow, keyed by revision (a revision's order never
-  // changes; the AUTOMATIC_ORDER_CACHE most recent are kept). Read only while layer order
-  // can matter: otherwise the tracer infers none and no order is listed.
-  const [automaticOrders, setAutomaticOrders] = useState<ReadonlyMap<string, string[] | null>>(new Map())
-  // The last failed read of a revision's automatic order, shown as the list's lock reason.
-  const [automaticOrderError, setAutomaticOrderError] = useState<{ revision: string; message: string } | null>(null)
-  const [automaticOrderAttempt, setAutomaticOrderAttempt] = useState(0)
-  // The layer order a trace run leaves out because order cannot matter. Before the run
-  // starts it is written into the persisted trace draft unless that draft already names one
-  // (so a reload or a run from an older trace keeps it); this remembers the draft's order
-  // then, for the run that spends that draft on success.
-  const traceOrderHeld = useRef<{ jobId: string; order: string[] } | null>(null)
-  // A trace job whose start is reading the revision's palette first; the job buttons wait.
+  // A job being started, until the server answers; the job buttons wait.
   const [startingJob, setStartingJob] = useState(false)
-  const startRead = useRef<AbortController | null>(null)
   const starting = useRef(false)
   // Pixel size of the image the trace stage fits curves to (the flattened/edited grid).
   // The traced grid and the revision it was measured for. A load keeps the last one on
-  // display (the live preview pauses until the new revision's grid is known).
+  // display (the live cleanup preview pauses until the new revision's grid is known).
   const [tracedGrid, setTracedGrid] = useState<{ revision: string; width: number; height: number } | null>(null)
   const tracedSize = useMemo(() => tracedGrid ? { width: tracedGrid.width, height: tracedGrid.height } : null, [tracedGrid])
   // Why the traced grid of a revision could not be measured, so the paused preview says so.
@@ -716,13 +660,7 @@ export default function App() {
   const flattened = artifacts.find(row => row.kind === 'flattened')
   // The settings that produced the shown image, recorded on its nearest ancestor.
   const pipelineBaseline = useMemo(() => inheritedPipelineSettings(revisions, current?.id || null), [revisions, current?.id])
-  // Pick the variant from the settings of the run that produced the loaded SVGs, so the
-  // choice and its label always describe the file shown, even mid-reload.
-  const tracedRunId = artifacts.find(row => TRACED_SVG_KINDS.has(row.kind))?.revision_id
-  const tracedRunSettings = (revisions.find(row => row.id === tracedRunId)?.settings.trace ?? pipelineBaseline.trace) as Partial<TraceSettings> | undefined
-  // A run traced with t3 writes the edge variant only, whatever overlap setting it carries.
-  const tracedSvg = artifacts.find(row => row.kind === tracedSvgKind(tracedRunSettings))
-    ?? artifacts.find(row => row.kind === 'traced-edge')
+  const tracedSvg = artifacts.find(row => row.kind === 'traced-edge')
   const cleanupLookup = useMemo(() => nearestCleanup(revisions, current?.id || null), [revisions, current?.id])
   const activeCleanup = cleanupLookup.stale ? null : cleanupLookup.revision
   // The artwork changed after the last Cleanup, so tracing waits for Cleanup to re-run.
@@ -888,10 +826,12 @@ export default function App() {
   const generation = generationFromRevision(sourceRevision)
 
   useEffect(() => { api.projects().then(list => { projectsKnown.current = true; setProjects(list) }).catch(e => setError(String(e))) }, [])
-  useEffect(() => { api.health().then(health => setMaxUploadBytes(health.max_upload_bytes)).catch(() => { /* keep the default cap */ }) }, [])
+  useEffect(() => { api.health().then(health => { setMaxUploadBytes(health.max_upload_bytes); setTracer(health.tracer ?? null) }).catch(() => { /* keep the default cap */ }) }, [])
   useEffect(() => job ? followJob(job.id, next => {
     setError('')
     setJob(next)
+    // A finished job's faces are done with: its revision's edge SVG shows the result.
+    if (['succeeded', 'failed', 'cancelled'].includes(next.status)) setLiveFaces(held => held?.jobId === next.id ? null : held)
     if (next.status === 'succeeded' && next.result_revision_id) {
       // The run recorded these values on the new revision; that revision is now the
       // baseline, so the pending draft for this step is spent — drop it before the
@@ -899,11 +839,7 @@ export default function App() {
       if (next.kind === 'palette' && next.project_id) clearDraft(next.project_id, 'palette')
       if (next.kind === 'cleanup' && next.project_id && cleanupDraftSpent.current === next.id) clearDraft(next.project_id, 'cleanup')
       if (next.kind === 'trace' && next.project_id && traceDraftSpent.current === next.id) {
-        const held = traceOrderHeld.current?.jobId === next.id ? traceOrderHeld.current.order : null
-        const pending = held ? draftTraceOrder(next.project_id) : undefined
         clearDraft(next.project_id, 'trace')
-        // The withheld order survives the spend; an order the user saved during the run wins.
-        if (held) keepTraceDraftOrder(next.project_id, sameOrder(pending, held) ? held : pending ?? null)
       }
       // The result lands only in its own project; one that finishes after the user
       // switched away leaves the now-selected project's revision, view and stage alone.
@@ -916,7 +852,10 @@ export default function App() {
       // the freshly generated artwork is ready to reduce without hunting for the tab.
       if (next.kind === 'generate') navigateStage('flatten')
     }
-  }, () => setError('Lost the live job connection')) : undefined, [job?.id])
+  }, () => setError('Lost the live job connection'), face => {
+    const jobId = job.id
+    setLiveFaces(held => ({ jobId, faces: withFace(held?.jobId === jobId ? held.faces : NO_FACES, face) }))
+  }) : undefined, [job?.id])
   useEffect(() => {
     if (!selected) { setArtifacts([]); setArtifactsRevision(null); setPreCleanup(null); setCleanupResult(null); setRevision(null); setRevisions([]); setRevisionLoading(false); loadedProject.current = null; return }
     const controller = new AbortController()
@@ -1062,35 +1001,12 @@ export default function App() {
     setPaletteSettings({ ...DEFAULT_PALETTE_SETTINGS, ...storedPalette, ...draftPalette })
     setCleanupSettings({ ...DEFAULT_CLEANUP_SETTINGS, ...storedCleanup, ...draft.cleanup })
     setCleanupStep(0); cleanupLive.current = null
-    // Trace lengths are thousandths of the traced image's longer side. A draft saved
-    // before units (no length_unit) holds pixels, as does a recorded run the server could
-    // not convert ('px'); those wait in `pixelTrace` until this revision's traced grid is
-    // measured, then convert on it (the effect below).
+    // A stored record or draft keeps only the trace fields t3 reads (normalizeTraceSettings).
     const draftTrace = traceRuns.index > 0 || !draft.trace ? undefined : normalizeTraceSettings(draft.trace)
-    const pixelStored = storedTrace && isPixelRecord(storedTrace) ? storedTrace : undefined
-    const pixelDraft = draftTrace && isPixelRecord(draftTrace) ? draftTrace : undefined
-    pixelTrace.current = selected && current && (pixelStored || pixelDraft)
-      ? { project: selected, revision: current.id, stored: pixelStored, draft: pixelDraft } : null
-    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...(pixelStored ? {} : storedTrace), ...(pixelDraft ? {} : draftTrace) })
+    setTraceSettings({ ...DEFAULT_TRACE_SETTINGS, ...storedTrace, ...draftTrace })
     setPaletteStep(0); paletteLive.current = null
     setSelectionMode(null); setDistinctFirst(null)
   }, [current?.id, selected])
-  // Pixel-era trace settings held back by the fill above convert on the traced grid of the
-  // revision they were loaded for, once it is measured; a converted draft is stored back.
-  useEffect(() => {
-    const pending = pixelTrace.current
-    if (!pending || !tracedGrid || tracedGrid.revision !== pending.revision || pending.project !== selected) return
-    pixelTrace.current = null
-    const longSide = Math.max(tracedGrid.width, tracedGrid.height)
-    const stored = pending.stored && pixelRecordInUnits(pending.stored, longSide)
-    const draft = pending.draft && pixelRecordInUnits(pending.draft, longSide)
-    setTraceSettings(settings => ({ ...settings, ...stored, ...draft }))
-    if (draft) {
-      let saved: { trace?: Partial<TraceSettings> } = {}
-      try { saved = JSON.parse(localStorage.getItem(draftKey(pending.project)) || '{}') } catch { saved = {} }
-      localStorage.setItem(draftKey(pending.project), JSON.stringify({ ...saved, trace: draft }))
-    }
-  }, [tracedGrid, selected, current?.id])
   // Once the server has resolved the inherited removed colour for this revision, the
   // form takes it in place of the value it inherited before reading it (the cleanup's
   // hex, which a recolour can give two colours), unless the user changed that value.
@@ -1180,37 +1096,6 @@ export default function App() {
     })
     return () => controller.abort()
   }, [revision, artifactsCurrent, flattened?.id])
-  const orderMatters = layerOrderMatters(traceSettings)
-  const automaticOrderCached = Boolean(revision && automaticOrders.has(revision))
-  useEffect(() => {
-    // A revision's automatic order never changes, so it is read once per revision, and only
-    // once the trace settings make layer order matter. A failed read is retried by the
-    // list's Retry, or on the next revision or setting change that needs it.
-    if (!revision || !flattened || !artifactsCurrent || !orderMatters || automaticOrderCached) return
-    const controller = new AbortController()
-    setAutomaticOrderError(failure => failure?.revision === revision ? null : failure)
-    api.automaticLayerOrder(revision, controller.signal)
-      .then(result => {
-        if (controller.signal.aborted) return
-        setAutomaticOrders(orders => {
-          const next = new Map(orders)
-          next.delete(revision)
-          next.set(revision, result.automatic_layer_order)
-          while (next.size > AUTOMATIC_ORDER_CACHE) next.delete(next.keys().next().value!)
-          return next
-        })
-      })
-      .catch(cause => { if (!controller.signal.aborted) setAutomaticOrderError({ revision, message: String(cause) }) })
-    return () => controller.abort()
-  }, [revision, artifactsCurrent, flattened?.id, orderMatters, automaticOrderCached, automaticOrderAttempt])
-  const automaticOrder = revision && automaticOrders.has(revision) ? automaticOrders.get(revision) ?? null : null
-  // Until the automatic order is known the list would show palette order as "automatic",
-  // so it stays locked: loading, the failure with a Retry, or a revision with no automatic
-  // order (it cannot be traced as it stands, e.g. its cleanup is stale).
-  const automaticOrderLock = !revision || !flattened || !orderMatters ? null
-    : automaticOrderCached ? (automaticOrder ? null : 'Automatic order unavailable: this revision cannot be traced as it stands.')
-      : automaticOrderError?.revision === revision ? `Automatic order unavailable: ${automaticOrderError.message}`
-        : 'Loading automatic order…'
   useEffect(() => {
     // The Edit stage shows one overlay for whichever tool is active: the pencil's
     // staged (uncommitted) pixels in their target colours, or the selected areas.
@@ -1401,43 +1286,16 @@ export default function App() {
     try {
       const settings = kind === 'palette' ? { palette: paletteSettings }
         : kind === 'cleanup' ? (rerunLastCleanup ? { rerun_last_cleanup: true } : { cleanup: cleanupSettings })
-          : kind === 'trace' ? { trace: traceSettingsForRun(revision) ?? await traceSettingsFetchingPalette(revision) } : undefined
-      // A layer order the run leaves out (order cannot matter) is the form's own, whichever
-      // run it came from: keep it in the draft, where the next form finds it, unless the
-      // user's pending draft already names an order, which wins.
-      const withheld = kind === 'trace' && !orderMatters ? traceSettings.layer_order : null
-      if (withheld && !draftTraceOrder(selected)) keepTraceDraftOrder(selected, withheld)
-      const draftOrder = withheld ? draftTraceOrder(selected) : null
+          : kind === 'trace' ? { trace: traceSettings } : undefined
       const started = await api.startPipeline(kind, selected, revision, settings)
       // Only a run from the newest trace carries the pending trace draft, so only that
       // run spends it; a branch from an older run leaves it for the newest.
       traceDraftSpent.current = kind === 'trace' && traceRuns.index <= 0 ? started.id : null
-      traceOrderHeld.current = traceDraftSpent.current && draftOrder ? { jobId: started.id, order: draftOrder } : null
       cleanupDraftSpent.current = kind === 'cleanup' && !rerunLastCleanup ? started.id : null
       setJob(started)
     }
-    catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(String(cause)) }
+    catch (cause) { setError(String(cause)) }
     finally { starting.current = false; setStartingJob(false) }
-  }
-  useEffect(() => () => { startRead.current?.abort() }, [revision, selected])
-  // The trace form for a run of `revisionId`, its layer order narrowed to that revision's
-  // own palette so a stale order never runs; null when that palette must be read first.
-  function traceSettingsForRun(revisionId: string): TraceSettings | null {
-    if (!traceSettings.layer_order || !orderMatters) return withoutMootLayerOrder(traceSettings)
-    return paletteRevision === revisionId ? withPaletteLayerOrder(traceSettings, editorPalette, removedIndex) : null
-  }
-  // Reading the palette is part of starting the job (the job buttons stay disabled), and a
-  // revision or project change aborts it (the throw is then dropped).
-  async function traceSettingsFetchingPalette(revisionId: string): Promise<TraceSettings> {
-    const controller = new AbortController()
-    startRead.current = controller
-    try {
-      const state = await api.editor(revisionId, controller.signal)
-      if (controller.signal.aborted) throw new DOMException('The palette read was superseded.', 'AbortError')
-      return withPaletteLayerOrder(traceSettings, state.palette, state.removed_colour_index ?? null)
-    } finally {
-      if (startRead.current === controller) startRead.current = null
-    }
   }
   function persistDraft(step: 'palette' | 'cleanup' | 'trace') {
     // The trace draft belongs to the newest run; an older run's form is its record.
@@ -1455,23 +1313,8 @@ export default function App() {
       const { remove_colour: removeColour, ...rest } = cleanupSettings
       draft.cleanup = removeColour === baselineCleanup.remove_colour ? rest : cleanupSettings
     }
-    else {
-      // The form's own settings supersede any pixel-era draft still waiting to convert.
-      draft.trace = traceSettings
-      pixelTrace.current = null
-    }
+    else draft.trace = traceSettings
     localStorage.setItem(draftKey(selected), JSON.stringify(draft))
-  }
-  // The layer order of the project's pending trace draft (undefined: the draft names none).
-  function draftTraceOrder(projectId: string): string[] | null | undefined {
-    try { return (JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') as { trace?: Partial<TraceSettings> }).trace?.layer_order } catch { return undefined }
-  }
-  // Set `order` as the layer order of the project's trace draft, keeping its other fields.
-  function keepTraceDraftOrder(projectId: string, order: string[] | null) {
-    let draft: { trace?: Partial<TraceSettings> } = {}
-    try { draft = JSON.parse(localStorage.getItem(draftKey(projectId)) || '{}') } catch { draft = {} }
-    draft.trace = { ...draft.trace, layer_order: order }
-    localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
   }
   function clearDraft(projectId: string, step: 'palette' | 'cleanup' | 'trace') {
     let draft: { palette?: PaletteSettings; palette_revision?: string; cleanup?: CleanupSettings; trace?: TraceSettings } = {}
@@ -1517,7 +1360,7 @@ export default function App() {
   }, [overlayOperation])
   const workspaceLayers = artifacts.filter(row => row.kind !== CLEANED_IMAGE_KIND).map(artifactToWorkspaceLayer).filter((layer): layer is WorkspaceLayer => layer !== null)
     .map(layer => TRACED_SVG_KINDS.has(artifacts.find(row => row.id === layer.id)?.kind ?? '') && flattened ? { ...layer, sizeFrom: flattened.id } : layer)
-    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: tracedSvgName(tracedRunSettings, traceRunIsPhysical(revisions, tracedRunId)) } : layer)
+    .map(layer => layer.id === tracedSvg?.id ? { ...layer, name: TRACED_SVG_NAME } : layer)
   const preEditLayer: WorkspaceLayer | null = hasEdit && preEditFlattened ? {
     id: preEditFlattened.id, name: `flattened (before edits) · ${preEditFlattened.filename}`,
     url: preEditFlattened.download_url, mediaType: preEditFlattened.media_type, role: 'image',
@@ -1768,7 +1611,10 @@ export default function App() {
           markers={(stage === 'flatten' || selectionMode) && artifactsCurrent ? preservationMarkers(paletteSettings, selectionMode === 'distinct-second' ? distinctFirst : null) : undefined}
           markerGridFrom={source?.id}
           highlightedMarker={highlight?.lists === pointLists ? highlight.id : null}
-          livePreview={stage === 'trace' && !selectionMode && revision ? { revisionId: revision, settings: withoutMootLayerOrder(withPaletteLayerOrder(traceSettings, paletteRevision === revision ? editorPalette : [], removedIndex)), tracedSize } : undefined}
+          // The running trace of the shown revision, face by face, in its own palette's colours.
+          liveTrace={stage === 'trace' && !selectionMode && revision && job?.kind === 'trace' && job.revision_id === revision && (job.status === 'queued' || job.status === 'running')
+            && liveFaces?.jobId === job.id && paletteRevision === revision && tracedSize && tracedGrid?.revision === revision
+            ? { faces: liveFaces.faces, palette: editorPalette, omitted: removedIndex, traced: tracedSize } : undefined}
           // The unsaved Cleanup form, physical size included; nothing is saved.
           // A cleanup that changed pixels but has no changes overlay ran before runs recorded one.
           cleanupPreview={stage === 'cleanup' && !selectionMode && revision ? { revisionId: revision, settings: cleanupSettings, tracedSize, changesUnavailable: cleanupChangedPixels ? 'Re-run Cleanup to record its changes' : 'No Cleanup changes to show' } : undefined}
@@ -1855,9 +1701,7 @@ export default function App() {
           <div className="section-heading"><h2>Trace vinyl layers</h2><span>{readiness}</span></div><p className="section-intro">Convert flattened colour regions into shared-boundary SVG layers.</p>
           {cleanupStale && <div className="stage-guidance cleanup-stale" role="status"><p>The artwork changed after Cleanup: re-run Cleanup</p><button type="button" className="secondary" title="Runs Cleanup again on this artwork with the settings of the last Cleanup run, not the Cleanup form" disabled={!revision || busy || startingJob || Boolean(selectedUnavailable)} onClick={() => runPipeline('cleanup', true)}>Re-run Cleanup with its last settings</button></div>}
           <div className="job"><button disabled={runActions.trace.disabled} aria-describedby={runActions.trace.describedBy} onClick={runActions.trace.run}>{runActions.trace.label}</button>{lockReason('trace-lock-reason')}</div>
-          <PipelineControls stage="trace" removedIndex={removedIndex} automaticOrder={automaticOrder} layerOrderLocked={!revision || paletteRevision === revision || (artifactsCurrent && !flattened) ? automaticOrderLock
-            : tracedGridError && tracedGridError.revision === revision ? `Palette unavailable: ${tracedGridError.message}`
-              : selectedUnavailable ?? 'Loading the selected revision…'} onRetryLayerOrder={automaticOrderLock && automaticOrderError?.revision === revision ? () => setAutomaticOrderAttempt(attempt => attempt + 1) : null} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
+          <PipelineControls stage="trace" tracer={tracer} palette={paletteSettings} setPalette={setPaletteSettings} basePalette={baselinePalette} trace={traceSettings} setTrace={setTraceSettings} baseTrace={baselineTrace} paletteColours={editorPalette} selectionMode={selectionMode} setSelectionMode={setSelectionMode} onReset={() => setTraceSettings(DEFAULT_TRACE_SETTINGS)} iterationCount={traceRuns.runs.length} iterationIndex={Math.max(0, traceRuns.index)} onStep={stepTrace} stepDisabled={busy} onCommitDraft={() => persistDraft('trace')} tracedSize={tracedSize} traceSize={traceSize} />
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
           {/* The revision history is offered whenever the project has revisions, so Undo to

@@ -12,7 +12,6 @@ from scipy import ndimage
 
 from vinylgen.contracts import SegmentationBundle
 from vinylgen.reporting import create_report
-from vinylgen.tracing import infer_order
 
 from .models import LabelEditOperation
 from .npz_edit import reuse_member_supported, savez_bytes, write_npz_reusing_member
@@ -166,37 +165,6 @@ def removed_colour_index(store: Store, revision_id: str, palette_size: int) -> i
     except ValueError:
         return None
     return index if index is not None and index < palette_size else None
-
-
-def automatic_layer_order(store: Store, revision_id: str) -> list[str] | None:
-    """The bottom-to-top colour order (hex) a trace of ``revision_id`` infers before any
-    layer-order override: the tracer's own ``infer_order`` over the labels it traces
-    (the active cleanup's raster) without the colour that cleanup removes. Colours an
-    override leaves unnamed stack in this order when layer order can matter (solid
-    underlayers or a positive overlap); the tracer only infers it then, so it is read
-    on its own rather than with the editor state. ``None`` when the revision cannot be
-    traced as it stands (no flatten, a stale cleanup, an unresolvable removed colour)."""
-    cleanup_revision, stale = nearest_cleanup(store, revision_id)
-    if stale:
-        return None
-    artifacts = store.effective_artifacts(revision_id)
-    if "segmentation" not in artifacts or "palette" not in artifacts:
-        return None
-    labels = SegmentationBundle.load(store.artifact_path(artifacts["segmentation"]["id"]),
-                                     with_costs=False).labels
-    palette = json.loads(store.artifact_path(artifacts["palette"]["id"]).read_text())["palette"]
-    # By palette index: a trace's colour names may have renamed the colours in the
-    # palette.json read here, so the cleanup's recorded name may now be another's.
-    try:
-        omitted = (cleanup_removed_index(store, cleanup_revision)
-                   if cleanup_revision is not None else None)
-    except ValueError:
-        return None
-    if omitted is not None and omitted >= len(palette):
-        return None
-    included = [index for index in range(len(palette)) if index != omitted]
-    inferred, _ = infer_order(labels, included, palette)
-    return [str(palette[index]["hex"]) for index in inferred]
 
 
 def _check_label(value: int | None, count: int, field: str = "label") -> int:
