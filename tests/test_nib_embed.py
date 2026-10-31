@@ -64,12 +64,12 @@ NIB_CORE_TAG = "core-v0.4.0"
 NIB_CORE_COMMIT = "f9e355e5ee302d24d3d4d14c0373d2d3df4e7d93"
 
 # The edited document: one node moved by (0.25, 0.25) with nib's node tool. Produced by nib's
-# core at tag core-v0.1.0 (21e34c1), run under Node from packages/core/dist:
+# core at tag core-v0.4.0 (f9e355e), run under Node from the vendored tarball's dist:
 # LabelMapSession.fromText(the fixture's map.json), the view node of face 15 at edge 10's piece
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
 # 0.25), then session.text(). checkLabelMap reported no violation. The vendored tarball's
 # dist/label-map-session.js writes the same bytes from the same steps. Its sha256:
-NIB_MOVE_SHA256 = "b1b1af569263cdbf91ab83821bfaf26eac66e479b26ae28284b6c1a8dc749a36"
+NIB_MOVE_SHA256 = "64e73aa6287efb5b1eeae808841c0699f7472df6e566496278f191f534087da2"
 MOVED_EDGE, MOVED_J, MOVE = 10, 1, (0.25, 0.25)
 
 # The artefacts a trace revision made from a map holds, by kind and file name.
