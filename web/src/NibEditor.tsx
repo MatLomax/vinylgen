@@ -16,7 +16,7 @@ import { api, type Revision } from './api'
 // line once the chrome is mounted: the host's word carried over a remount, such as `SAVED` on
 // the editor of the revision a save made. The component has no controls of its own. With no
 // `mapUrl` (a revision traced before t3, or none at all) it renders nothing.
-export type NibEditorProps = { revisionId: string; mapUrl?: string | null; onSaved?: (revision: Revision) => void; notice?: string | null }
+export type NibEditorProps = { revisionId: string; mapUrl?: string | null; onSaved?: (revision: Revision) => void; notice?: string | null; onEditedChange?: (edited: boolean) => void }
 
 const MAP_NAME = 'map.json'
 export const SAVED = 'Saved as a new trace revision.'
@@ -43,12 +43,12 @@ export function refusalNotice(detail: string, problems: readonly string[] = []):
 
 const reason = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
 
-export function NibEditor({ revisionId, mapUrl, onSaved, notice }: NibEditorProps) {
+export function NibEditor({ revisionId, mapUrl, onSaved, notice, onEditedChange }: NibEditorProps) {
   const container = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   // The latest props the host reads when nib calls it, without remounting the editor.
-  const latest = useRef({ revisionId, mapUrl, onSaved, notice })
-  latest.current = { revisionId, mapUrl, onSaved, notice }
+  const latest = useRef({ revisionId, mapUrl, onSaved, notice, onEditedChange })
+  latest.current = { revisionId, mapUrl, onSaved, notice, onEditedChange }
   const mountedChrome = useRef<MountedChrome | null>(null)
 
   useEffect(() => {
@@ -58,6 +58,11 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice }: NibEditorProp
     let editor: MountedEditor | null = null
     let chrome: MountedChrome | null = null
     let saving = false
+    // Whether the open map holds an edit not yet saved: nib's undo history is non-empty. A save
+    // remounts the editor on the saved revision, whose history starts empty.
+    let edited = false
+    const setEdited = (next: boolean) => { if (next !== edited) { edited = next; latest.current.onEditedChange?.(next) } }
+    let unwatch: (() => void) | null = null
     // nib's chrome clears its notice line once its Save has resolved, so a save's outcome is
     // put on the line on the next task, after that clear; then a saved revision goes to
     // `onSaved`, which may remount the editor on it. A chrome disposed by then ignores the line.
@@ -100,6 +105,7 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice }: NibEditorProp
     const mount = (text?: string) => {
       editor = mountEditor(element, text === undefined ? { host } : { host, text, kind: 'label-map' })
       chrome = mountChrome(root, editor.editor, { actions: ['save'] })
+      unwatch = editor.editor.onStats(stats => setEdited(stats.canUndo))
       mountedChrome.current = chrome
       if (latest.current.notice) chrome.notice(latest.current.notice)
       return editor
@@ -116,6 +122,8 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice }: NibEditorProp
     })
     return () => {
       controller.abort()
+      unwatch?.()
+      setEdited(false)
       if (mountedChrome.current === chrome) mountedChrome.current = null
       chrome?.dispose()
       editor?.dispose()

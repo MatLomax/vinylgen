@@ -27,7 +27,7 @@ const OPTIONAL_KINDS = new Set<keyof TraceSettings>(['half_arc', 'half_ellipse',
 // The Curve kinds rows, in order: each kind's field, its name, the drawn piece it names
 // and whether it can be turned off.
 type HalfKey = 'half_line' | 'half_arc' | 'half_ellipse' | 'half_cubic'
-const CURVE_KINDS: { key: HalfKey; kind: CurveKind; label: string; piece: string; optional: boolean }[] = [
+export const CURVE_KINDS: { key: HalfKey; kind: CurveKind; label: string; piece: string; optional: boolean }[] = [
   { key: 'half_line', kind: 'line', label: 'Lines', piece: 'line', optional: false },
   { key: 'half_arc', kind: 'arc', label: 'Circular arcs', piece: 'circular arc', optional: true },
   { key: 'half_ellipse', kind: 'ellipse', label: 'Elliptical arcs', piece: 'elliptical arc', optional: true },

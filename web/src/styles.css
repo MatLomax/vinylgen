@@ -210,6 +210,9 @@ button:disabled { opacity: .45; cursor: default; } button.secondary { background
 .iteration-stepper { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
 .iteration-stepper button { min-width: 40px; padding: 8px 10px; }
 .iteration-indicator { text-align: center; color: var(--text-muted); font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nodes-revision { display: grid; gap: 6px; }
+.nodes-revision-detail { margin: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.nodes-revision-detail strong { color: var(--text); font-weight: 600; }
 .selection-actions { grid-template-columns: 1fr; }
 .settings-grid { display: grid; gap: 11px; padding-bottom: 16px; }
 .check-field { grid-template-columns: 22px 1fr; align-items: center; min-height: 44px; }

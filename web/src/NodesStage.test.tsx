@@ -24,7 +24,7 @@ import { createElement, type FunctionComponent } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Project, Revision } from './api'
 
-type NibEditorProps = { revisionId: string; mapUrl?: string | null; onSaved?: (revision: Revision) => void }
+type NibEditorProps = { revisionId: string; mapUrl?: string | null; onSaved?: (revision: Revision) => void; onEditedChange?: (edited: boolean) => void }
 type Box = { width: number; height: number }
 
 // The NibEditor App renders: recorded, and either a stand-in or the real component.
@@ -248,7 +248,7 @@ describe('the Nodes stage', () => {
     expect(nodesPanel()!.textContent).not.toContain('Trace first')
   })
 
-  it('holds the heading, the readiness line and a guidance paragraph in its panel, and no editing control', async () => {
+  it('holds the heading, the readiness line, a guidance paragraph and the trace-run stepper in its panel, and no editing control', async () => {
     serve([trace, flatten, base], async () => [...raster, edge(), map()])
     await openApp('nodes')
     await vi.waitFor(() => expect(standIns()).toHaveLength(1))
@@ -261,8 +261,10 @@ describe('the Nodes stage', () => {
     expect(guidance).toMatch(/node/i)
     expect(guidance).toMatch(/\bsave\b/i)
     expect(guidance).toMatch(/new (trace )?revision/i)
-    // Every editing control is nib's chrome, none is the panel's.
-    expect(panel.querySelectorAll('button, input, select, textarea')).toHaveLength(0)
+    // Every editing control is nib's chrome; the panel's only controls are the run stepper's two
+    // arrows (the user's decision of 2026-11-07: the Nodes stage names and steps its trace run).
+    expect([...panel.querySelectorAll('button, input, select, textarea')].map(control => control.getAttribute('aria-label')))
+      .toEqual(['Open the previous trace run', 'Open the next trace run'])
   })
 
   it('mounts nothing for a revision with no map.json, and its readiness line says "Trace first"', async () => {
@@ -303,6 +305,54 @@ describe('the Nodes stage', () => {
     expect(standIns()).toHaveLength(1)
     expect(mountedWithMap().at(-1)?.revisionId).toBe('trace-2')
     expect(nodesPanel()!.textContent).not.toContain('Loading the selected revision…')
+  })
+})
+
+describe('the Nodes stage\'s trace-run bar', () => {
+  // Two runs in one chain: the second traced from the first at line 1, cubic 2, arcs and
+  // ellipses off; the first recorded before the per-kind table, so every kind reads 1.75.
+  const first: Revision = { ...trace, message: 'Deterministic trace pipeline', created_at: '2026-01-03T10:00:00Z' }
+  const second: Revision = { ...trace, id: 'trace-b', parent_revision_id: 'trace-1', message: 'Deterministic trace pipeline', created_at: '2026-01-05T10:00:00Z',
+    settings: { trace: { half_line: 1, half_arc: null, half_ellipse: null, half_cubic: 2 } } }
+  const artefactsOf = async (id: string) => [...raster, edge(id), map(id)]
+  const bar = () => nodesPanel()!.querySelector<HTMLElement>('.nodes-revision')!
+  const previous = () => within(nodesPanel()!).getByRole('button', { name: 'Open the previous trace run' }) as HTMLButtonElement
+  const next = () => within(nodesPanel()!).getByRole('button', { name: 'Open the next trace run' }) as HTMLButtonElement
+
+  it('names the open run, when it was made and its half-widths, and its arrows open the other runs in the editor', async () => {
+    serve([second, first, flatten, base], artefactsOf)
+    await openApp('nodes', 'trace-b')
+    await vi.waitFor(() => expect(mountedWithMap().at(-1)?.revisionId).toBe('trace-b'))
+    expect(bar().textContent).toContain('Trace 2 of 2')
+    expect(bar().textContent).toContain('Deterministic trace pipeline')
+    expect(bar().querySelector('time')?.getAttribute('dateTime')).toBe(second.created_at)
+    expect(bar().textContent).toContain('Lines 1 px · Circular arcs off · Elliptical arcs off · Cubic curves 2 px')
+    expect(next().disabled).toBe(true)
+    expect(previous().disabled).toBe(false)
+
+    fireEvent.click(previous())
+    await vi.waitFor(() => expect(mountedWithMap().at(-1)).toMatchObject({ revisionId: 'trace-1', mapUrl: map('trace-1').download_url }))
+    await vi.waitFor(() => expect(bar().textContent).toContain('Trace 1 of 2'))
+    expect(bar().textContent).toContain('Lines 1.75 px · Circular arcs 1.75 px · Elliptical arcs 1.75 px · Cubic curves 1.75 px')
+    expect(new URLSearchParams(window.location.hash.slice(1)).get('stage')).toBe('nodes')
+    expect(previous().disabled).toBe(true)
+
+    fireEvent.click(next())
+    await vi.waitFor(() => expect(mountedWithMap().at(-1)?.revisionId).toBe('trace-b'))
+  })
+
+  it('holds both arrows while nib\'s editor has an unsaved edit, saying why, and frees them when it has none', async () => {
+    serve([second, first, flatten, base], artefactsOf)
+    await openApp('nodes', 'trace-b')
+    await vi.waitFor(() => expect(mountedWithMap().at(-1)?.revisionId).toBe('trace-b'))
+    const report = mountedWithMap().at(-1)!.onEditedChange!
+    await act(async () => { report(true) })
+    expect(previous().disabled).toBe(true)
+    expect(next().disabled).toBe(true)
+    expect(bar().textContent).toContain('Save or undo your node edits to open another trace run.')
+    await act(async () => { report(false) })
+    expect(previous().disabled).toBe(false)
+    expect(bar().textContent).not.toContain('Save or undo')
   })
 })
 

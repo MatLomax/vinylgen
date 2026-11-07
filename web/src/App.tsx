@@ -16,6 +16,7 @@ import { palettePointsForRevision } from './sourceGrid'
 import { hexToRgb, neighbourLabels, overlayPixels, paintOverlayPixels, paletteHasDuplicateRgb, pixelsWithComponents, pixelsWithPaintedCells, recolourPreviewPixels, regionReloadDecision, removeComponents, selectionLabels, toggleComponent, type Component, type OverlayFrame, type Pixels } from './regionSelection'
 import { DEFAULT_CLEANUP_SETTINGS, DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, legacyCleanupSettings, normalizeTraceSettings, physicalSize, preservationMarkers, resolvePaletteColour, type SelectionMode } from './PipelineControls'
 import { NO_FACES, withFace, type LiveFaces } from './LiveTrace'
+import { NodesRevision } from './NodesRevision'
 import './styles.css'
 
 const MASK_ARTIFACT_KINDS = new Set(['edit-mask'])
@@ -520,6 +521,8 @@ export default function App() {
   // until another revision is selected.
   const [savedByNib, setSavedByNib] = useState<string | null>(null)
   useEffect(() => { if (savedByNib && revision !== savedByNib) setSavedByNib(null) }, [revision, savedByNib])
+  // Whether nib's editor holds an edit not yet saved; the Nodes stage's run stepper waits on it.
+  const [nodesEdited, setNodesEdited] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
   // The flattened original behind the shown artwork's edits made before cleanup (a
@@ -1622,7 +1625,7 @@ export default function App() {
           // The Nodes stage's canvas area is nib's editor, with nib's chrome, on the selected
           // revision's map, saved for the trace revision that owns the map.
           ? editedMap
-            ? <NibEditor revisionId={editedMap.revision_id} mapUrl={editedMap.download_url} onSaved={mapSaved} notice={savedByNib && savedByNib === revision ? SAVED : null} />
+            ? <NibEditor revisionId={editedMap.revision_id} mapUrl={editedMap.download_url} onSaved={mapSaved} notice={savedByNib && savedByNib === revision ? SAVED : null} onEditedChange={setNodesEdited} />
             : <section className="mobile-stage-state nodes-unavailable"><h2>Edit nodes</h2><p>{!revision ? 'Choose an active project in the header first.' : selectedUnavailable ?? 'This revision has no planar map: trace it first, on the Trace stage.'}</p></section>
           : stage === 'upload' || stage === 'flatten' || stage === 'palette' || stage === 'edit' || stage === 'cleanup' || stage === 'trace' || selectionMode ? <ImageWorkspace
           layers={displayLayers} editorMode
@@ -1730,6 +1733,7 @@ export default function App() {
           <div className="section-heading"><h2>Edit nodes</h2><span>{nodesReadiness}</span></div>
           <p className="section-intro">Move, retype and delete the nodes of the traced planar map in nib's editor, with the tools over the canvas.</p>
           <p className="stage-guidance">{tracedMap ? 'Save makes a new trace revision, edited in nib, and selects it; the revision you started from is kept.' : 'Trace this revision first: only a revision traced with t3 has a planar map whose nodes can be edited. Save then makes a new trace revision.'}</p>
+          {tracedMap && <NodesRevision runs={traceRuns.runs} index={traceRuns.index} onStep={stepTrace} locked={nodesEdited ? 'Save or undo your node edits to open another trace run.' : null} />}
           {lockReason('nodes-lock-reason')}
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">
