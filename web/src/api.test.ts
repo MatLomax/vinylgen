@@ -106,8 +106,9 @@ describe('abortable project artifact requests', () => {
     })
     expect(Object.keys(DEFAULT_PALETTE_SETTINGS)).toHaveLength(29)
     // The same field counts as the server's TraceJobSettings and CleanupJobSettings.
-    // TraceJobSettings keeps the three soft limits; every other trace field is retired.
-    expect(Object.keys(DEFAULT_TRACE_SETTINGS).sort()).toEqual(['soft_document_nodes', 'soft_layer_nodes', 'soft_path_nodes'])
+    // TraceJobSettings holds the three soft limits and the four curve kinds' half-widths; every
+    // other trace field is retired.
+    expect(Object.keys(DEFAULT_TRACE_SETTINGS).sort()).toEqual(['half_arc', 'half_cubic', 'half_ellipse', 'half_line', 'soft_document_nodes', 'soft_layer_nodes', 'soft_path_nodes'])
     expect(Object.keys(DEFAULT_CLEANUP_SETTINGS)).toHaveLength(8)
   })
 

@@ -2,20 +2,21 @@
 
 Built wheels that `requirements-web.txt` installs by path.
 
-## t3api-0.26.0-cp312-cp312-linux_x86_64.whl
+## t3api-0.27.0-cp312-cp312-linux_x86_64.whl
 
 The turbo tube tiler (t3) engine, compiled with Nuitka and packaged as `t3api`. Vinylgen's trace stage calls
-`t3api.trace` on the cleaned labels and keeps the trace as a planar-map file (`map.json`).
+`t3api.trace` on the cleaned labels at the trace's half-width table and keeps the trace as a planar-map file (`map.json`).
 
 | | |
 |---|---|
-| sha256 | `7d1858c35d72a21492fe3733a8d4412da235da52008826aaa480210cfa9c3980` |
-| build id (`t3api.BUILD_ID`) | `0.26.0-nuitka-92e3e2065eabf5d3` |
-| version (`t3api.VERSION`) | `0.26.0` |
-| size | 2,039,784 bytes |
-| engine change | build 25: the arc sweep takes only candidates inside the pencil, so it always ends and fox-owl-table-2's edited labels trace to the end |
-| built by | the tracer repo (`MatLomax/tracer`) packaging round 6 (build 25), `cards/turbo-tube-tiler/packaging-6.md` |
+| sha256 | `a6cc05f490608998f61c2f3b8368b7dbc72c2752f31f07717a22d9ef7c5e13d4` |
+| build id (`t3api.BUILD_ID`) | `0.27.0-nuitka-da1b63121b3eccba` |
+| version (`t3api.VERSION`) | `0.27.0` |
+| size | 2,134,083 bytes |
+| engine change | build 27 with its fix rounds 1 and 2: each curve kind's own tube half-width, any kind but the line can be off and is then never drawn, no piece past the canvas's half-pixel band, junction feet kept in order; the API's `t3api.normal_setting` and the canonical setting `{"half": {line, arc, ellipse, cubic}, A1, A2, L}` (every kind 1.75 by default; a header with only `w` reads as every kind at w / 2) |
+| built by | the tracer repo (`MatLomax/tracer`) packaging round 7 (build 27), `cards/turbo-tube-tiler/packaging-7.md` |
 | requires | Python 3.12, `numpy==1.26.4`, `scipy==1.11.4`, `numba==0.68.0`, `llvmlite==0.50.0` |
+| nib | the vendored nib core 0.4.0 reads only a `{w, A1, A2, L}` header, so it refuses to open a map this wheel writes (its `setting` holds `half`); the Nodes stage opens maps traced up to 0.26.0 only |
 
 ## Replacing it with a new build
 

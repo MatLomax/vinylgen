@@ -136,11 +136,16 @@ class TraceJobSettings(BaseModel):
     # without them.
     model_config = ConfigDict(extra="forbid")
 
-    # The soft node limits (contracts.TraceSettings): each only warns. t3 traces at its
-    # one fixed setting, so nothing here steers the trace.
+    # The soft node limits (contracts.TraceSettings), each only warning, and each curve
+    # kind's tube half-width in pixels, which steers t3: > 0, or None (off) on arcs,
+    # ellipses and cubics. The line is never off.
     soft_path_nodes: int = Field(default=5_000, ge=1)
     soft_layer_nodes: int = Field(default=50_000, ge=1)
     soft_document_nodes: int = Field(default=200_000, ge=1)
+    half_line: float = Field(default=1.75, gt=0)
+    half_arc: float | None = Field(default=1.75, gt=0)
+    half_ellipse: float | None = Field(default=1.75, gt=0)
+    half_cubic: float | None = Field(default=1.75, gt=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -279,12 +284,22 @@ class EditorState(BaseModel):
     inherited_remove_colour: InheritedRemoveColour | None = None
 
 
+class TracerSetting(BaseModel):
+    """t3api's canonical setting (``t3api.normal_setting``): each curve kind's tube
+    half-width (``None`` off) and the limits A1, A2 and L."""
+
+    half: dict[str, float | None]
+    A1: float
+    A2: float
+    L: float
+
+
 class TracerInfo(BaseModel):
-    """The tracer a trace run uses: t3api, its build and its one fixed setting."""
+    """The tracer a trace run uses: t3api, its build and its default setting."""
 
     name: str
     build: str
-    setting: dict[str, float]
+    setting: TracerSetting
 
 
 class Health(BaseModel):

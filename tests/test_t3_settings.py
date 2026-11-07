@@ -62,6 +62,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # Card section 5: the three fields TraceSettings keeps, at the limits the form has today.
 FORM_LIMITS = {"soft_path_nodes": 5_000, "soft_layer_nodes": 50_000, "soft_document_nodes": 200_000}
 KEPT = tuple(FORM_LIMITS)
+# Each curve kind's tube half-width at its default (card 12): every record that does not set them
+# holds these beside the limits.
+HALF_DEFAULTS = {"half_line": 1.75, "half_arc": 1.75, "half_ellipse": 1.75, "half_cubic": 1.75}
 # Card section 5's table: every other TraceSettings field is retired.
 SECTION_5_RETIRED = (
     "curve_fit_tolerance", "straight_line_max_deviation", "minimum_straight_length",
@@ -286,11 +289,12 @@ class TraceSettingsFieldsTest(unittest.TestCase):
     """``TraceSettings`` keeps the three soft node limits; every other field of section 5's table
     is retired; the record upgrade drops them; the pixel-era conversion is gone."""
 
-    def test_trace_settings_keeps_only_the_three_soft_node_limits_at_the_forms_limits(self):
+    def test_trace_settings_keeps_the_three_soft_node_limits_and_the_four_half_widths(self):
         from vinylgen.contracts import TraceSettings
 
-        self.assertEqual({field.name for field in dataclasses.fields(TraceSettings)}, set(KEPT))
-        self.assertEqual(dataclasses.asdict(TraceSettings()), FORM_LIMITS)
+        self.assertEqual({field.name for field in dataclasses.fields(TraceSettings)},
+                         set(KEPT) | set(HALF_DEFAULTS))
+        self.assertEqual(dataclasses.asdict(TraceSettings()), {**FORM_LIMITS, **HALF_DEFAULTS})
 
     def test_every_other_field_of_section_5_joins_the_retired_fields(self):
         from vinylgen.contracts import RETIRED_TRACE_FIELDS
@@ -409,7 +413,8 @@ class OldClientRequestTest(_WebTest):
                     traced = await run_job(self, api, "trace", project_id, palette_revision,
                                            trace=request)
                     recorded = api.app.state.store.get_revision(traced)["settings"]["trace"]
-                    self.assertEqual(recorded, {key: request[key] for key in KEPT})
+                    self.assertEqual(recorded, {**{key: request[key] for key in KEPT},
+                                                **HALF_DEFAULTS})
 
 
 class CliConfigTest(unittest.TestCase):
@@ -430,7 +435,8 @@ class CliConfigTest(unittest.TestCase):
             with mock.patch("sys.argv", argv), contextlib.redirect_stdout(io.StringIO()):
                 main()
             audit = json.loads((subject / "trace.json").read_text())
-            self.assertEqual(audit["settings"], {key: OLD_TRACE_JSON_SETTINGS[key] for key in KEPT})
+            self.assertEqual(audit["settings"], {**{key: OLD_TRACE_JSON_SETTINGS[key] for key in KEPT},
+                                                 **HALF_DEFAULTS})
             self.assertEqual(audit["cleanup_settings"], OLD_TRACE_JSON_CLEANUP)
             self.assertEqual((audit["mode"], audit["physical_dimensions_mm"]),
                              ("physical", [1200.0, 400.0]))
@@ -599,7 +605,7 @@ class ReexportTest(unittest.TestCase, _FaceEventChecks):
         chain = self.chain()
         audit = chain["trace_2"]["audit"]
         self.assertIsNotNone(audit, "trace 2 writes its own trace.json")
-        self.assertEqual(audit["settings"], {**FORM_LIMITS, "soft_path_nodes": 1})
+        self.assertEqual(audit["settings"], {**FORM_LIMITS, **HALF_DEFAULTS, "soft_path_nodes": 1})
         self.assertEqual(audit["determinism"]["map_sha256"],
                          hashlib.sha256(chain["trace_1"]["map"]).hexdigest())
         self.assertTrue(any("path-node limit" in warning for warning in audit["warnings"]),

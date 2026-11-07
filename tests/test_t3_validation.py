@@ -9,7 +9,8 @@ result. The two loud-failure tests corrupt the planar map the real trace made (a
 reference, a moved node) before the trace writes and checks it, so the failing branch of the
 trace's own check is the one reached.
 
-The audit's tolerances are the setting's: ``maximum_deviation = t3api.SETTING["w"] / 2`` and
+The audit's tolerances are the setting's: ``maximum_deviation`` the largest enabled half-width of
+the default table (``t3api.SETTING["half"]``, 1.75 for every kind) and
 ``minimum_feature_span = feature_span(maximum_deviation)``.
 """
 
@@ -55,7 +56,7 @@ from vinylgen.tracing import MISSED_DETAIL_RGBA, feature_span, trace_subject
 from vinylgen.validation import validate_semantic_preservation, validate_svg
 
 # t3's tube half-width, the audit's maximum deviation (card section 4).
-TUBE_HALF_WIDTH = float(t3api.SETTING["w"]) / 2.0
+TUBE_HALF_WIDTH = max(float(half) for half in t3api.SETTING["half"].values() if half is not None)
 MISSED_OVERLAY = "trace-missed-details-overlay.png"
 SEMANTIC_INSPECTION = "trace-semantic-warnings.png"
 FOUR = ndimage.generate_binary_structure(2, 1)

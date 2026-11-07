@@ -2,7 +2,8 @@
 // Card 4 of vinylgen-on-t3 (tracer card `cards/vinylgen-on-t3/card.md` section 5): the trace
 // form under t3. "Complexity warnings" stays with its three limits; "Layers & overlap", "Path
 // fidelity" and "Nodes & straight lines" are gone with their fields; one read-only line names
-// the tracer and its one setting. Old browser drafts load with the retired fields dropped.
+// the tracer and its default setting. Old browser drafts load with the retired fields dropped.
+// The "Curve kinds" group (card 12) is pinned in kindTolerance.test.tsx.
 import { cleanup, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { TraceSettings } from './api'
@@ -11,8 +12,10 @@ import { DEFAULT_PALETTE_SETTINGS, DEFAULT_TRACE_SETTINGS, PipelineControls, nor
 
 afterEach(cleanup)
 
-// The three limits the form keeps, at the values it has today.
+// The three limits the form keeps, at the values it has today, and the four curve kinds'
+// half-widths at their default.
 const FORM_LIMITS = { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000 }
+const HALVES = { half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75 }
 const KEPT = Object.keys(FORM_LIMITS)
 // Section 5's retired fields, and the names retired or renamed before card 4.
 const RETIRED = ['curve_fit_tolerance', 'straight_line_max_deviation', 'minimum_straight_length', 'max_deviation', 'corner_analysis_span', 'side_smoothness', 'corner_sharpening_allowance', 'straight_line_snap', 'snap_angle', 'node_placement', 'nodes_at_bends', 'curve_feature_scale', 'length_unit', 'overlap', 'solid_underlayers', 'layer_order', 'corner_threshold', 'corner_straightness']
@@ -44,8 +47,8 @@ function renderTrace() {
 }
 
 describe('trace settings under t3', () => {
-  it('keeps only the three soft node limits in DEFAULT_TRACE_SETTINGS', () => {
-    expect(DEFAULT_TRACE_SETTINGS).toEqual(FORM_LIMITS)
+  it('keeps the three soft node limits and the four half-widths in DEFAULT_TRACE_SETTINGS', () => {
+    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...FORM_LIMITS, ...HALVES })
   })
 
   it('offers Complexity warnings with its three limits and no other trace control', () => {
@@ -59,13 +62,16 @@ describe('trace settings under t3', () => {
     expect(within(section).getByLabelText(/Nodes per path/)).toBe(limits[0])
     expect(within(section).getByLabelText(/Nodes per layer/)).toBe(limits[1])
     expect(within(section).getByLabelText(/Nodes per document/)).toBe(limits[2])
-    // The trace form edits nothing else: no overlap, layer order, fit, node or snap control.
-    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3)
+    // The trace form edits nothing else: no overlap, layer order, fit, node or snap control;
+    // beside the three limits, only the Curve kinds group's four half-widths and three toggles.
+    const kinds = screen.getByRole('heading', { name: 'Curve kinds' }).closest('section')!
+    expect(kinds.querySelectorAll('input')).toHaveLength(7)
+    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3 + 7)
   })
 
-  it('names the tracer and its one setting on a read-only line', () => {
+  it('names the tracer and its default setting on a read-only line', () => {
     const { container } = renderTrace()
-    const patterns = [/t3api/, /(?<![\w.])w\s*=?\s*3\.5(?![\d.])/, /(?<![\w.])A1\s*=?\s*22\.5(?![\d.])/, /(?<![\w.])A2\s*=?\s*45(?:\.0+)?(?![\d.])/, /(?<![\w.])L\s*=?\s*4(?:\.0+)?(?![\d.])/]
+    const patterns = [/t3api/, /(?<![\w.])line\s*=?\s*1\.75(?![\d.])/, /(?<![\w.])arc\s*=?\s*1\.75(?![\d.])/, /(?<![\w.])ellipse\s*=?\s*1\.75(?![\d.])/, /(?<![\w.])cubic\s*=?\s*1\.75(?![\d.])/, /(?<![\w.])A1\s*=?\s*22\.5(?![\d.])/, /(?<![\w.])A2\s*=?\s*45(?:\.0+)?(?![\d.])/, /(?<![\w.])L\s*=?\s*4(?:\.0+)?(?![\d.])/]
     const lines = [...container.querySelectorAll('*')].filter(element => patterns.every(pattern => pattern.test(element.textContent ?? ''))
       && ![...element.children].some(child => patterns.every(pattern => pattern.test(child.textContent ?? ''))))
     expect(lines).toHaveLength(1)
@@ -79,8 +85,9 @@ describe('trace settings under t3', () => {
       expect(Object.keys(loaded).filter(key => RETIRED.includes(key))).toEqual([])
       const limits = Object.fromEntries(KEPT.map(key => [key, draft[key]]))
       expect(Object.fromEntries(KEPT.map(key => [key, loaded[key]]))).toEqual(limits)
-      // The form's state is the defaults with the draft over them, as App loads a draft.
-      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual(limits)
+      // The form's state is the defaults with the draft over them, as App loads a draft; a
+      // draft from before the half-widths loads them at their default.
+      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual({ ...limits, ...HALVES })
     }
   })
 

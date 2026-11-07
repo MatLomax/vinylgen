@@ -299,7 +299,8 @@ to about 1.3 s for widen on 1.5-megapixel subjects) are documented in the
   SVG. The removed colour is excluded from cleanup and keeps its pixels.
 - Tracing never cleans labels itself; it consumes the cleanup stage's labels,
   size and removed colour (the CLI runs the same cleanup inline first).
-- Tracing is one `t3api.trace` call on the cleaned labels at t3's one setting.
+- Tracing is one `t3api.trace` call on the cleaned labels at the trace's
+  half-width table, each curve kind's tube half-width.
   Its planar map, `map.json`, stores every boundary edge once with the faces
   on its two sides, so adjacent colours share their boundary bit for bit; it is
   checked and read back before anything is built from it, and every later step

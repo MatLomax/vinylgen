@@ -21,7 +21,7 @@ import numpy as np
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings, upgrade_trace_record
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
-from vinylgen.tracing import ensure_palette_names, resolve_colour
+from vinylgen.tracing import ensure_palette_names, resolve_colour, t3_setting
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
@@ -583,12 +583,14 @@ class PipelineRunner:
             labels = np.ascontiguousarray(data["labels"].astype(np.int16))
         return hashlib.sha256(labels.tobytes()).hexdigest()
 
-    def reusable_map(self, parent_id: str) -> dict | None:
-        """The planar map a trace from ``parent_id`` re-exports instead of tracing, or
-        ``None``. It is the parent's effective ``traced-map`` when the trace revision that
-        wrote it traced labels with the same sha256 as the labels this trace would trace
-        (each revision's effective segmentation), its header names the installed
-        ``t3api.BUILD_ID``, and that revision's ``trace.json`` is there to give the
+    def reusable_map(self, parent_id: str, setting: dict) -> dict | None:
+        """The planar map a trace from ``parent_id`` at the t3api ``setting`` re-exports
+        instead of tracing, or ``None``. It is the parent's effective ``traced-map`` when the
+        trace revision that wrote it traced labels with the same sha256 as the labels this
+        trace would trace (each revision's effective segmentation), its header names the
+        installed ``t3api.BUILD_ID``, its header's setting and ``setting`` are equal in the
+        canonical form (``t3api.normal_setting``; a header written up to 0.26.0 holds only
+        ``w``, every kind at w / 2), and that revision's ``trace.json`` is there to give the
         trace's ``t3`` record. Returns the map's artifact and ``{"revision", "t3"}`` for
         ``tracing.trace_subject``'s ``reuse``."""
         import t3api
@@ -614,6 +616,12 @@ class PipelineRunner:
             return None
         if header.get("build") != t3api.BUILD_ID:
             return None
+        try:
+            if (not isinstance(header.get("setting"), dict)
+                    or t3api.normal_setting(header["setting"]) != t3api.normal_setting(setting)):
+                return None
+        except ValueError:
+            return None
         # A map edited in nib is not t3's trace of these labels, so a trace traces them afresh.
         if audit["t3"].get("edited"):
             return None
@@ -636,6 +644,9 @@ class PipelineRunner:
         subject = work / self.store.get_project(project_id)["slug"]
         self._copy_inputs(parent_id, subject, TRACE_INPUT_KINDS)
         trace_settings = TraceSettings(**values)
+        # The table t3 traces at, validated before anything runs: a refused one is the job's
+        # error.
+        setting = t3_setting(trace_settings)
         cleanup_settings = (cleanup_revision["settings"]["cleanup"]
                             if cleanup_revision is not None else None)
         # The colour the cleanup removed, by index: ``colour_names`` rename the palette
@@ -645,14 +656,14 @@ class PipelineRunner:
         spec = {"op": "trace", "subject": str(subject),
                 "settings": asdict(trace_settings), "colour_names": colour_names,
                 "cleanup": cleanup_settings, "removed_index": removed_index}
-        # Re-export without a trace: the same labels traced by the same t3 build give the
-        # same planar map, so only what is built from it is redone.
+        # Re-export without a trace: the same labels traced by the same t3 build at the same
+        # setting give the same planar map, so only what is built from it is redone.
         if edited is not None:
             (subject / TRACE_FILES["traced-map"]).write_bytes(edited["map"])
             spec["reuse"] = {"revision": parent_id, "t3": edited["t3"], "editor": NIB_EDITOR}
             reusable = spec["reuse"]
         else:
-            reusable = self.reusable_map(parent_id)
+            reusable = self.reusable_map(parent_id, setting)
             if reusable is not None:
                 shutil.copyfile(self.store.artifact_path(reusable["artifact"]["id"]),
                                 subject / TRACE_FILES["traced-map"])

@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import t3api
+
 from test_nib_embed import _IdentityApi, move_one_node
 from test_t3_trace import FIXTURE, SCRATCH, build_subject
 from vinylgen.web.nib import NIB_EDITOR, map_refusal
@@ -90,5 +92,7 @@ class TraceAfterAnEditTest(unittest.IsolatedAsyncioTestCase):
             saved = await api.post_map(trace_id, move_one_node(parent_map))
             self.assertEqual(saved.status_code, 201, saved.text)
             runner = api.app.state.jobs.pipeline
-            self.assertIsNotNone(await asyncio.to_thread(runner.reusable_map, trace_id))
-            self.assertIsNone(await asyncio.to_thread(runner.reusable_map, saved.json()["id"]))
+            setting = t3api.normal_setting(None)
+            self.assertIsNotNone(await asyncio.to_thread(runner.reusable_map, trace_id, setting))
+            self.assertIsNone(await asyncio.to_thread(runner.reusable_map, saved.json()["id"],
+                                                      setting))

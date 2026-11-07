@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CleanupSettings, PaletteColour, PaletteSettings, TraceSettings, TracerInfo } from './api'
+import type { CleanupSettings, CurveKind, PaletteColour, PaletteSettings, TraceSettings, TracerInfo } from './api'
 import type { CanvasMarker } from './ImageWorkspace'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
@@ -12,13 +12,30 @@ export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
   width_mm: null, height_mm: null, remove_colour: null,
   cleanup: false, cleanup_action: 'remove', min_detail_width: 0, min_region_area: 0, remove_below_width: 0,
 }
-// The trace's settings are its three soft node limits (vinylgen.contracts.TraceSettings):
-// each only warns. t3 traces at its one fixed setting, so nothing the form holds changes
-// the traced shapes.
-export const DEFAULT_TRACE_SETTINGS: TraceSettings = { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000 }
+// The trace's settings (vinylgen.contracts.TraceSettings): its three soft node limits, each
+// only warning, and each curve kind's tube half-width in px, the furthest a drawn piece of
+// that kind may lie from its edge. Arcs, ellipses and cubics can be off (null); the line,
+// the only kind that can draw an edge of one crack, cannot.
+export const HALF_WIDTH_DEFAULT = 1.75
+export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
+  soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
+  half_line: HALF_WIDTH_DEFAULT, half_arc: HALF_WIDTH_DEFAULT, half_ellipse: HALF_WIDTH_DEFAULT, half_cubic: HALF_WIDTH_DEFAULT,
+}
 const TRACE_KEYS = Object.keys(DEFAULT_TRACE_SETTINGS) as (keyof TraceSettings)[]
-// t3api's one fixed setting (t3api.SETTING), shown when the server does not report it.
-export const T3_SETTING: TracerInfo['setting'] = { w: 3.5, A1: 22.5, A2: 45, L: 4 }
+// The kinds that may be off, whose stored null is kept.
+const OPTIONAL_KINDS = new Set<keyof TraceSettings>(['half_arc', 'half_ellipse', 'half_cubic'])
+// The Curve kinds rows, in order: each kind's field, its name, the drawn piece it names
+// and whether it can be turned off.
+type HalfKey = 'half_line' | 'half_arc' | 'half_ellipse' | 'half_cubic'
+const CURVE_KINDS: { key: HalfKey; kind: CurveKind; label: string; piece: string; optional: boolean }[] = [
+  { key: 'half_line', kind: 'line', label: 'Lines', piece: 'line', optional: false },
+  { key: 'half_arc', kind: 'arc', label: 'Circular arcs', piece: 'circular arc', optional: true },
+  { key: 'half_ellipse', kind: 'ellipse', label: 'Elliptical arcs', piece: 'elliptical arc', optional: true },
+  { key: 'half_cubic', kind: 'cubic', label: 'Cubic curves', piece: 'cubic curve', optional: true },
+]
+const HALF_WIDTH_HELP = 'Higher lets this kind cover longer stretches, looser; lower holds it tighter to the pixels.'
+// t3api's default setting (t3api.SETTING, canonical), shown when the server does not report it.
+export const T3_SETTING: TracerInfo['setting'] = { half: { line: HALF_WIDTH_DEFAULT, arc: HALF_WIDTH_DEFAULT, ellipse: HALF_WIDTH_DEFAULT, cubic: HALF_WIDTH_DEFAULT }, A1: 22.5, A2: 45, L: 4 }
 const CLEANUP_KEYS = Object.keys(DEFAULT_CLEANUP_SETTINGS) as (keyof CleanupSettings)[]
 // Trace settings recorded before the cleanup stage existed embed the physical size, the
 // removed colour and the cutter cleanup. Those values belong to the Cleanup form; this
@@ -28,14 +45,16 @@ export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<
   return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
 // A stored trace record or browser draft as the trace form loads it: the soft node limits
-// it holds and nothing else. Every other field an older record carries (the old fitter's
+// and half-widths it holds, and an optional kind's null (off), and nothing else; a record
+// from before the half-widths lacks them and loads them at their defaults, and a null line
+// is dropped, so it loads at its default too. Every other field an older record carries (the old fitter's
 // lengths and their unit, its corner, node and snap controls, overlap, solid underlayers,
 // layer order, the renamed `corner_straightness`, `corner_threshold`, the pixel-era
 // `curve_optimization` and the cleanup fields a trace once embedded, which
 // legacyCleanupSettings hands to the Cleanup form) is dropped, so it is never sent.
 export function normalizeTraceSettings(stored: Record<string, unknown> | Partial<TraceSettings>): Partial<TraceSettings> {
   const record = stored as Record<string, unknown>
-  return Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number').map(key => [key, record[key]])) as Partial<TraceSettings>
+  return Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number' || (record[key] === null && OPTIONAL_KINDS.has(key))).map(key => [key, record[key]])) as Partial<TraceSettings>
 }
 // The physical size a trace uses, from its cleanup: both sides in mm, with a one-sided
 // size completed from the raster's proportions once those are known.
@@ -158,7 +177,7 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
   // The physical size the trace uses, set by the nearest cleanup; null traces in px.
   traceSize?: PhysicalSize | null
   // The tracer the server traces with (its health report); the read-only tracer line
-  // names t3api and its one setting without it, and its build with it.
+  // names t3api and its default setting without it, and its build with it.
   tracer?: TracerInfo | null
   // Whether `paletteColours` is the shown revision's own (not the last one's, still
   // listed while it loads); the Cleanup form judges its removed colour only then.
@@ -264,7 +283,18 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
     </> : <>
       {tracedSize && <p className="settings-save-note traced-size">Traced image: {tracedSize.width} × {tracedSize.height} px</p>}
       <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
-      <p className="settings-save-note tracer-line">Tracer: t3api{tracer?.build ? ` ${tracer.build}` : ''}, at its one fixed setting w = {setting.w}, A1 = {setting.A1}, A2 = {setting.A2}, L = {setting.L} (no trace setting changes the traced shapes)</p>
+      <p className="settings-save-note tracer-line">Tracer: t3api{tracer?.build ? ` ${tracer.build}` : ''}; default half-widths {CURVE_KINDS.map(row => `${row.kind} ${setting.half[row.kind] ?? 'off'}`).join(', ')} px; A1 = {setting.A1}, A2 = {setting.A2}, L = {setting.L}</p>
+      <section className="settings-group"><h3>Curve kinds</h3><p>Each kind's half-width is the furthest, in px, a drawn piece of that kind may lie from its edge.</p>
+        {CURVE_KINDS.map(row => {
+          const value = trace[row.key]
+          const on = value !== null
+          const numberField = <NumberField label={row.label} help={`The furthest a drawn ${row.piece} may lie from its edge, in px. ${HALF_WIDTH_HELP}${row.optional ? '' : ' Below about 0.55 px (sampled) long shallow straight edges break into several lines.'}`}
+            value={value} min={0} disabled={!on} dirty={on && td(row.key)} onChange={next => { if (next !== null && next > 0) t(row.key, next) }} />
+          return row.optional
+            ? <ToggleGroup key={row.key} label={row.label} help={`On: ${row.piece}s are drawn within the half-width. Off: this kind is never used.`} on={on} dirty={(value === null) !== (baseTrace[row.key] === null)} onToggle={next => t(row.key, next ? HALF_WIDTH_DEFAULT : null)}>{numberField}</ToggleGroup>
+            : <div key={row.key} className="settings-grid">{numberField}</div>
+        })}
+      </section>
       <section className="settings-group"><h3>Complexity warnings</h3><p>These limits warn; they never silently simplify geometry.</p><div className="settings-grid"><NumberField label="Nodes per path" help="Warn when one shape has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_path_nodes} min={1} step={1} dirty={td('soft_path_nodes')} onChange={value => t('soft_path_nodes', value!)} /><NumberField label="Nodes per layer" help="Warn when one colour layer has more nodes than this in total. Lower: warns sooner. Never changes the geometry." value={trace.soft_layer_nodes} min={1} step={1} dirty={td('soft_layer_nodes')} onChange={value => t('soft_layer_nodes', value!)} /><NumberField label="Nodes per document" help="Warn when the whole design has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_document_nodes} min={1} step={1} dirty={td('soft_document_nodes')} onChange={value => t('soft_document_nodes', value!)} /></div></section>
     </>}
   </div>

@@ -14,8 +14,8 @@ read, answered off the preview thread, tells the canvas whether those measuremen
 are held for a revision and whether they are being built now, so it can say why a
 first preview is slow.
 
-The Trace canvas has no windowed preview: t3 traces the whole image at its one
-fixed setting, and the trace run streams each face as it lands
+The Trace canvas has no windowed preview: t3 traces the whole image at once,
+and the trace run streams each face as it lands
 (docs/svg-tracing-spec.md "Live trace view").
 """
 

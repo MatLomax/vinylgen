@@ -116,11 +116,11 @@ class CleanupSettings:
 
 
 # Trace settings that no longer exist: stored records (web revisions and drafts, CLI
-# configs, trace.json) carrying them are read with them dropped. t3 traces at its one
-# fixed setting, so every field that steered the old fitter is retired (its lengths, their
-# unit, corner, node and snap controls), and the trace writes the edge variant only, where
-# the colours meet edge to edge and no stacking order changes a centre's colour (overlap,
-# solid underlayers, layer order). ``corner_threshold`` and ``corner_straightness`` (the
+# configs, trace.json) carrying them are read with them dropped. Every field that steered
+# the old fitter is retired (its lengths, their unit, corner, node and snap controls); t3 is
+# steered by each curve kind's tube half-width alone (``TraceSettings``' ``half_*``). The
+# trace writes the edge variant only, where the colours meet edge to edge and no stacking
+# order changes a centre's colour (overlap, solid underlayers, layer order). ``corner_threshold`` and ``corner_straightness`` (the
 # side smoothness's former name) were retired or renamed before t3 and are still in old
 # records (docs/svg-tracing-spec.md "Configuration").
 RETIRED_TRACE_FIELDS = (
@@ -139,10 +139,25 @@ def upgrade_trace_record(values: dict) -> dict:
 
 @dataclass
 class TraceSettings:
-    """The trace's settings: the soft node limits. Each only warns, naming the path, the
-    layer or the document over it in ``trace.json``; none changes the geometry, which t3
-    traces at its one fixed setting."""
+    """The trace's settings: the soft node limits and each curve kind's tube half-width.
+
+    The soft node limits only warn, naming the path, the layer or the document over it in
+    ``trace.json``. The half-widths steer t3: ``half_<kind>`` is the furthest, in pixels, a
+    drawn piece of that kind may lie from its edge (t3api's ``{"half": {line, arc, ellipse,
+    cubic}}``). Each is > 0; ``None`` turns arcs, ellipses or cubics off, so that kind is never
+    drawn. The line is never off: an edge of one crack can only be a line. A record from before
+    the half-widths reads as the defaults, 1.75 each."""
 
     soft_path_nodes: int = 5_000
     soft_layer_nodes: int = 50_000
     soft_document_nodes: int = 200_000
+    half_line: float = 1.75
+    half_arc: float | None = 1.75
+    half_ellipse: float | None = 1.75
+    half_cubic: float | None = 1.75
+
+    def halves(self) -> dict[str, float | None]:
+        """The half-width table t3api takes as ``setting["half"]``: each kind's half-width,
+        ``None`` for an off kind."""
+        return {"line": self.half_line, "arc": self.half_arc, "ellipse": self.half_ellipse,
+                "cubic": self.half_cubic}

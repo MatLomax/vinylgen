@@ -22,10 +22,18 @@ export type CleanupSettings = {
   cleanup: boolean; cleanup_action: 'remove' | 'widen' | 'remove_then_widen'
   min_detail_width: number; min_region_area: number; remove_below_width: number
 }
-// The trace's settings: the soft node limits, which only warn (vinylgen.contracts.TraceSettings).
-export type TraceSettings = { soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number }
-// The tracer the server traces with: t3api, its build and its one fixed setting.
-export type TracerInfo = { name: string; build: string; setting: { w: number; A1: number; A2: number; L: number } }
+// The trace's settings (vinylgen.contracts.TraceSettings): the soft node limits, which only
+// warn, and each curve kind's tube half-width in px, which steers t3. Arcs, ellipses and
+// cubics are null when off; the line is never off.
+export type TraceSettings = {
+  soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
+  half_line: number; half_arc: number | null; half_ellipse: number | null; half_cubic: number | null
+}
+// The curve kinds t3 draws, as its setting's `half` table names them.
+export type CurveKind = 'line' | 'arc' | 'ellipse' | 'cubic'
+// The tracer the server traces with: t3api, its build and its default setting in the
+// canonical form (t3api.normal_setting): each kind's half-width (null off), A1, A2 and L.
+export type TracerInfo = { name: string; build: string; setting: { half: Record<CurveKind, number | null>; A1: number; A2: number; L: number } }
 // One face of a running trace as t3 emitted it (vinylgen.tracing.face_event): its planar-map
 // face id, its colour's palette index, its rings as one path-data string (the `d` of its
 // path in traced-edge.svg) and their sodipodi:nodetypes.

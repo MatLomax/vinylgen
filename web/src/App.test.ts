@@ -2090,7 +2090,7 @@ describe('retired trace settings', () => {
     return screen.getByRole('tabpanel', { name: 'Trace' })
   }
 
-  it('drops a stored draft\'s retired fields on load and sends only the three soft limits', async () => {
+  it('drops a stored draft\'s retired fields on load and sends the three soft limits with the half-widths at their defaults', async () => {
     const oldDraft = { curve_fit_tolerance: 2.172, straight_line_max_deviation: 1.6, corner_threshold: 45, overlap: 3, layer_order: ['#00ff00'], soft_document_nodes: 1234 }
     localStorage.setItem(`vinylgen.project-settings.${project.id}`, JSON.stringify({ trace: oldDraft }))
     const panel = await openTrace([oldRun])
@@ -2099,11 +2099,11 @@ describe('retired trace settings', () => {
     await vi.waitFor(() => expect([documentLimit.value, pathLimit.value]).toEqual(['1234', '900']))
     fireEvent.blur(documentLimit)
     const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234 })
+    expect(stored).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75 })
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
-    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234 } })
+    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75 } })
   })
 
   it('states the traced image size from the editor state', async () => {

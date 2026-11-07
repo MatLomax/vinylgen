@@ -75,10 +75,12 @@ per included colour and one even-odd path per face. Before the trace writes
 anything, `map.json`'s read-back paint must equal the labels t3 painted and
 `planar_map_check` must find no violation.
 
-t3 traces at its one fixed setting, so no option changes the fit. Use
-`python3 svg_trace.py --help` for physical dimensions, colour omission, colour
-names, cutter cleanup and reusable JSON configuration; a configuration may also
-set the soft node limits, which only warn in `trace.json`.
+t3 traces within each curve kind's tube half-width: `--half-line`,
+`--half-arc`, `--half-ellipse` and `--half-cubic` (1.75 px each; `off` turns
+arcs, ellipses or cubics off). Use `python3 svg_trace.py --help` for physical
+dimensions, colour omission, colour names, cutter cleanup and reusable JSON
+configuration; a configuration may also set the soft node limits, which only
+warn in `trace.json`.
 
 ## Web application
 

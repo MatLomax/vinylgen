@@ -7,8 +7,8 @@ subject folder built the way the palette stage writes one, the trace CLI's ``mai
 pipeline's trace job, and ``just deploy``'s cache warm. The contract is the tracer card
 ``cards/vinylgen-on-t3/card.md`` sections 1, 2, 3 and 7, and ``planar-map-file.md``.
 
-The trace stage calls the engine as ``t3api.trace(labels, on_event=...)`` (card section 1), a
-module attribute, so a wrapper patched onto ``t3api.trace`` counts every call.
+The trace stage calls the engine as ``t3api.trace(labels, setting=..., on_event=...)`` (card
+section 1), a module attribute, so a wrapper patched onto ``t3api.trace`` counts every call.
 """
 
 from __future__ import annotations
@@ -235,7 +235,7 @@ class _Traced(unittest.TestCase):
 
 
 class TraceSubjectCallsT3Test(_Traced):
-    def test_trace_subject_calls_t3api_trace_once_on_the_int16_labels_at_its_one_setting(self):
+    def test_trace_subject_calls_t3api_trace_once_on_the_int16_labels_at_the_default_table(self):
         recorder = self.traced()["recorder"]
         self.assertEqual(len(recorder.calls), 1, "t3api.trace is called exactly once per trace")
         call = recorder.calls[0]
@@ -243,7 +243,8 @@ class TraceSubjectCallsT3Test(_Traced):
         self.assertEqual(call["labels"].dtype, np.int16)
         self.assertTrue(np.array_equal(call["labels"], labels))
         setting = call["kwargs"].get("setting", call["args"][0] if call["args"] else None)
-        self.assertIsNone(setting, "no setting: t3 runs at t3api.SETTING, its only validated one")
+        self.assertEqual(setting, t3api.normal_setting(None),
+                         "the default TraceSettings trace at t3api's canonical default table")
         workers = call["kwargs"].get("workers", call["args"][2] if len(call["args"]) > 2 else None)
         self.assertIsNone(workers, "workers=None: t3api.workers_of chooses")
 

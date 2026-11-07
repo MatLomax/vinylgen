@@ -30,13 +30,15 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
 `planar-map-file.md`.
 
 - **One call per trace.** `trace_subject` (`vinylgen/tracing.py`) calls
-  `t3api.trace(labels, on_event=...)` once on the cleaned labels: 2-D, `int16`,
-  every colour included, the omitted one too (its regions are real faces and
-  its boundaries are the other colours' cut lines). No setting is passed, so t3
-  runs at `t3api.SETTING` (w 3.5, A1 22.5, A2 45, L 4), the one setting it is
-  validated at, and `workers=None` lets `t3api.workers_of` use every CPU the
-  process may use. No trace setting in `TraceSettings` steers the trace; the
-  settings are recorded only.
+  `t3api.trace(labels, setting=..., on_event=...)` once on the cleaned labels:
+  2-D, `int16`, every colour included, the omitted one too (its regions are
+  real faces and its boundaries are the other colours' cut lines). The setting
+  is `TraceSettings`' half-width table, `{"half": {line, arc, ellipse,
+  cubic}}`, in the canonical form `t3api.normal_setting` gives (A1 22.5, A2 45
+  and L 4 fixed; see [Size, units and cropping](#size-units-and-cropping)); a
+  table it refuses raises `ValueError` before anything is written, which a web
+  job reports as its error. `workers=None` lets `t3api.workers_of` use every
+  CPU the process may use.
 - **`map.json`** is `t3api.planar_map_json(t3api.planar_map(result, palette))`
   with the subject's `palette.json` list: every boundary edge once with the
   faces on its two sides, every face as rings of signed edge references, in
@@ -69,8 +71,9 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   symmetric node), one per Inkscape node; an `A` counts as the cubics Inkscape
   converts it to. t3 writes no `z`.
 - **The semantic audit** reads t3's painted labels, the exact raster of the
-  drawing (a centre no face holds reads as white paper), at t3's tube
-  half-width `w / 2` = 1.75 px; see [Audit report](#audit-report).
+  drawing (a centre no face holds reads as white paper), at the largest
+  half-width an enabled kind of the map's own setting has (1.75 px at the
+  defaults); see [Audit report](#audit-report).
 - **The preview** `traced.png` is rendered from `traced-edge.svg` by Inkscape.
 - **The engine cache.** t3's numba kernels are compiled on first use into
   `t3api.cache_dir()` (`~/.cache/t3api/<build id>`); a cold cache costs the
@@ -98,8 +101,11 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
 
 - **Re-export without a trace.** A web trace whose parent's effective
   `map.json` came from a trace of labels with the same sha256 (each revision's
-  effective `segmentation.npz`) and the installed t3api build (the map header's
-  `build`), with that trace's `trace.json` present, makes no `t3api.trace`
+  effective `segmentation.npz`), the installed t3api build (the map header's
+  `build`) and the same setting (the header's `setting` and this trace's table
+  equal under `t3api.normal_setting`; a header written up to t3api 0.26.0 holds
+  only `w`, every kind at w / 2 = 1.75), with that trace's `trace.json`
+  present, makes no `t3api.trace`
   call: the map is copied byte for byte, rewritten only when the new palette
   names its colours differently, passes `planar_map_check`, and the edge SVG,
   the audit and `trace.json` are built from it with this revision's own
@@ -116,9 +122,9 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   palette and trace settings (`PipelineRunner.save_map`). Its `map.json` is the
   posted document byte for byte. The edge SVG, the checks, the audit,
   `traced.png` and `trace.json` are rebuilt from it by the re-export path
-  (`trace_subject` with `reuse` naming the editor), with two differences: the
-  map is never rewritten, and its header's build need not be the installed
-  one. Before anything is made, the server refuses with HTTP 422 a document
+  (`trace_subject` with `reuse` naming the editor), with three differences: the
+  map is never rewritten, its header's build need not be the installed one,
+  and it is audited at its header's own setting. Before anything is made, the server refuses with HTTP 422 a document
   that fails one of these checks, in this order:
   1. `t3api.read_planar_map` reads it (`reason` `"invalid"`).
   2. `planar_map_check` finds no violation (`"invalid"`, with `violations`).
@@ -225,12 +231,24 @@ outputs/<subject>/cropped.png
 Aspect-ratio and crop settings belong to the palette-stage configuration, not
 the tracing command.
 
-The trace's settings are the three soft node limits of `TraceSettings`
-(`vinylgen/contracts.py`): `soft_path_nodes` (5,000), `soft_layer_nodes`
-(50,000) and `soft_document_nodes` (200,000), node counts that only add a
-warning to `trace.json` naming the path, the layer or the document over its
-limit. None of them changes the geometry: t3 traces the pixel grid at its one
-setting. The physical size is set by the cleanup stage and applies to both the
+The trace's settings (`TraceSettings`, `vinylgen/contracts.py`) are the three
+soft node limits and each curve kind's tube half-width. The soft node limits,
+`soft_path_nodes` (5,000), `soft_layer_nodes` (50,000) and
+`soft_document_nodes` (200,000), are node counts that only add a warning to
+`trace.json` naming the path, the layer or the document over its limit. The
+half-widths, `half_line`, `half_arc`, `half_ellipse` and `half_cubic` (1.75 px
+each), steer t3: each is the furthest a drawn piece of that kind may lie from
+its edge. Higher lets the kind cover longer stretches, looser; lower holds it
+tighter to the pixels. Each is > 0. Arcs, ellipses and cubics can be off
+(`null`), so that kind is never drawn; the line cannot, since an edge of one
+crack can only be a line. Below about 0.55 px (sampled) long shallow straight
+edges break into several lines. A stored record from before the half-widths
+reads as the defaults. On the trace step they are the "Curve kinds" group,
+one row per kind (Lines, Circular arcs, Elliptical arcs, Cubic curves), each a
+half-width field and, but for the line, an on/off toggle. A table other than
+the defaults may trace several times slower (fox-owl-table-2's edited labels:
+150 s at the defaults, 778 s at line 1.75, arc 1.0, ellipse 1.75, cubic 4.0);
+no vinylgen job has a time limit. The physical size is set by the cleanup stage and applies to both the
 cleanup thresholds and the traced SVG; in the web workflow the trace shows it
 read-only and changing it means running cleanup again. Setting a physical size
 never changes the trace; the SVG `viewBox` is the traced pixel grid (the
@@ -477,8 +495,9 @@ the shown cleanup's own settings, nothing is measured and the badge keeps
 
 ## Trace accuracy and complexity
 
-t3 traces the cleaned labels at its one setting, `t3api.SETTING` (tube width
-w 3.5 px, A1 22.5, A2 45, L 4); no vinylgen setting changes the geometry. Its
+t3 traces the cleaned labels at the trace's half-width table (each kind 1.75
+px by default; A1 22.5, A2 45, L 4), the only vinylgen settings that change the
+geometry. Its
 corners, joins, node placement and piece kinds are t3's, decided from the
 labels alone, and its design and proofs live in the tracer repository. What a
 trace holds vinylgen to:
@@ -490,8 +509,8 @@ trace holds vinylgen to:
 - **The drawing stays in the tube.** t3's summary in `trace.json` records its
   own gates (`over_tube`, `checks_count`) and how far its painted labels differ
   from the input: `diff_px` counts the centres whose painted label is not the
-  input label. The semantic audit reads the painted labels at t3's tube
-  half-width, 1.75 px, and flags lost or moved features
+  input label. The semantic audit reads the painted labels at the largest
+  enabled half-width of the map's setting, 1.75 px at the defaults, and flags lost or moved features
   ([Audit report](#audit-report)).
 - **Complexity is reported, never traded for accuracy.** `geometry.edge` counts
   each layer's paths, Inkscape nodes, pieces by kind and node types. The three
@@ -533,8 +552,10 @@ asserted at capped sizes.
 The tracing command supports both individual CLI flags and a reusable JSON
 configuration file. CLI arguments override values from the configuration file.
 Settings and effective defaults are recorded in `trace.json`. The flags are
-the cleanup's (size, removed colour, cutter cleanup) and `--colour-name`; the
-three soft node limits are set in a configuration file only. A configuration's
+the cleanup's (size, removed colour, cutter cleanup), `--colour-name`, and the
+half-widths `--half-line`, `--half-arc`, `--half-ellipse` and `--half-cubic`
+(px, > 0; `off` on all but the line); the three soft node limits are set in a
+configuration file only, which may also set the half-widths (`null` is off). A configuration's
 retired trace settings are dropped on load
 ([Retired trace settings](#size-units-and-cropping)).
 
@@ -550,11 +571,13 @@ symmetric detail controls.
 - `subject`, `sources` (source, flattened, palette and segmentation paths, and
   `map`, the planar-map file `map.json`),
   `raster_dimensions`, `mode` and `physical_dimensions_mm`.
-- `settings`, the trace settings as given (the three soft node limits; none
-  steers t3), and
+- `settings`, the trace settings as given (the three soft node limits and the
+  four half-widths), and
   `cleanup_settings` (size, removed colour, cleanup).
 - `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
-  (`t3api.VERSION`), `setting` (`t3api.SETTING`, the one setting traced at)
+  (`t3api.VERSION`), `setting` (the map's setting in the canonical form,
+  `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
+  "L"}`)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
   nib adds `editor` (`{"name": "nib", "version": "0.2.0"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
@@ -583,8 +606,9 @@ symmetric detail controls.
   0, and its empty `problems`) and `read_back` (`differ` 0, the centres where
   the read-back paint differs from t3's painted labels); and
   `validation.semantic` (the semantic preservation audit of t3's painted
-  labels at `maximum_deviation` 1.75 px, t3's tube half-width, and
-  `minimum_feature_span` 6 px).
+  labels at `maximum_deviation`, the largest enabled half-width of the map's
+  setting (1.75 px at the defaults), and `minimum_feature_span`
+  `feature_span(maximum_deviation)`, 6 px at the defaults).
 - `warnings`, none of which blocks the export:
   - the semantic audit's failure, naming `trace-semantic-warnings.png` and
     `trace-missed-details-overlay.png`;

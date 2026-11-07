@@ -210,11 +210,28 @@ class TraceTicks:
 
 def tracer_info() -> dict:
     """The tracer a trace run uses, as the web client's read-only tracer line names it:
-    ``t3api``, its build and its one fixed setting (w, A1, A2, L)."""
+    ``t3api``, its build and its default setting in the canonical form
+    (``t3api.normal_setting(None)``: each kind's half-width, A1, A2, L)."""
     import t3api
 
-    return {"name": "t3api", "build": t3api.BUILD_ID,
-            "setting": {key: float(value) for key, value in t3api.SETTING.items()}}
+    return {"name": "t3api", "build": t3api.BUILD_ID, "setting": t3api.normal_setting(None)}
+
+
+def t3_setting(settings: TraceSettings) -> dict:
+    """The canonical t3api setting a trace at ``settings`` runs at: its half-width table
+    (``TraceSettings.halves``) validated by ``t3api.normal_setting``, which raises
+    ``ValueError`` naming the kind when the table is refused (an off line, a half-width not
+    > 0)."""
+    import t3api
+
+    return t3api.normal_setting({"half": settings.halves()})
+
+
+def largest_half_width(setting: dict) -> float:
+    """The largest half-width an enabled kind of the canonical ``setting`` has: the furthest
+    any drawn piece of a map traced at it lies from its edge. An off kind (``None``) draws
+    nothing and does not count; the line is never off, so there is always one."""
+    return max(float(half) for half in setting["half"].values() if half is not None)
 
 
 def face_event(payload: dict) -> dict:
@@ -334,13 +351,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     """Trace a subject's segmentation with t3 into ``map.json`` and the edge SVG.
 
     One ``t3api.trace`` call on the cleaned labels (``int16`` palette indices, every colour,
-    the omitted one too) at t3's one setting. Its planar map is written as ``map.json``
+    the omitted one too) at ``settings``' half-width table (``t3_setting``; a table t3 refuses
+    raises ``ValueError`` before anything is written). Its planar map is written as ``map.json``
     (``t3api.planar_map_json``) and read back (``t3api.read_planar_map``) for every later
     step: the planar map's gate (``planar_map_check`` with no violation, and the read-back
     paint equal to t3's painted labels at every centre, else a ``RuntimeError``), the edge
     SVG ``traced-edge.svg`` (one layer per included colour, ``svg_writer.add_face_layer``),
-    and its ``traced.png`` preview. The semantic audit reads t3's painted labels at t3's
-    tube half-width.
+    and its ``traced.png`` preview. The semantic audit reads t3's painted labels at the
+    largest enabled half-width of the map's own setting (``largest_half_width``), which
+    ``trace.json`` records in the canonical form (``backend.setting``).
 
     ``cleanup`` supplies the physical size and the removed colour; without it the trace is in
     pixels and cuts every colour. ``removed_index``, when given, is the palette index of the
@@ -351,15 +370,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     segmentation is traced as it is stored, which in the web pipeline is the cleanup
     stage's cleaned labels. With ``clean_inline`` (the trace CLI) the cutter cleanup in
     ``cleanup`` is first applied to the labels in memory, through the same function the
-    cleanup stage uses. ``settings`` (the soft node limits) is recorded and warns; t3 has
-    one setting, so nothing in it steers the trace.
+    cleanup stage uses. ``settings`` is recorded; its soft node limits warn, and its
+    half-widths are the table t3 traces at.
 
     ``on_face`` receives each of t3's ``face`` events (``face_event``) as t3 emits it, for the
     live trace view.
 
     ``reuse`` re-exports without a trace: the web pipeline found that an earlier trace
-    revision traced these same labels with this same t3 build, and copied its ``map.json``
-    into ``subject_dir``. ``reuse`` names that revision (``revision``) and carries its audit's
+    revision traced these same labels with this same t3 build at this same canonical setting,
+    and copied its ``map.json`` into ``subject_dir``. ``reuse`` names that revision (``revision``) and carries its audit's
     ``t3`` block (``t3``). The map is used byte for byte (its header's palette and names are
     rewritten only where this trace's palette.json differs, which leaves every face as it
     is), checked with ``planar_map_check``, and everything after the trace (the edge SVG,
@@ -368,12 +387,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
 
     ``reuse`` with an ``editor`` (``{"name", "version"}``) re-exports a map edited in that
     editor from revision ``revision``'s map, which the web pipeline wrote into ``subject_dir``
-    as posted. It is the same path with three differences: the map is never rewritten (a
+    as posted. It is the same path with four differences: the map is never rewritten (a
     header whose palette or names are not this trace's raises), its build need not be the
-    installed one (the geometry is the editor's, checked here), and the audit records the
-    editor (``backend.editor``) and ``t3.edited``.
+    installed one (the geometry is the editor's, checked here), its setting need not be
+    ``settings``' table (the map is audited at its own header's setting), and the audit
+    records the editor (``backend.editor``) and ``t3.edited``.
     """
     import t3api
+
+    requested = t3_setting(settings)
 
     tick = progress or _noop
     cleanup = cleanup or CleanupSettings()
@@ -445,8 +467,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     audit_path.unlink(missing_ok=True)
     map_path = subject_dir / "map.json"
     if reuse is None:
-        # The trace: one call, at t3's one setting, on every CPU the process may use.
-        result = t3api.trace(labels, on_event=TraceEvents(tick, on_face))
+        # The trace: one call, at the settings' half-width table, on every CPU the process
+        # may use.
+        result = t3api.trace(labels, setting=requested, on_event=TraceEvents(tick, on_face))
         tick(0.8, "Writing the planar map and the edge SVG")
         map_path.write_text(t3api.planar_map_json(t3api.planar_map(result, palette)))
         pm = t3api.read_planar_map(map_path.read_text())
@@ -462,6 +485,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         if editor is None and pm["build"] != t3api.BUILD_ID:
             raise RuntimeError(f"the reused map.json was written by t3api {pm['build']}, "
                                f"not {t3api.BUILD_ID}")
+        if editor is None and t3api.normal_setting(pm["setting"]) != requested:
+            raise RuntimeError(f"the reused map.json was traced at {pm['setting']}, "
+                               f"not at {requested}")
         if (pm["W"], pm["H"]) != (width, height):
             raise RuntimeError("the reused map.json is not the size of the traced labels")
         named = map_with_palette(pm, palette)
@@ -489,6 +515,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                          "edited_from": reuse["revision"]}
             t3_record.update(edited=True, edited_from=reuse["revision"])
 
+    # The setting the map was traced at, canonical: a header written up to t3api 0.26.0 holds
+    # only ``w``, which is every kind at w / 2.
+    traced_setting = t3api.normal_setting(pm["setting"])
     paths = t3api.planar_map_paths(pm)
     areas = face_areas(pm)
     elements = face_elements(pm)
@@ -513,9 +542,10 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                             "planar_map_check": check, "read_back": read_back}}
 
     tick(0.88, "Semantic audit")
-    # The audit reads the exact raster of the drawing, t3's painted labels, at t3's tube
-    # half-width: every drawn piece lies within it of its edge's points.
-    tolerance = float(t3api.SETTING["w"]) / 2.0
+    # The audit reads the exact raster of the drawing, t3's painted labels, at the largest
+    # half-width an enabled kind of the map's setting has: every drawn piece lies within it of
+    # its edge's points.
+    tolerance = largest_half_width(traced_setting)
     minimum_feature_span = feature_span(tolerance)
     vector_labels = painted.astype(np.int16)
     palette_rgb = segmentation.palette_rgb.astype(np.uint8)
@@ -580,7 +610,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
              "settings": asdict(settings),
              "cleanup_settings": asdict(physical),
              "backend": {"tracer": "t3api", "build": t3api.BUILD_ID, "version": t3api.VERSION,
-                         "setting": t3api.SETTING, "numpy": np.__version__,
+                         "setting": traced_setting, "numpy": np.__version__,
                          "scipy": scipy.__version__, "numba": numba.__version__,
                          **({"editor": dict(reuse["editor"])}
                             if reuse is not None and reuse.get("editor") else {})},

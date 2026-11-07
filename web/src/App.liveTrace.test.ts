@@ -68,7 +68,7 @@ describe('Trace canvas live trace wiring', () => {
     expect(workspaceProps.current?.liveTrace).toBeUndefined()
     fireEvent.click(run)
     await vi.waitFor(() => expect(mocks.followJob).toHaveBeenCalled())
-    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000 } })
+    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75 } })
     const [, onJob, , onFace] = mocks.followJob.mock.calls[0] as [string, (job: Job) => void, unknown, (face: FaceEvent) => void]
 
     // t3's emission order, never sorted on arrival: a later face may paint lower.

@@ -503,7 +503,7 @@ export default function App() {
     else if (previous) setError(shown => shown === previous ? '' : shown)
   }
   const [maxUploadBytes, setMaxUploadBytes] = useState(100 * 1024 * 1024)
-  // The tracer the server runs (its name, build and one fixed setting), from /api/health.
+  // The tracer the server runs (its name, build and default setting), from /api/health.
   const [tracer, setTracer] = useState<TracerInfo | null>(null)
   // The faces the running trace job has emitted so far, for the Trace canvas's live trace.
   const [liveFaces, setLiveFaces] = useState<{ jobId: string; faces: LiveFaces } | null>(null)
