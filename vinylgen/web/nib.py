@@ -1,6 +1,6 @@
 """A save from nib's editor: the planar-map file nib wrote for a shown trace revision.
 
-The web client embeds nib's editor (``@nib/core``, vendored as ``web/vendor/nib-core-0.4.0.tgz``)
+The web client embeds nib's editor (``@nib/core``, vendored as ``web/vendor/nib-core-0.5.0.tgz``)
 on a trace revision's ``map.json`` and posts the document nib wrote to
 ``POST /api/revisions/{revision_id}/map``. ``map_refusal`` decides whether that document may
 become a new trace revision; ``PipelineRunner.save_map`` makes it one.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # The editor a saved map was edited in, recorded in the new revision's ``trace.json``
 # (``backend.editor``): the package the web client installs, ``web/vendor/README.md``.
-NIB_EDITOR = {"name": "nib", "version": "0.4.0"}
+NIB_EDITOR = {"name": "nib", "version": "0.5.0"}
 # The message of the trace revision a save makes.
 EDITED_MESSAGE = "edited in nib"
 

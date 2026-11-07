@@ -16,7 +16,7 @@ The turbo tube tiler (t3) engine, compiled with Nuitka and packaged as `t3api`. 
 | engine change | build 27 with its fix rounds 1 and 2: each curve kind's own tube half-width, any kind but the line can be off and is then never drawn, no piece past the canvas's half-pixel band, junction feet kept in order; the API's `t3api.normal_setting` and the canonical setting `{"half": {line, arc, ellipse, cubic}, A1, A2, L}` (every kind 1.75 by default; a header with only `w` reads as every kind at w / 2) |
 | built by | the tracer repo (`MatLomax/tracer`) packaging round 7 (build 27), `cards/turbo-tube-tiler/packaging-7.md` |
 | requires | Python 3.12, `numpy==1.26.4`, `scipy==1.11.4`, `numba==0.68.0`, `llvmlite==0.50.0` |
-| nib | the vendored nib core 0.4.0 reads only a `{w, A1, A2, L}` header, so it refuses to open a map this wheel writes (its `setting` holds `half`); the Nodes stage opens maps traced up to 0.26.0 only |
+| nib | the vendored nib core 0.5.0 reads and writes back either header, `{half, A1, A2, L}` as this wheel writes it and `{w, A1, A2, L}` as up to 0.26.0, so the Nodes stage opens maps traced with this wheel and with older ones |
 
 ## Replacing it with a new build
 

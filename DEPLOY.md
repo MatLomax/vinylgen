@@ -29,7 +29,7 @@ different caches. `just deploy` does not reinstall the units; after a change to 
 
 The web client's `@nib/core` (nib's editor core and chrome, the Nodes stage)
 is not fetched from a registry: it is the committed tarball
-`web/vendor/nib-core-0.4.0.tgz`, packed from nib at tag `core-v0.4.0`.
+`web/vendor/nib-core-0.5.0.tgz`, packed from nib at tag `core-v0.5.0`.
 `web/package.json` names it by `file:` path, `web/package-lock.json` records
 its integrity, and `npm --prefix web ci` installs it like any other package,
 with its one dependency, `lucide`, from the registry.
