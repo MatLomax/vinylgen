@@ -11,7 +11,8 @@ setup:
     .venv/bin/pip install -r requirements-web.txt
     npm --prefix web ci
 
-# Build the production frontend served by FastAPI.
+# Build the frontend into web/dist. The service never serves web/dist: only
+# `just deploy` publishes a build (scripts/publish_web.py swaps web/live).
 build:
     npm --prefix web run build
 
@@ -91,25 +92,35 @@ logs lines="100":
 restart:
     systemctl --user restart vinylgen
 
-# Build, test, install the requirements (the t3api wheel among them), warm the t3
-# engine's kernel cache, restart, and check both routes. Refuses to restart while a job is
-# active, because the restart would interrupt it and surface a spurious "Worker
+# Test, build the frontend into .tmp/deploy-web (its own directory, so no other
+# build can change what is published), install the requirements (the t3api wheel
+# among them), warm the t3 engine's kernel cache, publish the build as the served
+# page (scripts/publish_web.py: an atomic swap of web/live), restart, and check both
+# routes. Refuses, before installing and again just before publishing, while a job
+# is active, because the restart would interrupt it and surface a spurious "Worker
 # process stopped before completion"; pass force=true to override. just hands a
 # recipe parameter its command-line word verbatim, so both "force=true" and a bare
 # "true" arrive here and both override.
-deploy force="false": test build
-    active="$(curl -fsS --max-time 5 http://127.0.0.1:8275/api/health 2>/dev/null \
-        | sed -n 's/.*"active_jobs":\([0-9][0-9]*\).*/\1/p' || true)"; \
-    if [[ "{{force}}" != "true" && "{{force}}" != "force=true" && -n "$active" && "$active" != "0" ]]; then \
-        echo "Refusing to restart: $active job(s) still active; a restart would interrupt them." >&2; \
-        echo "Wait for them to finish, or run 'just deploy force=true' to override." >&2; \
-        exit 1; \
-    fi
+deploy force="false": test
+    npm --prefix web run build -- --outDir ../.tmp/deploy-web --emptyOutDir
+    just _no-active-jobs "{{force}}"
     .venv/bin/pip install -r requirements-web.txt
     .venv/bin/python scripts/warm_t3_cache.py
+    just _no-active-jobs "{{force}}"
+    .venv/bin/python scripts/publish_web.py --dist .tmp/deploy-web --web web
     systemctl --user restart vinylgen
     just health
     just health-public
+
+# Fail while the service reports an active job, unless forced.
+_no-active-jobs force="false":
+    active="$(curl -fsS --max-time 5 http://127.0.0.1:8275/api/health 2>/dev/null \
+        | sed -n 's/.*"active_jobs":\([0-9][0-9]*\).*/\1/p' || true)"; \
+    if [[ "{{force}}" != "true" && "{{force}}" != "force=true" && -n "$active" && "$active" != "0" ]]; then \
+        echo "Refusing to deploy: $active job(s) still active; a restart would interrupt them." >&2; \
+        echo "Wait for them to finish, or run 'just deploy force=true' to override." >&2; \
+        exit 1; \
+    fi
 
 # Explicit administrative operation, not part of normal deployment. The units are
 # rendered from deploy/'s templates for this checkout's path and for the tunnel's SSH

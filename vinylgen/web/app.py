@@ -481,7 +481,9 @@ def create_app(config: WebConfig | None = None,
 
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
-    frontend = Path(__file__).resolve().parents[2] / "web" / "dist"
+    # The served page (``WebConfig.frontend_dir``, ``web/live``): each request resolves it afresh, so the
+    # symlink ``just deploy`` swaps is the one moment a new page goes live; a build never touches it.
+    frontend = config.frontend_dir
     if frontend.exists():
         @app.get("/{frontend_path:path}", include_in_schema=False)
         async def frontend_file(frontend_path: str) -> StreamingResponse:

@@ -40,6 +40,10 @@ docs/cameo-5-alpha/
 /package-lock.json
 web/node_modules/
 web/dist/
+# The served page: the symlink `just deploy` swaps, and the releases it points at.
+web/live
+web/releases/
+web/.live.new
 web/*.tsbuildinfo
 
 # impeccable tooling dependencies and local outputs

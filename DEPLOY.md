@@ -12,12 +12,21 @@ identity header; direct localhost health checks remain read-only.
 `VINYLGEN_TUNNEL_HOST` to the edge host's SSH destination, in the untracked
 `.vinylgen-data/vinylgen.env`; the template values are placeholders.
 
-`just deploy` runs the test suite and the frontend build, then (unless a job is
-active) installs `requirements-web.txt` into `.venv` (the `t3api` wheel under
-`wheels/` among them), warms the t3 engine's kernel cache with
-`scripts/warm_t3_cache.py` (one trace of the test array; a cold cache otherwise
-costs the first trace 28 to 45 s), restarts the service and checks local and
-public health. The cache is t3api's default, `~/.cache/t3api/<build id>`, keyed
+`just deploy` runs the test suite and builds the frontend into its own
+directory, `.tmp/deploy-web`, then (unless a job is active) installs
+`requirements-web.txt` into `.venv` (the `t3api` wheel under `wheels/` among
+them), warms the t3 engine's kernel cache with `scripts/warm_t3_cache.py` (one
+trace of the test array; a cold cache otherwise costs the first trace 28 to
+45 s), checks again that no job is active, publishes the build, restarts the
+service and checks local and public health.
+
+The service serves `web/live` (`WebConfig.frontend_dir`), never `web/dist`. A
+build (`just build`, a gate, `npm --prefix web run build`) writes `web/dist` and
+changes nothing a visitor sees. `scripts/publish_web.py` is the only step that
+does: it copies the build into a new `web/releases/<UTC stamp>` and renames a
+new symlink over `web/live` (one `rename(2)`, so a request gets the old page or
+the new one, never a mix), keeping the release it replaced and removing older
+ones. Each request resolves `web/live` afresh. The cache is t3api's default, `~/.cache/t3api/<build id>`, keyed
 per build; the warm records `{build, seconds, warm_s, workers}` in its
 `warm.json`. The warm runs as the service's user, outside the unit's sandbox,
 and the unit lists `%h/.cache/t3api` in `ReadWritePaths` so the service can read
@@ -64,6 +73,7 @@ owned process tree and discard its `.tmp/codex-image-*` directory.
 .venv/bin/python scripts/warm_t3_cache.py   # creates and warms ~/.cache/t3api
 npm --prefix web ci
 npm --prefix web run build
+.venv/bin/python scripts/publish_web.py --dist web/dist --web web   # the served page
 just install-services
 ```
 

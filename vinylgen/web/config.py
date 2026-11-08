@@ -4,6 +4,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# The page the service serves: the symlink ``just deploy`` swaps to each published release
+# (``scripts/publish_web.py``). A build writes ``web/dist``, which is never served.
+LIVE_FRONTEND = Path(__file__).resolve().parents[2] / "web" / "live"
+
 
 @dataclass(frozen=True)
 class WebConfig:
@@ -13,6 +17,7 @@ class WebConfig:
     max_active_jobs: int = 2
     retention_days: int = 90
     require_proxy_identity: bool = False
+    frontend_dir: Path = LIVE_FRONTEND
 
     @classmethod
     def from_env(cls) -> "WebConfig":

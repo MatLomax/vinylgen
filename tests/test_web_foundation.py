@@ -17,7 +17,11 @@ from vinylgen.web.store import Store, _process_token
 class WebFoundationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(dir=".tmp")
-        self.app = create_app(WebConfig(Path(self.temp.name)))
+        # A served page of its own, so the test never depends on what the checkout has published.
+        frontend = Path(self.temp.name) / "frontend"
+        frontend.mkdir()
+        (frontend / "index.html").write_text("<!doctype html><title>Vinylgen</title>")
+        self.app = create_app(WebConfig(Path(self.temp.name), frontend_dir=frontend))
 
     def tearDown(self) -> None:
         self.temp.cleanup()
