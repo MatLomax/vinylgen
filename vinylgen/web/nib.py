@@ -1,6 +1,6 @@
 """A save from nib's editor: the planar-map file nib wrote for a shown trace revision.
 
-The web client embeds nib's editor (``@nib/core``, vendored as ``web/vendor/nib-core-0.9.0.tgz``)
+The web client embeds nib's editor (``@nib/core``, vendored as ``web/vendor/nib-core-0.9.1.tgz``)
 on a trace revision's ``map.json`` and posts the document nib wrote to
 ``POST /api/revisions/{revision_id}/map``. ``map_refusal`` decides whether that document may
 become a new trace revision; ``PipelineRunner.save_map`` makes it one.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # The editor a saved map was edited in, recorded in the new revision's ``trace.json``
 # (``backend.editor``): the package the web client installs, ``web/vendor/README.md``.
-NIB_EDITOR = {"name": "nib", "version": "0.9.0"}
+NIB_EDITOR = {"name": "nib", "version": "0.9.1"}
 # The message of the trace revision a save makes.
 EDITED_MESSAGE = "edited in nib"
 
@@ -114,9 +114,11 @@ def palette_problems(pm: dict, parent: dict) -> list[str]:
     first differing entry first; empty when they are.
 
     Every parent entry is kept at its index (none changed, reordered or removed); every appended
-    palette entry is a colour (``is_colour``) labelling at least one face of ``pm``; the names
-    keep the parent's the same way (null names stay null), and an appended name is null or a
-    name no other entry holds, ignoring case, as each palette name is unique."""
+    palette entry is a colour (``is_colour``) equal to no earlier entry (a palette never holds one
+    colour twice: two layers of one fill are two sheets of one vinyl colour) and labelling at
+    least one face of ``pm``; the names keep the parent's the same way (null names stay null),
+    and an appended name is null or a name no other entry holds, ignoring case, as each palette
+    name is unique."""
     palette, original = pm["palette"], parent["palette"]
     problems = []
     for index, entry in enumerate(original):
@@ -129,9 +131,13 @@ def palette_problems(pm: dict, parent: dict) -> list[str]:
             break
     labels = {face["label"] for face in pm["faces"]}
     for index in range(len(original), len(palette)):
+        earlier = next((j for j in range(index) if palette[j] == palette[index]), None)
         if not is_colour(palette[index]):
             problems.append(f"palette entry {index} {palette[index]!r} is not a colour [r, g, b] "
                             "of integers from 0 to 255")
+        elif earlier is not None:
+            problems.append(f"palette entry {index} {palette[index]!r} equals palette entry "
+                            f"{earlier}")
         elif index not in labels:
             problems.append(f"palette entry {index} {palette[index]!r} labels no face")
     names, original_names = pm.get("names"), parent.get("names")

@@ -228,11 +228,11 @@ the canvas, in the component's positioned container, it mounts nib's chrome with
 `mountChrome(container, editor, { actions: ['save'] })`, styled by
 `@nib/core/chrome.css`; the chrome's Save calls the host's `save`, and every
 outcome is a line on the chrome's notice. The package is the vendored tarball
-`web/vendor/nib-core-0.9.0.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
+`web/vendor/nib-core-0.9.1.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
 `PipelineRunner.save_map` (`web/pipeline.py`). That function refuses a document
 with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`,
 breaking the rule of the map, of another size than the parent's, a palette that
-is not the parent's with colours only appended, a face labelled with no palette
+is not the parent's with new colours only appended, a face labelled with no palette
 entry, or unchanged). Otherwise it makes a
 child trace revision, "edited in nib", through `PipelineRunner._trace`, the one
 function that also traces and re-exports. The posted map is written into the

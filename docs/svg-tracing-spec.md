@@ -117,7 +117,7 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   map edited in nib (below) is never reused this way: it is not t3's trace of
   the labels, so a trace from an edited revision traces afresh.
 - **Editing the trace in nib.** The Nodes stage is nib's editor with nib's
-  chrome (`@nib/core` 0.2.0, `web/vendor/`) on the selected revision's `map.json`.
+  chrome (`@nib/core` 0.9.1, `web/vendor/nib-core-0.9.1.tgz`) on the selected revision's `map.json`.
   Saving posts the exact text nib wrote to
   `POST /api/revisions/{revision_id}/map`, where `revision_id` is the trace
   revision that owns the map. Revisions are immutable, so a save makes a child
@@ -142,7 +142,9 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
      (`"invalid"`, naming the edge).
   4. Its `W` and `H` are the parent's, and its `palette` is the parent's with
      entries only appended: none changed, reordered or removed, each appended
-     entry a colour `[r, g, b]` of integers from 0 to 255 that labels at
+     entry a colour `[r, g, b]` of integers from 0 to 255, equal to no
+     earlier entry (a palette never holds one colour twice; nib's picker
+     gives a colour equal to an entry that entry's label), that labels at
      least one face. Its `names` keep the parent's the same way, an appended
      name null or one no other entry holds, ignoring case (`"mismatch"`,
      naming the first differing entry).
@@ -618,7 +620,7 @@ symmetric detail controls.
   `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
   "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
-  nib adds `editor` (`{"name": "nib", "version": "0.2.0"}`).
+  nib adds `editor` (`{"name": "nib", "version": "0.9.1"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),

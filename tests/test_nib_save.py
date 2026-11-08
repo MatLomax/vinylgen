@@ -193,6 +193,17 @@ class GrownPaletteRefusalTest(unittest.TestCase):
         pm["names"].append(None)
         self.assert_names_entry(pm, 4)
 
+    def test_an_appended_colour_equal_to_an_earlier_entry_is_refused_naming_both(self):
+        # Equal to the parent's Cream (entry 2), and an appended colour appended again.
+        pm = grown(self.PARENT.decode(), [244, 230, 173])
+        self.assert_names_entry(pm, 4)
+        refusal = self.refusal(pm)
+        self.assertIn("palette entry 4 [244, 230, 173] equals palette entry 2", refusal["detail"], refusal)
+        twice = grown(nib_text(grown(self.PARENT.decode(), NEW_RGB)), NEW_RGB, face=13)
+        refusal = self.refusal(twice)
+        self.assertEqual(refusal["reason"], "mismatch", refusal)
+        self.assertIn("palette entry 5 [12, 200, 90] equals palette entry 4", refusal["detail"], refusal)
+
     def test_a_changed_name_is_refused_naming_its_entry(self):
         pm = grown(self.PARENT.decode(), NEW_RGB)
         pm["names"][0] = "Ink"
