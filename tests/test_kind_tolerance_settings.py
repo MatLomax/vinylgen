@@ -52,8 +52,10 @@ DEFAULT_HALF = 1.75
 SETTING_DEFAULT = {"half": {kind: DEFAULT_HALF for kind in KINDS}, "A1": 22.5, "A2": 45.0, "L": 4.0}
 # The only setting a planar-map header written by t3api up to 0.26.0 carries.
 W_ONLY_SETTING = {"w": 3.5, "A1": 22.5, "A2": 45.0, "L": 4.0}
-# The trace settings record as every surface stores it: the three limits and the four half-widths.
-DEFAULT_RECORD = {**FORM_LIMITS, **{field: DEFAULT_HALF for field in HALF_FIELDS}}
+# The trace settings record as every surface stores it: the three limits, the four half-widths and the two
+# minimum sweeps (the arc minimum sweep, 0 by default).
+DEFAULT_RECORD = {**FORM_LIMITS, **{field: DEFAULT_HALF for field in HALF_FIELDS},
+                  "min_sweep_arc": 0.0, "min_sweep_ellipse": 0.0}
 
 
 def table(**halves) -> dict:

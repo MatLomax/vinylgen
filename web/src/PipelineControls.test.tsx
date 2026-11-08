@@ -237,6 +237,6 @@ describe('legacy trace settings', () => {
     const stored = { curve_fit_tolerance: .9, straight_line_max_deviation: 1.6, curve_optimization: false, length_unit: 'px', overlap: 2,
       solid_underlayers: true, layer_order: ['#ff0000'], corner_threshold: 45, soft_path_nodes: 900, soft_document_nodes: 1000 }
     expect(normalizeTraceSettings(stored)).toEqual({ soft_path_nodes: 900, soft_document_nodes: 1000 })
-    expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(stored) }).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1000, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75 })
+    expect({ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(stored) }).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1000, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75, min_sweep_arc: 0, min_sweep_ellipse: 0 })
   })
 })

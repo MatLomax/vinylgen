@@ -301,21 +301,39 @@ button.danger:hover:not(:disabled) { background: var(--error); opacity: .88; }
 /* The trace step's Curve kinds table: one row per kind, its switch, its name, then its tube
    half-width and unit, the rows aligned under a header row. The last track ("sweep") is held
    for a second per-kind field and is empty today. */
-.curve-kind-table { display: grid; }
-.curve-kind-row { display: grid; grid-template-columns: [switch] 20px [name] minmax(0, 1fr) [half] 7.5rem [sweep] auto; column-gap: 12px; row-gap: 4px; align-items: center; min-height: 52px; padding: 6px 2px; border-bottom: 1px solid var(--border); }
+.curve-kind-table { display: grid; container: curve-kinds / inline-size; }
+/* Each row is its own grid, so every track is a fixed width: the half-width and minimum-sweep
+   columns line up down the table whether a row has a minimum-sweep cell (the two arc kinds)
+   or not. */
+.curve-kind-row { display: grid; grid-template-columns: [switch] 20px [name] minmax(0, 1fr) [half] 7.5rem [sweep] 5.5rem; column-gap: 12px; row-gap: 4px; align-items: center; min-height: 52px; padding: 6px 2px; border-bottom: 1px solid var(--border); }
 .curve-kind-head { min-height: 0; padding-block: 0 8px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .curve-kind-head .curve-kind-kind { grid-column: switch / half; }
 .curve-kind-head .curve-kind-half { grid-column: half; }
+.curve-kind-head::after { content: attr(data-sweep); grid-column: sweep; }
 .curve-kind-switch { width: 20px; height: 20px; margin: 0; padding: 0; accent-color: var(--accent); }
 .curve-kind-switch:disabled { cursor: not-allowed; }
 .curve-kind-name { display: block; color: var(--text-label); font-size: 13px; font-weight: 700; letter-spacing: 0; }
 .curve-kind-half { display: flex; align-items: center; gap: 6px; }
 .curve-kind-half input { min-height: 38px; padding: 7px 9px; font-variant-numeric: tabular-nums; }
+.curve-kind-sweep { grid-column: sweep; display: flex; align-items: center; gap: 6px; }
+.curve-kind-sweep input { min-width: 0; min-height: 38px; padding: 7px 9px; font-variant-numeric: tabular-nums; }
+.curve-kind-sweep-label { display: none; color: var(--text-muted); font-size: 12px; }
 .curve-kind-unit { color: var(--text-muted); font-size: 12px; }
 .curve-kind-note { grid-column: name / -1; color: var(--text-muted); font-size: 11px; font-weight: 450; line-height: 1.45; }
 .curve-kind-row.is-off .curve-kind-name, .curve-kind-row.is-off .curve-kind-unit { opacity: .5; }
-.curve-kind-row.is-off .curve-kind-half input { opacity: .45; cursor: default; }
+.curve-kind-row.is-off .curve-kind-half input, .curve-kind-row.is-off .curve-kind-sweep input { opacity: .45; cursor: default; }
+.curve-kind-row.is-off .curve-kind-sweep-label { opacity: .5; }
 .curve-kind-row.is-off .curve-kind-half input::placeholder { color: var(--text-muted); font-style: italic; opacity: 1; }
+/* A narrow table (a phone's drawer): with a minimum-sweep column the name column would fall
+   below the width of "Elliptical", so the minimum sweep moves to a second line of its row,
+   under the half-width, named by its own label in place of the header column. */
+@container curve-kinds (max-width: 340px) {
+  .curve-kind-row { grid-template-columns: [switch] 20px [name] minmax(0, 1fr) [half] 7.5rem; }
+  .curve-kind-head::after { content: none; }
+  .curve-kind-row > .curve-kind-sweep { grid-column: name / -1; grid-row: 2; justify-content: flex-end; }
+  .curve-kind-sweep input { width: 5.5rem; flex: none; }
+  .curve-kind-sweep-label { display: inline; }
+}
 .layer-order-field { display: grid; }
 .layer-order-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .layer-order-list li { display: grid; grid-template-columns: 18px 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 9px; background: var(--surface-control); border: 1px solid var(--border-control); border-radius: var(--radius-sm); cursor: grab; }

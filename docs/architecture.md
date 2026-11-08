@@ -228,7 +228,7 @@ the canvas, in the component's positioned container, it mounts nib's chrome with
 `mountChrome(container, editor, { actions: ['save'] })`, styled by
 `@nib/core/chrome.css`; the chrome's Save calls the host's `save`, and every
 outcome is a line on the chrome's notice. The package is the vendored tarball
-`web/vendor/nib-core-0.7.1.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
+`web/vendor/nib-core-0.8.0.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
 `PipelineRunner.save_map` (`web/pipeline.py`). That function refuses a document
 with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`, of
 another size or palette than the parent's, or unchanged). Otherwise it makes a
@@ -300,7 +300,9 @@ to about 1.3 s for widen on 1.5-megapixel subjects) are documented in the
 - Tracing never cleans labels itself; it consumes the cleanup stage's labels,
   size and removed colour (the CLI runs the same cleanup inline first).
 - Tracing is one `t3api.trace` call on the cleaned labels at the trace's
-  half-width table, each curve kind's tube half-width.
+  half-width table, each curve kind's tube half-width, and its minimum sweeps,
+  the least sweep a drawn circular or elliptical arc may have (the setting's
+  `min_sweep` key, present only when either is above 0).
   Its planar map, `map.json`, stores every boundary edge once with the faces
   on its two sides, so adjacent colours share their boundary bit for bit; it is
   checked and read back before anything is built from it, and every later step

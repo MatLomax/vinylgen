@@ -1,18 +1,27 @@
-import type { Revision } from './api'
+import type { Revision, TraceSettings } from './api'
 import { CURVE_KINDS, DEFAULT_TRACE_SETTINGS, normalizeTraceSettings } from './PipelineControls'
 
 // The half-widths a trace revision ran at, one entry per curve kind in the Curve kinds order:
 // its recorded `settings.trace` over the defaults, so a revision traced before the per-kind
 // table (all at w 3.5) reads as every kind at 1.75. `null` is a kind that was off.
 export function revisionHalfWidths(revision: Revision): { label: string; half: number | null }[] {
-  const stored = revision.settings.trace
-  const trace = { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(stored && typeof stored === 'object' ? stored as Record<string, unknown> : {}) }
+  const trace = revisionTrace(revision)
   return CURVE_KINDS.map(({ key, label }) => ({ label, half: trace[key] }))
 }
 
-// One line naming a trace revision's half-widths: "Lines 1 px · Circular arcs off · …".
+// A trace revision's recorded `settings.trace` over the defaults.
+function revisionTrace(revision: Revision): TraceSettings {
+  const stored = revision.settings.trace
+  return { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(stored && typeof stored === 'object' ? stored as Record<string, unknown> : {}) }
+}
+
+// One line naming a trace revision's half-widths: "Lines 1 px · Circular arcs off · …",
+// followed by its arc minimum sweeps, "min sweep arc A, ellipse E" in degrees, only when either
+// is above 0 (at the default the line names the half-widths alone).
 export function halfWidthsLine(revision: Revision): string {
-  return revisionHalfWidths(revision).map(({ label, half }) => `${label} ${half === null ? 'off' : `${half} px`}`).join(' · ')
+  const halves = revisionHalfWidths(revision).map(({ label, half }) => `${label} ${half === null ? 'off' : `${half} px`}`).join(' · ')
+  const { min_sweep_arc: arc, min_sweep_ellipse: ellipse } = revisionTrace(revision)
+  return arc > 0 || ellipse > 0 ? `${halves} · min sweep arc ${arc}, ellipse ${ellipse}` : halves
 }
 
 // The Nodes stage's revision bar: which trace run nib's editor has open, stepped like the Trace

@@ -34,9 +34,10 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   2-D, `int16`, every colour included, the omitted one too (its regions are
   real faces and its boundaries are the other colours' cut lines). The setting
   is `TraceSettings`' half-width table, `{"half": {line, arc, ellipse,
-  cubic}}`, in the canonical form `t3api.normal_setting` gives (A1 22.5, A2 45
-  and L 4 fixed; see [Size, units and cropping](#size-units-and-cropping)); a
-  table it refuses raises `ValueError` before anything is written, which a web
+  cubic}}`, with its minimum sweeps, `"min_sweep": {"arc", "ellipse"}`, only
+  when either is above 0, in the canonical form `t3api.normal_setting` gives
+  (A1 22.5, A2 45 and L 4 fixed; see [Size, units and
+  cropping](#size-units-and-cropping)); a setting it refuses raises `ValueError` before anything is written, which a web
   job reports as its error. `workers=None` lets `t3api.workers_of` use every
   CPU the process may use.
 - **`map.json`** is `t3api.planar_map_json(t3api.planar_map(result, palette))`
@@ -102,8 +103,10 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
 - **Re-export without a trace.** A web trace whose parent's effective
   `map.json` came from a trace of labels with the same sha256 (each revision's
   effective `segmentation.npz`), the installed t3api build (the map header's
-  `build`) and the same setting (the header's `setting` and this trace's table
-  equal under `t3api.normal_setting`; a header written up to t3api 0.26.0 holds
+  `build`) and the same setting (the header's `setting` and this trace's
+  setting, its half-width table and minimum sweeps, equal under
+  `t3api.normal_setting`, so a trace at one minimum never reuses a map drawn
+  at another; a header written up to t3api 0.26.0 holds
   only `w`, every kind at w / 2 = 1.75), with that trace's `trace.json`
   present, makes no `t3api.trace`
   call: the map is copied byte for byte, rewritten only when the new palette
@@ -232,7 +235,8 @@ Aspect-ratio and crop settings belong to the palette-stage configuration, not
 the tracing command.
 
 The trace's settings (`TraceSettings`, `vinylgen/contracts.py`) are the three
-soft node limits and each curve kind's tube half-width. The soft node limits,
+soft node limits, each curve kind's tube half-width and each arc kind's minimum
+sweep. The soft node limits,
 `soft_path_nodes` (5,000), `soft_layer_nodes` (50,000) and
 `soft_document_nodes` (200,000), are node counts that only add a warning to
 `trace.json` naming the path, the layer or the document over its limit. The
@@ -243,11 +247,25 @@ tighter to the pixels. Each is > 0. Arcs, ellipses and cubics can be off
 (`null`), so that kind is never drawn; the line cannot, since an edge of one
 crack can only be a line. Below about 0.55 px (sampled) long shallow straight
 edges break into several lines. A stored record from before the half-widths
-reads as the defaults. On the trace step they are the "Curve kinds" group, laid
-out in aligned rows under a header row (Kind, Tube half-width), one row per kind (Lines,
+reads as the defaults. The minimum sweeps, `min_sweep_arc` and
+`min_sweep_ellipse` (degrees, 0 each), are the least sweep a drawn circular
+and elliptical arc may have: an arc of that kind sweeping less is never drawn,
+and the other kinds draw that stretch. Each is in [0, 360]: 0 is no minimum,
+360 admits whole circles or ellipses only. A kind that is off takes only 0 (the
+web job answers 422 to a minimum above 0 on it, the CLI exits 2), and t3 is
+given the `min_sweep` key only when either is above 0, so the canonical
+setting, the map header and the audit at the default carry no `min_sweep`. A stored record from before the
+minimum sweeps reads them as 0. On the trace step they are the "Curve kinds" group, laid
+out in aligned rows under a header row (Kind, Tube half-width, Min sweep), one row per kind (Lines,
 Circular arcs, Elliptical arcs, Cubic curves): the kind's switch, its name and
-its half-width field in px. The line's switch is shown fixed on, its title
-saying why; a row switched off is dimmed, its field disabled and reading "off".
+its half-width field in px, and on the two arc rows a minimum-sweep field in
+degrees (0 to 360; a value outside is not sent). On a narrow panel (a phone) the
+minimum-sweep field moves to a second line of its row, under the half-width,
+with its own "Minimum sweep" label. The line's switch is shown fixed on, its title
+saying why; a row switched off is dimmed, its fields disabled and its half-width
+reading "off"; switching an arc kind off sends its minimum sweep as 0 with it.
+The Nodes stage names the half-widths a revision was traced at, followed by
+`min sweep arc A, ellipse E` only when either minimum is above 0.
 A table other than
 the defaults may trace several times slower (fox-owl-table-2's edited labels:
 150 s at the defaults, 778 s at line 1.75, arc 1.0, ellipse 1.75, cubic 4.0);
@@ -499,8 +517,8 @@ the shown cleanup's own settings, nothing is measured and the badge keeps
 ## Trace accuracy and complexity
 
 t3 traces the cleaned labels at the trace's half-width table (each kind 1.75
-px by default; A1 22.5, A2 45, L 4), the only vinylgen settings that change the
-geometry. Its
+px by default; A1 22.5, A2 45, L 4) and its minimum sweeps (0 by default), the
+only vinylgen settings that change the geometry. Its
 corners, joins, node placement and piece kinds are t3's, decided from the
 labels alone, and its design and proofs live in the tracer repository. What a
 trace holds vinylgen to:
@@ -557,8 +575,11 @@ configuration file. CLI arguments override values from the configuration file.
 Settings and effective defaults are recorded in `trace.json`. The flags are
 the cleanup's (size, removed colour, cutter cleanup), `--colour-name`, and the
 half-widths `--half-line`, `--half-arc`, `--half-ellipse` and `--half-cubic`
-(px, > 0; `off` on all but the line); the three soft node limits are set in a
-configuration file only, which may also set the half-widths (`null` is off). A configuration's
+(px, > 0; `off` on all but the line), and the minimum sweeps `--min-sweep-arc`
+and `--min-sweep-ellipse` (degrees, 0 to 360, 0 by default; above 0 refused on
+a kind given as off); the three soft node limits are set in a
+configuration file only, which may also set the half-widths (`null` is off) and
+the minimum sweeps (`min_sweep_arc`, `min_sweep_ellipse`). A configuration's
 retired trace settings are dropped on load
 ([Retired trace settings](#size-units-and-cropping)).
 
@@ -574,13 +595,13 @@ symmetric detail controls.
 - `subject`, `sources` (source, flattened, palette and segmentation paths, and
   `map`, the planar-map file `map.json`),
   `raster_dimensions`, `mode` and `physical_dimensions_mm`.
-- `settings`, the trace settings as given (the three soft node limits and the
-  four half-widths), and
+- `settings`, the trace settings as given (the three soft node limits, the
+  four half-widths and the two minimum sweeps), and
   `cleanup_settings` (size, removed colour, cleanup).
 - `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
   (`t3api.VERSION`), `setting` (the map's setting in the canonical form,
   `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
-  "L"}`)
+  "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
   nib adds `editor` (`{"name": "nib", "version": "0.2.0"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and

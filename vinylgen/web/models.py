@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from vinylgen.contracts import upgrade_trace_record
 
@@ -138,7 +138,8 @@ class TraceJobSettings(BaseModel):
 
     # The soft node limits (contracts.TraceSettings), each only warning, and each curve
     # kind's tube half-width in pixels, which steers t3: > 0, or None (off) on arcs,
-    # ellipses and cubics. The line is never off.
+    # ellipses and cubics. The line is never off. Each arc kind's minimum sweep, in degrees,
+    # in [0, 360] (0: no minimum), and 0 on a kind that is off.
     soft_path_nodes: int = Field(default=5_000, ge=1)
     soft_layer_nodes: int = Field(default=50_000, ge=1)
     soft_document_nodes: int = Field(default=200_000, ge=1)
@@ -146,6 +147,8 @@ class TraceJobSettings(BaseModel):
     half_arc: float | None = Field(default=1.75, gt=0)
     half_ellipse: float | None = Field(default=1.75, gt=0)
     half_cubic: float | None = Field(default=1.75, gt=0)
+    min_sweep_arc: float = Field(default=0.0, ge=0, le=360, allow_inf_nan=False)
+    min_sweep_ellipse: float = Field(default=0.0, ge=0, le=360, allow_inf_nan=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -155,6 +158,23 @@ class TraceJobSettings(BaseModel):
         corner, node and snap controls, overlap, solid underlayers, layer order), is read
         without them."""
         return upgrade_trace_record(values) if isinstance(values, dict) else values
+
+    @field_validator("min_sweep_arc", "min_sweep_ellipse", mode="before")
+    @classmethod
+    def minimum_is_a_number(cls, value):
+        """A minimum sweep is a number of degrees: a bool is refused, not read as 0 or 1."""
+        if isinstance(value, bool):
+            raise ValueError("a minimum sweep is a number of degrees, not a bool")
+        return value
+
+    @model_validator(mode="after")
+    def no_minimum_on_an_off_kind(self) -> "TraceJobSettings":
+        """A minimum sweep above 0 on a kind that is off is refused: an off kind draws nothing
+        to restrict, and t3api refuses the setting."""
+        for kind in ("arc", "ellipse"):
+            if getattr(self, f"half_{kind}") is None and getattr(self, f"min_sweep_{kind}") > 0:
+                raise ValueError(f"min_sweep_{kind} is above 0 while {kind} is off")
+        return self
 
 
 class StartJob(BaseModel):

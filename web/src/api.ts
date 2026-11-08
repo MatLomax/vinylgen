@@ -23,11 +23,13 @@ export type CleanupSettings = {
   min_detail_width: number; min_region_area: number; remove_below_width: number
 }
 // The trace's settings (vinylgen.contracts.TraceSettings): the soft node limits, which only
-// warn, and each curve kind's tube half-width in px, which steers t3. Arcs, ellipses and
-// cubics are null when off; the line is never off.
+// warn, each curve kind's tube half-width in px, which steers t3, and each arc kind's minimum
+// sweep in degrees. Arcs, ellipses and cubics are null when off; the line is never off. A
+// minimum sweep is in [0, 360], 0 (no minimum) by default, and 0 while its kind is off.
 export type TraceSettings = {
   soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
   half_line: number; half_arc: number | null; half_ellipse: number | null; half_cubic: number | null
+  min_sweep_arc: number; min_sweep_ellipse: number
 }
 // The curve kinds t3 draws, as its setting's `half` table names them.
 export type CurveKind = 'line' | 'arc' | 'ellipse' | 'cubic'

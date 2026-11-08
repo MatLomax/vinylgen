@@ -48,7 +48,7 @@ function renderTrace() {
 
 describe('trace settings under t3', () => {
   it('keeps the three soft node limits and the four half-widths in DEFAULT_TRACE_SETTINGS', () => {
-    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...FORM_LIMITS, ...HALVES })
+    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...FORM_LIMITS, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0 })
   })
 
   it('offers Complexity warnings with its three limits and no other trace control', () => {
@@ -63,11 +63,11 @@ describe('trace settings under t3', () => {
     expect(within(section).getByLabelText(/Nodes per layer/)).toBe(limits[1])
     expect(within(section).getByLabelText(/Nodes per document/)).toBe(limits[2])
     // The trace form edits nothing else: no overlap, layer order, fit, node or snap control;
-    // beside the three limits, only the Curve kinds group's four half-widths and four switches (the
-    // line's fixed on).
+    // beside the three limits, only the Curve kinds group's four half-widths, four switches (the
+    // line's fixed on) and the two arc kinds' minimum sweeps.
     const kinds = screen.getByRole('heading', { name: 'Curve kinds' }).closest('section')!
-    expect(kinds.querySelectorAll('input')).toHaveLength(8)
-    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3 + 8)
+    expect(kinds.querySelectorAll('input')).toHaveLength(10)
+    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3 + 10)
   })
 
   it('names the tracer and its default setting on a read-only line', () => {
@@ -88,7 +88,7 @@ describe('trace settings under t3', () => {
       expect(Object.fromEntries(KEPT.map(key => [key, loaded[key]]))).toEqual(limits)
       // The form's state is the defaults with the draft over them, as App loads a draft; a
       // draft from before the half-widths loads them at their default.
-      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual({ ...limits, ...HALVES })
+      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual({ ...limits, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0 })
     }
   })
 

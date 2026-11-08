@@ -139,14 +139,20 @@ def upgrade_trace_record(values: dict) -> dict:
 
 @dataclass
 class TraceSettings:
-    """The trace's settings: the soft node limits and each curve kind's tube half-width.
+    """The trace's settings: the soft node limits, each curve kind's tube half-width and each
+    arc kind's minimum sweep.
 
     The soft node limits only warn, naming the path, the layer or the document over it in
     ``trace.json``. The half-widths steer t3: ``half_<kind>`` is the furthest, in pixels, a
     drawn piece of that kind may lie from its edge (t3api's ``{"half": {line, arc, ellipse,
     cubic}}``). Each is > 0; ``None`` turns arcs, ellipses or cubics off, so that kind is never
     drawn. The line is never off: an edge of one crack can only be a line. A record from before
-    the half-widths reads as the defaults, 1.75 each."""
+    the half-widths reads as the defaults, 1.75 each.
+
+    ``min_sweep_arc`` and ``min_sweep_ellipse`` are the least sweep, in degrees, a drawn
+    circular and elliptical arc may have (t3api's ``{"min_sweep": {arc, ellipse}}``): each in
+    [0, 360], 0 (no minimum) by default, and 0 on a kind that is off. A record from before the
+    minima reads them as 0."""
 
     soft_path_nodes: int = 5_000
     soft_layer_nodes: int = 50_000
@@ -155,9 +161,18 @@ class TraceSettings:
     half_arc: float | None = 1.75
     half_ellipse: float | None = 1.75
     half_cubic: float | None = 1.75
+    min_sweep_arc: float = 0.0
+    min_sweep_ellipse: float = 0.0
 
     def halves(self) -> dict[str, float | None]:
         """The half-width table t3api takes as ``setting["half"]``: each kind's half-width,
         ``None`` for an off kind."""
         return {"line": self.half_line, "arc": self.half_arc, "ellipse": self.half_ellipse,
                 "cubic": self.half_cubic}
+
+    def min_sweeps(self) -> dict[str, float] | None:
+        """The minimum-sweep table t3api takes as ``setting["min_sweep"]``, in degrees, or
+        ``None`` at the default (both 0), where the setting carries no ``min_sweep`` key."""
+        if self.min_sweep_arc == 0 and self.min_sweep_ellipse == 0:
+            return None
+        return {"arc": float(self.min_sweep_arc), "ellipse": float(self.min_sweep_ellipse)}

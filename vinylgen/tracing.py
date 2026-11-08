@@ -219,12 +219,19 @@ def tracer_info() -> dict:
 
 def t3_setting(settings: TraceSettings) -> dict:
     """The canonical t3api setting a trace at ``settings`` runs at: its half-width table
-    (``TraceSettings.halves``) validated by ``t3api.normal_setting``, which raises
-    ``ValueError`` naming the kind when the table is refused (an off line, a half-width not
-    > 0)."""
+    (``TraceSettings.halves``) and, when either arc kind's minimum is above 0, its
+    minimum-sweep table (``TraceSettings.min_sweeps``), validated by ``t3api.normal_setting``.
+    That raises ``ValueError`` naming the kind when the half-width table is refused (an off
+    line, a half-width not > 0), and naming ``min_sweep`` when a minimum is refused (outside
+    [0, 360], or above 0 on a kind that is off). At both minima 0 the setting has no
+    ``min_sweep`` key."""
     import t3api
 
-    return t3api.normal_setting({"half": settings.halves()})
+    setting: dict = {"half": settings.halves()}
+    min_sweeps = settings.min_sweeps()
+    if min_sweeps is not None:
+        setting["min_sweep"] = min_sweeps
+    return t3api.normal_setting(setting)
 
 
 def largest_half_width(setting: dict) -> float:
@@ -351,8 +358,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     """Trace a subject's segmentation with t3 into ``map.json`` and the edge SVG.
 
     One ``t3api.trace`` call on the cleaned labels (``int16`` palette indices, every colour,
-    the omitted one too) at ``settings``' half-width table (``t3_setting``; a table t3 refuses
-    raises ``ValueError`` before anything is written). Its planar map is written as ``map.json``
+    the omitted one too) at ``settings``' t3 setting (``t3_setting``: its half-width table and minimum sweeps; a
+    setting t3 refuses raises ``ValueError`` before anything is written). Its planar map is written as ``map.json``
     (``t3api.planar_map_json``) and read back (``t3api.read_planar_map``) for every later
     step: the planar map's gate (``planar_map_check`` with no violation, and the read-back
     paint equal to t3's painted labels at every centre, else a ``RuntimeError``), the edge
@@ -371,7 +378,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     stage's cleaned labels. With ``clean_inline`` (the trace CLI) the cutter cleanup in
     ``cleanup`` is first applied to the labels in memory, through the same function the
     cleanup stage uses. ``settings`` is recorded; its soft node limits warn, and its
-    half-widths are the table t3 traces at.
+    half-widths and minimum sweeps are the setting t3 traces at.
 
     ``on_face`` receives each of t3's ``face`` events (``face_event``) as t3 emits it, for the
     live trace view.
@@ -467,7 +474,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     audit_path.unlink(missing_ok=True)
     map_path = subject_dir / "map.json"
     if reuse is None:
-        # The trace: one call, at the settings' half-width table, on every CPU the process
+        # The trace: one call, at the settings' canonical t3 setting, on every CPU the process
         # may use.
         result = t3api.trace(labels, setting=requested, on_event=TraceEvents(tick, on_face))
         tick(0.8, "Writing the planar map and the edge SVG")

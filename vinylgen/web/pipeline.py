@@ -644,8 +644,8 @@ class PipelineRunner:
         subject = work / self.store.get_project(project_id)["slug"]
         self._copy_inputs(parent_id, subject, TRACE_INPUT_KINDS)
         trace_settings = TraceSettings(**values)
-        # The table t3 traces at, validated before anything runs: a refused one is the job's
-        # error.
+        # The setting t3 traces at (the half-width table and the minimum sweeps), validated
+        # before anything runs: a refused one is the job's error.
         setting = t3_setting(trace_settings)
         cleanup_settings = (cleanup_revision["settings"]["cleanup"]
                             if cleanup_revision is not None else None)

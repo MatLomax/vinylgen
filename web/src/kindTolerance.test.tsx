@@ -49,7 +49,7 @@ function toggle(section: HTMLElement, label: RegExp): HTMLInputElement | null {
 
 describe('the trace settings carry each kind\'s half-width', () => {
   it('defaults every kind to 1.75 beside the three soft limits', () => {
-    expect(DEFAULT_TRACE_SETTINGS).toEqual(DEFAULTS)
+    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...DEFAULTS, min_sweep_arc: 0, min_sweep_ellipse: 0 })
   })
 
   it('keeps an off kind\'s null and reads an older draft as the defaults', () => {
@@ -59,7 +59,7 @@ describe('the trace settings carry each kind\'s half-width', () => {
     expect(off.half_cubic).toBe(2.5)
     // App.tsx loads a stored record or draft as `{ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(record) }`.
     const older = { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700, curve_fit_tolerance: 1.6, overlap: 0 }) }
-    expect(older).toEqual({ ...HALVES, soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700 })
+    expect(older).toEqual({ ...HALVES, soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700, min_sweep_arc: 0, min_sweep_ellipse: 0 })
     // The line is never null: a draft that says so is read as the default.
     const line = { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ ...LIMITS, half_line: null } as unknown as Partial<TraceSettings>) }
     expect(line.half_line).toBe(HALF_DEFAULT)
@@ -73,7 +73,8 @@ describe('the Curve kinds group', () => {
     const fields = ROWS.map(row => field(section, row.label))
     expect(fields.map(input => Number(input.value))).toEqual([1.75, 1.75, 1.75, 1.75])
     const spinbuttons = within(section).getAllByRole('spinbutton')
-    expect(spinbuttons).toEqual(fields)
+    const sweep = (name: RegExp) => within(section).getByLabelText(name, { selector: 'input[type="number"]' })
+    expect(spinbuttons).toEqual([fields[0], fields[1], sweep(/^Minimum sweep of circular arcs/), fields[2], sweep(/^Minimum sweep of elliptical arcs/), fields[3]])
     // The group's line says what the half-width means and that an off kind is never drawn; each
     // field's title carries its kind's own help.
     const intro = section.querySelector(':scope > p')!.textContent ?? ''
@@ -139,7 +140,7 @@ describe('the Curve kinds group', () => {
     const setTrace = vi.fn()
     renderTrace(DEFAULTS, setTrace)
     fireEvent.click(toggle(group(), /^Circular arcs/)!)
-    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULTS, half_arc: null })
+    expect(setTrace).toHaveBeenLastCalledWith({ ...DEFAULTS, half_arc: null, min_sweep_arc: 0 })
     cleanup()
     const off = { ...DEFAULTS, half_cubic: null } as unknown as TraceSettings
     const setTraceOn = vi.fn()

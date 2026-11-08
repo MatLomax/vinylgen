@@ -77,7 +77,9 @@ anything, `map.json`'s read-back paint must equal the labels t3 painted and
 
 t3 traces within each curve kind's tube half-width: `--half-line`,
 `--half-arc`, `--half-ellipse` and `--half-cubic` (1.75 px each; `off` turns
-arcs, ellipses or cubics off). Use `python3 svg_trace.py --help` for physical
+arcs, ellipses or cubics off). `--min-sweep-arc` and `--min-sweep-ellipse` set
+each arc kind's minimum sweep in degrees (0 to 360; 0, no minimum, by default;
+an arc sweeping less is never drawn, and a kind that is off takes only 0). Use `python3 svg_trace.py --help` for physical
 dimensions, colour omission, colour names, cutter cleanup and reusable JSON
 configuration; a configuration may also set the soft node limits, which only
 warn in `trace.json`.

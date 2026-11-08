@@ -15,24 +15,31 @@ export const DEFAULT_CLEANUP_SETTINGS: CleanupSettings = {
 // The trace's settings (vinylgen.contracts.TraceSettings): its three soft node limits, each
 // only warning, and each curve kind's tube half-width in px, the furthest a drawn piece of
 // that kind may lie from its edge. Arcs, ellipses and cubics can be off (null); the line,
-// the only kind that can draw an edge of one crack, cannot.
+// the only kind that can draw an edge of one crack, cannot. Circular and elliptical arcs each
+// take a minimum sweep in degrees, [0, 360]: an arc of that kind sweeping less is never drawn.
+// 0 is no minimum; an off kind's minimum is 0.
 export const HALF_WIDTH_DEFAULT = 1.75
+export const MIN_SWEEP_MAX = 360
 export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
   soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
   half_line: HALF_WIDTH_DEFAULT, half_arc: HALF_WIDTH_DEFAULT, half_ellipse: HALF_WIDTH_DEFAULT, half_cubic: HALF_WIDTH_DEFAULT,
+  min_sweep_arc: 0, min_sweep_ellipse: 0,
 }
 const TRACE_KEYS = Object.keys(DEFAULT_TRACE_SETTINGS) as (keyof TraceSettings)[]
 // The kinds that may be off, whose stored null is kept.
 const OPTIONAL_KINDS = new Set<keyof TraceSettings>(['half_arc', 'half_ellipse', 'half_cubic'])
-// The Curve kinds rows, in order: each kind's field, its name, the drawn piece it names
-// and whether it can be turned off.
+// The Curve kinds rows, in order: each kind's field, its name, the drawn piece it names,
+// whether it can be turned off and, on the two arc kinds, its minimum-sweep field.
 type HalfKey = 'half_line' | 'half_arc' | 'half_ellipse' | 'half_cubic'
-export const CURVE_KINDS: { key: HalfKey; kind: CurveKind; label: string; piece: string; optional: boolean }[] = [
+type SweepKey = 'min_sweep_arc' | 'min_sweep_ellipse'
+export const CURVE_KINDS: { key: HalfKey; kind: CurveKind; label: string; piece: string; optional: boolean; sweep?: SweepKey }[] = [
   { key: 'half_line', kind: 'line', label: 'Lines', piece: 'line', optional: false },
-  { key: 'half_arc', kind: 'arc', label: 'Circular arcs', piece: 'circular arc', optional: true },
-  { key: 'half_ellipse', kind: 'ellipse', label: 'Elliptical arcs', piece: 'elliptical arc', optional: true },
+  { key: 'half_arc', kind: 'arc', label: 'Circular arcs', piece: 'circular arc', optional: true, sweep: 'min_sweep_arc' },
+  { key: 'half_ellipse', kind: 'ellipse', label: 'Elliptical arcs', piece: 'elliptical arc', optional: true, sweep: 'min_sweep_ellipse' },
   { key: 'half_cubic', kind: 'cubic', label: 'Cubic curves', piece: 'cubic curve', optional: true },
 ]
+// A minimum sweep the server takes: a number of degrees in [0, 360].
+const isMinSweep = (value: unknown): value is number => typeof value === 'number' && value >= 0 && value <= MIN_SWEEP_MAX
 const HALF_WIDTH_HELP = 'Higher lets this kind cover longer stretches, looser; lower holds it tighter to the pixels.'
 // t3api's default setting (t3api.SETTING, canonical), shown when the server does not report it.
 export const T3_SETTING: TracerInfo['setting'] = { half: { line: HALF_WIDTH_DEFAULT, arc: HALF_WIDTH_DEFAULT, ellipse: HALF_WIDTH_DEFAULT, cubic: HALF_WIDTH_DEFAULT }, A1: 22.5, A2: 45, L: 4 }
@@ -44,17 +51,25 @@ export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<
   const picked = Object.fromEntries(CLEANUP_KEYS.filter(key => key in stored).map(key => [key, stored[key]]))
   return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
-// A stored trace record or browser draft as the trace form loads it: the soft node limits
-// and half-widths it holds, and an optional kind's null (off), and nothing else; a record
-// from before the half-widths lacks them and loads them at their defaults, and a null line
-// is dropped, so it loads at its default too. Every other field an older record carries (the old fitter's
+// A stored trace record or browser draft as the trace form loads it: the soft node limits,
+// half-widths and minimum sweeps it holds, and an optional kind's null (off), and nothing
+// else; a record from before the half-widths or the minimum sweeps lacks them and loads them
+// at their defaults, and a null line is dropped, so it loads at its default too. An off
+// kind's minimum sweep reads as 0 and one outside [0, 360] is dropped, so a draft never sends
+// a minimum the server refuses. Every other field an older record carries (the old fitter's
 // lengths and their unit, its corner, node and snap controls, overlap, solid underlayers,
 // layer order, the renamed `corner_straightness`, `corner_threshold`, the pixel-era
 // `curve_optimization` and the cleanup fields a trace once embedded, which
 // legacyCleanupSettings hands to the Cleanup form) is dropped, so it is never sent.
 export function normalizeTraceSettings(stored: Record<string, unknown> | Partial<TraceSettings>): Partial<TraceSettings> {
   const record = stored as Record<string, unknown>
-  return Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number' || (record[key] === null && OPTIONAL_KINDS.has(key))).map(key => [key, record[key]])) as Partial<TraceSettings>
+  const kept = Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number' || (record[key] === null && OPTIONAL_KINDS.has(key))).map(key => [key, record[key]])) as Record<string, unknown>
+  for (const { key, sweep } of CURVE_KINDS) {
+    if (!sweep || !(sweep in kept)) continue
+    if (kept[key] === null) kept[sweep] = 0
+    else if (!isMinSweep(kept[sweep])) delete kept[sweep]
+  }
+  return kept as Partial<TraceSettings>
 }
 // The physical size a trace uses, from its cleanup: both sides in mm, with a one-sided
 // size completed from the raster's proportions once those are known.
@@ -291,24 +306,33 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
       <p className="settings-save-note tracer-line">Tracer: t3api{tracer?.build ? ` ${tracer.build}` : ''}; default half-widths {CURVE_KINDS.map(row => `${row.kind} ${setting.half[row.kind] ?? 'off'}`).join(', ')} px; A1 = {setting.A1}, A2 = {setting.A2}, L = {setting.L}</p>
       <section className="settings-group curve-kinds"><h3>Curve kinds</h3>
-        <p>A kind's tube half-width is how far, in px, a drawn piece of that kind may stray from the pixel boundary. {HALF_WIDTH_HELP} A kind switched off is never drawn.</p>
+        <p>A kind's tube half-width is how far, in px, a drawn piece of that kind may stray from the pixel boundary. {HALF_WIDTH_HELP} A kind switched off is never drawn. An arc's minimum sweep, in degrees, keeps arcs of that kind sweeping less than it out of the drawing (0: no minimum; 360: whole circles or ellipses only).</p>
         <div className="curve-kind-table" role="group" aria-label="Curve kinds">
-          <div className="curve-kind-row curve-kind-head" aria-hidden="true"><span className="curve-kind-kind">Kind</span><span className="curve-kind-half">Tube half-width</span></div>
+          {/* The minimum-sweep column's heading is the row's ::after (data-sweep), in the sweep track: the head's cells are the kind and half-width columns. */}
+          <div className="curve-kind-row curve-kind-head" aria-hidden="true" data-sweep="Min sweep"><span className="curve-kind-kind">Kind</span><span className="curve-kind-half">Tube half-width</span></div>
           {CURVE_KINDS.map(row => {
             const value = trace[row.key]
             const on = value !== null
-            const dirty = (value === null) !== (baseTrace[row.key] === null) || (on && td(row.key))
+            const dirty = (value === null) !== (baseTrace[row.key] === null) || (on && td(row.key)) || (row.sweep !== undefined && td(row.sweep))
             const id = `curve-kind-${row.kind}`
             const switchTitle = row.optional
               ? `On: ${row.piece}s are drawn within the half-width. Off: this kind is never used.`
               : 'Lines are always on: an edge one pixel crack long can only be drawn as a line, so a trace cannot do without them.'
             return <div key={row.key} className={`curve-kind-row${on ? '' : ' is-off'}`}>
-              <input type="checkbox" className="curve-kind-switch" aria-label={row.label} title={switchTitle} checked={on} disabled={!row.optional} onChange={row.optional ? event => t(row.key, event.target.checked ? HALF_WIDTH_DEFAULT : null) : undefined} />
+              <input type="checkbox" className="curve-kind-switch" aria-label={row.label} title={switchTitle} checked={on} disabled={!row.optional} onChange={row.optional ? event => setTrace(event.target.checked
+                ? { ...trace, [row.key]: HALF_WIDTH_DEFAULT }
+                // Off: the kind draws nothing, so its minimum sweep goes to 0 with it.
+                : { ...trace, [row.key]: null, ...(row.sweep ? { [row.sweep]: 0 } : {}) }) : undefined} />
               <label className="curve-kind-name" htmlFor={id}>{row.label}<DirtyDot dirty={dirty} /></label>
               <span className="curve-kind-half">
                 <NumberInput id={id} aria-label={`${row.label} tube half-width`} title={`The furthest a drawn ${row.piece} may lie from its edge, in px. ${HALF_WIDTH_HELP}`} value={value} min={0} disabled={!on} placeholder={on ? undefined : 'off'} onChange={next => { if (next !== null && next > 0) t(row.key, next) }} />
                 <span className="curve-kind-unit" aria-hidden="true">px</span>
               </span>
+              {row.sweep && <span className="curve-kind-sweep">
+                <span className="curve-kind-sweep-label" aria-hidden="true">Minimum sweep</span>
+                <NumberInput aria-label={`Minimum sweep of ${row.piece}s, in degrees`} title={`The least sweep, in degrees (0 to 360), a drawn ${row.piece} may have; a stretch only a shorter one could draw is drawn by the other kinds. 0: no minimum; 360: whole ${row.kind === 'arc' ? 'circles' : 'ellipses'} only.${on ? '' : ' Off with its kind.'}`} value={trace[row.sweep]} min={0} max={MIN_SWEEP_MAX} disabled={!on} onChange={next => { const sweep = row.sweep!; if (on && isMinSweep(next)) t(sweep, next === 0 ? 0 : next) }} />
+                <span className="curve-kind-unit" aria-hidden="true">°</span>
+              </span>}
               {!row.optional && <small className="curve-kind-note">Below about 0.55 px (sampled) long shallow straight edges break into several lines.</small>}
             </div>
           })}
