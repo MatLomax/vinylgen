@@ -127,12 +127,27 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   `traced.png` and `trace.json` are rebuilt from it by the re-export path
   (`trace_subject` with `reuse` naming the editor), with three differences: the
   map is never rewritten, its header's build need not be the installed one,
-  and it is audited at its header's own setting. Before anything is made, the server refuses with HTTP 422 a document
-  that fails one of these checks, in this order:
+  and it is audited at its header's own setting. A colour nib's boundary tool
+  appended to the palette (a "new colour" pick) is drawn as its own layer
+  after the included colours, named by the map's name for it or else by its
+  generated colour name, numbered past a name another colour holds
+  (`tracing.trace_palette`); validation and the export read the colours the
+  same way, and the revision's `palette.json` stays the raster's. Before
+  anything is made, the server refuses with HTTP 422 a document that fails
+  one of these checks, in this order:
   1. `t3api.read_planar_map` reads it (`reason` `"invalid"`).
   2. `planar_map_check` finds no violation (`"invalid"`, with `violations`).
-  3. Its `W`, `H`, `palette` and `names` are the parent's (`"mismatch"`).
-  4. It is not byte-equal to the parent's map (`"unchanged"`: nothing was
+  3. The rule of the map: no edge has one label on both sides; an edge with
+     a null side (a border edge) is exempt, as in nib's `checkLabelMap`
+     (`"invalid"`, naming the edge).
+  4. Its `W` and `H` are the parent's, and its `palette` is the parent's with
+     entries only appended: none changed, reordered or removed, each appended
+     entry a colour `[r, g, b]` of integers from 0 to 255 that labels at
+     least one face. Its `names` keep the parent's the same way, an appended
+     name null or one no other entry holds, ignoring case (`"mismatch"`,
+     naming the first differing entry).
+  5. Every face's label is an entry of its palette (`"invalid"`).
+  6. It is not byte-equal to the parent's map (`"unchanged"`: nothing was
      edited).
 
   The 422 body is `{detail, reason, problems[, violations]}`. A revision with no

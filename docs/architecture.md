@@ -230,12 +230,16 @@ the canvas, in the component's positioned container, it mounts nib's chrome with
 outcome is a line on the chrome's notice. The package is the vendored tarball
 `web/vendor/nib-core-0.9.0.tgz`, installed by `file:` path. The route (`web/app.py`) hands the body to
 `PipelineRunner.save_map` (`web/pipeline.py`). That function refuses a document
-with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`, of
-another size or palette than the parent's, or unchanged). Otherwise it makes a
+with `nib.map_refusal` (HTTP 422: unreadable, failing `planar_map_check`,
+breaking the rule of the map, of another size than the parent's, a palette that
+is not the parent's with colours only appended, a face labelled with no palette
+entry, or unchanged). Otherwise it makes a
 child trace revision, "edited in nib", through `PipelineRunner._trace`, the one
 function that also traces and re-exports. The posted map is written into the
 work folder and `trace_subject` rebuilds everything after the trace from it, as
-it does for a re-export. The save runs in the request (in the compute worker
+it does for a re-export; a colour nib appended to the palette is drawn as its
+own layer after the included ones (`tracing.trace_palette`), and validation
+reads the colours from the map the same way. The save runs in the request (in the compute worker
 subprocess, as a trace does) and answers 201 with the new revision. The parent's
 artifacts are untouched.
 

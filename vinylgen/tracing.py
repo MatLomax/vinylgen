@@ -19,7 +19,7 @@ import scipy
 from PIL import Image
 from scipy import ndimage
 
-from vinylgen.colour import colour_names
+from vinylgen.colour import colour_names, hex_colour
 from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSettings
 from vinylgen.cutter_cleanup import apply_cleanup, resolve_physical_size
 from vinylgen.palette import Progress, _noop
@@ -274,6 +274,38 @@ def map_with_palette(pm: dict, palette: list[dict]) -> dict:
     return {**pm, "palette": rgb, "names": names}
 
 
+def trace_palette(palette: list[dict], pm: dict) -> list[dict]:
+    """The palette rows a trace draws map ``pm`` in: the trace's own ``palette`` rows
+    (``palette.json``), then one row per entry ``pm``'s header appends to them, as nib's editor
+    appends a new colour. An appended row is ``{"index", "name", "hex", "rgb"}``: its name is the
+    map's name for it, else the generated name of its colour (``colour_names``), numbered " 2",
+    " 3", ... past a name another entry holds, ignoring case, so every row's name is unique.
+    ``palette`` itself (as a new list) when the header appends nothing. Raises ``ValueError``
+    when the header's first ``len(palette)`` colours and names are not ``palette``'s."""
+    count = len(palette)
+    names = pm.get("names")
+    header = {**pm, "palette": pm["palette"][:count],
+              "names": names[:count] if names is not None else None}
+    if len(pm["palette"]) < count or map_with_palette(header, palette) is not header:
+        raise ValueError("the map's palette and names do not begin with the trace's")
+    names = names if names is not None else [None] * len(pm["palette"])
+    taken = ({str(row["name"]).casefold() for row in palette}
+             | {str(name).casefold() for name in names[count:] if name is not None})
+    rows = list(palette)
+    for index in range(count, len(pm["palette"])):
+        rgb = [int(value) for value in pm["palette"][index]]
+        name = names[index]
+        if name is None:
+            base = colour_names(np.asarray([rgb], dtype=np.uint8))[0]
+            name, number = base, 1
+            while name.casefold() in taken:
+                number += 1
+                name = f"{base} {number}"
+            taken.add(name.casefold())
+        rows.append({"index": index, "name": name, "hex": hex_colour(rgb), "rgb": rgb})
+    return rows
+
+
 # The paper behind the cut vinyl: the colour the semantic audit sees at a centre no drawn
 # face holds (t3's painted label -1).
 UNPAINTED_RGB = (255, 255, 255)
@@ -394,8 +426,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
 
     ``reuse`` with an ``editor`` (``{"name", "version"}``) re-exports a map edited in that
     editor from revision ``revision``'s map, which the web pipeline wrote into ``subject_dir``
-    as posted. It is the same path with four differences: the map is never rewritten (a
-    header whose palette or names are not this trace's raises), its build need not be the
+    as posted. It is the same path with four differences: the map is never rewritten (its
+    header's palette and names are this trace's with colours only appended, else it raises;
+    each appended colour is drawn as its own layer, ``trace_palette``), its build need not be the
     installed one (the geometry is the editor's, checked here), its setting need not be
     ``settings``' table (the map is audited at its own header's setting), and the audit
     records the editor (``backend.editor``) and ``t3.edited``.
@@ -497,9 +530,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                                f"not at {requested}")
         if (pm["W"], pm["H"]) != (width, height):
             raise RuntimeError("the reused map.json is not the size of the traced labels")
-        named = map_with_palette(pm, palette)
-        if named is not pm and editor is not None:
-            raise RuntimeError("the edited map.json's palette and names are not the trace's")
+        # An edited map's header is the trace's palette with colours only appended
+        # (``trace_palette``, below); a reused one is renamed to this trace's palette.
+        named = pm if editor is not None else map_with_palette(pm, palette)
         if named is not pm:
             map_path.write_text(t3api.planar_map_json(named))
             pm = t3api.read_planar_map(map_path.read_text())
@@ -522,6 +555,14 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                          "edited_from": reuse["revision"]}
             t3_record.update(edited=True, edited_from=reuse["revision"])
 
+    # The colours the map is drawn in: the trace's palette, then any colour an edit in nib
+    # appended, each drawn as its own layer after the included ones.
+    try:
+        drawn = trace_palette(palette, pm)
+    except ValueError as error:
+        raise RuntimeError("the edited map.json's palette and names do not begin with the "
+                           "trace's") from error
+    drawn_included = included + list(range(len(palette), len(drawn)))
     # The setting the map was traced at, canonical: a header written up to t3api 0.26.0 holds
     # only ``w``, which is every kind at w / 2.
     traced_setting = t3api.normal_setting(pm["setting"])
@@ -530,8 +571,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     elements = face_elements(pm)
     root = svg_document(pm["W"], pm["H"], physical_mm)
     edge_stats = []
-    for index in included:
-        stats = add_face_layer(root, palette[index], pm, paths=paths, areas=areas,
+    for index in drawn_included:
+        stats = add_face_layer(root, drawn[index], pm, paths=paths, areas=areas,
                                elements=elements)
         stats["source_colour_components"] = source_component_count(labels == index)
         edge_stats.append(stats)
@@ -544,8 +585,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     tick(0.85, "Checking the planar map")
     gap_stats: dict = {}
     t3api.faces_svg_from_planar_map(
-        pm, [dict(row, index=i) for i, row in enumerate(palette)], gap_stats)
-    validations = {"edge": {**validate_svg(edge_path, palette, included),
+        pm, [dict(row, index=i) for i, row in enumerate(drawn)], gap_stats)
+    validations = {"edge": {**validate_svg(edge_path, drawn, drawn_included),
                             "planar_map_check": check, "read_back": read_back}}
 
     tick(0.88, "Semantic audit")
@@ -555,7 +596,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     tolerance = largest_half_width(traced_setting)
     minimum_feature_span = feature_span(tolerance)
     vector_labels = painted.astype(np.int16)
-    palette_rgb = segmentation.palette_rgb.astype(np.uint8)
+    palette_rgb = np.asarray([row["rgb"] for row in drawn], dtype=np.uint8).reshape(-1, 3)
     vector_rgb = np.where((painted >= 0)[..., None], palette_rgb[np.maximum(painted, 0)],
                           np.asarray(UNPAINTED_RGB, dtype=np.uint8)).astype(np.uint8)
     semantic_cache: dict = {}
@@ -622,7 +663,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                          **({"editor": dict(reuse["editor"])}
                             if reuse is not None and reuse.get("editor") else {})},
              "t3": {**t3_record, "gaps": gap_stats["gaps"], "gap_max": gap_stats["gap_max"]},
-             "colours": {"included": [palette[i] for i in included],
+             "colours": {"included": [drawn[i] for i in drawn_included],
                          "omitted": palette[omitted] if omitted is not None else None},
              "cleanup": cleanup_summary, "geometry": {"edge": edge_stats},
              "validation": validations, "warnings": warnings}

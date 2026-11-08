@@ -57,8 +57,9 @@ export type UpscaleStarted = { project: Project; job: Job }
 export type Health = { status: 'ok'; max_upload_bytes: number; active_jobs?: number; tracer?: TracerInfo | null }
 export type InkscapeHandoff = { exports: Artifact[]; shared_folder_enabled: boolean; guidance: string }
 // Why the server refused a planar map saved from nib's editor (HTTP 422): `invalid` (t3 cannot
-// read it, or its check finds `violations`), `mismatch` (another size or palette than the
-// revision it edits) or `unchanged` (nothing was edited).
+// read it, its check finds `violations`, an edge has one label on both sides, or a face's label
+// is no palette entry), `mismatch` (another size than the revision it edits, or a palette that
+// is not its palette with colours only appended) or `unchanged` (nothing was edited).
 export type MapRefusal = { detail: string; reason: 'invalid' | 'mismatch' | 'unchanged'; problems: string[]; violations?: number }
 export type MapSaved = { revision: Revision } | { refusal: MapRefusal }
 

@@ -6,8 +6,9 @@ are immutable, so the server makes a child revision of kind ``trace`` (parent: t
 revision; message "edited in nib") whose ``map.json`` is the posted document byte for byte, and
 rebuilds ``traced-edge.svg``, the checks, the audit, ``traced.png`` and ``trace.json`` from it as the
 re-export path does, with the revision's own settings. It refuses with HTTP 422 a document that
-fails ``t3api.read_planar_map`` or ``planar_map_check``, one whose ``W``, ``H`` or palette differ
-from the parent's, and one byte-equal to the parent's map (nothing edited). The contract is the
+fails ``t3api.read_planar_map`` or ``planar_map_check``, one whose ``W`` or ``H`` differ from the
+parent's or whose palette is not the parent's with colours only appended (``test_nib_save``), and
+one byte-equal to the parent's map (nothing edited). The contract is the
 tracer card ``cards/vinylgen-on-t3/card.md`` section 5 ("The traced-node viewer is nib's editor")
 and section 8 ("Later: the nib embed"), as decided in ``build-7a-brief.md``.
 

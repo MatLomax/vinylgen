@@ -21,7 +21,7 @@ import numpy as np
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings, upgrade_trace_record
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
-from vinylgen.tracing import ensure_palette_names, resolve_colour, t3_setting
+from vinylgen.tracing import ensure_palette_names, resolve_colour, t3_setting, trace_palette
 from vinylgen.validation import validate_svg
 
 from .cleanup import completion_message
@@ -717,13 +717,19 @@ class PipelineRunner:
         _require_fresh(self.store, parent_id, {"trace"})
         required = {"palette", "trace-audit", "traced-edge"}
         # A run traced before t3 also wrote the overlap variant, validated with it.
-        variants = ["edge"] + (["overlap"] if "traced-overlap" in
-                               self.store.effective_artifacts(parent_id) else [])
+        effective = self.store.effective_artifacts(parent_id)
+        variants = ["edge"] + (["overlap"] if "traced-overlap" in effective else [])
+        # A t3 run's map.json holds the colours it was drawn in (``tracing.trace_palette``):
+        # the palette, then any colour an edit in nib appended.
+        mapped = {"traced-map"} if "traced-map" in effective else set()
         artifacts = self._copy_inputs(
-            parent_id, work, required | {f"traced-{variant}" for variant in variants})
+            parent_id, work, required | mapped | {f"traced-{variant}" for variant in variants})
         palette_report = json.loads((work / artifacts["palette"]["filename"]).read_text())
         trace_audit = json.loads((work / artifacts["trace-audit"]["filename"]).read_text())
         palette = palette_report["palette"]
+        if mapped:
+            palette = trace_palette(
+                palette, json.loads((work / artifacts["traced-map"]["filename"]).read_text()))
         # The layers in document order: the included colours as the trace recorded them.
         names = [row["name"] for row in trace_audit["colours"]["included"]]
         by_name = {row["name"]: index for index, row in enumerate(palette)}
