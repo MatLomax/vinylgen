@@ -243,9 +243,12 @@ tighter to the pixels. Each is > 0. Arcs, ellipses and cubics can be off
 (`null`), so that kind is never drawn; the line cannot, since an edge of one
 crack can only be a line. Below about 0.55 px (sampled) long shallow straight
 edges break into several lines. A stored record from before the half-widths
-reads as the defaults. On the trace step they are the "Curve kinds" group,
-one row per kind (Lines, Circular arcs, Elliptical arcs, Cubic curves), each a
-half-width field and, but for the line, an on/off toggle. A table other than
+reads as the defaults. On the trace step they are the "Curve kinds" group, laid
+out in aligned rows under a header row (Kind, Tube half-width), one row per kind (Lines,
+Circular arcs, Elliptical arcs, Cubic curves): the kind's switch, its name and
+its half-width field in px. The line's switch is shown fixed on, its title
+saying why; a row switched off is dimmed, its field disabled and reading "off".
+A table other than
 the defaults may trace several times slower (fox-owl-table-2's edited labels:
 150 s at the defaults, 778 s at line 1.75, arc 1.0, ellipse 1.75, cubic 4.0);
 no vinylgen job has a time limit. The physical size is set by the cleanup stage and applies to both the

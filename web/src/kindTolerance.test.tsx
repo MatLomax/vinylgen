@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-// Card 12 of vinylgen-on-t3 (tracer card `cards/vinylgen-on-t3/build-12-brief.md`): the "Curve kinds"
-// group on the trace step. One row per kind (Lines, Circular arcs, Elliptical arcs, Cubic curves), each a
-// number field holding the kind's tube half-width in pixels (1.75 by default); arcs, ellipses and cubics
-// each have an on/off toggle, the line has none. A toggle off sends `null` for the kind; on from off
-// sends the default 1.75; an off kind's number field is disabled. Each row shows dirty state like the
-// other settings. DEFAULT_TRACE_SETTINGS carries the four half-widths beside the three soft limits, and
+// Cards 12 and 14 of vinylgen-on-t3 (tracer cards `cards/vinylgen-on-t3/build-12-brief.md`,
+// `build-14-brief.md`): the "Curve kinds" group on the trace step, a table under a header row ("Kind",
+// "Tube half-width") with one row per kind (Lines, Circular arcs, Elliptical arcs, Cubic curves): the
+// kind's switch, its name, then its tube half-width field in px (1.75 by default). Arcs, ellipses and
+// cubics switch on and off; the line's switch is fixed on, its title saying why. A switch off sends
+// `null` for the kind; on from off sends the default 1.75; an off row reads as off, its field disabled
+// and dimmed with "off" in place of its value. Each row shows dirty state like the other settings. DEFAULT_TRACE_SETTINGS carries the four half-widths beside the three soft limits, and
 // normalizeTraceSettings keeps an off kind's `null` while an older draft without the fields reads as
 // the defaults. The read-only tracer line names the build and the table, and no longer claims that no
 // trace setting changes the traced shapes.
@@ -73,23 +74,65 @@ describe('the Curve kinds group', () => {
     expect(fields.map(input => Number(input.value))).toEqual([1.75, 1.75, 1.75, 1.75])
     const spinbuttons = within(section).getAllByRole('spinbutton')
     expect(spinbuttons).toEqual(fields)
-    expect(within(section).getAllByText(/Higher lets this kind cover longer stretches, looser; lower holds it tighter to the pixels\./)).toHaveLength(4)
+    // The group's line says what the half-width means and that an off kind is never drawn; each
+    // field's title carries its kind's own help.
+    const intro = section.querySelector(':scope > p')!.textContent ?? ''
+    expect(intro).toMatch(/how far, in px, a drawn piece of that kind may stray from the pixel boundary/)
+    expect(intro).toMatch(/Higher lets this kind cover longer stretches, looser; lower holds it tighter to the pixels\./)
+    expect(intro).toMatch(/A kind switched off is never drawn\./)
+    expect(fields.map(input => input.title)).toEqual(['line', 'circular arc', 'elliptical arc', 'cubic curve'].map(piece => `The furthest a drawn ${piece} may lie from its edge, in px. Higher lets this kind cover longer stretches, looser; lower holds it tighter to the pixels.`))
   })
 
-  it('gives arcs, ellipses and cubics a toggle, and the line none', () => {
+  it('lays the kinds out as a table: a header row, then each row its switch, its name and its field in px', () => {
     renderTrace()
     const section = group()
-    expect(toggle(section, /^Lines/)).toBeNull()
+    const rows = [...section.querySelectorAll('.curve-kind-row')]
+    expect(rows).toHaveLength(5)
+    expect([...rows[0].children].map(cell => cell.textContent)).toEqual(['Kind', 'Tube half-width'])
+    rows.slice(1).forEach((row, index) => {
+      const [box, name, half] = [...row.children]
+      expect(box.matches('input[type="checkbox"]'), String(ROWS[index].field)).toBe(true)
+      expect(name.tagName).toBe('LABEL')
+      expect(name.textContent).toMatch(ROWS[index].label)
+      expect(half.querySelector('input[type="number"]')).toBe(field(section, ROWS[index].label))
+      expect(half.textContent).toBe('px')
+    })
+  })
+
+  it('gives arcs, ellipses and cubics a switch, and shows the line\'s fixed on, saying why', () => {
+    renderTrace()
+    const section = group()
+    const line = toggle(section, /^Lines/)!
+    expect(line.checked).toBe(true)
+    expect(line.disabled).toBe(true)
+    expect(line.title).toMatch(/Lines are always on: an edge one pixel crack long can only be drawn as a line/)
     for (const row of ROWS.filter(row => row.optional)) {
       const box = toggle(section, row.label)
       expect(box, String(row.field)).not.toBeNull()
       expect(box!.checked).toBe(true)
+      expect(box!.disabled).toBe(false)
+      expect(box!.title).toMatch(/Off: this kind is never used\./)
     }
-    expect(within(section).getAllByRole('checkbox')).toHaveLength(3)
-    expect(within(section).getAllByText(/Off: this kind is never used\./)).toHaveLength(3)
-    // The line's help carries the sampled note: below about 0.55 px long shallow straight edges
+    expect(within(section).getAllByRole('checkbox')).toHaveLength(4)
+    // The line's row carries the sampled note: below about 0.55 px long shallow straight edges
     // break into several lines.
-    expect(field(section, /^Lines/).closest('label')!.textContent).toMatch(/0\.55/)
+    expect(field(section, /^Lines/).closest('.curve-kind-row')!.textContent).toMatch(/0\.55/)
+  })
+
+  it('shows a switched-off row as off: its field disabled, dimmed and reading "off"', () => {
+    const off = { ...DEFAULTS, half_arc: null, half_ellipse: null } as unknown as TraceSettings
+    renderTrace(off, () => undefined, off)
+    const section = group()
+    for (const row of ROWS) {
+      const input = field(section, row.label)
+      const tr = input.closest('.curve-kind-row')!
+      const isOff = row.field === 'half_arc' || row.field === 'half_ellipse'
+      expect(tr.classList.contains('is-off'), String(row.field)).toBe(isOff)
+      expect(toggle(section, row.label)!.checked).toBe(!isOff)
+      expect(input.disabled).toBe(isOff)
+      expect(input.value).toBe(isOff ? '' : '1.75')
+      expect(input.placeholder).toBe(isOff ? 'off' : '')
+    }
   })
 
   it('sends null when a kind is toggled off and the default when it is toggled back on', () => {
@@ -125,8 +168,8 @@ describe('the Curve kinds group', () => {
     cleanup()
     renderTrace({ ...DEFAULTS, half_cubic: null } as unknown as TraceSettings, () => undefined, DEFAULTS)
     dots = [...group().querySelectorAll('.field-dirty')]
-    expect(dots.length).toBeGreaterThanOrEqual(1)
-    for (const dot of dots) expect(dot.closest('label')!.textContent).toMatch(/Cubic curves/)
+    expect(dots).toHaveLength(1)
+    expect(dots[0].closest('label')!.textContent).toMatch(/Cubic curves/)
     cleanup()
     renderTrace(DEFAULTS, () => undefined, DEFAULTS)
     expect(group().querySelectorAll('.field-dirty')).toHaveLength(0)

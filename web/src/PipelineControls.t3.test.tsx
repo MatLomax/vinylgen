@@ -63,10 +63,11 @@ describe('trace settings under t3', () => {
     expect(within(section).getByLabelText(/Nodes per layer/)).toBe(limits[1])
     expect(within(section).getByLabelText(/Nodes per document/)).toBe(limits[2])
     // The trace form edits nothing else: no overlap, layer order, fit, node or snap control;
-    // beside the three limits, only the Curve kinds group's four half-widths and three toggles.
+    // beside the three limits, only the Curve kinds group's four half-widths and four switches (the
+    // line's fixed on).
     const kinds = screen.getByRole('heading', { name: 'Curve kinds' }).closest('section')!
-    expect(kinds.querySelectorAll('input')).toHaveLength(7)
-    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3 + 7)
+    expect(kinds.querySelectorAll('input')).toHaveLength(8)
+    expect(container.querySelectorAll('input, select, textarea')).toHaveLength(3 + 8)
   })
 
   it('names the tracer and its default setting on a read-only line', () => {

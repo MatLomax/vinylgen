@@ -93,9 +93,15 @@ export function NumberField({ label, help, value, onChange, min = 0, max, step =
   // backspaced, a trailing dot) survives instead of snapping back to the last committed number.
   // Unfocused, the field mirrors the committed value, so external changes (stepping iterations,
   // reset) and a required field cleared then left empty both resolve back to the real value.
+  return <Field label={label} help={help} dirty={dirty} disabled={disabled}><NumberInput value={value} onChange={onChange} min={min} max={max} step={step} optional={optional} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} /></Field>
+}
+// NumberField's input alone, for a field laid out by its caller (the Curve kinds table).
+function NumberInput({ value, onChange, min = 0, max, step = 'any', optional = false, disabled, placeholder, ...rest }: {
+  value: number | null; onChange: (value: number | null) => void; min?: number; max?: number; step?: number | 'any'; optional?: boolean; disabled?: boolean; placeholder?: string; id?: string; title?: string; 'aria-label'?: string; 'aria-describedby'?: string
+}) {
   const [text, setText] = useState('')
   const [focused, setFocused] = useState(false)
-  return <Field label={label} help={help} dirty={dirty} disabled={disabled}><input type="number" min={min} max={max} step={step} value={focused ? text : (value ?? '')} disabled={disabled} placeholder={optional ? 'Automatic' : undefined} onFocus={() => { setFocused(true); setText(value === null ? '' : String(value)) }} onChange={event => { const raw = event.target.value; setText(raw); if (raw === '') { if (optional) onChange(null); return } const parsed = Number(raw); if (!Number.isNaN(parsed)) onChange(parsed) }} onBlur={() => setFocused(false)} /></Field>
+  return <input {...rest} type="number" min={min} max={max} step={step} value={focused ? text : (value ?? '')} disabled={disabled} placeholder={placeholder} onFocus={() => { setFocused(true); setText(value === null ? '' : String(value)) }} onChange={event => { const raw = event.target.value; setText(raw); if (raw === '') { if (optional) onChange(null); return } const parsed = Number(raw); if (!Number.isNaN(parsed)) onChange(parsed) }} onBlur={() => setFocused(false)} />
 }
 // A continuous-range counterpart to NumberField, for settings better dragged than typed.
 export function Slider({ label, help, value, onChange, min, max, step, format, dirty, disabled }: {
@@ -284,16 +290,29 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
       {tracedSize && <p className="settings-save-note traced-size">Traced image: {tracedSize.width} × {tracedSize.height} px</p>}
       <p className="settings-save-note physical-size">{formatPhysicalSize(traceSize)}</p>
       <p className="settings-save-note tracer-line">Tracer: t3api{tracer?.build ? ` ${tracer.build}` : ''}; default half-widths {CURVE_KINDS.map(row => `${row.kind} ${setting.half[row.kind] ?? 'off'}`).join(', ')} px; A1 = {setting.A1}, A2 = {setting.A2}, L = {setting.L}</p>
-      <section className="settings-group"><h3>Curve kinds</h3><p>Each kind's half-width is the furthest, in px, a drawn piece of that kind may lie from its edge.</p>
-        {CURVE_KINDS.map(row => {
-          const value = trace[row.key]
-          const on = value !== null
-          const numberField = <NumberField label={row.label} help={`The furthest a drawn ${row.piece} may lie from its edge, in px. ${HALF_WIDTH_HELP}${row.optional ? '' : ' Below about 0.55 px (sampled) long shallow straight edges break into several lines.'}`}
-            value={value} min={0} disabled={!on} dirty={on && td(row.key)} onChange={next => { if (next !== null && next > 0) t(row.key, next) }} />
-          return row.optional
-            ? <ToggleGroup key={row.key} label={row.label} help={`On: ${row.piece}s are drawn within the half-width. Off: this kind is never used.`} on={on} dirty={(value === null) !== (baseTrace[row.key] === null)} onToggle={next => t(row.key, next ? HALF_WIDTH_DEFAULT : null)}>{numberField}</ToggleGroup>
-            : <div key={row.key} className="settings-grid">{numberField}</div>
-        })}
+      <section className="settings-group curve-kinds"><h3>Curve kinds</h3>
+        <p>A kind's tube half-width is how far, in px, a drawn piece of that kind may stray from the pixel boundary. {HALF_WIDTH_HELP} A kind switched off is never drawn.</p>
+        <div className="curve-kind-table" role="group" aria-label="Curve kinds">
+          <div className="curve-kind-row curve-kind-head" aria-hidden="true"><span className="curve-kind-kind">Kind</span><span className="curve-kind-half">Tube half-width</span></div>
+          {CURVE_KINDS.map(row => {
+            const value = trace[row.key]
+            const on = value !== null
+            const dirty = (value === null) !== (baseTrace[row.key] === null) || (on && td(row.key))
+            const id = `curve-kind-${row.kind}`
+            const switchTitle = row.optional
+              ? `On: ${row.piece}s are drawn within the half-width. Off: this kind is never used.`
+              : 'Lines are always on: an edge one pixel crack long can only be drawn as a line, so a trace cannot do without them.'
+            return <div key={row.key} className={`curve-kind-row${on ? '' : ' is-off'}`}>
+              <input type="checkbox" className="curve-kind-switch" aria-label={row.label} title={switchTitle} checked={on} disabled={!row.optional} onChange={row.optional ? event => t(row.key, event.target.checked ? HALF_WIDTH_DEFAULT : null) : undefined} />
+              <label className="curve-kind-name" htmlFor={id}>{row.label}<DirtyDot dirty={dirty} /></label>
+              <span className="curve-kind-half">
+                <NumberInput id={id} aria-label={`${row.label} tube half-width`} title={`The furthest a drawn ${row.piece} may lie from its edge, in px. ${HALF_WIDTH_HELP}`} value={value} min={0} disabled={!on} placeholder={on ? undefined : 'off'} onChange={next => { if (next !== null && next > 0) t(row.key, next) }} />
+                <span className="curve-kind-unit" aria-hidden="true">px</span>
+              </span>
+              {!row.optional && <small className="curve-kind-note">Below about 0.55 px (sampled) long shallow straight edges break into several lines.</small>}
+            </div>
+          })}
+        </div>
       </section>
       <section className="settings-group"><h3>Complexity warnings</h3><p>These limits warn; they never silently simplify geometry.</p><div className="settings-grid"><NumberField label="Nodes per path" help="Warn when one shape has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_path_nodes} min={1} step={1} dirty={td('soft_path_nodes')} onChange={value => t('soft_path_nodes', value!)} /><NumberField label="Nodes per layer" help="Warn when one colour layer has more nodes than this in total. Lower: warns sooner. Never changes the geometry." value={trace.soft_layer_nodes} min={1} step={1} dirty={td('soft_layer_nodes')} onChange={value => t('soft_layer_nodes', value!)} /><NumberField label="Nodes per document" help="Warn when the whole design has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_document_nodes} min={1} step={1} dirty={td('soft_document_nodes')} onChange={value => t('soft_document_nodes', value!)} /></div></section>
     </>}
