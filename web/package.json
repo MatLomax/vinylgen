@@ -9,7 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@nib/core": "file:vendor/nib-core-0.9.2.tgz",
+    "@nib/core": "file:vendor/nib-core-0.9.3.tgz",
     "@vitejs/plugin-react": "latest",
     "lucide-react": "^1.33.0",
     "react": "latest",
