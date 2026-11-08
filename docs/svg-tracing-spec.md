@@ -117,7 +117,7 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   map edited in nib (below) is never reused this way: it is not t3's trace of
   the labels, so a trace from an edited revision traces afresh.
 - **Editing the trace in nib.** The Nodes stage is nib's editor with nib's
-  chrome (`@nib/core` 0.9.3, `web/vendor/nib-core-0.9.3.tgz`) on the selected revision's `map.json`.
+  chrome (`@nib/core` 0.9.4, `web/vendor/nib-core-0.9.4.tgz`) on the selected revision's `map.json`.
   Saving posts the exact text nib wrote to
   `POST /api/revisions/{revision_id}/map`, where `revision_id` is the trace
   revision that owns the map. Revisions are immutable, so a save makes a child
@@ -620,7 +620,7 @@ symmetric detail controls.
   `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
   "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
-  nib adds `editor` (`{"name": "nib", "version": "0.9.3"}`).
+  nib adds `editor` (`{"name": "nib", "version": "0.9.4"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),

@@ -22,12 +22,12 @@ Every route test runs through the live app (the frozen ``test_t3_trace`` helpers
 client, the identity header required as on the deployed service) on the test array traced by the
 web pipeline's trace job.
 
-The embed mounts ``@nib/core`` 0.9.3 and its chrome. ``VendoredNibCoreTest`` pins the package: the
-tarball packed from nib at tag ``core-v0.9.3`` (commit ``00fd209a2d2ba1b20d1e68d6a8c931c97982e1e3``)
-as ``web/vendor/nib-core-0.9.3.tgz`` with its sha256, no other tarball vendored, ``web/vendor/README.md``
+The embed mounts ``@nib/core`` 0.9.4 and its chrome. ``VendoredNibCoreTest`` pins the package: the
+tarball packed from nib at tag ``core-v0.9.4`` (commit ``4f032563cab092ec26a62f4958a2c381044c16dc``)
+as ``web/vendor/nib-core-0.9.4.tgz`` with its sha256, no other tarball vendored, ``web/vendor/README.md``
 naming the tag, the commit and the hash, ``web/package.json`` and its lockfile depending on it by
 ``file:`` path, and the package exporting ``mountChrome`` and ``./chrome.css``. The editor version a
-save records is the package's, ``0.9.3``.
+save records is the package's, ``0.9.4``.
 """
 
 from __future__ import annotations
@@ -54,18 +54,18 @@ from vinylgen.svg_writer import add_face_layer, svg_document, write_svg
 
 IDENTITY = {"X-Gandalf-User": "nib-embed@example.test"}
 
-# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.9.3; the pack
+# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.9.4; the pack
 # is reproducible.
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "web" / "vendor"
-NIB_CORE_VERSION = "0.9.3"
+NIB_CORE_VERSION = "0.9.4"
 NIB_CORE_TARBALL = f"nib-core-{NIB_CORE_VERSION}.tgz"
-NIB_CORE_SHA256 = "8ec67d3ce7ced78cf120fc18601928737af1dab22edde3e0a79b0e46bf646ce4"
-NIB_CORE_TAG = "core-v0.9.3"
-NIB_CORE_COMMIT = "00fd209a2d2ba1b20d1e68d6a8c931c97982e1e3"
+NIB_CORE_SHA256 = "2e34aeaea94faedb7821831da5674b314a76be4623e2ee8a60dca4712883bb3b"
+NIB_CORE_TAG = "core-v0.9.4"
+NIB_CORE_COMMIT = "4f032563cab092ec26a62f4958a2c381044c16dc"
 
 # The edited document: one node moved by (0.25, 0.25) with nib's node tool. Produced by nib's
-# core at tag core-v0.9.3 (00fd209), run under Node from the vendored tarball's dist:
+# core at tag core-v0.9.4 (4f03256), run under Node from the vendored tarball's dist:
 # LabelMapSession.fromText(the fixture's map.json), the view node of face 15 at edge 10's piece
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
 # 0.25), then session.text(). checkLabelMap reported no violation. The vendored tarball's
@@ -396,7 +396,7 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
 
 
 class VendoredNibCoreTest(unittest.TestCase):
-    """``@nib/core`` 0.9.3 is the vendored tarball the web client installs, and it carries the
+    """``@nib/core`` 0.9.4 is the vendored tarball the web client installs, and it carries the
     chrome vinylgen mounts."""
 
     def tarball(self) -> bytes:
