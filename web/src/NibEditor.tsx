@@ -6,7 +6,7 @@ import { api, type Revision } from './api'
 // nib's editor with nib's chrome on a trace revision's planar map (`map.json`): the Nodes stage's
 // canvas area. The component owns a positioned container holding a canvas. It mounts nib's
 // `Editor` on the canvas with `mountEditor` (`@nib/core`, vendored as
-// `web/vendor/nib-core-0.9.1.tgz`) through a server host, and nib's chrome over it in the
+// `web/vendor/nib-core-0.9.2.tgz`) through a server host, and nib's chrome over it in the
 // container with `mountChrome(container, editor, { actions: ['save'] })`, styled by
 // `@nib/core/chrome.css`. The host's `open` is a GET of the map artefact at `mapUrl`; its `save`
 // (the chrome's Save) is a POST of the exact text nib wrote to `/api/revisions/{revisionId}/map`,
