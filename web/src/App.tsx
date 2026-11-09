@@ -710,8 +710,11 @@ export default function App() {
   const readiness = selectedFailed ? 'Unavailable' : artifacts.some(row => row.kind === 'segmentation') ? 'Ready' : 'Flatten first'
   const nodesReadiness = selectedFailed ? 'Unavailable' : tracedMap ? 'Ready' : 'Trace first'
   // The map the Nodes stage edits: the selected revision's own effective map.json, never the
-  // last revision's while the selected one's artefacts load.
-  const editedMap = artifactsCurrent ? tracedMap : undefined
+  // last revision's while the selected one's artefacts load. The one exception is the revision
+  // a save from nib's editor just made: its map is the editor's open document byte for byte, so
+  // while its artefacts load (or after they fail to) the editor stays mounted on the map it
+  // holds, and takes the new revision's map as its props once they arrive.
+  const editedMap = artifactsCurrent ? tracedMap : savedByNib && savedByNib === revision ? tracedMap : undefined
   // Why a stage's controls are locked: announced to assistive tech through the buttons'
   // aria-describedby, and shown (below the controls, so nothing shifts during a normal
   // load) only once the revision has failed, with a way to retry.

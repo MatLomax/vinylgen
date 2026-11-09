@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 // `NibEditor`'s `onEditedChange`: whether the open map holds an edit not yet saved, read from nib's
-// per-frame stats (`Editor.onStats`, `EditorStats.canUndo`). The host is told each change once,
+// per-frame stats (`Editor.onStats`, `EditorStats.unsaved`: the undo position is not nib's save point). The host is told each change once,
 // never every frame, and told `false` when the editor goes (unmount, or a remount on another
 // map). `mountEditor` and `mountChrome` are stubs here: the test drives the stats nib would emit.
 import { act, cleanup, render } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-type StatsListener = (stats: { canUndo: boolean }) => void
+type StatsListener = (stats: { unsaved: boolean }) => void
 const nib = vi.hoisted(() => ({ listeners: [] as StatsListener[][], unwatched: 0 }))
 vi.mock('@nib/core', () => ({
   mountEditor: vi.fn(() => {
@@ -23,7 +23,7 @@ vi.mock('@nib/core', () => ({
 }))
 vi.mock('@nib/core/chrome.css', () => ({}))
 
-const emit = (canUndo: boolean, editor = nib.listeners.length - 1) => { for (const fn of [...nib.listeners[editor]]) fn({ canUndo }) }
+const emit = (unsaved: boolean, editor = nib.listeners.length - 1) => { for (const fn of [...nib.listeners[editor]]) fn({ unsaved }) }
 
 beforeEach(() => {
   nib.listeners = []
@@ -33,7 +33,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('NibEditor onEditedChange', () => {
-  it('reports each change of nib\'s canUndo once, and false when the editor goes', async () => {
+  it('reports each change of nib\'s unsaved once, and false when the editor goes', async () => {
     const { NibEditor } = await import('./NibEditor')
     const onEditedChange = vi.fn()
     const view = render(createElement(NibEditor, { revisionId: 'trace-1', mapUrl: '/api/artifacts/map-1/content', onEditedChange }))
