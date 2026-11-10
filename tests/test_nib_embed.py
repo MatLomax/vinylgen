@@ -8,7 +8,8 @@ rebuilds ``traced-edge.svg``, the checks, the audit, ``traced.png`` and ``trace.
 re-export path does, with the revision's own settings. It refuses with HTTP 422 a document that
 fails ``t3api.read_planar_map`` or ``planar_map_check``, one whose ``W`` or ``H`` differ from the
 parent's or whose palette is not the parent's with colours only appended (``test_nib_save``), and
-one byte-equal to the parent's map (nothing edited). The contract is the
+one byte-equal to the parent's map (nothing edited). A symmetric node, the letter ``z`` nib core 0.10.0 writes, is
+saved and read back as ``z``. The contract is the
 tracer card ``cards/vinylgen-on-t3/card.md`` section 5 ("The traced-node viewer is nib's editor")
 and section 8 ("Later: the nib embed"), as decided in ``build-7a-brief.md``.
 
@@ -22,12 +23,12 @@ Every route test runs through the live app (the frozen ``test_t3_trace`` helpers
 client, the identity header required as on the deployed service) on the test array traced by the
 web pipeline's trace job.
 
-The embed mounts ``@nib/core`` 0.9.5 and its chrome. ``VendoredNibCoreTest`` pins the package: the
-tarball packed from nib at tag ``core-v0.9.5`` (commit ``aa1c55e7e00f0eb1ae143c7b7bc3a6af024f924b``)
-as ``web/vendor/nib-core-0.9.5.tgz`` with its sha256, no other tarball vendored, ``web/vendor/README.md``
+The embed mounts ``@nib/core`` 0.10.0 and its chrome. ``VendoredNibCoreTest`` pins the package: the
+tarball packed from nib at tag ``core-v0.10.0`` (commit ``abe6ebe8906d98b75190938ee84c956979e08782``)
+as ``web/vendor/nib-core-0.10.0.tgz`` with its sha256, no other tarball vendored, ``web/vendor/README.md``
 naming the tag, the commit and the hash, ``web/package.json`` and its lockfile depending on it by
 ``file:`` path, and the package exporting ``mountChrome`` and ``./chrome.css``. The editor version a
-save records is the package's, ``0.9.5``.
+save records is the package's, ``0.10.0``.
 """
 
 from __future__ import annotations
@@ -51,21 +52,22 @@ import t3api
 
 from test_t3_trace import FIXTURE, SCRATCH, _Api, build_subject, expected_layers, svg_layers
 from vinylgen.svg_writer import add_face_layer, svg_document, write_svg
+from vinylgen.web.nib import map_refusal
 
 IDENTITY = {"X-Gandalf-User": "nib-embed@example.test"}
 
-# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.9.5; the pack
+# The vendored @nib/core: packed by `pnpm pack` in nib's packages/core at tag core-v0.10.0; the pack
 # is reproducible.
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "web" / "vendor"
-NIB_CORE_VERSION = "0.9.5"
+NIB_CORE_VERSION = "0.10.0"
 NIB_CORE_TARBALL = f"nib-core-{NIB_CORE_VERSION}.tgz"
-NIB_CORE_SHA256 = "51ffef11b3ac8ae841acec6184b6956cf3feb6c5809c079ad9cc8ab826fdcfee"
-NIB_CORE_TAG = "core-v0.9.5"
-NIB_CORE_COMMIT = "aa1c55e7e00f0eb1ae143c7b7bc3a6af024f924b"
+NIB_CORE_SHA256 = "220916efcfcc4fe9b484141ac44390a3c2c3dc29d785a85b24342f4cddffa3a2"
+NIB_CORE_TAG = "core-v0.10.0"
+NIB_CORE_COMMIT = "abe6ebe8906d98b75190938ee84c956979e08782"
 
 # The edited document: one node moved by (0.25, 0.25) with nib's node tool. Produced by nib's
-# core at tag core-v0.9.5 (aa1c55e), run under Node from the vendored tarball's dist:
+# core at tag core-v0.10.0 (abe6ebe), run under Node from the vendored tarball's dist:
 # LabelMapSession.fromText(the fixture's map.json), the view node of face 15 at edge 10's piece
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
 # 0.25), then session.text(). checkLabelMap reported no violation. The vendored tarball's
@@ -97,6 +99,19 @@ def move_one_node(text: str) -> str:
     pieces[MOVED_J]["seg"][1:3] = moved
     pieces[MOVED_J]["p0"] = list(moved)
     return nib_text(pm)
+
+
+def symmetric_node(text: str) -> tuple[str, int, int]:
+    """The document with its first smooth node (``"node": "s"``) written as symmetric
+    (``"node": "z"``), the letter nib core 0.10.0 writes for a symmetric node; returns the text
+    and the node's edge and piece."""
+    pm = json.loads(text)
+    for k, edge in enumerate(pm["edges"]):
+        for i, piece in enumerate(edge["pieces"]):
+            if piece["node"] == "s":
+                piece["node"] = "z"
+                return nib_text(pm), k, i
+    raise AssertionError("the map has no smooth node")
 
 
 def reversed_reference(text: str) -> str:
@@ -324,6 +339,25 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(int(np.count_nonzero(
             np.asarray(t3api.paint_planar_map(stored)) != np.asarray(t3api.paint_planar_map(parent)))), 0)
 
+    async def test_a_symmetric_node_z_is_saved_and_read_back_as_z(self):
+        # nib core 0.10.0 writes a symmetric node as ``z``: the save route reads it, stores it
+        # byte for byte, and t3's reader and SVG writer keep the letter.
+        self.prepared()
+        text, k, i = symmetric_node(self.parent_map)
+        self.assertIsNone(map_refusal(text.encode("utf-8"), self.parent_map.encode("utf-8")))
+        async with _IdentityApi(self, self.data) as api:
+            response = await api.post_map(self.trace_id, text)
+            self.assertEqual(response.status_code, 201, response.text)
+            own = await api.own(response.json()["id"])
+        self.assertEqual(own["traced-map"]["content"], text.encode("utf-8"))
+        stored = t3api.read_planar_map(own["traced-map"]["content"].decode("utf-8"))
+        self.assertEqual(stored["edges"][k]["pieces"][i]["node"], "z")
+        self.assertEqual(t3api.planar_map_check(stored)["violations"], 0)
+        nodetypes = "".join(node.attrib["{http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd}nodetypes"]
+                            for node in ET.fromstring(own["traced-edge"]["content"]).iter(
+                                "{http://www.w3.org/2000/svg}path"))
+        self.assertIn("z", nodetypes, "the rebuilt edge SVG marks the node symmetric")
+
     # ------------------------------------------------------------------------------- refusals
 
     async def test_an_unchanged_document_is_refused_422_unchanged(self):
@@ -396,7 +430,7 @@ class NibSaveRouteTest(unittest.IsolatedAsyncioTestCase):
 
 
 class VendoredNibCoreTest(unittest.TestCase):
-    """``@nib/core`` 0.9.5 is the vendored tarball the web client installs, and it carries the
+    """``@nib/core`` 0.10.0 is the vendored tarball the web client installs, and it carries the
     chrome vinylgen mounts."""
 
     def tarball(self) -> bytes:

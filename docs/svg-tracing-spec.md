@@ -68,9 +68,9 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   The viewBox is the pixel grid, `0 0 W H`. The SVG depends on `map.json` and
   the palette alone, so exporting it again from `map.json` gives the same
   bytes.
-- **Node types** are t3's: `c` (cusp) or `s` (Inkscape smooth, Vinylgen's
-  symmetric node), one per Inkscape node; an `A` counts as the cubics Inkscape
-  converts it to. t3 writes no `z`.
+- **Node types** are the map's: `c` (cusp) or `s` (smooth) from t3, and `z`
+  (symmetric) from an edit in nib, one per Inkscape node; an `A` counts as the
+  cubics Inkscape converts it to. t3 writes no `z`.
 - **The semantic audit** reads t3's painted labels, the exact raster of the
   drawing (a centre no face holds reads as white paper), at the largest
   half-width an enabled kind of the map's own setting has (1.75 px at the
@@ -117,7 +117,7 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   map edited in nib (below) is never reused this way: it is not t3's trace of
   the labels, so a trace from an edited revision traces afresh.
 - **Editing the trace in nib.** The Nodes stage is nib's editor with nib's
-  chrome (`@nib/core` 0.9.5, `web/vendor/nib-core-0.9.5.tgz`) on the selected revision's `map.json`.
+  chrome (`@nib/core` 0.10.0, `web/vendor/nib-core-0.10.0.tgz`) on the selected revision's `map.json`.
   Saving posts the exact text nib wrote to
   `POST /api/revisions/{revision_id}/map`, where `revision_id` is the trace
   revision that owns the map. Revisions are immutable, so a save makes a child
@@ -209,11 +209,10 @@ nodes. Terms follow [GLOSSARY.md](../GLOSSARY.md) "Path nodes".
 | Character | Vinylgen term | Inkscape name | Where t3 writes it |
 |---|---|---|---|
 | `c` | cusp node | cusp | A corner, and every end of an open edge: a junction cut, a chain end, the canvas border or a gap. |
-| `s` | symmetric node | smooth | A tangent join between two pieces, and the inner nodes of an arc. |
+| `s` | smooth node | smooth | A tangent join between two pieces, and the inner nodes of an arc. |
+| `z` | symmetric node | symmetric | Never: t3's smooth joins are tangent joins, not equal-handle ones. A `z` comes only from an edit in nib's editor, saved in the map's `node` letter. |
 
-t3 writes no `z` (Inkscape's symmetric, Vinylgen's smooth node): its smooth
-joins are tangent joins, not equal-handle ones. Rendering ignores the
-attribute.
+Rendering ignores the attribute.
 
 ## Palette names and optional colour removal
 
@@ -620,7 +619,7 @@ symmetric detail controls.
   `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
   "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
-  nib adds `editor` (`{"name": "nib", "version": "0.9.5"}`).
+  nib adds `editor` (`{"name": "nib", "version": "0.10.0"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),

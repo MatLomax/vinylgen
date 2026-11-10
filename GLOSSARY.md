@@ -93,7 +93,7 @@ automatically interchangeable when an entry calls out a narrower meaning.
 | **minimum sweep** | The least angle, in degrees (0 to 360), a drawn circular or elliptical arc may sweep: a trace setting per arc kind (`min_sweep_arc`, `min_sweep_ellipse`), passed to t3 as `{"min_sweep": {arc, ellipse}}`. An arc of that kind sweeping less is never drawn, and the stretch is drawn by the other kinds. 0 (the default) is no minimum and leaves the setting without the key; 360 admits whole circles or ellipses only; an off kind's minimum is 0. An elliptical arc's sweep is measured in its parameter angle, not its central angle. | min sweep, arc minimum sweep | minimum arc length (a sweep is an angle, not a length) |
 | **planar-map file** | `map.json`: t3's drawing as a label map, every boundary edge stored once with the faces on its two sides and every face as rings of signed edge references, in paint order, every number exact. The trace's artefact and the one source of its geometry. | planar map, `map.json`, traced map | face map file (`faces.json`, which stores every shared boundary twice) |
 | **label map** | A planar-map file opened as a document in nib's editor: its faces are fills derived from the edges' rings, so editing a node moves the boundary of both faces it separates and a shared boundary never tears. | nib's label-map document | an SVG path document (nib's other document kind), a raster label image (the segmentation's labels) |
-| **nib** | The vector node editor whose core (`@nib/core`, vendored as `web/vendor/nib-core-0.9.5.tgz`) the Nodes stage embeds, with nib's chrome, on a revision's planar-map file. Saving from it makes a new trace revision ("edited in nib"). | nib's editor, the Nodes stage | Inkscape handoff (an SVG round trip that makes an `inkscape-edit` revision) |
+| **nib** | The vector node editor whose core (`@nib/core`, vendored as `web/vendor/nib-core-0.10.0.tgz`) the Nodes stage embeds, with nib's chrome, on a revision's planar-map file. Saving from it makes a new trace revision ("edited in nib"). | nib's editor, the Nodes stage | Inkscape handoff (an SVG round trip that makes an `inkscape-edit` revision) |
 | **rule of the map** | No edge of a planar-map file has the same label on both sides: two adjacent faces of one label are one region, so an edge between them is no boundary. An edge with a null side (a border edge) is exempt. nib's `checkLabelMap` enforces it, and the save route refuses a map that breaks it, naming the edge. | the map's label rule | `planar_map_check` (t3's format check, which has no label rule) |
 | **appended colour** | A palette entry a map saved from nib adds after the trace's palette, as the boundary tool's "new colour" pick does: a colour `[r, g, b]`, equal to no earlier entry, that labels at least one face. The save route accepts a palette only so grown; the re-export draws each appended colour as its own layer, named by the map or by its generated colour name, while the revision's `palette.json` stays the raster's. | new colour, grown palette | a palette edit (Palette stage: merge, recolour, rename of the raster's colours) |
 | **canonical boundary** | One boundary edge between two faces, stored once in the planar-map file and drawn by the two faces' rings in opposite directions. | shared boundary, canonical interface | two matching paths, independently traced edge |
@@ -122,16 +122,18 @@ A **node** is an endpoint shared by two consecutive path segments; each cubic
 segment gives the node a **handle** (control point) on that side. Node types are
 defined by the node's two handles. The shape is the marker Vinylgen's documents
 use for that type; the Nodes stage is nib's editor, which draws
-its own markers. A traced node is a cusp or a symmetric node,
-from t3 (`sodipodi:nodetypes` `c` or `s`): t3's smooth joins are tangent joins,
-not equal-handle ones, so it writes no smooth node, and an elliptical or
-circular arc counts as the cubics Inkscape converts it to.
+its own markers. The terms are Inkscape's and nib's. A traced node is a cusp or a
+smooth node, from t3 (`sodipodi:nodetypes` `c` or `s`): t3's smooth joins are
+tangent joins, not equal-handle ones, so it writes no symmetric node, and an
+elliptical or circular arc counts as the cubics Inkscape converts it to. A
+symmetric node (`z`) comes only from an edit in nib's editor, which saves it in
+the map as `z`.
 
 | Canonical term | Definition | Shape | Avoid or qualify |
 |---|---|---|---|
 | **cusp node** | A node whose two handles are not at 180° to each other, so the path changes direction abruptly there; a node between two straight segments is always a cusp. | rhombus | sharp node; "corner" when the true edge has no corner there (that is a **kink**) |
-| **symmetric node** | A node whose two handles are at 180° to each other (collinear through the node) but may differ in length (unbalanced). | square | Inkscape calls this type *smooth* (`sodipodi:nodetypes` `s`); name it by Vinylgen's term |
-| **smooth node** | A node whose two handles are at 180° to each other and equal in length (balanced). | circle | Inkscape calls this type *symmetric* (`sodipodi:nodetypes` `z`); name it by Vinylgen's term |
+| **smooth node** | A node whose two handles are at 180° to each other (collinear through the node) but may differ in length (unbalanced): a tangent join. `sodipodi:nodetypes` and the planar map's `node` letter `s`. | square | "symmetric" for this type |
+| **symmetric node** | A node whose two handles are at 180° to each other and equal in length (balanced). `sodipodi:nodetypes` and the planar map's `node` letter `z`. | circle | "smooth" for this type |
 | **turn angle** | The change of direction at a node, in degrees: 0° is straight on, 180° doubles back. | bend angle | interior angle, which is 180° minus the turn |
 | **kink** | A cusp node where the true edge has no corner: an unintended sharp change of direction in what should be a continuous edge. | | corner |
 | **corner** | A direction jump where two pieces of a traced edge meet transversally, drawn as a cusp node. t3 decides it from the labels; no setting steers it. | | corner threshold (a fixed minimum turn, which Vinylgen does not have) |
