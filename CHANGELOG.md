@@ -24,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Nodes stage's editor is nib core 0.11.1.** Its chrome now writes only the attributes that
+  change: before, every frame rewrote the same `hidden`, `disabled`, `title` and `aria-*` values,
+  which queued a DOM mutation and invalidated style once per frame while nothing changed.
 - **Editing nodes in the Nodes stage** (nib core 0.10.0). A smooth node stays a tangent join
   through every edit; a double-click, or a double-tap on a touch screen, inserts the node at the
   exact nearest point of the segment, first time, with a touch reach sized to the finger; a path

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Card 8 of vinylgen-on-t3 (tracer `cards/vinylgen-on-t3/build-8a-brief.md`): `NibEditor` is nib's
 // editor with nib's full chrome. It owns a canvas and mounts nib's `Editor` on it with
-// `mountEditor` (`@nib/core` 0.11.0, from `web/vendor/nib-core-0.11.0.tgz`) through a server host:
+// `mountEditor` (`@nib/core` 0.11.1, from `web/vendor/nib-core-0.11.1.tgz`) through a server host:
 // `open` is a GET of the revision's `map.json` artefact, `save` a POST of the exact text nib wrote
 // to `/api/revisions/{revision_id}/map` (`application/json`). Over the canvas it mounts nib's
 // chrome with `mountChrome(container, editor, { actions: ['save'] })` and imports its stylesheet

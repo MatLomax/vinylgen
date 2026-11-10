@@ -2,7 +2,7 @@
 // Card 8 of vinylgen-on-t3 (tracer `cards/vinylgen-on-t3/build-8a-brief.md`): the outcomes of a save
 // from nib's chrome. The chrome's Save calls the host's `save`, which posts the map; the outcome
 // is the chrome's `notice(text, tone)`:
-// - 201: "Saved as a new trace revision." in the success tone (nib core 0.11.0's green toast), and
+// - 201: "Saved as a new trace revision." in the success tone (nib core 0.11.1's green toast), and
 //   the new revision goes to `onSaved`;
 // - 422 "unchanged": the server's detail (NibEditor.test.tsx);
 // - any other refusal: the server's detail followed by its problems, one per sentence (each
