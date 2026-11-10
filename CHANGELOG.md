@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A handle can be selected and deleted in the Nodes stage, the edge a drag would bend lights
+  up under the mouse, and three buttons set a node's type** (nib core 0.13.0). A tap on a
+  handle of a selected node selects it (Shift adds another), shown as a filled dot in a ring;
+  Del, or the Delete button (then labelled "Delete selected handles"), removes only the
+  selected handles, the node's type settling as it does when a handle is retracted, in one
+  undo step. With a mouse or pen, the edge segment a drag would bend is drawn lighter and the
+  cursor becomes a grab hand. The single button that cycled the node type is now three,
+  Cusp, Smooth and Symmetric, the selected nodes' type shown pressed; a press sets every
+  selected node to that type in one undo step. Symmetric is off, saying why, when a selected
+  node has a straight side. T still cycles.
 - **Bend any edge in the Nodes stage by dragging it, as in Inkscape** (nib core 0.12.0). A
   drag on any segment of the active face bends it, with nothing selected first: its two
   nodes become the selection, an arc converts to curves and bends in the same undo step,
@@ -26,6 +36,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tool disarms) and the symmetric node in label maps: the type button cycles cusp, smooth and
   symmetric (a node with a straight side passes over symmetric), and a symmetric node is saved as
   the map's `node` letter `z`, which the save route accepts and t3 reads and writes back as `z`.
+
+### Changed
+
+- **Dragging an edge in the Nodes stage bends it as Inkscape does** (nib core 0.13.0). A grab
+  near one end of a curve now moves only that end's handle (within a sixth of the curve from
+  the end), the far end's handle staying put; nearer the middle the two handles share the move
+  as Inkscape's node tool shares it. The point grabbed still follows the pointer exactly.
 
 ### Fixed
 
