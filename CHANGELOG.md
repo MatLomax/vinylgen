@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Nodes stage no longer leaves stale patches of the map on screen on a phone** (nib core
+  0.12.2). On a GPU-drawn canvas, as in Chrome on Android, parts of the map's static picture
+  could keep showing an old view (another zoom, or the map before an edit) after a pan, a zoom
+  or a tap, because a tile's canvas was reused for another tile. Each tile now has a canvas of
+  its own, and after every gesture the screen matches a fresh render of the map.
+
 - **A touch double-tap in the Nodes stage inserts its node where the first tap landed, and a
   press near the active face pans again** (nib core 0.12.1). The second tap counts within the
   touch reach of the first tap's point and half a second, so jitter across a node, a first tap
