@@ -1,24 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
-import { mountChrome, mountEditor, type Host, type MountedChrome, type MountedEditor, type SaveResult } from '@nib/core'
+import { mountChrome, mountEditor, type Host, type MountedChrome, type MountedEditor, type NoticeTone, type SaveResult } from '@nib/core'
 import '@nib/core/chrome.css'
 import { api, type Revision } from './api'
 
 // nib's editor with nib's chrome on a trace revision's planar map (`map.json`): the Nodes stage's
 // canvas area. The component owns a positioned container holding a canvas. It mounts nib's
 // `Editor` on the canvas with `mountEditor` (`@nib/core`, vendored as
-// `web/vendor/nib-core-0.10.0.tgz`) through a server host, and nib's chrome over it in the
+// `web/vendor/nib-core-0.11.0.tgz`) through a server host, and nib's chrome over it in the
 // container with `mountChrome(container, editor, { actions: ['save'] })`, styled by
 // `@nib/core/chrome.css`. The host's `open` is a GET of the map artefact at `mapUrl`; its `save`
 // (the chrome's Save) is a POST of the exact text nib wrote to `/api/revisions/{revisionId}/map`,
 // which makes a new trace revision (`onSaved` receives it). Every outcome is a line on the
-// chrome's notice: the saved revision, the server's "unchanged" detail, or a refusal's detail
-// followed by its problems, one per sentence. The server stores the posted text byte for byte as
+// chrome's notice, in a tone: the saved revision in the success tone (nib's green toast, which
+// clears itself), the server's "unchanged" detail, or a refusal's detail followed by its
+// problems, one per sentence, in the error tone, as is a failed post. nib shows the save in
+// flight on its Save button and runs one save at a time. The server stores the posted text byte for byte as
 // the new revision's map.json, so a save keeps the editor as it is: nib sets its save point and
 // keeps its view, selection, layers panel and undo history, the next save posts to the saved
 // revision, and props moving onto that revision's own map do not remount it. Any other `mapUrl`
 // (another revision, trace run or project) remounts the editor on that map. `notice`, when given,
 // is put on the chrome's notice line, at mount and whenever it changes, such as `SAVED` on the
-// revision a save made. The component has no controls of its own. With no `mapUrl` (a revision
+// revision a save made: `SAVED` in the success tone, any other text as info (`noticeTone`). The component has no controls of its own. With no `mapUrl` (a revision
 // traced before t3, or none at all) it renders nothing.
 export type NibEditorProps = { revisionId: string; mapUrl?: string | null; onSaved?: (revision: Revision) => void; notice?: string | null; onEditedChange?: (edited: boolean) => void }
 
@@ -44,6 +46,9 @@ function sentence(text: string): string {
 export function refusalNotice(detail: string, problems: readonly string[] = []): string {
   return [detail.trim(), ...problems.map(sentence)].filter(Boolean).join(' ')
 }
+
+// The tone the `notice` prop is shown in: the saved line as a success, anything else as info.
+export const noticeTone = (text: string): NoticeTone => text === SAVED ? 'success' : 'info'
 
 const reason = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
 
@@ -78,13 +83,13 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice, onEditedChange 
     let edited = false
     const setEdited = (next: boolean) => { if (next !== edited) { edited = next; latest.current.onEditedChange?.(next) } }
     let unwatch: (() => void) | null = null
-    // nib's chrome clears its notice line once its Save has resolved, so a save's outcome is
-    // put on the line on the next task, after that clear; then a saved revision goes to
-    // `onSaved`, which selects it while this editor stays mounted. A chrome disposed by then
-    // ignores the line.
-    const afterSave = (text: string, saved?: Revision) => {
+    // nib's chrome sets its notice line once its Save has resolved ("Saved" on a save, cleared
+    // otherwise), so a save's outcome is put on the line on the next task, replacing nib's; then
+    // a saved revision goes to `onSaved`, which selects it while this editor stays mounted. A
+    // chrome disposed by then ignores the line.
+    const afterSave = (text: string, tone: NoticeTone, saved?: Revision) => {
       window.setTimeout(() => {
-        chrome?.notice(text)
+        chrome?.notice(text, tone)
         if (saved) latest.current.onSaved?.(saved)
       }, 0)
     }
@@ -95,23 +100,24 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice, onEditedChange 
       },
       save: async (_name, text, kind): Promise<SaveResult> => {
         // Only the planar map goes back to the server; nib's SVG exports have no place there.
-        // A second Save while one is on its way posts nothing.
+        // A second Save while one is on its way posts nothing: nib runs one save at a time, and
+        // this guard stays as a backstop.
         if (kind !== 'label-map' || saving) return 'cancelled'
         saving = true
         try {
           const saved = await api.saveMap(savedTo ?? latest.current.revisionId, text)
           if ('refusal' in saved) {
             const { refusal } = saved
-            if (refusal.reason === 'unchanged') { afterSave(refusal.detail); return 'empty' }
-            afterSave(refusalNotice(refusal.detail, refusal.problems))
+            if (refusal.reason === 'unchanged') { afterSave(refusal.detail, 'error'); return 'empty' }
+            afterSave(refusalNotice(refusal.detail, refusal.problems), 'error')
             return 'cancelled'
           }
           savedTo = saved.revision.id
           setMount(current => current.key === mountKey ? { ...current, saved: saved.revision.id } : current)
-          afterSave(SAVED, saved.revision)
+          afterSave(SAVED, 'success', saved.revision)
           return 'saved'
         } catch (cause) {
-          afterSave(`Could not save the map: ${reason(cause)}`)
+          afterSave(`Could not save the map: ${reason(cause)}`, 'error')
           return 'cancelled'
         } finally {
           saving = false
@@ -125,7 +131,7 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice, onEditedChange 
       chrome = mountChrome(root, editor.editor, { actions: ['save'] })
       unwatch = editor.editor.onStats(stats => setEdited(stats.unsaved))
       mountedChrome.current = chrome
-      if (latest.current.notice) chrome.notice(latest.current.notice)
+      if (latest.current.notice) chrome.notice(latest.current.notice, noticeTone(latest.current.notice))
       return editor
     }
     fetchMap(mapUrl, controller.signal).then(text => {
@@ -151,7 +157,7 @@ export function NibEditor({ revisionId, mapUrl, onSaved, notice, onEditedChange 
   }, [mountKey])
 
   // A notice given once the chrome is mounted replaces the line's text.
-  useEffect(() => { if (notice) mountedChrome.current?.notice(notice) }, [notice])
+  useEffect(() => { if (notice) mountedChrome.current?.notice(notice, noticeTone(notice)) }, [notice])
 
   if (!mapUrl) return null
   return <div ref={container} className="nib-editor">

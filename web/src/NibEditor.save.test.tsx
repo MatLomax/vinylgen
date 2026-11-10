@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 // Card 8 of vinylgen-on-t3 (tracer `cards/vinylgen-on-t3/build-8a-brief.md`): the outcomes of a save
 // from nib's chrome. The chrome's Save calls the host's `save`, which posts the map; the outcome
-// is the chrome's `notice(text)`:
-// - 201: "Saved as a new trace revision.", and the new revision goes to `onSaved`;
+// is the chrome's `notice(text, tone)`:
+// - 201: "Saved as a new trace revision." in the success tone (nib core 0.11.0's green toast), and
+//   the new revision goes to `onSaved`;
 // - 422 "unchanged": the server's detail (NibEditor.test.tsx);
 // - any other refusal: the server's detail followed by its problems, one per sentence (each
 //   problem with its first letter capitalised and a closing period unless it already ends in
-//   one of `.`, `!` or `?`), joined by single spaces.
+//   one of `.`, `!` or `?`), joined by single spaces, in the error tone.
+// The `notice` prop is shown in the success tone when it is that saved line, and as info otherwise.
 // On the Nodes stage the saved child trace revision ("edited in nib") is selected, as
 // `mapSaved` does. Card 24 (`build-24-brief.md`): the save keeps the editor as it is. The posted
 // text is the new revision's map byte for byte, so the editor is neither disposed nor remounted,
@@ -21,9 +23,9 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Project, Revision } from './api'
-import { NibEditor } from './NibEditor'
+import { NibEditor, SAVED } from './NibEditor'
 
-type ChromeCall = { container: HTMLElement; editor: unknown; options: unknown; root: HTMLElement; save: HTMLButtonElement; notices: (string | null)[] }
+type ChromeCall = { container: HTMLElement; editor: unknown; options: unknown; root: HTMLElement; save: HTMLButtonElement; notices: (string | null)[]; tones: (string | undefined)[] }
 type Mounted = { editor: unknown; loaded: Promise<unknown>; dispose(): void }
 type EditorCall = { canvas: HTMLCanvasElement; options: { text?: string; kind?: string }; mounted: Mounted; disposed: number }
 // The few editor members the card-24 tests drive: an edit (lock a face), undo, and the stats.
@@ -52,9 +54,9 @@ vi.mock('@nib/core', async importOriginal => {
       save.addEventListener('click', () => { void editor.saveDocument() })
       root.append(save)
       container.append(root)
-      const call: ChromeCall = { container, editor, options, root, save, notices: [] }
+      const call: ChromeCall = { container, editor, options, root, save, notices: [], tones: [] }
       nibCore.chromes.push(call)
-      return { root, notice: (text: string | null) => { call.notices.push(text) }, dispose: () => { root.remove() } }
+      return { root, notice: (text: string | null, tone?: string) => { call.notices.push(text); call.tones.push(tone) }, dispose: () => { root.remove() } }
     }),
   }
 })
@@ -159,6 +161,7 @@ describe('NibEditor saves', () => {
     const { onSaved, chrome, container } = await saveWith(json(child, 201))
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith(child))
     await vi.waitFor(() => expect(chrome.notices.at(-1)).toBe('Saved as a new trace revision.'))
+    expect(chrome.tones.at(-1)).toBe('success')
     expect(ownNotices(container, chrome)).toHaveLength(0)
   })
 
@@ -171,6 +174,7 @@ describe('NibEditor saves', () => {
     await vi.waitFor(() => expect(chrome.notices.filter(Boolean)).not.toHaveLength(0))
     expect(chrome.notices.at(-1)).toBe(
       'The map fails the planar-map check with 2 violation(s). Ring 0 of face 0 does not close. Edge 3 sides disagree with its references.')
+    expect(chrome.tones.at(-1)).toBe('error')
     expect(onSaved).not.toHaveBeenCalled()
     expect(ownNotices(container, chrome)).toHaveLength(0)
   })
@@ -179,7 +183,30 @@ describe('NibEditor saves', () => {
     const refusal = { detail: 'The map is not this trace\'s: its size or palette differ.', reason: 'mismatch', problems: ['W is 101, the parent\'s is 100'] }
     const { onSaved, chrome } = await saveWith(json(refusal, 422))
     await vi.waitFor(() => expect(chrome.notices.at(-1)).toBe('The map is not this trace\'s: its size or palette differ. W is 101, the parent\'s is 100.'))
+    expect(chrome.tones.at(-1)).toBe('error')
     expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('puts a failed post on the notice line in the error tone', async () => {
+    stubBrowser(() => { throw new Error('offline') })
+    const onSaved = vi.fn()
+    render(createElement(NibEditor, { revisionId: 'trace-1', mapUrl: MAP_URL, onSaved }))
+    const chrome = await pressSave()
+    await vi.waitFor(() => expect(chrome.notices.at(-1)).toMatch(/^Could not save the map: /))
+    expect(chrome.tones.at(-1)).toBe('error')
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('shows the notice prop in the success tone when it is the saved line, and as info otherwise', async () => {
+    stubBrowser(() => json({}, 200))
+    const view = render(createElement(NibEditor, { revisionId: 'trace-1', mapUrl: MAP_URL, notice: SAVED }))
+    await vi.waitFor(() => expect(nibCore.chromes).toHaveLength(1))
+    const chrome = nibCore.chromes[0]
+    await vi.waitFor(() => expect(chrome.notices).toContain(SAVED))
+    expect(chrome.tones[chrome.notices.indexOf(SAVED)]).toBe('success')
+    view.rerender(createElement(NibEditor, { revisionId: 'trace-1', mapUrl: MAP_URL, notice: 'Traced with the new setting.' }))
+    await vi.waitFor(() => expect(chrome.notices.at(-1)).toBe('Traced with the new setting.'))
+    expect(chrome.tones.at(-1)).toBe('info')
   })
 })
 
