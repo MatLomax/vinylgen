@@ -24,8 +24,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **The Nodes stage's editor is nib core 0.11.1.** Its chrome now writes only the attributes that
-  change: before, every frame rewrote the same `hidden`, `disabled`, `title` and `aria-*` values,
+- **Drags and pans on a large map in the Nodes stage stay near a frame** (nib core 0.11.2). On a
+  map with a background face of hundreds of rings (the fox, 458 rings and 17,054 nodes), a node or
+  handle drag cost about 150 ms a move and a pan about 125 ms on a phone-speed CPU; they now cost
+  about 25 to 30 ms. A face of many rings builds its path in linear time, each edge's path is kept
+  until that edge changes, a pan or pinch reuses the static layer (rastered with a margin of one
+  view) until the gesture ends, and what lies outside the view is not drawn.
+- **The Nodes stage's chrome writes only the attributes that change** (nib core 0.11.1): before, every frame rewrote the same `hidden`, `disabled`, `title` and `aria-*` values,
   which queued a DOM mutation and invalidated style once per frame while nothing changed.
 - **Editing nodes in the Nodes stage** (nib core 0.10.0). A smooth node stays a tangent join
   through every edit; a double-click, or a double-tap on a touch screen, inserts the node at the
