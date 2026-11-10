@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Bend any edge in the Nodes stage by dragging it, as in Inkscape** (nib core 0.12.0). A
+  drag on any segment of the active face bends it, with nothing selected first: its two
+  nodes become the selection, an arc converts to curves and bends in the same undo step,
+  both faces of the edge follow, and one undo puts back the edge and the selection. A drag
+  on another face's edge still pans, and a tap there makes that face active.
 - **Save progress, a green save toast and a full-screen editor in the Nodes stage** (nib core
   0.11.0). While a save posts, nib's Save button is disabled and its icon turns, and a second
   save waits for the first. A save that makes a new trace revision says so in a green toast that

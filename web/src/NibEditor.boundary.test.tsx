@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Card 18 of vinylgen-on-t3 (tracer `cards/vinylgen-on-t3/build-18-brief.md`): the Nodes stage's
-// embedded editor offers nib's boundary tool (`@nib/core` 0.11.2). On a revision's map.json, nib's
+// embedded editor offers nib's boundary tool (`@nib/core` 0.12.0). On a revision's map.json, nib's
 // real chrome over the real editor shows:
 // - the toolbar button "Draw a boundary", shown on a label map, `aria-pressed` "false" while the
 //   tool is off;
