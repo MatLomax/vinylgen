@@ -29,6 +29,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A touch double-tap in the Nodes stage inserts its node where the first tap landed, and a
+  press near the active face pans again** (nib core 0.12.1). The second tap counts within the
+  touch reach of the first tap's point and half a second, so jitter across a node, a first tap
+  that made the face on its side active, or a selected node's handle under the second tap no
+  longer loses the insert; the node goes on the boundary nearest the finger, whichever face
+  is active. A drag bends a boundary only when it starts within 8 CSS px of it; further out it
+  pans, as before 0.12.0. A press or release on a large map no longer stalls the screen: it
+  redraws only the part of the map the edited faces cover, and the map's static picture is
+  held in tiles bounded to what is on screen plus a ring (about 27 MB on a phone).
+
 - **Drags and pans on a large map in the Nodes stage stay near a frame** (nib core 0.11.2). On a
   map with a background face of hundreds of rings (the fox, 458 rings and 17,054 nodes), a node or
   handle drag cost about 150 ms a move and a pan about 125 ms on a phone-speed CPU; they now cost
