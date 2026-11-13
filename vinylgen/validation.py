@@ -5,6 +5,7 @@ import math
 import hashlib
 import threading
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -698,7 +699,7 @@ def semantic_warning_mask(source_rgb: np.ndarray, candidate_rgb: np.ndarray,
     return reference & (distances > maximum_deviation)
 
 
-def validate_svg(path: Path, palette: list[dict], included: list[int]) -> dict:
+def validate_svg(path: Path, palette: Sequence[Mapping[str, object]], included: list[int]) -> dict:
     root = ET.parse(path).getroot()
     layers = root.findall(f"{{{SVG}}}g")
     paths = root.findall(f".//{{{SVG}}}path")

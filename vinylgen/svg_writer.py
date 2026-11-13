@@ -4,6 +4,15 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import t3api
+
+    class PaletteRow(t3api.PaletteEntry):
+        """One of vinylgen's palette rows (``palette.json``'s entries, and the rows a trace draws
+        in, ``tracing.trace_palette``): t3api's palette entry and the colour's ``rgb``."""
+        rgb: list[int]
 
 
 SVG = "http://www.w3.org/2000/svg"
@@ -26,7 +35,14 @@ def svg_document(width: int, height: int,
     return ET.Element(f"{{{SVG}}}svg", attrs)
 
 
-def layer_slug(name: str) -> str:
+def palette_name(row: PaletteRow) -> str | None:
+    """``row["name"]``: a ``KeyError`` when the row has none, as indexing raises."""
+    if "name" not in row:
+        raise KeyError("name")
+    return row["name"]
+
+
+def layer_slug(name: str | None) -> str:
     """The id fragment of a colour's layer and paths: its name casefolded, runs of other
     characters as one hyphen."""
     return re.sub(r"[^a-z0-9]+", "-", str(name).casefold()).strip("-")
@@ -69,7 +85,7 @@ def segment_area(seg: list) -> float:
 _CUBIC_AREA = ((0, 12, 6, 2), (0, 0, 6, 6), (0, 0, 0, 12), (0, 0, 0, 0))
 
 
-def face_areas(pm: dict) -> dict[int, float]:
+def face_areas(pm: t3api.PlanarMap) -> dict[int, float]:
     """Each face's drawn area by Green's theorem over its pieces: every edge's signed area
     once, each ring the sum of its signed references, and the face even-odd, its largest
     ring less the others (a face's rings are its outer ring and its holes, which do not
@@ -84,7 +100,7 @@ def face_areas(pm: dict) -> dict[int, float]:
     return areas
 
 
-def face_elements(pm: dict) -> dict[int, dict[str, int]]:
+def face_elements(pm: t3api.PlanarMap) -> dict[int, dict[str, int]]:
     """Each face's drawn pieces by kind: ``L``, ``A circular`` (rx = ry), ``A elliptical``,
     ``C``, and the connectors ``border`` and ``gap``."""
     edge_kinds = []
@@ -107,7 +123,8 @@ def face_elements(pm: dict) -> dict[int, dict[str, int]]:
     return faces
 
 
-def add_face_layer(root: ET.Element, row: dict, pm: dict, *, paths: list[dict] | None = None,
+def add_face_layer(root: ET.Element, row: PaletteRow, pm: t3api.PlanarMap, *,
+                   paths: list[t3api.FacePath] | None = None,
                    areas: dict[int, float] | None = None,
                    elements: dict[int, dict[str, int]] | None = None) -> dict:
     """Append one colour's layer of the edge SVG from a planar map read from ``map.json``.
@@ -126,9 +143,10 @@ def add_face_layer(root: ET.Element, row: dict, pm: dict, *, paths: list[dict] |
         areas = face_areas(pm)
     if elements is None:
         elements = face_elements(pm)
-    slug = layer_slug(row["name"])
+    name = palette_name(row)
+    slug = layer_slug(name)
     layer = ET.SubElement(root, f"{{{SVG}}}g", {
-        f"{{{INKSCAPE}}}groupmode": "layer", f"{{{INKSCAPE}}}label": f"{row['name']} ({row['hex']})",
+        f"{{{INKSCAPE}}}groupmode": "layer", f"{{{INKSCAPE}}}label": f"{name} ({row['hex']})",
         "id": f"layer-{slug}", "fill": str(row["hex"]),
         "stroke": "none",
         "fill-rule": "evenodd"})
@@ -140,7 +158,7 @@ def add_face_layer(root: ET.Element, row: dict, pm: dict, *, paths: list[dict] |
     for number, face in enumerate(faces, 1):
         path_id = f"edge-{slug}-{number:03d}"
         ET.SubElement(layer, f"{{{SVG}}}path", {
-            "id": path_id, f"{{{INKSCAPE}}}label": f"{row['name']} {number:03d}",
+            "id": path_id, f"{{{INKSCAPE}}}label": f"{name} {number:03d}",
             "d": face["d"], f"{{{SODIPODI}}}nodetypes": face["nodetypes"]})
         rings = face["d"].count("M")
         # t3 writes one letter per Inkscape node plus one closing letter per subpath.
@@ -150,7 +168,7 @@ def add_face_layer(root: ET.Element, row: dict, pm: dict, *, paths: list[dict] |
             layer_elements[kind] = layer_elements.get(kind, 0) + count
         for letter in face["nodetypes"]:
             node_types[letter] = node_types.get(letter, 0) + 1
-    return {"index": row["index"], "name": row["name"], "hex": row["hex"],
+    return {"index": row["index"], "name": name, "hex": row["hex"],
             "paths": len(components), "nodes": sum(c["nodes"] for c in components),
             "holes": sum(c["holes"] for c in components), "construction": "t3 planar map",
             "elements": dict(sorted(layer_elements.items())), "node_types": node_types,

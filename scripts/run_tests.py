@@ -83,7 +83,10 @@ class _Result(unittest.TestResult):
     def addSubTest(self, test, subtest, err):
         super().addSubTest(test, subtest, err)
         if err is not None:
-            kind = "FAIL" if issubclass(err[0], test.failureException) else "ERROR"
+            # A failed subtest's ``err`` is its ``sys.exc_info()``, so it names the exception.
+            exc_type = err[0]
+            assert exc_type is not None
+            kind = "FAIL" if issubclass(exc_type, test.failureException) else "ERROR"
             detail = (self.failures if kind == "FAIL" else self.errors)[-1][1]
             self.records.append({"id": subtest.id(), "outcome": kind, "detail": detail,
                                  "seconds": 0.0})
@@ -207,7 +210,7 @@ def _load_durations() -> dict[str, float]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--durations", type=int, default=0, metavar="N",

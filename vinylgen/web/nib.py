@@ -8,6 +8,11 @@ become a new trace revision; ``PipelineRunner.save_map`` makes it one.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import t3api
+
 # The editor a saved map was edited in, recorded in the new revision's ``trace.json``
 # (``backend.editor``): the package the web client installs, ``web/vendor/README.md``.
 NIB_EDITOR = {"name": "nib", "version": "0.13.0"}
@@ -84,7 +89,7 @@ def map_refusal(body: bytes, parent: bytes) -> dict | None:
     return None
 
 
-def rule_problems(pm: dict) -> list[str]:
+def rule_problems(pm: t3api.PlanarMap) -> list[str]:
     """The rule of the map, over the map's own edge and face records: one problem per edge whose
     two sides are two faces of one label, naming the edge. Two adjacent regions of one label are
     one region, so such an edge is no boundary of the labels. An edge with a null side (a border
@@ -109,7 +114,7 @@ def is_colour(entry) -> bool:
                     for v in entry))
 
 
-def palette_problems(pm: dict, parent: dict) -> list[str]:
+def palette_problems(pm: t3api.PlanarMap, parent: t3api.PlanarMap) -> list[str]:
     """Why ``pm``'s ``palette`` and ``names`` are not ``parent``'s with entries only appended,
     first differing entry first; empty when they are.
 
@@ -120,6 +125,8 @@ def palette_problems(pm: dict, parent: dict) -> list[str]:
     and an appended name is null or a name no other entry holds, ignoring case, as each palette
     name is unique."""
     palette, original = pm["palette"], parent["palette"]
+    if palette is None or original is None:
+        raise TypeError("a planar map without a palette has no palette entries to compare")
     problems = []
     for index, entry in enumerate(original):
         if index >= len(palette):
@@ -157,12 +164,15 @@ def palette_problems(pm: dict, parent: dict) -> list[str]:
     return problems
 
 
-def label_problems(pm: dict) -> list[str]:
+def label_problems(pm: t3api.PlanarMap) -> list[str]:
     """One problem per face whose label is no index of ``pm``'s palette."""
+    palette = pm["palette"]
+    if palette is None:
+        raise TypeError("a planar map without a palette has no entry to label a face")
     return [f"face {face['face']} has label {face['label']}, no entry of the "
-            f"{len(pm['palette'])}-entry palette"
+            f"{len(palette)}-entry palette"
             for face in pm["faces"]
-            if not (isinstance(face["label"], int) and 0 <= face["label"] < len(pm["palette"]))]
+            if not (isinstance(face["label"], int) and 0 <= face["label"] < len(palette))]
 
 
 def _refusal(reason: str, detail: str, problems: list[str]) -> dict:

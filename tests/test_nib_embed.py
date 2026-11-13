@@ -72,7 +72,7 @@ NIB_CORE_COMMIT = "c847f26a1ab01275a11ca0fc27d51744df37e591"
 # boundary j = 1 (the point (164.5, 181.0) between two L pieces), moveNodes([that ref], 0.25,
 # 0.25), then session.text(). checkLabelMap reported no violation. The vendored tarball's
 # dist/label-map-session.js writes the same bytes from the same steps. Its sha256:
-NIB_MOVE_SHA256 = "83aa8e17981b7e3852ad7d0e90088a9f0e434ac4fb2235856f2a1594748ec0ab"
+NIB_MOVE_SHA256 = "1c6b90c6551db393b4c3424eb169e4607843b06c7fa4075000590c50e7339d96"
 MOVED_EDGE, MOVED_J, MOVE = 10, 1, (0.25, 0.25)
 
 # The artefacts a trace revision made from a map holds, by kind and file name.

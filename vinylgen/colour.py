@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import SupportsInt
+
 import numpy as np
 from numba import njit, prange
 from PIL import Image
@@ -125,7 +128,7 @@ def lab_to_srgb(lab: np.ndarray) -> np.ndarray:
     return np.clip(np.rint(rgb * 255), 0, 255).astype(np.uint8)
 
 
-def hex_colour(rgb: np.ndarray) -> str:
+def hex_colour(rgb: Iterable[SupportsInt]) -> str:
     return "#" + "".join(f"{int(channel):02X}" for channel in rgb)
 
 

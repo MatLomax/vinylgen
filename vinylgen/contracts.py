@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import t3api
 
 
 @dataclass(frozen=True)
@@ -164,13 +168,13 @@ class TraceSettings:
     min_sweep_arc: float = 0.0
     min_sweep_ellipse: float = 0.0
 
-    def halves(self) -> dict[str, float | None]:
+    def halves(self) -> t3api.HalfTable:
         """The half-width table t3api takes as ``setting["half"]``: each kind's half-width,
         ``None`` for an off kind."""
         return {"line": self.half_line, "arc": self.half_arc, "ellipse": self.half_ellipse,
                 "cubic": self.half_cubic}
 
-    def min_sweeps(self) -> dict[str, float] | None:
+    def min_sweeps(self) -> t3api.MinSweep | None:
         """The minimum-sweep table t3api takes as ``setting["min_sweep"]``, in degrees, or
         ``None`` at the default (both 0), where the setting carries no ``min_sweep`` key."""
         if self.min_sweep_arc == 0 and self.min_sweep_ellipse == 0:

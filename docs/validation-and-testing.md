@@ -18,8 +18,12 @@ fixed scratch paths: every test and every pipeline stage writes to a unique
 temporary directory or file name. Plain `python -m unittest discover -s tests`
 still works for a serial run.
 
-`just test` runs this backend suite and the frontend `vitest` suite
-concurrently, printing each one's output whole once both finish; the whole gate
+`just test` runs this backend suite, the frontend `vitest` suite and `just
+typecheck` concurrently, printing each one's output whole once all finish, and fails
+when any does. `just typecheck` runs pyright (pinned in `web/package.json`, standard
+mode) over the modules that import t3api (`pyrightconfig.json`), against `.venv` and
+the t3api wheel's type stub, so a call that hands t3api a wrong shape fails the gate
+before it runs. The whole gate
 takes roughly 47 s on the 28-core host (the backend about 43 s, the frontend,
 which sets the total, about 46 s).
 

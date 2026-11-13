@@ -16,8 +16,8 @@ setup:
 build:
     npm --prefix web run build
 
-# Run all automated tests. Backend and frontend run concurrently; each one's
-# output is buffered and printed whole so the two never interleave.
+# Run all automated tests and the type check. Backend, frontend and type check run
+# concurrently; each one's output is buffered and printed whole so they never interleave.
 test:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -26,14 +26,23 @@ test:
     trap 'rm -rf "$logs"' EXIT
     .venv/bin/python scripts/run_tests.py > "$logs/backend" 2>&1 & backend=$!
     npm --prefix web test > "$logs/frontend" 2>&1 & frontend=$!
+    just typecheck > "$logs/typecheck" 2>&1 & typecheck=$!
     wait "$backend"; backend_status=$?
     wait "$frontend"; frontend_status=$?
+    wait "$typecheck"; typecheck_status=$?
     echo "=== backend ==="; cat "$logs/backend"
     echo "=== frontend ==="; cat "$logs/frontend"
-    if (( backend_status || frontend_status )); then
-        echo "Tests failed: backend exit $backend_status, frontend exit $frontend_status" >&2
+    echo "=== typecheck ==="; cat "$logs/typecheck"
+    if (( backend_status || frontend_status || typecheck_status )); then
+        echo "Tests failed: backend exit $backend_status, frontend exit $frontend_status," \
+            "typecheck exit $typecheck_status" >&2
         exit 1
     fi
+
+# pyright (pinned in web/package.json) over the modules that import t3api, listed in
+# pyrightconfig.json, against .venv's packages and the t3api wheel's type stub.
+typecheck:
+    web/node_modules/.bin/pyright -p pyrightconfig.json
 
 # Runs across one worker per core; pass args such as `-j 1`, `-v`,
 # `--durations 20` or test names (e.g. test_web_pipeline.WebCleanupStageTest).

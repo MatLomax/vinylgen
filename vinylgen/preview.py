@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TypedDict
 
 PREVIEW_DPI = 768
 PREVIEW_MAX_SIDE = 1920
@@ -14,6 +15,17 @@ PREVIEW_MAX_SIDE = 1920
 _INCHES_PER_UNIT = {"": 1 / 96, "px": 1 / 96, "in": 1.0, "mm": 1 / 25.4,
                     "cm": 1 / 2.54, "pt": 1 / 72, "pc": 1 / 6}
 _LENGTH = re.compile(r"^\s*([0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*([a-zA-Z%]*)\s*$")
+
+
+class PreviewPlan(TypedDict):
+    """A preview's size: the Inkscape export ``arguments``, the ``dpi`` they render at, the
+    pixel ``width`` and ``height``, the ``max_side`` cap and whether it ``capped`` the size."""
+    arguments: list[str]
+    dpi: float
+    width: int
+    height: int
+    max_side: int
+    capped: bool
 
 
 def _length_inches(value: str | None) -> float | None:
@@ -33,7 +45,7 @@ def _svg_root(svg: Path | bytes) -> ET.Element:
     return ET.fromstring(svg)
 
 
-def preview_plan(svg: Path | bytes) -> dict[str, object]:
+def preview_plan(svg: Path | bytes) -> PreviewPlan:
     """Decide the pixel size of an SVG's preview and the Inkscape flags for it.
 
     The preview targets ``PREVIEW_DPI`` over the document's physical size,

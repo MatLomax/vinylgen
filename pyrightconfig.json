@@ -1,0 +1,17 @@
+{
+  // The modules that import t3api, checked against the wheel's stub (t3api/__init__.pyi) by
+  // `just typecheck`, which `just test` and so `just deploy` run.
+  "include": [
+    "vinylgen/tracing.py",
+    "vinylgen/contracts.py",
+    "vinylgen/svg_writer.py",
+    "vinylgen/web/pipeline.py",
+    "vinylgen/web/nib.py",
+    "scripts/warm_t3_cache.py",
+    "scripts/run_tests.py"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}

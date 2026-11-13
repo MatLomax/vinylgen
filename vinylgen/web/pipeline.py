@@ -15,12 +15,13 @@ import uuid
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
 from vinylgen.contracts import CleanupSettings, PaletteSettings, TraceSettings, upgrade_trace_record
 from vinylgen.cutter_cleanup import CLEANUP_ALGORITHM_VERSION
+from vinylgen.svg_writer import palette_name
 from vinylgen.tracing import ensure_palette_names, resolve_colour, t3_setting, trace_palette
 from vinylgen.validation import validate_svg
 
@@ -29,6 +30,9 @@ from .nib import EDITED_MESSAGE, NIB_EDITOR, MapRefused, map_refusal
 from .store import CLEANED_IMAGE_KINDS, Store
 from .touch_ups import (CLEANED_FLATTENED_FILE, CLEANED_LABELS_FILE, TOUCH_UPS_FILE,
                         TOUCH_UPS_KIND, pending_touch_ups)
+
+if TYPE_CHECKING:
+    import t3api
 
 
 Progress = Callable[[float, str], None]
@@ -83,6 +87,8 @@ def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled,
     stderr_tail: list[str] = []
     closed = 0
     try:
+        # Popen with stdin=PIPE always opens the pipe.
+        assert process.stdin is not None
         process.stdin.write(json.dumps(spec))
         process.stdin.close()
         while closed < 2 or process.poll() is None:
@@ -123,6 +129,8 @@ def run_worker(spec: dict, *, on_progress: Progress, cancelled: Cancelled,
         if process.poll() is None:
             _terminate(process)
         for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is None:
+                continue
             try:
                 stream.close()
             except Exception:  # pragma: no cover - defensive cleanup
@@ -335,7 +343,9 @@ def inherited_remove_colour(store: Store, revision_id: str,
         start = store.effective_artifacts(revision_id, before_cleanup=True).get("palette")
         if start is None:
             raise ValueError("revision is missing required artifacts: palette")
-        palette = json.loads(store.artifact_path(start["id"]).read_text())["palette"]
+        report_text = store.artifact_path(start["id"]).read_text()
+        start_palette: list[dict] = json.loads(report_text)["palette"]
+        palette = start_palette
     report = {"palette": [dict(row) for row in palette]}
     ensure_palette_names(report, {})
     palette = report["palette"]
@@ -583,7 +593,7 @@ class PipelineRunner:
             labels = np.ascontiguousarray(data["labels"].astype(np.int16))
         return hashlib.sha256(labels.tobytes()).hexdigest()
 
-    def reusable_map(self, parent_id: str, setting: dict) -> dict | None:
+    def reusable_map(self, parent_id: str, setting: t3api.Setting) -> dict | None:
         """The planar map a trace from ``parent_id`` at the t3api ``setting`` re-exports
         instead of tracing, or ``None``. It is the parent's effective ``traced-map`` when the
         trace revision that wrote it traced labels with the same sha256 as the labels this
@@ -732,7 +742,7 @@ class PipelineRunner:
                 palette, json.loads((work / artifacts["traced-map"]["filename"]).read_text()))
         # The layers in document order: the included colours as the trace recorded them.
         names = [row["name"] for row in trace_audit["colours"]["included"]]
-        by_name = {row["name"]: index for index, row in enumerate(palette)}
+        by_name = {palette_name(row): index for index, row in enumerate(palette)}
         order = [by_name[name] for name in names]
         progress(0.3, "Validating SVG structure")
         result = {

@@ -11,7 +11,7 @@ import subprocess
 import base64
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, overload
 
 import numba
 import numpy as np
@@ -24,12 +24,24 @@ from vinylgen.contracts import CleanupSettings, SegmentationBundle, TraceSetting
 from vinylgen.cutter_cleanup import apply_cleanup, resolve_physical_size
 from vinylgen.palette import Progress, _noop
 from vinylgen.preview import preview_plan
-from vinylgen.svg_writer import add_face_layer, face_areas, face_elements, svg_document, write_svg
+from vinylgen.svg_writer import (
+    add_face_layer,
+    face_areas,
+    face_elements,
+    palette_name,
+    svg_document,
+    write_svg,
+)
 from vinylgen.validation import (
     semantic_warning_mask,
     validate_semantic_preservation,
     validate_svg,
 )
+
+if TYPE_CHECKING:
+    import t3api
+
+    from vinylgen.svg_writer import PaletteRow
 
 # The semantic audit checks source thin features at least this long: three
 # times the maximum deviation (a feature shorter than that may legitimately be
@@ -81,6 +93,12 @@ def ensure_palette_names(report: dict, overrides: dict[str, str]) -> bool:
     return changed
 
 
+@overload
+def resolve_colour(value: str, palette: list[dict]) -> int: ...
+@overload
+def resolve_colour(value: None, palette: list[dict]) -> None: ...
+@overload
+def resolve_colour(value: str | None, palette: list[dict]) -> int | None: ...
 def resolve_colour(value: str | None, palette: list[dict]) -> int | None:
     if value is None:
         return None
@@ -160,10 +178,20 @@ def missed_detail_overlay(missing: np.ndarray) -> Image.Image:
     return Image.fromarray(overlay, "RGBA")
 
 
+def label_components(mask: np.ndarray, structure: np.ndarray) -> tuple[np.ndarray, int]:
+    """``scipy.ndimage.label`` of ``mask`` under ``structure``: the labelled array and the
+    component count, the pair it answers when no ``output`` is given."""
+    labelled = ndimage.label(mask, structure=structure)
+    if not isinstance(labelled, tuple):
+        raise TypeError("scipy.ndimage.label without an output answers (labels, count)")
+    regions, count = labelled
+    return regions, int(count)
+
+
 def source_component_count(mask: np.ndarray) -> int:
     """The 4-connected raster components of one colour's mask (edge-sharing connectivity, the
     cutter's authoritative region model)."""
-    return int(ndimage.label(mask, structure=ndimage.generate_binary_structure(2, 1))[1])
+    return label_components(mask, ndimage.generate_binary_structure(2, 1))[1]
 
 
 class TraceTicks:
@@ -217,7 +245,7 @@ def tracer_info() -> dict:
     return {"name": "t3api", "build": t3api.BUILD_ID, "setting": t3api.normal_setting(None)}
 
 
-def t3_setting(settings: TraceSettings) -> dict:
+def t3_setting(settings: TraceSettings) -> t3api.Setting:
     """The canonical t3api setting a trace at ``settings`` runs at: its half-width table
     (``TraceSettings.halves``) and, when either arc kind's minimum is above 0, its
     minimum-sweep table (``TraceSettings.min_sweeps``), validated by ``t3api.normal_setting``.
@@ -227,18 +255,20 @@ def t3_setting(settings: TraceSettings) -> dict:
     ``min_sweep`` key."""
     import t3api
 
-    setting: dict = {"half": settings.halves()}
+    setting: t3api.SettingInput = {"half": settings.halves()}
     min_sweeps = settings.min_sweeps()
     if min_sweeps is not None:
         setting["min_sweep"] = min_sweeps
     return t3api.normal_setting(setting)
 
 
-def largest_half_width(setting: dict) -> float:
+def largest_half_width(setting: t3api.Setting) -> float:
     """The largest half-width an enabled kind of the canonical ``setting`` has: the furthest
     any drawn piece of a map traced at it lies from its edge. An off kind (``None``) draws
     nothing and does not count; the line is never off, so there is always one."""
-    return max(float(half) for half in setting["half"].values() if half is not None)
+    table = setting["half"]
+    halves = (table["line"], table["arc"], table["ellipse"], table["cubic"])
+    return max(float(half) for half in halves if half is not None)
 
 
 def face_event(payload: dict) -> dict:
@@ -263,18 +293,18 @@ class TraceEvents:
             self.on_face(face_event(payload))
 
 
-def map_with_palette(pm: dict, palette: list[dict]) -> dict:
+def map_with_palette(pm: t3api.PlanarMap, palette: list[PaletteRow]) -> t3api.PlanarMap:
     """``pm`` with its header's ``palette`` and ``names`` set to ``palette``'s colours and
     names, as ``t3api.planar_map`` writes them; the faces, edges and nodes are untouched, so
     the map paints the same labels. ``pm`` itself when they already agree."""
-    rgb = [list(row["rgb"]) for row in palette]
-    names = [row["name"] for row in palette]
+    rgb: list[list[int] | None] = [list(row["rgb"]) for row in palette]
+    names = [palette_name(row) for row in palette]
     if pm["palette"] == rgb and pm["names"] == names:
         return pm
     return {**pm, "palette": rgb, "names": names}
 
 
-def trace_palette(palette: list[dict], pm: dict) -> list[dict]:
+def trace_palette(palette: list[PaletteRow], pm: t3api.PlanarMap) -> list[PaletteRow]:
     """The palette rows a trace draws map ``pm`` in: the trace's own ``palette`` rows
     (``palette.json``), then one row per entry ``pm``'s header appends to them, as nib's editor
     appends a new colour. An appended row is ``{"index", "name", "hex", "rgb"}``: its name is the
@@ -283,17 +313,23 @@ def trace_palette(palette: list[dict], pm: dict) -> list[dict]:
     ``palette`` itself (as a new list) when the header appends nothing. Raises ``ValueError``
     when the header's first ``len(palette)`` colours and names are not ``palette``'s."""
     count = len(palette)
+    colours = pm["palette"]
+    if colours is None:
+        raise TypeError("the map's header holds no palette")
     names = pm.get("names")
-    header = {**pm, "palette": pm["palette"][:count],
-              "names": names[:count] if names is not None else None}
-    if len(pm["palette"]) < count or map_with_palette(header, palette) is not header:
+    header: t3api.PlanarMap = {**pm, "palette": colours[:count],
+                               "names": names[:count] if names is not None else None}
+    if len(colours) < count or map_with_palette(header, palette) is not header:
         raise ValueError("the map's palette and names do not begin with the trace's")
-    names = names if names is not None else [None] * len(pm["palette"])
-    taken = ({str(row["name"]).casefold() for row in palette}
+    names = names if names is not None else [None] * len(colours)
+    taken = ({str(palette_name(row)).casefold() for row in palette}
              | {str(name).casefold() for name in names[count:] if name is not None})
     rows = list(palette)
-    for index in range(count, len(pm["palette"])):
-        rgb = [int(value) for value in pm["palette"][index]]
+    for index in range(count, len(colours)):
+        colour = colours[index]
+        if colour is None:
+            raise TypeError(f"the map's palette entry {index} is null")
+        rgb = [int(value) for value in colour]
         name = names[index]
         if name is None:
             base = colour_names(np.asarray([rgb], dtype=np.uint8))[0]
@@ -311,7 +347,8 @@ def trace_palette(palette: list[dict], pm: dict) -> list[dict]:
 UNPAINTED_RGB = (255, 255, 255)
 
 
-def planar_map_gate(pm: dict, painted: np.ndarray) -> tuple[dict, dict]:
+def planar_map_gate(pm: t3api.PlanarMap,
+                    painted: np.ndarray) -> tuple[t3api.PlanarMapCheck, dict[str, int]]:
     """The planar map's gate, run on the read-back map before anything is derived from it:
     ``t3api.planar_map_check`` with no violation, then the map's paint
     (``t3api.paint_planar_map``) equal to t3's painted labels at every centre. Returns the
@@ -343,7 +380,7 @@ def changed_explicit_components(explicit: np.ndarray, labels: np.ndarray,
     differs = np.asarray(painted) != labels
     four = ndimage.generate_binary_structure(2, 1)
     for label in np.unique(labels[explicit]).tolist():
-        regions, _ = ndimage.label(explicit & (labels == label), structure=four)
+        regions, _ = label_components(explicit & (labels == label), four)
         for number, window in enumerate(ndimage.find_objects(regions), start=1):
             if window is None:
                 continue
@@ -495,8 +532,9 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     if labels.dtype != np.int16:
         raise ValueError(f"the labels t3 traces are int16 palette indices, not {labels.dtype}")
     physical = resolve_physical_size(cleanup, width, height)
+    # ``resolve_physical_size`` completes a one-sided size, so both are set or neither is.
     physical_mm = ((physical.width_mm, physical.height_mm)
-                   if physical.width_mm is not None else None)
+                   if physical.width_mm is not None and physical.height_mm is not None else None)
     renderer = Path(__file__).resolve().parents[1] / "scripts" / "inkscape-headless"
     warnings: list[str] = []
 
@@ -532,7 +570,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             raise RuntimeError("the reused map.json is not the size of the traced labels")
         # An edited map's header is the trace's palette with colours only appended
         # (``trace_palette``, below); a reused one is renamed to this trace's palette.
-        named = pm if editor is not None else map_with_palette(pm, palette)
+        named: t3api.PlanarMap = pm if editor is not None else map_with_palette(pm, palette)
         if named is not pm:
             map_path.write_text(t3api.planar_map_json(named))
             pm = t3api.read_planar_map(map_path.read_text())
@@ -584,8 +622,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         (subject_dir / stale).unlink(missing_ok=True)
     tick(0.85, "Checking the planar map")
     gap_stats: dict = {}
-    t3api.faces_svg_from_planar_map(
-        pm, [dict(row, index=i) for i, row in enumerate(drawn)], gap_stats)
+    indexed: list[PaletteRow] = [{**row, "index": i} for i, row in enumerate(drawn)]
+    t3api.faces_svg_from_planar_map(pm, indexed, gap_stats)
     validations = {"edge": {**validate_svg(edge_path, drawn, drawn_included),
                             "planar_map_check": check, "read_back": read_back}}
 
@@ -632,8 +670,8 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             f"trace: {component['count']} of {component['size']} centres changed; see "
             f"{semantic_overlay.name}")
     if not validations["semantic"]["passed"]:
-        faded = Image.blend(Image.fromarray(original),
-                            Image.new("RGB", (width, height), "white"), 0.82)
+        white = np.full((height, width, 3), 255, dtype=np.uint8)
+        faded = Image.blend(Image.fromarray(original), Image.fromarray(white), 0.82)
         overlay = np.asarray(faded).copy()
         overlay[missed] = MISSED_DETAIL_RGBA[:3]
         Image.fromarray(overlay).save(semantic_inspection)

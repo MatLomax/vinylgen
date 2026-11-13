@@ -39,6 +39,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **t3api 0.29.1, and `just test` type-checks every module that calls it.** The vendored
+  wheel is 0.29.1: build 29's engine unchanged (the same drawings as 0.29.0), now with a type
+  stub and `py.typed`, and argument checks that refuse a wrong argument by name. `just
+  typecheck` runs pyright 1.1.414 (pinned in `web/package.json`) over the modules that import
+  t3api, listed in `pyrightconfig.json`, and `just test`, so `just deploy`, fails when it does:
+  a call handing t3api the wrong shape, such as a planar map's `[[r, g, b], ...]` palette for
+  palette.json's rows, is caught before it runs. Those modules type their planar maps,
+  settings, face paths and palette rows with t3api's types (`PlanarMap`, `Setting`,
+  `FacePath`, and vinylgen's `PaletteRow`, t3api's palette entry with `rgb`). No behaviour
+  changes.
+
 - **Dragging an edge in the Nodes stage bends it as Inkscape does** (nib core 0.13.0). A grab
   near one end of a curve now moves only that end's handle (within a sixth of the curve from
   the end), the far end's handle staying put; nearer the middle the two handles share the move
