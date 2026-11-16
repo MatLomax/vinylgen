@@ -26,10 +26,18 @@ export type CleanupSettings = {
 // warn, each curve kind's tube half-width in px, which steers t3, and each arc kind's minimum
 // sweep in degrees. Arcs, ellipses and cubics are null when off; the line is never off. A
 // minimum sweep is in [0, 360], 0 (no minimum) by default, and 0 while its kind is off.
+// The stroke trace: `line_colours` are the palette indices traced as centrelines (strokes),
+// ascending, none by default; `width_mode` sets a stroke's width per stroke, per colour or by
+// tiers; `tiers` is the tier count, an integer >= 1 or 'auto'; `stroke_fallback` is what a part
+// of a stroke outside its tube becomes: not drawn, a face, or drawn as built. The last three
+// take effect only while a colour is traced as lines (`tiers` only in the tiers mode).
+export type WidthMode = 'stroke' | 'colour' | 'tiers'
+export type StrokeFallback = 'none' | 'face' | 'best'
 export type TraceSettings = {
   soft_path_nodes: number; soft_layer_nodes: number; soft_document_nodes: number
   half_line: number; half_arc: number | null; half_ellipse: number | null; half_cubic: number | null
   min_sweep_arc: number; min_sweep_ellipse: number
+  line_colours: number[]; width_mode: WidthMode; tiers: number | 'auto'; stroke_fallback: StrokeFallback
 }
 // The curve kinds t3 draws, as its setting's `half` table names them.
 export type CurveKind = 'line' | 'arc' | 'ellipse' | 'cubic'

@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Line colours: a colour can be traced as lines, drawn as stroked paths** (t3api 0.30.0,
+  nib core 0.14.1). The trace panel's "Line colours" section has one switch per palette
+  colour; a colour switched on is traced by t3's stroke trace as centre lines with a width
+  instead of as filled faces. With a colour switched, three controls appear: Width mode
+  (Per stroke: each stroke keeps its own width; Per colour: every stroke of a colour takes
+  one width; Tiers: the widths are grouped into a few shared widths), Tiers (a whole number
+  of at least 1, or automatic when blank; tiers mode only) and Fallback (what a part of a
+  stroke that strays outside its tube becomes: nothing, a filled face, or the stroke drawn
+  whole as built and flagged). The
+  four settings are `line_colours`, `width_mode`, `tiers` and `stroke_fallback` in the trace
+  record and the job request, sent to t3api as `line_labels`, `width_mode`, `tiers` and
+  `stroke_fallback` only when a colour is switched; at the defaults a trace is today's. The
+  exported SVG carries the strokes as one `<g id="strokes" fill="none">` group after every
+  colour layer, one path per stroke and per dot with t3api's `stroke`, `stroke-width`,
+  `stroke-linecap` and `stroke-linejoin`; `validate_svg` checks it (the face layers closed,
+  the group last and well formed), and the validation render paints the strokes over the
+  faces. The run line names the line colours, the width mode and the fallback.
+
 - **A handle can be selected and deleted in the Nodes stage, the edge a drag would bend lights
   up under the mouse, and three buttons set a node's type** (nib core 0.13.0). A tap on a
   handle of a selected node selects it (Shift adds another), shown as a filled dot in a ring;
@@ -38,6 +56,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the map's `node` letter `z`, which the save route accepts and t3 reads and writes back as `z`.
 
 ### Changed
+
+- **t3api 0.30.0 and nib core 0.14.1.** The vendored wheel is t3api 0.30.0 (tracer build 30:
+  the stroke trace, the planar map's strokes, dots and `under` edges, and
+  `strokes_svg_from_planar_map`), which needs shapely 2.0.3 and matplotlib, now pinned in
+  `requirements-web.txt` (`matplotlib==3.11.2`). The Nodes stage's editor is nib core 0.14.1,
+  which reads, draws and saves a map's strokes. Traces without a line colour draw as before.
 
 - **t3api 0.29.1, and `just test` type-checks every module that calls it.** The vendored
   wheel is 0.29.1: build 29's engine unchanged (the same drawings as 0.29.0), now with a type

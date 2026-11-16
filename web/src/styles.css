@@ -334,6 +334,12 @@ button.danger:hover:not(:disabled) { background: var(--error); opacity: .88; }
   .curve-kind-sweep input { width: 5.5rem; flex: none; }
   .curve-kind-sweep-label { display: inline; }
 }
+/* The trace step's Line colours list: one switch row per palette colour, its swatch and name. */
+.line-colour-list { display: grid; gap: 6px; margin-bottom: 12px; }
+.line-colour-row { min-height: 44px; padding: 8px 12px; }
+.line-colour-row .line-colour-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.line-colour-row .swatch { display: inline-block; flex: none; width: 18px; height: 18px; min-height: 18px; border-radius: var(--radius-sm); }
+.line-colour-row strong { min-width: 0; overflow-wrap: anywhere; }
 .layer-order-field { display: grid; }
 .layer-order-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .layer-order-list li { display: grid; grid-template-columns: 18px 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 9px; background: var(--surface-control); border: 1px solid var(--border-control); border-radius: var(--radius-sm); cursor: grab; }

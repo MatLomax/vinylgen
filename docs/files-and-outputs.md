@@ -180,7 +180,9 @@ canvas toggle "Missed source details (red)".
 `trace.json` is the audit: the sources (`map.json` among them), the size and
 mode, the trace settings as given (`settings`: the three soft node limits, which
 only raise warnings, the four curve kinds' half-widths and the two arc kinds' minimum
-sweeps, `min_sweep_arc` and `min_sweep_ellipse`, which steer t3) and the
+sweeps, `min_sweep_arc` and `min_sweep_ellipse`, and the line colours with
+their settings, `line_colours`, `width_mode`, `tiers` and `stroke_fallback`,
+which steer t3) and the
 cleanup settings with the physical size resolved (`cleanup_settings`), the
 tracer (`backend`: `tracer` `"t3api"`, `build`, `version`, `setting` and the
 `numpy`, `scipy` and `numba` versions), t3's record (`t3`: its result

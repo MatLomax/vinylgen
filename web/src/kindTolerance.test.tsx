@@ -19,7 +19,7 @@ afterEach(cleanup)
 const LIMITS = { soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000 }
 const HALF_DEFAULT = 1.75
 const HALVES = { half_line: HALF_DEFAULT, half_arc: HALF_DEFAULT, half_ellipse: HALF_DEFAULT, half_cubic: HALF_DEFAULT }
-const DEFAULTS = { ...LIMITS, ...HALVES } as TraceSettings
+const DEFAULTS = { ...LIMITS, ...HALVES, line_colours: [] as number[], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' } as TraceSettings
 // The rows in order, each kind's field and whether it can be turned off.
 const ROWS: { label: RegExp; field: keyof TraceSettings; optional: boolean }[] = [
   { label: /^Lines/, field: 'half_line', optional: false },
@@ -59,7 +59,7 @@ describe('the trace settings carry each kind\'s half-width', () => {
     expect(off.half_cubic).toBe(2.5)
     // App.tsx loads a stored record or draft as `{ ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings(record) }`.
     const older = { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700, curve_fit_tolerance: 1.6, overlap: 0 }) }
-    expect(older).toEqual({ ...HALVES, soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700, min_sweep_arc: 0, min_sweep_ellipse: 0 })
+    expect(older).toEqual({ ...HALVES, soft_path_nodes: 7, soft_layer_nodes: 70, soft_document_nodes: 700, min_sweep_arc: 0, min_sweep_ellipse: 0, line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' })
     // The line is never null: a draft that says so is read as the default.
     const line = { ...DEFAULT_TRACE_SETTINGS, ...normalizeTraceSettings({ ...LIMITS, half_line: null } as unknown as Partial<TraceSettings>) }
     expect(line.half_line).toBe(HALF_DEFAULT)

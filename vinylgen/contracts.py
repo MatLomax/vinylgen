@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -143,8 +143,8 @@ def upgrade_trace_record(values: dict) -> dict:
 
 @dataclass
 class TraceSettings:
-    """The trace's settings: the soft node limits, each curve kind's tube half-width and each
-    arc kind's minimum sweep.
+    """The trace's settings: the soft node limits, each curve kind's tube half-width, each
+    arc kind's minimum sweep and the stroke trace's line colours.
 
     The soft node limits only warn, naming the path, the layer or the document over it in
     ``trace.json``. The half-widths steer t3: ``half_<kind>`` is the furthest, in pixels, a
@@ -156,7 +156,15 @@ class TraceSettings:
     ``min_sweep_arc`` and ``min_sweep_ellipse`` are the least sweep, in degrees, a drawn
     circular and elliptical arc may have (t3api's ``{"min_sweep": {arc, ellipse}}``): each in
     [0, 360], 0 (no minimum) by default, and 0 on a kind that is off. A record from before the
-    minima reads them as 0."""
+    minima reads them as 0.
+
+    ``line_colours`` are the palette indices t3 traces as centreline strokes at a fitted
+    width rather than as faces (t3api's ``line_labels``), none by default. ``width_mode``
+    (``stroke``, ``colour`` or ``tiers``), ``tiers`` (``auto`` or a count >= 1, read in tiers
+    mode) and ``stroke_fallback`` (``none``, ``face`` or ``best``: what is drawn where a
+    stroke fails its tube) say how; they are form state that means nothing, and is not sent
+    to t3, while no colour is a line colour (``strokes``). A record from before the stroke
+    trace reads them at the defaults: no line colour, ``stroke``, ``auto``, ``none``."""
 
     soft_path_nodes: int = 5_000
     soft_layer_nodes: int = 50_000
@@ -167,6 +175,10 @@ class TraceSettings:
     half_cubic: float | None = 1.75
     min_sweep_arc: float = 0.0
     min_sweep_ellipse: float = 0.0
+    line_colours: list[int] = field(default_factory=list)
+    width_mode: Literal["stroke", "colour", "tiers"] = "stroke"
+    tiers: int | Literal["auto"] = "auto"
+    stroke_fallback: Literal["none", "face", "best"] = "none"
 
     def halves(self) -> t3api.HalfTable:
         """The half-width table t3api takes as ``setting["half"]``: each kind's half-width,
@@ -180,3 +192,20 @@ class TraceSettings:
         if self.min_sweep_arc == 0 and self.min_sweep_ellipse == 0:
             return None
         return {"arc": float(self.min_sweep_arc), "ellipse": float(self.min_sweep_ellipse)}
+
+    def strokes(self) -> t3api.SettingInput:
+        """The stroke keys t3api's setting takes: none while ``line_colours`` is empty;
+        otherwise ``line_labels`` (the line colours sorted, each once) and ``width_mode``,
+        with ``tiers`` in tiers mode and ``stroke_fallback`` when it is not ``none`` (t3api
+        writes neither elsewhere). The values are passed as they are, so
+        ``t3api.normal_setting`` refuses an unknown mode or fallback, a tier count below 1 and
+        a line colour that is not an index >= 0, each naming its key."""
+        if not self.line_colours:
+            return {}
+        keys: t3api.SettingInput = {"line_labels": sorted(set(self.line_colours)),
+                                    "width_mode": self.width_mode}
+        if self.width_mode == "tiers":
+            keys["tiers"] = self.tiers
+        if self.stroke_fallback != "none":
+            keys["stroke_fallback"] = self.stroke_fallback
+        return keys

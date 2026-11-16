@@ -35,7 +35,10 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   real faces and its boundaries are the other colours' cut lines). The setting
   is `TraceSettings`' half-width table, `{"half": {line, arc, ellipse,
   cubic}}`, with its minimum sweeps, `"min_sweep": {"arc", "ellipse"}`, only
-  when either is above 0, in the canonical form `t3api.normal_setting` gives
+  when either is above 0, and the stroke keys (`TraceSettings.strokes`) only
+  when a line colour is set: `line_labels` (the line colours, sorted),
+  `width_mode`, `tiers` in the tiers mode only and `stroke_fallback` at `face`
+  or `best` only, in the canonical form `t3api.normal_setting` gives
   (A1 22.5, A2 45 and L 4 fixed; see [Size, units and
   cropping](#size-units-and-cropping)); a setting it refuses raises `ValueError` before anything is written, which a web
   job reports as its error. `workers=None` lets `t3api.workers_of` use every
@@ -65,14 +68,26 @@ The engine is the turbo tube tiler (t3), installed as the `t3api` wheel
   over its pieces in closed form (`svg_writer.face_areas`), ties to the face
   id: `id="edge-{slug}-{nnn}"`, `inkscape:label="{name} {nnn}"`. The omitted
   colour gets no layer: its faces are already holes in the faces around them.
-  The viewBox is the pixel grid, `0 0 W H`. The SVG depends on `map.json` and
+  The viewBox is the pixel grid, `0 0 W H`. A map with strokes or dots (a
+  trace with a line colour) adds, after every layer, one group
+  `<g id="strokes" fill="none">` (`svg_writer.add_stroke_group`, from
+  `t3api.strokes_svg_from_planar_map`): one path per stroke, then one per dot,
+  each with t3api's `d`, `stroke`, `stroke-width`, `stroke-linecap` and
+  `stroke-linejoin` (a dot has no join), `id="stroke-{slug}-{nnn}"` or
+  `id="dot-{slug}-{nnn}"` numbered per colour in map order, and
+  `inkscape:label="{name} stroke {nnn}"` or `"{name} dot {nnn}"`. The group is
+  not a layer; a map without strokes or dots gets no group. The SVG depends on `map.json` and
   the palette alone, so exporting it again from `map.json` gives the same
   bytes.
 - **Node types** are the map's: `c` (cusp) or `s` (smooth) from t3, and `z`
   (symmetric) from an edit in nib, one per Inkscape node; an `A` counts as the
   cubics Inkscape converts it to. t3 writes no `z`.
 - **The semantic audit** reads t3's painted labels, the exact raster of the
-  drawing (a centre no face holds reads as white paper), at the largest
+  drawing (a centre no face holds reads as white paper), with the map's strokes
+  and dots painted over them as the stroke group draws them
+  (`validation.paint_strokes`: each stroke's area with its width, caps and
+  joins, a mitre join at SVG's limit 4, curves flattened within 0.01 px, a
+  pixel centre inside taking the stroke's colour), at the largest
   half-width an enabled kind of the map's own setting has (1.75 px at the
   defaults); see [Audit report](#audit-report).
 - **The preview** `traced.png` is rendered from `traced-edge.svg` by Inkscape.
@@ -117,7 +132,7 @@ Progress (`trace_subject`'s `progress`, relayed by the web job as
   map edited in nib (below) is never reused this way: it is not t3's trace of
   the labels, so a trace from an edited revision traces afresh.
 - **Editing the trace in nib.** The Nodes stage is nib's editor with nib's
-  chrome (`@nib/core` 0.13.0, `web/vendor/nib-core-0.13.0.tgz`) on the selected revision's `map.json`.
+  chrome (`@nib/core` 0.14.1, `web/vendor/nib-core-0.14.1.tgz`) on the selected revision's `map.json`.
   Saving posts the exact text nib wrote to
   `POST /api/revisions/{revision_id}/map`, where `revision_id` is the trace
   revision that owns the map. Revisions are immutable, so a save makes a child
@@ -280,8 +295,27 @@ minimum-sweep field moves to a second line of its row, under the half-width,
 with its own "Minimum sweep" label. The line's switch is shown fixed on, its title
 saying why; a row switched off is dimmed, its fields disabled and its half-width
 reading "off"; switching an arc kind off sends its minimum sweep as 0 with it.
+The line colours, `line_colours` (palette indices, each once; none by
+default), are the colours traced as lines: t3's stroke trace draws each
+stroke of such a colour as a centre line with a width, written to the stroke
+group, instead of as filled faces. `width_mode` (`stroke`, the default:
+each stroke keeps its own width; `colour`: every stroke of a colour takes one
+width; `tiers`: the widths are grouped into a few shared widths), `tiers`
+(`auto`, the default, or a whole number of at least 1; read in the tiers mode
+only) and `stroke_fallback` (`none`, the default: a part of a stroke that
+strays outside its tube is not drawn; `face`: it is drawn as a filled shape in
+its colour; `best`: the stroke is drawn whole as built, and flagged) shape
+them. A bad value is refused (the web job answers 422, as it does to a repeated
+line colour). Without a line colour t3 is given none of the four keys, so a
+trace at the defaults is the trace without them, and a stored record from
+before them reads them at the defaults. On the trace step they are the "Line
+colours" group: one switch per palette colour ("Trace {name} as lines"), and,
+only while a colour is switched, Width mode, Tiers (in the tiers mode only, blank
+for automatic) and Fallback.
 The Nodes stage names the half-widths a revision was traced at, followed by
-`min sweep arc A, ellipse E` only when either minimum is above 0.
+`min sweep arc A, ellipse E` only when either minimum is above 0, then
+`lines {names} · width {mode}` (`width tiers {n}` in the tiers mode) and
+`fallback {value}` when it is not `none`, only when a line colour is set.
 A table other than
 the defaults may trace several times slower (fox-owl-table-2's edited labels:
 150 s at the defaults, 778 s at line 1.75, arc 1.0, ellipse 1.75, cubic 4.0);
@@ -533,8 +567,9 @@ the shown cleanup's own settings, nothing is measured and the badge keeps
 ## Trace accuracy and complexity
 
 t3 traces the cleaned labels at the trace's half-width table (each kind 1.75
-px by default; A1 22.5, A2 45, L 4) and its minimum sweeps (0 by default), the
-only vinylgen settings that change the geometry. Its
+px by default; A1 22.5, A2 45, L 4), its minimum sweeps (0 by default) and
+its line colours with their width mode, tiers and fallback (none by default),
+the only vinylgen settings that change the geometry. Its
 corners, joins, node placement and piece kinds are t3's, decided from the
 labels alone, and its design and proofs live in the tracer repository. What a
 trace holds vinylgen to:
@@ -595,7 +630,9 @@ half-widths `--half-line`, `--half-arc`, `--half-ellipse` and `--half-cubic`
 and `--min-sweep-ellipse` (degrees, 0 to 360, 0 by default; above 0 refused on
 a kind given as off); the three soft node limits are set in a
 configuration file only, which may also set the half-widths (`null` is off) and
-the minimum sweeps (`min_sweep_arc`, `min_sweep_ellipse`). A configuration's
+the minimum sweeps (`min_sweep_arc`, `min_sweep_ellipse`) and the line
+colours with their settings (`line_colours`, `width_mode`, `tiers`,
+`stroke_fallback`), which have no flags. A configuration's
 retired trace settings are dropped on load
 ([Retired trace settings](#size-units-and-cropping)).
 
@@ -612,14 +649,15 @@ symmetric detail controls.
   `map`, the planar-map file `map.json`),
   `raster_dimensions`, `mode` and `physical_dimensions_mm`.
 - `settings`, the trace settings as given (the three soft node limits, the
-  four half-widths and the two minimum sweeps), and
+  four half-widths, the two minimum sweeps and the four line-colour settings), and
   `cleanup_settings` (size, removed colour, cleanup).
 - `backend`: `tracer` `"t3api"`, `build` (`t3api.BUILD_ID`), `version`
   (`t3api.VERSION`), `setting` (the map's setting in the canonical form,
   `t3api.normal_setting`: `{"half": {line, arc, ellipse, cubic}, "A1", "A2",
-  "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0)
+  "L"}`, with `"min_sweep": {"arc", "ellipse"}` when either is above 0 and
+  the stroke keys when a line colour is set)
   and the `numpy`, `scipy` and `numba` versions. A trace revision saved from
-  nib adds `editor` (`{"name": "nib", "version": "0.13.0"}`).
+  nib adds `editor` (`{"name": "nib", "version": "0.14.1"}`).
 - `t3`: `summary` (t3's result summary, nested: pieces by kind, smooth and
   corner joins, termini, `over_tube`, `checks_count`, `diff_px`,
   `unpainted_px`, faces, `faces_empty`, the gates and t3's own phase seconds),
@@ -640,7 +678,11 @@ symmetric detail controls.
   layer's pieces by kind: `L`, `A circular`, `A elliptical`, `C`, and the
   `border` and `gap` connectors) and `node_types` (`c` and `s` counts), with
   `components[]` per path (`id`, `face`, `nodes`, `holes`).
-- `validation.edge`: `validate_svg` on `traced-edge.svg`, plus
+- `validation.edge`: `validate_svg` on `traced-edge.svg` (its layers are
+  every root group but the stroke group, `all_paths_closed` covers the face
+  paths, and `strokes_well_formed` holds when there is at most one stroke group,
+  last, with `fill="none"` and a `stroke` and `stroke-width` on every path,
+  counted in `stroke_path_count`), plus
   `planar_map_check` (the check's counts: `nodes`, `edges`, `border_edges`,
   `drawn_null_sides`, `faces`, `rings`, `references`, `pieces`, `violations`
   0, and its empty `problems`) and `read_back` (`differ` 0, the centres where

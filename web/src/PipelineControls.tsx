@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CleanupSettings, CurveKind, PaletteColour, PaletteSettings, TraceSettings, TracerInfo } from './api'
+import type { CleanupSettings, CurveKind, PaletteColour, PaletteSettings, StrokeFallback, TraceSettings, TracerInfo, WidthMode } from './api'
 import type { CanvasMarker } from './ImageWorkspace'
 
 export const DEFAULT_PALETTE_SETTINGS: PaletteSettings = {
@@ -24,8 +24,29 @@ export const DEFAULT_TRACE_SETTINGS: TraceSettings = {
   soft_path_nodes: 5000, soft_layer_nodes: 50000, soft_document_nodes: 200000,
   half_line: HALF_WIDTH_DEFAULT, half_arc: HALF_WIDTH_DEFAULT, half_ellipse: HALF_WIDTH_DEFAULT, half_cubic: HALF_WIDTH_DEFAULT,
   min_sweep_arc: 0, min_sweep_ellipse: 0,
+  line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none',
 }
-const TRACE_KEYS = Object.keys(DEFAULT_TRACE_SETTINGS) as (keyof TraceSettings)[]
+// The stroke trace's settings: the line colours, the width mode, the tier count and the
+// fallback (api.ts TraceSettings), each with the check a stored value must pass to be kept.
+export const WIDTH_MODES: { value: WidthMode; label: string }[] = [
+  { value: 'stroke', label: 'Per stroke' }, { value: 'colour', label: 'Per colour' }, { value: 'tiers', label: 'Tiers' },
+]
+export const STROKE_FALLBACKS: { value: StrokeFallback; label: string }[] = [
+  { value: 'none', label: 'Nothing' }, { value: 'face', label: 'Face' }, { value: 'best', label: 'Best' },
+]
+// A palette colour as the trace settings name it: its name, or its hex when it has none.
+export const colourLabel = (colour: PaletteColour) => colour.name || colour.hex
+const isIndex = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0
+const isLineColours = (value: unknown): value is number[] => Array.isArray(value) && value.every(isIndex) && new Set(value).size === value.length
+const isTierCount = (value: unknown): value is number | 'auto' => value === 'auto' || (typeof value === 'number' && Number.isInteger(value) && value >= 1)
+const STROKE_CHECKS: Partial<Record<keyof TraceSettings, (value: unknown) => boolean>> = {
+  line_colours: isLineColours,
+  width_mode: value => WIDTH_MODES.some(mode => mode.value === value),
+  tiers: isTierCount,
+  stroke_fallback: value => STROKE_FALLBACKS.some(fallback => fallback.value === value),
+}
+// The numeric trace fields: the soft node limits, the half-widths and the minimum sweeps.
+const NUMBER_KEYS = (Object.keys(DEFAULT_TRACE_SETTINGS) as (keyof TraceSettings)[]).filter(key => !(key in STROKE_CHECKS))
 // The kinds that may be off, whose stored null is kept.
 const OPTIONAL_KINDS = new Set<keyof TraceSettings>(['half_arc', 'half_ellipse', 'half_cubic'])
 // The Curve kinds rows, in order: each kind's field, its name, the drawn piece it names,
@@ -52,18 +73,21 @@ export function legacyCleanupSettings(stored: Record<string, unknown>): Partial<
   return Object.keys(picked).length ? picked as Partial<CleanupSettings> : undefined
 }
 // A stored trace record or browser draft as the trace form loads it: the soft node limits,
-// half-widths and minimum sweeps it holds, and an optional kind's null (off), and nothing
-// else; a record from before the half-widths or the minimum sweeps lacks them and loads them
-// at their defaults, and a null line is dropped, so it loads at its default too. An off
-// kind's minimum sweep reads as 0 and one outside [0, 360] is dropped, so a draft never sends
-// a minimum the server refuses. Every other field an older record carries (the old fitter's
+// half-widths and minimum sweeps it holds, an optional kind's null (off), and the stroke
+// trace's line colours, width mode, tier count and fallback when each is well formed (an
+// array of distinct integers >= 0, a known mode, 'auto' or an integer >= 1, a known
+// fallback), and nothing else. A record from before any of these lacks them and loads them
+// at their defaults; a null line or a malformed stroke field is dropped, so it loads at its
+// default too. An off kind's minimum sweep reads as 0 and one outside [0, 360] is dropped, so
+// a draft never sends a minimum the server refuses. Every other field an older record carries (the old fitter's
 // lengths and their unit, its corner, node and snap controls, overlap, solid underlayers,
 // layer order, the renamed `corner_straightness`, `corner_threshold`, the pixel-era
 // `curve_optimization` and the cleanup fields a trace once embedded, which
 // legacyCleanupSettings hands to the Cleanup form) is dropped, so it is never sent.
 export function normalizeTraceSettings(stored: Record<string, unknown> | Partial<TraceSettings>): Partial<TraceSettings> {
   const record = stored as Record<string, unknown>
-  const kept = Object.fromEntries(TRACE_KEYS.filter(key => typeof record[key] === 'number' || (record[key] === null && OPTIONAL_KINDS.has(key))).map(key => [key, record[key]])) as Record<string, unknown>
+  const kept = Object.fromEntries(NUMBER_KEYS.filter(key => typeof record[key] === 'number' || (record[key] === null && OPTIONAL_KINDS.has(key))).map(key => [key, record[key]])) as Record<string, unknown>
+  for (const [key, check] of Object.entries(STROKE_CHECKS)) if (check(record[key])) kept[key] = record[key]
   for (const { key, sweep } of CURVE_KINDS) {
     if (!sweep || !(sweep in kept)) continue
     if (kept[key] === null) kept[sweep] = 0
@@ -337,6 +361,30 @@ export function PipelineControls({ stage, palette, setPalette, basePalette, trac
             </div>
           })}
         </div>
+      </section>
+      <section className="settings-group line-colours"><h3>Line colours</h3>
+        <p>A colour traced as lines is drawn as strokes along the middle of its ink, each at a width, in place of filled shapes. Use it for line art: outlines, lettering, hatching. Every other colour is traced as shapes.</p>
+        {paletteColours.length > 0
+          ? <div className="line-colour-list">{paletteColours.map(colour => {
+            const on = trace.line_colours.includes(colour.index)
+            const name = colourLabel(colour)
+            return <label key={colour.index} className="check-field line-colour-row">
+              <input type="checkbox" aria-label={`Trace ${name} as lines`} checked={on} onChange={event => t('line_colours', event.target.checked
+                ? [...trace.line_colours.filter(index => index !== colour.index), colour.index].sort((a, b) => a - b)
+                : trace.line_colours.filter(index => index !== colour.index))} />
+              <span className="line-colour-name"><span className="swatch" style={{ background: colour.hex }} aria-hidden="true" /><strong>{name}<DirtyDot dirty={on !== baseTrace.line_colours.includes(colour.index)} /></strong></span>
+            </label>
+          })}</div>
+          : <p className="settings-save-note">Run Flatten to list this artwork's colours.</p>}
+        {trace.line_colours.length > 0 && <div className="settings-grid">
+          <Field label="Width mode" help="Per stroke: each stroke keeps its own width. Per colour: every stroke of a colour takes one width. Tiers: the widths are grouped into a few shared widths." dirty={td('width_mode')}>
+            <select value={trace.width_mode} onChange={event => t('width_mode', event.target.value as WidthMode)}>{WIDTH_MODES.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select>
+          </Field>
+          {trace.width_mode === 'tiers' && <NumberField label="Tiers" help="How many shared widths the strokes are grouped into, a whole number of at least 1. Blank: automatic, the fewest that keep every clean stroke within 0.5 px of its tier's width." value={trace.tiers === 'auto' ? null : trace.tiers} min={1} step={1} optional dirty={td('tiers')} onChange={value => { if (value === null) t('tiers', 'auto'); else if (Number.isInteger(value) && value >= 1) t('tiers', value) }} />}
+          <Field label="Fallback" help="What a part of a stroke that strays outside its tube becomes. Nothing: it is not drawn. Face: it is drawn as a filled shape in its colour. Best: the stroke is drawn whole as built, and flagged." dirty={td('stroke_fallback')}>
+            <select value={trace.stroke_fallback} onChange={event => t('stroke_fallback', event.target.value as StrokeFallback)}>{STROKE_FALLBACKS.map(fallback => <option key={fallback.value} value={fallback.value}>{fallback.label}</option>)}</select>
+          </Field>
+        </div>}
       </section>
       <section className="settings-group"><h3>Complexity warnings</h3><p>These limits warn; they never silently simplify geometry.</p><div className="settings-grid"><NumberField label="Nodes per path" help="Warn when one shape has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_path_nodes} min={1} step={1} dirty={td('soft_path_nodes')} onChange={value => t('soft_path_nodes', value!)} /><NumberField label="Nodes per layer" help="Warn when one colour layer has more nodes than this in total. Lower: warns sooner. Never changes the geometry." value={trace.soft_layer_nodes} min={1} step={1} dirty={td('soft_layer_nodes')} onChange={value => t('soft_layer_nodes', value!)} /><NumberField label="Nodes per document" help="Warn when the whole design has more nodes than this. Lower: warns sooner. Never changes the geometry." value={trace.soft_document_nodes} min={1} step={1} dirty={td('soft_document_nodes')} onChange={value => t('soft_document_nodes', value!)} /></div></section>
     </>}

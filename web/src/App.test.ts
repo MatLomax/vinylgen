@@ -2099,11 +2099,11 @@ describe('retired trace settings', () => {
     await vi.waitFor(() => expect([documentLimit.value, pathLimit.value]).toEqual(['1234', '900']))
     fireEvent.blur(documentLimit)
     const stored = JSON.parse(localStorage.getItem(`vinylgen.project-settings.${project.id}`) || '{}').trace
-    expect(stored).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75, min_sweep_arc: 0, min_sweep_ellipse: 0 })
+    expect(stored).toEqual({ soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75, min_sweep_arc: 0, min_sweep_ellipse: 0, line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' })
     const run = within(panel).getByRole('button', { name: 'Trace and validate' }) as HTMLButtonElement
     await vi.waitFor(() => expect(run.disabled).toBe(false))
     fireEvent.click(run)
-    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75, min_sweep_arc: 0, min_sweep_ellipse: 0 } })
+    expect(mocks.startPipeline.mock.calls[0][3]).toEqual({ trace: { soft_path_nodes: 900, soft_layer_nodes: 50000, soft_document_nodes: 1234, half_line: 1.75, half_arc: 1.75, half_ellipse: 1.75, half_cubic: 1.75, min_sweep_arc: 0, min_sweep_ellipse: 0, line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' } })
   })
 
   it('states the traced image size from the editor state', async () => {

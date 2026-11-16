@@ -26,6 +26,7 @@ from vinylgen.palette import Progress, _noop
 from vinylgen.preview import preview_plan
 from vinylgen.svg_writer import (
     add_face_layer,
+    add_stroke_group,
     face_areas,
     face_elements,
     palette_name,
@@ -33,6 +34,7 @@ from vinylgen.svg_writer import (
     write_svg,
 )
 from vinylgen.validation import (
+    paint_strokes,
     semantic_warning_mask,
     validate_semantic_preservation,
     validate_svg,
@@ -247,18 +249,21 @@ def tracer_info() -> dict:
 
 def t3_setting(settings: TraceSettings) -> t3api.Setting:
     """The canonical t3api setting a trace at ``settings`` runs at: its half-width table
-    (``TraceSettings.halves``) and, when either arc kind's minimum is above 0, its
-    minimum-sweep table (``TraceSettings.min_sweeps``), validated by ``t3api.normal_setting``.
-    That raises ``ValueError`` naming the kind when the half-width table is refused (an off
-    line, a half-width not > 0), and naming ``min_sweep`` when a minimum is refused (outside
-    [0, 360], or above 0 on a kind that is off). At both minima 0 the setting has no
-    ``min_sweep`` key."""
+    (``TraceSettings.halves``), when either arc kind's minimum is above 0 its minimum-sweep
+    table (``TraceSettings.min_sweeps``), and when a colour is a line colour the stroke keys
+    (``TraceSettings.strokes``), validated by ``t3api.normal_setting``. That raises
+    ``ValueError`` naming the kind when the half-width table is refused (an off line, a
+    half-width not > 0), naming ``min_sweep`` when a minimum is refused (outside [0, 360], or
+    above 0 on a kind that is off), and naming the stroke key it refuses (``line_labels``,
+    ``width_mode``, ``tiers`` or ``stroke_fallback``). At both minima 0 the setting has no
+    ``min_sweep`` key, and with no line colour none of the stroke keys."""
     import t3api
 
     setting: t3api.SettingInput = {"half": settings.halves()}
     min_sweeps = settings.min_sweeps()
     if min_sweeps is not None:
         setting["min_sweep"] = min_sweeps
+    setting.update(settings.strokes())
     return t3api.normal_setting(setting)
 
 
@@ -427,13 +432,15 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     """Trace a subject's segmentation with t3 into ``map.json`` and the edge SVG.
 
     One ``t3api.trace`` call on the cleaned labels (``int16`` palette indices, every colour,
-    the omitted one too) at ``settings``' t3 setting (``t3_setting``: its half-width table and minimum sweeps; a
+    the omitted one too) at ``settings``' t3 setting (``t3_setting``: its half-width table, minimum sweeps and stroke keys; a
     setting t3 refuses raises ``ValueError`` before anything is written). Its planar map is written as ``map.json``
     (``t3api.planar_map_json``) and read back (``t3api.read_planar_map``) for every later
     step: the planar map's gate (``planar_map_check`` with no violation, and the read-back
     paint equal to t3's painted labels at every centre, else a ``RuntimeError``), the edge
-    SVG ``traced-edge.svg`` (one layer per included colour, ``svg_writer.add_face_layer``),
-    and its ``traced.png`` preview. The semantic audit reads t3's painted labels at the
+    SVG ``traced-edge.svg`` (one layer per included colour, ``svg_writer.add_face_layer``,
+    then, when the map has strokes or dots, the stroke group above them,
+    ``svg_writer.add_stroke_group``), and its ``traced.png`` preview. The semantic audit reads
+    t3's painted labels with the strokes painted on top (``validation.paint_strokes``) at the
     largest enabled half-width of the map's own setting (``largest_half_width``), which
     ``trace.json`` records in the canonical form (``backend.setting``).
 
@@ -447,7 +454,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
     stage's cleaned labels. With ``clean_inline`` (the trace CLI) the cutter cleanup in
     ``cleanup`` is first applied to the labels in memory, through the same function the
     cleanup stage uses. ``settings`` is recorded; its soft node limits warn, and its
-    half-widths and minimum sweeps are the setting t3 traces at.
+    half-widths, minimum sweeps and line colours (with their mode, tiers and fallback) are the setting t3 traces at.
 
     ``on_face`` receives each of t3's ``face`` events (``face_event``) as t3 emits it, for the
     live trace view.
@@ -614,6 +621,10 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
                                elements=elements)
         stats["source_colour_components"] = source_component_count(labels == index)
         edge_stats.append(stats)
+    # The strokes of the line colours, above every layer: an omitted colour's layer is left
+    # out of the cut, its strokes are not.
+    indexed: list[PaletteRow] = [{**row, "index": i} for i, row in enumerate(drawn)]
+    add_stroke_group(root, pm, indexed)
     edge_path = subject_dir / "traced-edge.svg"
     write_svg(edge_path, root)
     # The overlap variant and the recovery fallbacks are not written by this tracer; a file
@@ -622,20 +633,22 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
         (subject_dir / stale).unlink(missing_ok=True)
     tick(0.85, "Checking the planar map")
     gap_stats: dict = {}
-    indexed: list[PaletteRow] = [{**row, "index": i} for i, row in enumerate(drawn)]
     t3api.faces_svg_from_planar_map(pm, indexed, gap_stats)
     validations = {"edge": {**validate_svg(edge_path, drawn, drawn_included),
                             "planar_map_check": check, "read_back": read_back}}
 
     tick(0.88, "Semantic audit")
-    # The audit reads the exact raster of the drawing, t3's painted labels, at the largest
-    # half-width an enabled kind of the map's setting has: every drawn piece lies within it of
-    # its edge's points.
+    # The audit reads the raster of the drawing at the largest half-width an enabled kind of
+    # the map's setting has: every drawn piece lies within it of its edge's points. The
+    # drawing is t3's painted labels (the faces, exact) with each stroke and dot painted on
+    # top at its width with its caps (``paint_strokes``), as the edge SVG paints its stroke
+    # group above the layers.
     tolerance = largest_half_width(traced_setting)
     minimum_feature_span = feature_span(tolerance)
-    vector_labels = painted.astype(np.int16)
+    drawing = paint_strokes(painted, pm)
+    vector_labels = drawing.astype(np.int16)
     palette_rgb = np.asarray([row["rgb"] for row in drawn], dtype=np.uint8).reshape(-1, 3)
-    vector_rgb = np.where((painted >= 0)[..., None], palette_rgb[np.maximum(painted, 0)],
+    vector_rgb = np.where((drawing >= 0)[..., None], palette_rgb[np.maximum(drawing, 0)],
                           np.asarray(UNPAINTED_RGB, dtype=np.uint8)).astype(np.uint8)
     semantic_cache: dict = {}
     validations["semantic"] = validate_semantic_preservation(
@@ -661,7 +674,7 @@ def trace_subject(subject_dir: Path, settings: TraceSettings, name_overrides: di
             f"the {tolerance:g}px deviation limit; see {semantic_inspection.name} and "
             f"{semantic_overlay.name}")
     for component in changed_explicit_components(
-            segmentation.explicit_protected_features, labels, painted):
+            segmentation.explicit_protected_features, labels, drawing):
         missed |= component["changed"]
         x0, y0, x1, y1 = component["bounds"]
         warnings.append(

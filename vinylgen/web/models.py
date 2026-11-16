@@ -139,7 +139,10 @@ class TraceJobSettings(BaseModel):
     # The soft node limits (contracts.TraceSettings), each only warning, and each curve
     # kind's tube half-width in pixels, which steers t3: > 0, or None (off) on arcs,
     # ellipses and cubics. The line is never off. Each arc kind's minimum sweep, in degrees,
-    # in [0, 360] (0: no minimum), and 0 on a kind that is off.
+    # in [0, 360] (0: no minimum), and 0 on a kind that is off. The stroke trace's line
+    # colours (distinct palette indices >= 0), its width mode, tier count ("auto" or an int
+    # >= 1, a bool not one) and fallback: the last three are form state, kept whatever
+    # line_colours holds, and sent to t3 only with a line colour (TraceSettings.strokes).
     soft_path_nodes: int = Field(default=5_000, ge=1)
     soft_layer_nodes: int = Field(default=50_000, ge=1)
     soft_document_nodes: int = Field(default=200_000, ge=1)
@@ -149,6 +152,10 @@ class TraceJobSettings(BaseModel):
     half_cubic: float | None = Field(default=1.75, gt=0)
     min_sweep_arc: float = Field(default=0.0, ge=0, le=360, allow_inf_nan=False)
     min_sweep_ellipse: float = Field(default=0.0, ge=0, le=360, allow_inf_nan=False)
+    line_colours: list[Annotated[int, Field(strict=True, ge=0)]] = Field(default_factory=list)
+    width_mode: Literal["stroke", "colour", "tiers"] = "stroke"
+    tiers: Literal["auto"] | Annotated[int, Field(strict=True, ge=1)] = "auto"
+    stroke_fallback: Literal["none", "face", "best"] = "none"
 
     @model_validator(mode="before")
     @classmethod
@@ -165,6 +172,14 @@ class TraceJobSettings(BaseModel):
         """A minimum sweep is a number of degrees: a bool is refused, not read as 0 or 1."""
         if isinstance(value, bool):
             raise ValueError("a minimum sweep is a number of degrees, not a bool")
+        return value
+
+    @field_validator("line_colours")
+    @classmethod
+    def each_line_colour_once(cls, value: list[int]) -> list[int]:
+        """A line colour is named once: a repeated index is refused."""
+        if len(set(value)) != len(value):
+            raise ValueError("a line colour is named more than once")
         return value
 
     @model_validator(mode="after")

@@ -81,7 +81,7 @@ def stroke_d(t3, S: dict) -> str:
     out = []
     for k, p in enumerate(S["pieces"]):
         d = t3.svg_d(list(p["seg"]))
-        out.append(d if k == 0 else d[d.index(next(ch for ch in d[1:] if ch.isalpha())):])
+        out.append(d if k == 0 else d[next(i for i, ch in enumerate(d) if ch in "LCA"):])
     return "".join(out) + ("Z" if S["cyclic"] else "")
 
 

@@ -12,7 +12,7 @@ import numpy as np
 from numba import njit, prange
 from scipy import ndimage
 
-from vinylgen.svg_writer import SVG
+from vinylgen.svg_writer import STROKE_GROUP_ID, SVG
 
 
 def _build_srgb_linear_lut() -> np.ndarray:
@@ -699,19 +699,130 @@ def semantic_warning_mask(source_rgb: np.ndarray, candidate_rgb: np.ndarray,
     return reference & (distances > maximum_deviation)
 
 
+# The furthest a stroke's flattened centreline lies from its drawn pieces, in px, when the
+# validation render paints the strokes (``paint_strokes``).
+STROKE_FLATTENING_PX = 0.01
+# Each quarter circle of a round cap, join or dot is drawn as this many chords: the furthest
+# the drawn outline lies inside the true one is r (1 - cos(pi / 128)), under 0.0003 r.
+STROKE_QUAD_SEGMENTS = 32
+# SVG's default stroke-miterlimit, which the edge SVG's butt strokes are drawn with: a mitre
+# longer than this many stroke widths is bevelled.
+SVG_MITRE_LIMIT = 4.0
+
+
+def segment_points(seg: Sequence) -> np.ndarray:
+    """Points along one drawn segment (``L``, ``C`` or ``E``, an element's ``seg``), its first
+    and last points its own ends, so close that the polyline through them lies within
+    ``STROKE_FLATTENING_PX`` of the segment. A polyline through n + 1 points equally spaced
+    in the parameter lies within h^2 max|f''| / 8 of a curve f, h the parameter step: for a
+    cubic |f''| <= 6 max(|P0 - 2 P1 + P2|, |P1 - 2 P2 + P3|) over t in [0, 1]; for an arc of
+    the ellipse (cx + cos(phi) rx cos t - sin(phi) ry sin t, cy + sin(phi) rx cos t +
+    cos(phi) ry sin t), |f''| <= max(rx, ry) over its angle range."""
+    kind = seg[0]
+    if kind == "L":
+        return np.asarray([[seg[1], seg[2]], [seg[3], seg[4]]], dtype=float)
+    if kind == "C":
+        c = np.asarray(seg[1:9], dtype=float).reshape(4, 2)
+        bend = 6.0 * max(float(np.hypot(*(c[0] - 2 * c[1] + c[2]))),
+                         float(np.hypot(*(c[1] - 2 * c[2] + c[3]))))
+        n = max(1, math.ceil(math.sqrt(bend / (8.0 * STROKE_FLATTENING_PX))))
+        t = np.linspace(0.0, 1.0, n + 1)[:, None]
+        points = ((1 - t) ** 3 * c[0] + 3 * (1 - t) ** 2 * t * c[1]
+                  + 3 * (1 - t) * t ** 2 * c[2] + t ** 3 * c[3])
+        points[0], points[-1] = c[0], c[3]
+        return points
+    if kind == "E":
+        cx, cy, rx, ry, rot, a0, a1 = (float(v) for v in seg[1:8])
+        n = max(1, math.ceil(abs(a1 - a0) * math.sqrt(max(rx, ry) / (8.0 * STROKE_FLATTENING_PX))))
+        t = np.linspace(a0, a1, n + 1)
+        x = cx + math.cos(rot) * rx * np.cos(t) - math.sin(rot) * ry * np.sin(t)
+        y = cy + math.sin(rot) * rx * np.cos(t) + math.cos(rot) * ry * np.sin(t)
+        return np.column_stack([x, y])
+    raise ValueError(f"not a drawn segment: {kind!r}")
+
+
+def stroke_area(stroke: Mapping):
+    """The area a stroke of the edge SVG paints, as a shapely geometry: its pieces' flattened
+    centreline (``segment_points``, each piece's first point dropped after the first piece,
+    as the drawn path drops each later moveto) buffered by half its width, with the cap and
+    join its SVG path has: round caps and joins (style ``round``), or flat caps and mitre
+    joins bevelled past ``SVG_MITRE_LIMIT`` (style ``butt``); a cyclic stroke closed as a
+    ring, with no cap."""
+    from shapely.geometry import LinearRing, LineString
+
+    pieces = [segment_points(piece["seg"]) for piece in stroke["pieces"]]
+    points = np.vstack([pieces[0]] + [p[1:] for p in pieces[1:]])
+    radius = float(stroke["width"]) / 2.0
+    join = {"join_style": "round"} if stroke["style"] == "round" else {
+        "join_style": "mitre", "mitre_limit": SVG_MITRE_LIMIT}
+    if stroke["cyclic"]:
+        ring = points[:-1] if np.allclose(points[0], points[-1]) else points
+        return LinearRing(ring).buffer(radius, quad_segs=STROKE_QUAD_SEGMENTS, **join)
+    cap = "round" if stroke["style"] == "round" else "flat"
+    return LineString(points).buffer(radius, quad_segs=STROKE_QUAD_SEGMENTS, cap_style=cap, **join)
+
+
+def paint_strokes(painted: np.ndarray, pm: Mapping) -> np.ndarray:
+    """The validation render of a drawing with strokes: ``painted`` (the faces' paint, a label
+    per pixel centre) with every stroke of the planar map ``pm`` painted on top in the map's
+    order, then every dot, as the edge SVG's stroke group paints them above the layers. A
+    pixel centre (x + 0.5, y + 0.5) inside a stroke's area (``stroke_area``: its width, its
+    caps and joins) or a dot's disc (its width across) takes its label. ``painted`` itself
+    when the map has no stroke and no dot."""
+    strokes, dots = pm.get("strokes") or [], pm.get("dots") or []
+    if not strokes and not dots:
+        return painted
+    import shapely
+    from shapely.geometry import Point
+
+    out = np.array(painted, copy=True)
+    height, width = out.shape
+    areas = [(int(s["label"]), stroke_area(s)) for s in strokes]
+    areas += [(int(d["label"]), Point(float(d["c"][0]), float(d["c"][1])).buffer(
+        float(d["width"]) / 2.0, quad_segs=STROKE_QUAD_SEGMENTS)) for d in dots]
+    for label, area in areas:
+        x0, y0, x1, y1 = area.bounds
+        cols = np.arange(max(0, math.floor(x0 - 0.5)), min(width, math.ceil(x1 - 0.5) + 1))
+        rows = np.arange(max(0, math.floor(y0 - 0.5)), min(height, math.ceil(y1 - 0.5) + 1))
+        if not len(cols) or not len(rows):
+            continue
+        xs, ys = np.meshgrid(cols + 0.5, rows + 0.5)
+        inside = shapely.contains_xy(area, xs, ys)
+        out[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1][inside] = label
+    return out
+
+
 def validate_svg(path: Path, palette: Sequence[Mapping[str, object]], included: list[int]) -> dict:
+    """The edge SVG's structural checks. Its layers are the root's ``<g>`` children other
+    than the stroke group (``svg_writer.add_stroke_group``): one per included colour, in
+    order, each filled with its colour, every face path in them closed. The stroke group,
+    when present, is not a layer and its paths are not faces: it is the root's last child,
+    unfilled, and each of its paths is stroked (``stroke`` and ``stroke-width``). Every path
+    id in the file is unique, and no raster or effect element is present."""
     root = ET.parse(path).getroot()
-    layers = root.findall(f"{{{SVG}}}g")
+    groups = root.findall(f"{{{SVG}}}g")
+    strokes = [g for g in groups if g.attrib.get("id") == STROKE_GROUP_ID]
+    layers = [g for g in groups if g.attrib.get("id") != STROKE_GROUP_ID]
     paths = root.findall(f".//{{{SVG}}}path")
+    face_paths = [p for layer in layers for p in layer.iter(f"{{{SVG}}}path")]
+    stroke_paths = [p for group in strokes for p in group.iter(f"{{{SVG}}}path")]
     ids = [node.attrib.get("id") for node in paths]
     unsupported = [name for name in ("image", "mask", "clipPath", "filter", "linearGradient", "radialGradient")
                    if root.findall(f".//{{{SVG}}}{name}")]
     expected = [str(palette[i]["hex"]).upper() for i in included]
     actual = [str(layer.attrib.get("fill", "")).upper() for layer in layers]
+    strokes_well_formed = len(strokes) <= 1 and all(
+        list(root)[-1] is group and group.attrib.get("fill") == "none"
+        and all(p.attrib.get("stroke") and p.attrib.get("stroke-width") for p in group.iter(f"{{{SVG}}}path"))
+        for group in strokes)
     checks = {"xml_valid": True, "layer_count": len(layers), "path_count": len(paths),
+              "stroke_path_count": len(stroke_paths),
               "expected_fills": actual == expected, "unique_path_ids": len(ids) == len(set(ids)),
-              "all_paths_closed": all(re.search(r"[zZ]\s*$", p.attrib.get("d", "")) is not None for p in paths),
+              "all_paths_closed": all(re.search(r"[zZ]\s*$", p.attrib.get("d", "")) is not None
+                                      for p in face_paths),
+              "strokes_well_formed": strokes_well_formed,
               "unsupported_elements": unsupported}
     checks["passed"] = all((checks["expected_fills"], checks["unique_path_ids"],
-                             checks["all_paths_closed"], not unsupported, len(layers) == len(included)))
+                             checks["all_paths_closed"], strokes_well_formed, not unsupported,
+                             len(layers) == len(included)))
     return checks

@@ -59,7 +59,8 @@ from vinylgen.contracts import TraceSettings, upgrade_trace_record
 KINDS = ("line", "arc", "ellipse", "cubic")
 HALF_DEFAULTS = {f"half_{kind}": 1.75 for kind in KINDS}
 MIN_DEFAULTS = {"min_sweep_arc": 0.0, "min_sweep_ellipse": 0.0}
-DEFAULT_RECORD = {**FORM_LIMITS, **HALF_DEFAULTS, **MIN_DEFAULTS}
+STROKE_DEFAULTS = {"line_colours": [], "width_mode": "stroke", "tiers": "auto", "stroke_fallback": "none"}
+DEFAULT_RECORD = {**FORM_LIMITS, **HALF_DEFAULTS, **MIN_DEFAULTS, **STROKE_DEFAULTS}
 SETTING_DEFAULT = {"half": {kind: 1.75 for kind in KINDS}, "A1": 22.5, "A2": 45.0, "L": 4.0}
 SETTING_270 = {**SETTING_DEFAULT, "min_sweep": {"arc": 270.0, "ellipse": 270.0}}
 

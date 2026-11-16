@@ -48,7 +48,7 @@ function renderTrace() {
 
 describe('trace settings under t3', () => {
   it('keeps the three soft node limits and the four half-widths in DEFAULT_TRACE_SETTINGS', () => {
-    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...FORM_LIMITS, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0 })
+    expect(DEFAULT_TRACE_SETTINGS).toEqual({ ...FORM_LIMITS, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0, line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' })
   })
 
   it('offers Complexity warnings with its three limits and no other trace control', () => {
@@ -88,7 +88,7 @@ describe('trace settings under t3', () => {
       expect(Object.fromEntries(KEPT.map(key => [key, loaded[key]]))).toEqual(limits)
       // The form's state is the defaults with the draft over them, as App loads a draft; a
       // draft from before the half-widths loads them at their default.
-      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual({ ...limits, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0 })
+      expect({ ...DEFAULT_TRACE_SETTINGS, ...loaded }).toEqual({ ...limits, ...HALVES, min_sweep_arc: 0, min_sweep_ellipse: 0, line_colours: [], width_mode: 'stroke', tiers: 'auto', stroke_fallback: 'none' })
     }
   })
 

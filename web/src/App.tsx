@@ -1736,7 +1736,8 @@ export default function App() {
           <div className="section-heading"><h2>Edit nodes</h2><span>{nodesReadiness}</span></div>
           <p className="section-intro">Move, retype and delete the nodes of the traced planar map in nib's editor, with the tools over the canvas.</p>
           <p className="stage-guidance">{tracedMap ? 'Save makes a new trace revision, edited in nib, and selects it; the revision you started from is kept.' : 'Trace this revision first: only a revision traced with t3 has a planar map whose nodes can be edited. Save then makes a new trace revision.'}</p>
-          {tracedMap && <NodesRevision runs={traceRuns.runs} index={traceRuns.index} onStep={stepTrace} locked={nodesEdited ? 'Save or undo your node edits to open another trace run.' : null} />}
+          {/* The shown run is the selected revision; its line colours are named only from that revision's own palette. */}
+          {tracedMap && <NodesRevision runs={traceRuns.runs} index={traceRuns.index} onStep={stepTrace} locked={nodesEdited ? 'Save or undo your node edits to open another trace run.' : null} palette={paletteRevision === revision ? editorPalette : undefined} />}
           {lockReason('nodes-lock-reason')}
         </section>
         <section id="workflow-panel-palette" role="tabpanel" aria-labelledby="workflow-tab-palette" className={`side-section edit-section workflow-surface ${stage === 'palette' ? 'mobile-stage-active' : ''}`} data-stage="palette">

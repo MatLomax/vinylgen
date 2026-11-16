@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -173,6 +174,54 @@ def add_face_layer(root: ET.Element, row: PaletteRow, pm: t3api.PlanarMap, *,
             "holes": sum(c["holes"] for c in components), "construction": "t3 planar map",
             "elements": dict(sorted(layer_elements.items())), "node_types": node_types,
             "components": components}
+
+
+# The stroke group's id, and the attributes t3api writes on each of its paths, in its order.
+STROKE_GROUP_ID = "strokes"
+STROKE_ATTRIBUTES = ("d", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin")
+
+
+def add_stroke_group(root: ET.Element, pm: t3api.PlanarMap,
+                     palette: Sequence[PaletteRow]) -> dict[str, int]:
+    """Append the stroke group of the edge SVG, from a planar map read from ``map.json``, as
+    ``root``'s next child: called after every face layer, it paints above them.
+
+    The group is ``<g id="strokes" fill="none">``, not a layer: it holds one path per stroke
+    in the map's order, then one per dot, each with the ``d``, ``stroke``, ``stroke-width``,
+    ``stroke-linecap`` and ``stroke-linejoin`` (a dot has no join) exactly as
+    ``t3api.strokes_svg_from_planar_map`` writes them (the stroke's pieces as one path, each
+    later piece's moveto dropped and ``Z`` on a ring; a dot as ``M x y l0 0`` with a round
+    cap). Each path gets a unique id, ``stroke-<colour>-NNN`` or ``dot-<colour>-NNN``
+    numbered per colour in the map's order, and an Inkscape label. ``palette`` holds a row
+    for every stroke's and dot's label (a removed colour's row too: its layer is left out of
+    the cut, its strokes are not). A map with no stroke and no dot gets no group. Returns
+    ``{"strokes", "dots"}``, the counts written."""
+    import t3api
+
+    strokes, dots = pm.get("strokes") or [], pm.get("dots") or []
+    if not strokes and not dots:
+        return {"strokes": 0, "dots": 0}
+    written = ET.fromstring(t3api.strokes_svg_from_planar_map(pm, palette))
+    groups = [g for g in written.findall(f"{{{SVG}}}g") if g.attrib.get("id") == STROKE_GROUP_ID]
+    if len(groups) != 1:
+        raise RuntimeError(f"t3api's strokes file holds {len(groups)} stroke groups, not one")
+    paths = groups[0].findall(f"{{{SVG}}}path")
+    labels = [int(row["label"]) for row in strokes] + [int(row["label"]) for row in dots]
+    if len(paths) != len(labels):
+        raise RuntimeError(f"t3api's stroke group holds {len(paths)} paths for "
+                           f"{len(strokes)} strokes and {len(dots)} dots")
+    rows = {int(row["index"]): row for row in palette}
+    group = ET.SubElement(root, f"{{{SVG}}}g", {"id": STROKE_GROUP_ID, "fill": "none"})
+    numbers: dict[tuple[str, int], int] = {}
+    for k, (path, label) in enumerate(zip(paths, labels)):
+        kind = "stroke" if k < len(strokes) else "dot"
+        name = palette_name(rows[label])
+        number = numbers[(kind, label)] = numbers.get((kind, label), 0) + 1
+        attributes = {"id": f"{kind}-{layer_slug(name)}-{number:03d}"}
+        attributes.update((key, path.attrib[key]) for key in STROKE_ATTRIBUTES if key in path.attrib)
+        attributes[f"{{{INKSCAPE}}}label"] = f"{name} {kind} {number:03d}"
+        ET.SubElement(group, f"{{{SVG}}}path", attributes)
+    return {"strokes": len(strokes), "dots": len(dots)}
 
 
 def write_svg(path: Path, root: ET.Element) -> None:
