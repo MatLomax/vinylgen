@@ -787,6 +787,8 @@ def paint_strokes(painted: np.ndarray, pm: Mapping) -> np.ndarray:
         if not len(cols) or not len(rows):
             continue
         xs, ys = np.meshgrid(cols + 0.5, rows + 0.5)
+        # Prepared, the area answers each centre from its edge index, not by walking every edge.
+        shapely.prepare(area)
         inside = shapely.contains_xy(area, xs, ys)
         out[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1][inside] = label
     return out
