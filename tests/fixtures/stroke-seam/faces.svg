@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" viewBox="0 0 200 200" width="200" height="200">
+<g inkscape:groupmode="layer" id="layer-0" inkscape:label="label 0 Paper #F4E6AD">
+<path id="face-0" data-face="0" data-label="0" fill="#F4E6AD" fill-rule="evenodd" stroke="none" sodipodi:nodetypes="cccccc" d="M200.0 120.52245852060575A122.12772662797107 122.12772662797107 0.0 0 1 79.47754147939425 0.0L0.0 0.0L0.0 200.0L200.0 200.0L200.0 120.52245852060575Z"/>
+</g>
+<g inkscape:groupmode="layer" id="layer-1" inkscape:label="label 1 Disc #E4B33A">
+<path id="face-1" data-face="1" data-label="1" fill="#E4B33A" fill-rule="evenodd" stroke="none" sodipodi:nodetypes="cccc" d="M79.47754147939425 0.0A122.12772662797107 122.12772662797107 0.0 0 0 200.0 120.52245852060575L200.0 0.0L79.47754147939425 0.0Z"/>
+</g>
+<g id="strokes" fill="none">
+<path d="M79.47754147939425 7.771561172376096e-15A122.12772662797107 122.12772662797107 0.0 0 0 200.0 120.52245852060575" stroke="#050301" stroke-width="5.963051461783363" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

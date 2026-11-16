@@ -1,0 +1,40 @@
+{
+ "source": "S13's seam array, generations/tube/tests/data/stroke_seam.npy, less 1",
+ "seam_sha256": "b6835e5b06ea6e38ab3b9cf7ab8a653cce3b8af1abcafdb4d9b3725b914e608c",
+ "line_colour": 2,
+ "palette": [
+  {
+   "index": 0,
+   "name": "Paper",
+   "hex": "#F4E6AD",
+   "rgb": [
+    244,
+    230,
+    173
+   ],
+   "share_percent": 70.3025
+  },
+  {
+   "index": 1,
+   "name": "Disc",
+   "hex": "#E4B33A",
+   "rgb": [
+    228,
+    179,
+    58
+   ],
+   "share_percent": 26.8875
+  },
+  {
+   "index": 2,
+   "name": "Ink",
+   "hex": "#050301",
+   "rgb": [
+    5,
+    3,
+    1
+   ],
+   "share_percent": 2.81
+  }
+ ]
+}
